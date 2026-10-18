@@ -2483,7 +2483,6 @@ jyc binary
 ├── jyc config init        ← config management
 ├── jyc config validate
 ├── jyc state              ← show monitoring state
-├── jyc patterns list      ← list patterns (shows all rule fields)
 └── jyc dashboard          ← live TUI dashboard (connects to running jyc serve)
 ```
 
@@ -3370,7 +3369,6 @@ jyc/
 │   │   ├── serve.rs                     # `jyc serve` — wiring
 │   │   ├── dashboard.rs                 # `jyc dashboard` — ratatui TUI
 │   │   ├── config.rs                    # `jyc config init/validate`
-│   │   ├── patterns.rs                  # `jyc patterns list` (all rule fields)
 │   │   ├── state.rs                     # `jyc state`
 │   │   └── mcp.rs                       # `jyc mcp` — MCP server probing
 │   ├── config/

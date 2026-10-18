@@ -69,24 +69,6 @@ enum Commands {
         action: cli::config::ConfigAction,
     },
 
-    /// Manage message patterns
-    Patterns {
-        #[command(subcommand)]
-        action: cli::patterns::PatternsAction,
-    },
-
-    /// Manage agent templates
-    Agents {
-        #[command(subcommand)]
-        action: cli::agents::AgentsAction,
-    },
-
-    /// Manage skills
-    Skills {
-        #[command(subcommand)]
-        action: cli::skills::SkillsAction,
-    },
-
     /// Install a plugin archive (.tar.gz) or a plugin directory into the config dir
     Plugins {
         #[command(subcommand)]
@@ -235,11 +217,6 @@ async fn main() -> Result<()> {
         Commands::Config { action } => {
             cli::config::run(action, &data_dir, cli.data_dir.is_some()).await
         }
-        Commands::Patterns { action } => {
-            cli::patterns::run(action, &data_dir, cli.data_dir.is_some()).await
-        }
-        Commands::Agents { action } => cli::agents::run(action).await,
-        Commands::Skills { action } => cli::skills::run(action).await,
         Commands::Plugins { action } => cli::plugins::run(action).await,
         Commands::Mcp { action } => cli::mcp::run(action, &data_dir, cli.data_dir.is_some()).await,
         Commands::Stop(args) => cli::stop::run(args, &data_dir).await,

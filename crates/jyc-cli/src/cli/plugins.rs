@@ -7,9 +7,9 @@
 //!
 //! Every collection the source carries is installed into `<target>/<name>/`
 //! (default: the platform config home, e.g. `~/.config/jyc/`): `skills/` and
-//! `subagents/` entry by entry, exactly like `jyc skills install` (one
-//! subdirectory per name, replaced cleanly), and `hooks/` file by file — its
-//! entries are flat shell scripts, not one directory per name. A collection
+//! `subagents/` entry by entry, one subdirectory per name and each replaced
+//! cleanly, and `hooks/` file by file — its entries are flat shell scripts, not
+//! one directory per name. A collection
 //! the source does not carry is skipped, and a directory this command does
 //! not know (e.g. a `scripts/` that only makes sense in the repo) is named in
 //! a printed line and left alone. Unlike `skills/` and `subagents/`, `hooks/`
@@ -47,7 +47,7 @@ pub enum PluginsAction {
 pub async fn run(action: &PluginsAction) -> Result<()> {
     match action {
         PluginsAction::Install { source, target } => {
-            let source = install::resolve_source(Some(source))?;
+            let source = install::resolve_source(source);
             let target = install::resolve_target(target.as_deref())?;
             install_plugins(&source, &target).await
         }
@@ -85,8 +85,7 @@ pub async fn install_plugins(source: &Path, target: &Path) -> Result<()> {
         }
         let path = entry.path();
         // Every collection but `hooks/` is one subdirectory per name, replaced
-        // cleanly — the semantics `jyc skills install` and `jyc agents install`
-        // already have. `hooks/` holds flat shell scripts instead, so it is
+        // cleanly. `hooks/` holds flat shell scripts instead, so it is
         // copied file by file: `install_entries` enumerates subdirectories and
         // would find none.
         if name == FLAT_COLLECTION {

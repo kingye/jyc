@@ -118,7 +118,7 @@ impl Syntax {
         if declared.is_empty() {
             return labels.iter().map(|label| label.to_string()).collect();
         }
-        let mut words: Vec<&str> = labels.iter().copied().collect();
+        let mut words: Vec<&str> = labels.to_vec();
         words.extend(declared);
         vec![words.join("|")]
     }

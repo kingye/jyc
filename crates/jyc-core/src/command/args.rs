@@ -7,6 +7,12 @@
 //! commands itself. `/model` is just one row of this table, not a special
 //! case in the client.
 //!
+//! Every value a command offers is written here, once, on a table its row in
+//! [`super::builtin`] points at: the key, the description the popup shows, and
+//! what it opens. Nothing below repeats a key the usage line or another
+//! command already names — `/context`'s `<sliding|full|reset|dump>` and the
+//! popup rows are the same declaration read twice, by two readers.
+//!
 //! Values come from three places: the command's own contract (the literals
 //! each handler `match`es on), per-topic state the caller already has
 //! (models, skills, MCP names), and the instance's own subagent types
@@ -30,6 +36,7 @@ use chrono::{Datelike, Utc};
 use jyc_types::{AppConfig, CommandArg, McpServerConfig, ModelInfo};
 
 use super::flags;
+use super::spec::{ArgDef, ArgSource};
 
 /// Per-topic state the dynamic values are read from.
 pub struct ArgCtx<'a> {
@@ -54,6 +61,15 @@ pub struct ArgCtx<'a> {
     pub subagents: &'a [String],
 }
 
+/// The values a command's first argument level offers, resolved against
+/// per-topic state.
+///
+/// A command with no built-in row — a config-declared custom command — offers
+/// nothing, so its arguments stay free text.
+pub fn command_args(command: &str, ctx: &ArgCtx) -> Vec<CommandArg> {
+    super::builtin::args_of(command).resolve(ctx)
+}
+
 /// A leaf value with no further levels.
 fn val(value: &str, description: &str) -> CommandArg {
     CommandArg {
@@ -72,66 +88,83 @@ fn val_with(value: &str, description: &str, args: Vec<CommandArg>) -> CommandArg
     }
 }
 
-/// Bare names, no descriptions.
-fn names<'a>(iter: impl Iterator<Item = &'a str>) -> Vec<CommandArg> {
-    iter.map(|n| val(n, "")).collect()
-}
-
 /// Argument values for `command` (with its leading slash), empty when the
 /// command takes free-text arguments.
-pub fn command_args(command: &str, ctx: &ArgCtx) -> Vec<CommandArg> {
-    match command {
-        "/model" => {
-            let mut args = names(ctx.models.iter().map(|m| m.name.as_str()));
-            args.push(val("reset", "Clear the override, use the configured model"));
-            args
-        }
-        "/thinking" => vec![
-            val("show", "Show reasoning content"),
-            val("hide", "Hide reasoning content"),
-        ],
-        "/context" => vec![
-            val("full", "Keep the whole prior conversation verbatim"),
-            // The handler also answers to `sliding_window`; the table offers
-            // one spelling, and typing the other simply closes the popup.
-            val("sliding", "Sliding window; optionally follow a window size"),
-            val("reset", "Drop the runtime override"),
-            val_with(
-                "dump",
-                "Toggle wire-payload dumping",
-                vec![val("on", ""), val("off", "")],
-            ),
-        ],
-        "/backlog" => vec![
-            val("push", "Add an item"),
-            val("list", "Show all items"),
-            val("ls", "Show all items"),
-            val("get", "Show one item by index"),
-            val("pop", "Remove and show the next item"),
-            val("rm", "Remove an item by index"),
-            val("set", "Replace an item"),
-        ],
-        "/spawn" => spawn_args(ctx),
-        "/skill" => toggle_args(names(ctx.skills.iter().map(String::as_str))),
-        "/mcp" => toggle_args(names(mcp_names(ctx.config).iter().map(String::as_str))),
-        "/template" => vec![val(
-            "update",
-            "Re-apply the template, overwriting local edits",
-        )],
-        // `/send` addresses any agent (it does not check the name), so it
-        // offers every agent; `/close` accepts only this topic's own
-        // subagents, so it offers the narrower list.
-        "/send" => send_args(ctx),
-        "/close" => close_args(ctx),
-        "/new" | "/reset" => flags::rows(flags::CONFIRM_FLAGS),
-        "/bill" => {
-            let mut args = recent_months();
-            args.push(val("all", "Every day with recorded usage"));
-            args
-        }
-        _ => vec![],
-    }
-}
+/// `/context`: the strategies, plus the one toggle. Sliding comes first because
+/// it is what a long topic wants; the order here *is* the order the popup offers
+/// and the order the usage line lists, which is why there is only one list.
+pub static CONTEXT_ARGS: ArgSource = ArgSource::Declared(&[
+    // The handler also answers to `sliding_window`; the table offers one
+    // spelling, and typing the other simply closes the popup.
+    ArgDef::leaf("sliding", "Sliding window; optionally follow a window size"),
+    ArgDef::leaf("full", "Keep the whole prior conversation verbatim"),
+    ArgDef::leaf("reset", "Drop the runtime override"),
+    ArgDef::opening(
+        "dump",
+        "Toggle wire-payload dumping",
+        &[ArgDef::leaf("on", ""), ArgDef::leaf("off", "")],
+    ),
+]);
+
+/// `/thinking`: show or hide the reasoning content.
+pub static THINKING_ARGS: ArgSource = ArgSource::Declared(&[
+    ArgDef::leaf("show", "Show reasoning content"),
+    ArgDef::leaf("hide", "Hide reasoning content"),
+]);
+
+/// `/backlog`'s verbs. Their arguments are free text (`/backlog push <text>`),
+/// so a bare `/backlog` closes the popup and sends the line as typed.
+pub static BACKLOG_ARGS: ArgSource = ArgSource::Declared(&[
+    ArgDef::leaf("push", "Add an item"),
+    ArgDef::leaf("list", "Show all items"),
+    ArgDef::leaf("ls", "Show all items"),
+    ArgDef::leaf("get", "Show one item by index"),
+    ArgDef::leaf("pop", "Remove and show the next item"),
+    ArgDef::leaf("rm", "Remove an item by index"),
+    ArgDef::leaf("set", "Replace an item"),
+]);
+
+/// `/bill`: this month's scopes and then every recorded day. `today` and
+/// `YYYY-MM` are what the usage line names instead — the popup offers the
+/// months themselves, which is the better answer to the same question.
+pub static BILL_ARGS: ArgSource = ArgSource::Mixed(
+    &[],
+    recent_months,
+    &[ArgDef::leaf("all", "Every day with recorded usage")],
+);
+
+/// `/model`: every model the configured providers expose, then the way back to
+/// the configured one.
+pub static MODEL_ARGS: ArgSource = ArgSource::Mixed(
+    &[],
+    model_names,
+    &[ArgDef::leaf(
+        "reset",
+        "Clear the override, use the configured model",
+    )],
+);
+
+/// `/skill`: one toggle shell, with this topic's own skills behind `on`/`off`.
+/// `/mcp` is the same shell over MCP server names — hence the shared
+/// [`toggle_args`] builder rather than two hand-written lists.
+pub static SKILL_ARGS: ArgSource = ArgSource::Declared(&toggle_args(skill_names, "skill"));
+pub static MCP_ARGS: ArgSource = ArgSource::Declared(&toggle_args(mcp_name_args, "MCP server"));
+
+/// `/template`: the only verb it offers; a template name is free text.
+pub static TEMPLATE_ARGS: ArgSource = ArgSource::Declared(&[ArgDef::leaf(
+    "update",
+    "Re-apply the template, overwriting local edits",
+)]);
+
+/// `/new` and `/reset`: the confirm flags, projected from the one declaration
+/// the parser reads them through.
+pub static CONFIRM_FLAG_ARGS: ArgSource = ArgSource::Provided(confirm_flag_args);
+
+/// `/spawn`, `/send` and `/close`: every key comes from per-topic state, so the
+/// level is provided whole and the usage line names the slot from the shape.
+pub static SPAWN_ARGS: ArgSource = ArgSource::Provided(spawn_args);
+pub static SEND_ARGS: ArgSource = ArgSource::Provided(send_args);
+pub static CLOSE_ARGS: ArgSource = ArgSource::Provided(close_args);
 
 /// `/spawn`'s next levels: the types a spawn accepts, and then the four flags.
 ///
@@ -197,16 +230,42 @@ fn close_args(ctx: &ArgCtx) -> Vec<CommandArg> {
 
 /// `<cmd> on|off|reset <name>` — `reset` clears everything at once, so only
 /// `on` and `off` carry the name list.
-fn toggle_args(targets: Vec<CommandArg>) -> Vec<CommandArg> {
-    vec![
-        val_with("on", "Force this name on for the topic", targets.clone()),
-        val_with("off", "Force this name off for the topic", targets),
-        val("reset", "Clear all overrides for this topic"),
+///
+/// One shell for `/skill` and `/mcp`: a toggle reads the same line whichever
+/// list it toggles, so the words are written here once and each row supplies
+/// its own names.
+const fn toggle_args(names: fn(&ArgCtx) -> Vec<CommandArg>, noun: &'static str) -> [ArgDef; 3] {
+    // `on`/`off` carry the names; `reset` clears everything at once.
+    [
+        ArgDef::dynamic("on", noun, names),
+        ArgDef::dynamic("off", noun, names),
+        ArgDef::leaf("reset", "Clear all overrides for this topic"),
     ]
 }
 
+/// The names behind a toggle's `on`/`off`.
+fn skill_names(ctx: &ArgCtx) -> Vec<CommandArg> {
+    ctx.skills.iter().map(|name| val(name, "")).collect()
+}
+
+fn mcp_name_args(ctx: &ArgCtx) -> Vec<CommandArg> {
+    mcp_names(ctx.config)
+        .iter()
+        .map(|name| val(name, ""))
+        .collect()
+}
+
+fn model_names(ctx: &ArgCtx) -> Vec<CommandArg> {
+    ctx.models.iter().map(|m| val(&m.name, "")).collect()
+}
+
+/// `/new`'s and `/reset`'s confirm flags.
+fn confirm_flag_args(_ctx: &ArgCtx) -> Vec<CommandArg> {
+    flags::rows(flags::CONFIRM_FLAGS)
+}
+
 /// The `YYYY-MM` scopes of this month and the two before it, newest first.
-fn recent_months() -> Vec<CommandArg> {
+fn recent_months(_ctx: &ArgCtx) -> Vec<CommandArg> {
     let today = Utc::now().date_naive();
     let index = today.year() as i64 * 12 + today.month() as i64 - 1;
     (0..3)
@@ -558,7 +617,7 @@ mod tests {
 
     #[test]
     fn recent_months_are_sorted_descending() {
-        let args = recent_months();
+        let args = recent_months(&ctx(&AppConfig::default(), &[], &[]));
         assert_eq!(args.len(), 3);
         assert!(
             args[0].value > args[2].value,
@@ -574,36 +633,76 @@ mod tests {
         );
     }
 
-    /// A command's declared value set and the first level its popup offers are
-    /// the same list — so a value added to one is a red test, not a popup level
-    /// nobody can type (or a word the usage line claims and the popup never
-    /// shows).
-    ///
-    /// One command builds its level from the topic at hand — `/bill` lists the
-    /// months with recorded usage — so there is no fixed list to compare.
+    /// The usage line's value set and the popup's are one declaration read
+    /// twice, so they cannot disagree — except where a row declares words the
+    /// popup has no row for (`/bill`'s `today`, `YYYY-MM`). Those words must not
+    /// also name a value the popup offers: that would be the second copy this
+    /// module exists to delete.
     #[test]
-    fn a_declared_value_set_is_the_one_the_popup_offers() {
-        const BUILT_FROM_THE_TOPIC: &[&str] = &["/bill"];
+    fn usage_words_never_repeat_a_declared_value() {
+        let mut checked = 0;
+        for spec in crate::command::builtin::BUILTIN_COMMANDS {
+            let declared: Vec<&str> = spec
+                .args
+                .declared_keys()
+                .iter()
+                .map(|arg| arg.value)
+                .collect();
+            for word in spec.usage_words {
+                assert!(
+                    !declared.contains(word),
+                    "{}: usage word `{word}` is already a declared value — \
+                     drop the word and let the declaration speak",
+                    spec.name
+                );
+            }
+            checked += spec.usage_words.len();
+        }
+        assert!(checked > 0, "no row declares a usage-only word");
+    }
+
+    /// Every value a row declares reaches the popup, in the declared order —
+    /// the one thing the resolver could still get wrong, since it stitches
+    /// declared and dynamic rows together.
+    #[test]
+    fn every_declared_value_reaches_the_popup_in_order() {
         let cfg = AppConfig::default();
         let skills = ["ponytail".to_string()];
         let ctx = ctx(&cfg, &skills, &[]);
         let mut checked = 0;
         for spec in crate::command::builtin::BUILTIN_COMMANDS {
-            let crate::command::spec::Shape::Subcommand { values, .. } = spec.shape else {
-                continue;
-            };
-            if BUILT_FROM_THE_TOPIC.contains(&spec.name) {
+            let declared = spec.args.declared_keys();
+            if declared.is_empty() {
                 continue;
             }
-            let offered_args = command_args(spec.name, &ctx);
-            let mut offered: Vec<&str> =
-                offered_args.iter().map(|arg| arg.value.as_str()).collect();
-            let mut declared = values.to_vec();
-            offered.sort_unstable();
-            declared.sort_unstable();
-            assert_eq!(offered, declared, "{}: popup vs declaration", spec.name);
+            let offered = command_args(spec.name, &ctx);
+            let mut rest = offered.iter();
+            for arg in declared {
+                assert!(
+                    rest.any(|row| row.value == arg.value),
+                    "{}: `{}` never reaches the popup (offered: {:?})",
+                    spec.name,
+                    arg.value,
+                    offered.iter().map(|r| &r.value).collect::<Vec<_>>()
+                );
+            }
             checked += 1;
         }
-        assert!(checked > 0, "no command's values were compared");
+        assert!(checked > 0, "no row declares a value");
+    }
+
+    /// `/context` leads with `sliding`: a long topic is the case it exists for,
+    /// and the order is one declaration, so the popup and the usage line put it
+    /// first together.
+    #[test]
+    fn context_offers_sliding_first() {
+        let cfg = AppConfig::default();
+        let args = command_args("/context", &ctx(&cfg, &[], &[]));
+        assert_eq!(args[0].value, "sliding");
+        assert!(
+            crate::command::builtin::usage_of("/context").starts_with("/context <sliding|"),
+            "{}",
+            crate::command::builtin::usage_of("/context")
+        );
     }
 }

@@ -54,7 +54,7 @@ use super::registry::CommandRegistry;
 use super::reset_handler::ResetCommandHandler;
 use super::send_handler::SendCommandHandler;
 use super::spawn_handler::SpawnCommandHandler;
-use super::spec::{self, Shape};
+use super::spec::{self, ArgSource, Shape, Syntax};
 use super::template_handler::TemplateCommandHandler;
 use super::thinking_handler::ThinkingCommandHandler;
 use super::toggle_handler::ToggleCommandHandler;
@@ -83,6 +83,17 @@ pub struct CommandSpec {
     /// line through, and what the popup's argument level and [`Self::usage`]
     /// are built from. Written here, on the command's one row.
     pub shape: Shape,
+    /// The values this command's first argument level offers — keys,
+    /// descriptions and whatever they open, declared once on the row that also
+    /// declares its shape. Omitted means the command offers none and the popup
+    /// closes after it.
+    pub args: ArgSource,
+    /// Usage-line words the popup cannot offer (patterns like `YYYY-MM`,
+    /// values the popup replaces with better choices like `today`). Only for
+    /// a command whose choices are not all declared in `args`; a word that
+    /// names a value `args` declares is a second copy, and
+    /// `usage_words_never_repeat_a_declared_value` refuses it.
+    pub usage_words: &'static [&'static str],
     /// The command's flag declarations, without their enum keys — the
     /// projection its own handler reads its typed set through
     /// ([`super::flags::specs_of`]).
@@ -94,14 +105,45 @@ pub struct CommandSpec {
 }
 
 impl CommandSpec {
-    /// The command's usage line, derived from its shape and its flags.
+    /// This row's argument syntax: shape, offered values, usage-only words.
+    pub fn syntax(&self) -> Syntax {
+        Syntax {
+            shape: self.shape,
+            args: self.args,
+            usage_words: self.usage_words,
+        }
+    }
+
+    /// The command's usage line, derived from its syntax and its flags.
     ///
     /// One writer for `/close [subagent|all] [--force] [--purge]`: the popup,
     /// `/?` and the command's own refusals all read this, so a line cannot
     /// advertise what the parser refuses.
     pub fn usage(&self) -> String {
-        spec::usage(self.name, self.shape, &(self.flags)())
+        spec::usage(self.name, self.syntax(), &(self.flags)())
     }
+}
+
+/// A row's `args` — omitted means the command offers no values, so the rows that
+/// offer none do not each say so.
+macro_rules! args_or_empty {
+    () => {
+        ArgSource::Declared(&[])
+    };
+    ($args:expr) => {
+        $args
+    };
+}
+
+/// A row's `usage_words` — omitted means the usage line's value set is exactly
+/// the popup's.
+macro_rules! usage_words_or_empty {
+    () => {
+        &[] as &'static [&'static str]
+    };
+    ($words:expr) => {
+        $words
+    };
 }
 
 /// `continues_to_agent` for a table row — omitted means the common case, so 21
@@ -143,33 +185,44 @@ fn no_flags() -> Vec<&'static FlagSpec> {
     Vec::new()
 }
 
-/// The shape `/skill` and `/mcp` share: a subcommand and the thing it acts on.
+/// The syntax `/skill` and `/mcp` share: a subcommand and the thing it acts on.
 ///
-/// One declaration for both, since a toggle reads the same line whichever list it
-/// toggles — the difference is which names the popup offers, and that comes from
-/// the topic's own skills and MCP servers.
+/// One declaration for the shape, since a toggle reads the same line whichever
+/// list it toggles — the difference is which names the popup offers, and that
+/// comes from the topic's own skills and MCP servers, so each row declares its
+/// own [`CommandSpec::args`].
 const fn toggle_shape() -> Shape {
     Shape::Subcommand {
-        values: &["on", "off", "reset"],
         labels: &["name"],
         rest: None,
     }
 }
 
-/// The shape `name`'s row declares.
+/// The syntax `name`'s row declares.
 ///
 /// A handler reads its command line through the very declaration its popup level
 /// and usage line come from, so it cannot accept a line its own row does not
 /// advertise.
 ///
 /// A name with no row is a caller's mistake, not a command that takes nothing —
-/// a parameterized handler must hold the shape of what it serves rather than
+/// a parameterized handler must hold the syntax of what it serves rather than
 /// look its own name up (a wrong name here would otherwise read every argument
 /// as one too many, silently and only at runtime).
-pub fn shape_of(name: &str) -> Shape {
+pub fn syntax_of(name: &str) -> Syntax {
     let row = BUILTIN_COMMANDS.iter().find(|spec| spec.name == name);
     debug_assert!(row.is_some(), "no built-in row for {name}");
-    row.map(|spec| spec.shape).unwrap_or(Shape::None)
+    row.map(|spec| spec.syntax()).unwrap_or(Syntax::EMPTY)
+}
+
+/// The first argument level `name`'s popup offers, or nothing for a command
+/// with no built-in row (a config-declared custom command, whose arguments stay
+/// free text).
+pub fn args_of(name: &str) -> ArgSource {
+    BUILTIN_COMMANDS
+        .iter()
+        .find(|spec| spec.name == name)
+        .map(|spec| spec.args)
+        .unwrap_or(ArgSource::Declared(&[]))
 }
 
 /// The usage line `name`'s row declares.
@@ -200,6 +253,8 @@ macro_rules! builtin_commands {
             desc: $desc:literal,
             $( continues: $cont:expr, )?
             $( shape: $shape:expr, )?
+            $( args: $args:expr, )?
+            $( usage_words: $words:expr, )?
             $( flags: $flags:expr, )?
             make: $make:expr
         },
@@ -212,6 +267,8 @@ macro_rules! builtin_commands {
                 description: $desc,
                 continues_to_agent: continues_or_false!( $( $cont )? ),
                 shape: shape_or_none!( $( $shape )? ),
+                args: args_or_empty!( $( $args )? ),
+                usage_words: usage_words_or_empty!( $( $words )? ),
                 flags: flags_or_none!( $( $flags )? ),
             },
         )* ];
@@ -253,19 +310,20 @@ builtin_commands! {
         desc: "Save and replay user messages",
         continues: true,
         shape: Shape::Subcommand {
-            values: &["push", "list", "ls", "get", "pop", "rm", "set"],
             labels: &[],
             rest: Some("text"),
         },
+        args: super::args::BACKLOG_ARGS,
         make: |_| Arc::new(BacklogCommandHandler::new())
     },
     "/bill" => {
         desc: "Usage/cost across topics",
         shape: Shape::Subcommand {
-            values: &["today", "YYYY-MM", "all"],
             labels: &[],
             rest: None,
         },
+        args: super::args::BILL_ARGS,
+        usage_words: &["today", "YYYY-MM"],
         make: |_| Arc::new(BillCommandHandler)
     },
     "/build" => {
@@ -279,16 +337,17 @@ builtin_commands! {
     "/close" => {
         desc: "Close this topic, or one of its subagents (it closes itself)",
         shape: Shape::Args { labels: &["subagent|all"] },
+        args: super::args::CLOSE_ARGS,
         flags: super::flags::close_specs,
         make: |tm| Arc::new(CloseCommandHandler::new(tm))
     },
     "/context" => {
         desc: "View or change the context strategy, or dump the wire payload",
         shape: Shape::Subcommand {
-            values: &["full", "sliding", "reset", "dump"],
             labels: &[],
             rest: Some("args"),
         },
+        args: super::args::CONTEXT_ARGS,
         make: |_| Arc::new(ContextCommandHandler)
     },
     "/exchange" => {
@@ -309,15 +368,18 @@ builtin_commands! {
     "/mcp" => {
         desc: "Toggle an MCP server for this topic",
         shape: toggle_shape(),
+        args: super::args::MCP_ARGS,
         make: |_| Arc::new(ToggleCommandHandler::mcp())
     },
     "/model" => {
         desc: "Switch AI model for this topic",
         shape: Shape::Args { labels: &["model|reset"] },
+        args: super::args::MODEL_ARGS,
         make: |_| Arc::new(ModelCommandHandler)
     },
     "/new" => {
         desc: "Reset session and clear chat history",
+        args: super::args::CONFIRM_FLAG_ARGS,
         flags: super::flags::confirm_specs,
         make: |_| Arc::new(NewCommandHandler)
     },
@@ -331,6 +393,7 @@ builtin_commands! {
     },
     "/reset" => {
         desc: "Reset session, keep chat history",
+        args: super::args::CONFIRM_FLAG_ARGS,
         flags: super::flags::confirm_specs,
         make: |_| Arc::new(ResetCommandHandler)
     },
@@ -340,32 +403,36 @@ builtin_commands! {
             label: "agent",
             body: "message",
         },
+        args: super::args::SEND_ARGS,
         flags: super::flags::send_specs,
         make: |tm| Arc::new(SendCommandHandler::new(tm))
     },
     "/skill" => {
         desc: "Toggle a skill for this topic",
         shape: toggle_shape(),
+        args: super::args::SKILL_ARGS,
         make: |_| Arc::new(ToggleCommandHandler::skill())
     },
     "/spawn" => {
         desc: "Start a sibling topic — a new dir by default, this one with -s",
         shape: Shape::Args { labels: &["type"] },
+        args: super::args::SPAWN_ARGS,
         flags: super::flags::spawn_specs,
         make: |tm| Arc::new(SpawnCommandHandler::new(tm))
     },
     "/template" => {
         desc: "Apply or re-apply this topic's template",
         shape: Shape::Args { labels: &["name|update"] },
+        args: super::args::TEMPLATE_ARGS,
         make: |_| Arc::new(TemplateCommandHandler)
     },
     "/thinking" => {
         desc: "Show or hide AI thinking/reasoning content",
         shape: Shape::Subcommand {
-            values: &["show", "hide"],
             labels: &[],
             rest: None,
         },
+        args: super::args::THINKING_ARGS,
         make: |_| Arc::new(ThinkingCommandHandler)
     },
     "/ungrant" => {

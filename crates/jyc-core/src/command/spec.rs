@@ -30,6 +30,9 @@ pub enum Shape {
     /// Fixed positional words, with flags allowed anywhere among them
     /// (`/spawn`, `/close`, `/grant`). A label names one slot in the usage line,
     /// and may spell its choices (`subagent|all`) where they are few and fixed.
+    /// Choices the row *declares* are not spelled here: [`Syntax::args_groups`]
+    /// reads them from [`Syntax::args`], so a label names only what the
+    /// declaration cannot see (`/model`'s `model`).
     Args { labels: &'static [&'static str] },
     /// One positional word, then the rest of the line is literal text, dashes
     /// and all (`/send`). `--` ends the leading flags explicitly, for text that
@@ -96,6 +99,28 @@ impl Syntax {
             .copied()
             .chain(declared.iter().map(|arg| arg.value))
             .collect()
+    }
+
+    /// The words a [`Shape::Args`] level names, one entry per group the line
+    /// renders in brackets.
+    ///
+    /// A declared value is offered in the slot the shape's label names, so the
+    /// line reads it from `args` and the label keeps naming only what it cannot
+    /// see (`/model`'s `model`). Writing it into the label instead — the
+    /// `model|reset` this replaced — is the second copy `args` exists to delete.
+    fn args_groups(&self, labels: &[&'static str]) -> Vec<String> {
+        let declared: Vec<&str> = self
+            .args
+            .declared_keys()
+            .iter()
+            .map(|arg| arg.value)
+            .collect();
+        if declared.is_empty() {
+            return labels.iter().map(|label| label.to_string()).collect();
+        }
+        let mut words: Vec<&str> = labels.iter().copied().collect();
+        words.extend(declared);
+        vec![words.join("|")]
     }
 
     /// Resolve the first level against per-topic state.
@@ -476,7 +501,14 @@ pub fn usage(name: &str, syntax: Syntax, specs: &[&FlagSpec]) -> String {
     match shape {
         Shape::None => {}
         Shape::Args { labels } => {
-            parts.extend(labels.iter().map(|label| format!("[{label}]")));
+            // The declared values join the slot the label names — one
+            // declaration read twice, not a word written down again.
+            parts.extend(
+                syntax
+                    .args_groups(labels)
+                    .into_iter()
+                    .map(|group| format!("[{group}]")),
+            );
         }
         Shape::ThenBody { label, body } => {
             parts.push(format!("<{label}>"));
@@ -601,8 +633,13 @@ impl Syntax {
         if matches!(self.shape, Shape::Subcommand { .. }) {
             parts.push(self.usage_keys().join("|"));
         }
-        if let Shape::Subcommand { labels, .. } | Shape::Args { labels } = self.shape {
+        if let Shape::Subcommand { labels, .. } = self.shape {
             parts.extend(labels.iter().map(|label| label.to_string()));
+        }
+        if let Shape::Args { labels } = self.shape {
+            // The same projection the usage line renders, so the refusal names
+            // the values the popup offers (`/model a b` expects `model|reset`).
+            parts.extend(self.args_groups(labels));
         }
         parts.join(" ")
     }
@@ -832,6 +869,10 @@ mod tests {
         );
         assert_eq!(usage_of("/build"), "/build");
         assert_eq!(usage_of("/skill"), "/skill <on|off|reset> [name]");
+        // The declared values are folded into the shape's label, so these two
+        // lines read exactly as they did when the label spelled them out.
+        assert_eq!(usage_of("/model"), "/model [model|reset]");
+        assert_eq!(usage_of("/template"), "/template [name|update]");
         // No `[--]`: `/backlog` does not read its line through the shape, so it
         // has no separator to advertise.
         assert_eq!(

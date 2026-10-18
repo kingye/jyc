@@ -88,8 +88,6 @@ fn val_with(value: &str, description: &str, args: Vec<CommandArg>) -> CommandArg
     }
 }
 
-/// Argument values for `command` (with its leading slash), empty when the
-/// command takes free-text arguments.
 /// `/context`: the strategies, plus the one toggle. Sliding comes first because
 /// it is what a long topic wants; the order here *is* the order the popup offers
 /// and the order the usage line lists, which is why there is only one list.
@@ -147,8 +145,8 @@ pub static MODEL_ARGS: ArgSource = ArgSource::Mixed(
 /// `/skill`: one toggle shell, with this topic's own skills behind `on`/`off`.
 /// `/mcp` is the same shell over MCP server names — hence the shared
 /// [`toggle_args`] builder rather than two hand-written lists.
-pub static SKILL_ARGS: ArgSource = ArgSource::Declared(&toggle_args(skill_names, "skill"));
-pub static MCP_ARGS: ArgSource = ArgSource::Declared(&toggle_args(mcp_name_args, "MCP server"));
+pub static SKILL_ARGS: ArgSource = ArgSource::Declared(&toggle_args(skill_names));
+pub static MCP_ARGS: ArgSource = ArgSource::Declared(&toggle_args(mcp_name_args));
 
 /// `/template`: the only verb it offers; a template name is free text.
 pub static TEMPLATE_ARGS: ArgSource = ArgSource::Declared(&[ArgDef::leaf(
@@ -234,11 +232,13 @@ fn close_args(ctx: &ArgCtx) -> Vec<CommandArg> {
 /// One shell for `/skill` and `/mcp`: a toggle reads the same line whichever
 /// list it toggles, so the words are written here once and each row supplies
 /// its own names.
-const fn toggle_args(names: fn(&ArgCtx) -> Vec<CommandArg>, noun: &'static str) -> [ArgDef; 3] {
-    // `on`/`off` carry the names; `reset` clears everything at once.
+const fn toggle_args(names: fn(&ArgCtx) -> Vec<CommandArg>) -> [ArgDef; 3] {
+    // `on`/`off` carry the names; `reset` clears everything at once. Both
+    // toggles say the same thing about the same line, so the words are written
+    // here once — the noun each row toggles does not change what `on` does.
     [
-        ArgDef::dynamic("on", noun, names),
-        ArgDef::dynamic("off", noun, names),
+        ArgDef::dynamic("on", "Force this name on for the topic", names),
+        ArgDef::dynamic("off", "Force this name off for the topic", names),
         ArgDef::leaf("reset", "Clear all overrides for this topic"),
     ]
 }
@@ -638,27 +638,98 @@ mod tests {
     /// popup has no row for (`/bill`'s `today`, `YYYY-MM`). Those words must not
     /// also name a value the popup offers: that would be the second copy this
     /// module exists to delete.
+    ///
+    /// Compared against everything the popup *offers*, nested levels and
+    /// dynamic runs included: a level two deep is still a value the popup shows.
     #[test]
     fn usage_words_never_repeat_a_declared_value() {
+        let cfg = AppConfig::default();
+        let skills = ["ponytail".to_string()];
+        // A topic with state, so the dynamic runs really produce values: a
+        // usage word must not collide with what only the topic can supply
+        // either (`/model`'s model list is resolved, not assumed empty).
+        let models = [ModelInfo {
+            name: "deepseek/deepseek-chat".into(),
+        }];
+        let fixture = ctx(&cfg, &skills, &models);
         let mut checked = 0;
         for spec in crate::command::builtin::BUILTIN_COMMANDS {
-            let declared: Vec<&str> = spec
-                .args
-                .declared_keys()
-                .iter()
-                .map(|arg| arg.value)
-                .collect();
+            let offered = collect_values(&command_args(spec.name, &fixture));
             for word in spec.usage_words {
                 assert!(
-                    !declared.contains(word),
-                    "{}: usage word `{word}` is already a declared value — \
-                     drop the word and let the declaration speak",
+                    !offered.iter().any(|value| value == word),
+                    "{}: usage word `{word}` is already a value the popup offers \
+                     ({offered:?}) — drop the word and let the declaration speak",
                     spec.name
                 );
             }
             checked += spec.usage_words.len();
         }
         assert!(checked > 0, "no row declares a usage-only word");
+    }
+
+    /// Every word of a label, however it spells its choices.
+    fn label_words(label: &str) -> Vec<&str> {
+        label.split('|').collect()
+    }
+
+    /// A `Shape::Args` label names what the row cannot see. A value the row
+    /// declares is spelled by the declaration itself — the usage line reads it
+    /// from `args` — so a label that repeats one is a second copy of it, and
+    /// the drift this guard exists to prevent (`[model]` beside a vanished
+    /// `reset`) is exactly what a label-only reader would never notice.
+    #[test]
+    fn args_labels_never_repeat_a_declared_value() {
+        use crate::command::spec::Shape;
+        let mut checked = 0;
+        for spec in crate::command::builtin::BUILTIN_COMMANDS {
+            let Shape::Args { labels } = spec.shape else {
+                continue;
+            };
+            let declared: Vec<&str> = spec
+                .args
+                .declared_keys()
+                .iter()
+                .map(|arg| arg.value)
+                .collect();
+            if declared.is_empty() {
+                continue;
+            }
+            // The line folds the declared values into the slot the labels name,
+            // so a second label would fold two slots into one group.
+            assert_eq!(
+                labels.len(),
+                1,
+                "{}: `args_groups` folds the declared values into one slot, but \
+                 the shape declares {}",
+                spec.name,
+                labels.len()
+            );
+            for word in labels.iter().flat_map(|label| label_words(label)) {
+                assert!(
+                    !declared.contains(&word),
+                    "{}: label spells `{word}`, which the row already declares in \
+                     `args` — drop it from the label",
+                    spec.name
+                );
+            }
+            checked += 1;
+        }
+        assert!(
+            checked > 0,
+            "no row pairs a fixed shape with declared values"
+        );
+    }
+
+    /// Every value the popup offers, at every level, flattened.
+    fn collect_values(rows: &[CommandArg]) -> Vec<String> {
+        rows.iter()
+            .flat_map(|row| {
+                let mut values = vec![row.value.clone()];
+                values.extend(collect_values(&row.args));
+                values
+            })
+            .collect()
     }
 
     /// Every value a row declares reaches the popup, in the declared order —

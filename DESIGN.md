@@ -3909,12 +3909,15 @@ table, not a special case in `jyc-cli`.
   (`CommandSpec::args`) with two projections: the popup resolves it against
   per-topic state (`ArgSource::Provided`/`Mixed` fill in the values only the
   topic knows — a topic's skills, the installed role names, a long model list),
-  while the usage line names the same keys. A level only per-topic state can
-  produce takes its slot from the shape's label instead, since the usage line has
-  no state to read. The one remaining seam is `usage_words` — words the popup
-  *cannot* offer, like `/bill`'s `today` and the `YYYY-MM` pattern, which stand
-  in for the months the popup offers instead — and a test refuses a word that
-  also names a declared value, which is what would make it a second copy.
+  while the usage line names the same keys — for a `Shape::Args` row too, where
+  the declared values are folded into the slot the label names (`/model`'s
+  `reset` is read from `args`, not spelled a second time in the label). A level
+  only per-topic state can produce takes its slot from the shape's label
+  instead, since the usage line has no state to read. The one remaining seam is
+  `usage_words` — words the popup *cannot* offer, like `/bill`'s `today` and the
+  `YYYY-MM` pattern, which stand in for the months the popup offers instead —
+  and a test refuses a word that also names a value the popup offers, at any
+  level, which is what would make it a second copy.
 - **Trade-off**: the values are computed per topic on every ~500 ms overview
   poll and serialized per topic, so a long model list is repeated for every
   topic (`topics × models`). Leaf entries omit their empty `description`/`args`

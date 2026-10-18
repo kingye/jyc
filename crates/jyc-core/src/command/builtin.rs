@@ -373,7 +373,7 @@ builtin_commands! {
     },
     "/model" => {
         desc: "Switch AI model for this topic",
-        shape: Shape::Args { labels: &["model|reset"] },
+        shape: Shape::Args { labels: &["model"] },
         args: super::args::MODEL_ARGS,
         make: |_| Arc::new(ModelCommandHandler)
     },
@@ -422,7 +422,7 @@ builtin_commands! {
     },
     "/template" => {
         desc: "Apply or re-apply this topic's template",
-        shape: Shape::Args { labels: &["name|update"] },
+        shape: Shape::Args { labels: &["name"] },
         args: super::args::TEMPLATE_ARGS,
         make: |_| Arc::new(TemplateCommandHandler)
     },

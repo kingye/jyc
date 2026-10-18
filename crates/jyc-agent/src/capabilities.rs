@@ -123,9 +123,8 @@ pub fn prompt_section(helpers: &[&Helper]) -> Option<String> {
     }
     let mut section = String::from(
         "\n## CLI Helpers\n\n\
-         These are installed on this machine. Inside `bash`, reach for one when it fits the job \
-         and fall back to the standard tools otherwise — using them is your call, not an \
-         instruction.\n\n",
+         These are installed on this machine. You MUST use a listed helper when it covers the \
+         task better. When no listed helper fits, fall back to the standard tools.\n\n",
     );
     for helper in helpers {
         section.push_str(&format!("- `{}` — {}\n", helper.name, helper.note));
@@ -274,6 +273,11 @@ mod tests {
         let section = prompt_section(&[rg, jq]).expect("section for two helpers");
 
         assert!(section.starts_with("\n## CLI Helpers\n\n"));
+        assert!(
+            section.contains("You MUST use a listed helper when it covers the task better"),
+            "the section states the rule as an instruction — phrased as a suggestion \
+             it was delivered, read, and ignored (#943)"
+        );
         assert!(section.contains("- `rg` — ripgrep"));
         assert!(section.contains("- `jq` — JSON query"));
         assert!(
@@ -303,12 +307,15 @@ mod tests {
     }
 
     #[test]
-    fn prompt_section_leaves_the_choice_to_the_model() {
+    fn prompt_section_does_not_hedge_the_rule() {
         let section = prompt_section(&[&HELPERS[0]]).expect("section");
 
+        // Advisory wording shipped with the feature and was read as advice:
+        // the section was received, quoted back, and then ignored. Guard the
+        // specific regression of re-adding a hedge while the imperative stays.
         assert!(
-            section.contains("your call"),
-            "the section informs, it does not instruct"
+            !section.contains("your call") && !section.contains("not an instruction"),
+            "the section states the rule instead of offering it as a choice (#941)"
         );
     }
 }

@@ -32,15 +32,12 @@ impl JycAgentService {
             additional_write_roots,
         ));
 
-        // Subagents this topic spawned (their directories are the grants listed
-        // just above). Naming them here — every turn, from the same lineage the
-        // cap check reads — is what stops the model from spawning a duplicate
-        // for work one of them already holds.
-        let subagents = jyc_core::command::spawn_handler::subagents_of(topic_name);
-        if !subagents.is_empty() {
-            prompt.push_str(&Self::format_subagents_section(&subagents));
-        }
-
+        // NOTE: the subagent list and the channel/topic enumeration are NOT
+        // here — both change whenever a topic or a child is created or closed,
+        // and every byte of churn in the system prompt invalidates the cached
+        // prefix this prompt exists to keep stable (see `build_turn_reference`,
+        // which ships them with the turn's user message instead).
+        //
         // Resolve skill filters: topic config > pattern > channel > none (shared
         // with `available_skills` so the `/` popup lists exactly what config
         // allows).
@@ -195,7 +192,7 @@ impl JycAgentService {
             .expect("topic_managers poisoned")
             .clone();
         let outbounds_configured = self.outbounds.lock().expect("outbounds poisoned").is_some();
-        if let Some(ref managers) = managers_opt {
+        if managers_opt.is_some() {
             prompt.push_str(
                 "\n## Cross-Topic Communication\n\n\
                  You can send messages to another agent — its own topic by default, or one of its \
@@ -219,39 +216,110 @@ impl JycAgentService {
                 );
             }
 
-            prompt.push_str("Available channels and their active topics:\n");
-            for tm in managers.all().iter() {
-                let channel_name = tm.channel_name();
-                let channel_type = tm.channel_type();
-                prompt.push_str(&format!(
-                    "- Channel \"{}\" ({})\n",
-                    channel_name, channel_type
-                ));
-                // List active topics for this channel — names only, which is
-                // all this list needs; `list_topic_names` documents what
-                // resolving each topic's state would cost.
-                let topics = tm.list_topic_names().await;
-                if topics.is_empty() {
-                    prompt.push_str("    (no active topics)\n");
-                } else {
-                    for name in &topics {
-                        prompt.push_str(&format!("  - {}\n", name));
-                    }
-                }
-            }
+            // The live channel/topic roster is deliberately NOT enumerated
+            // here: topics come and go, and one line of churn in the system
+            // prompt invalidates its cached prefix on every provider that
+            // caches by prefix. The roster rides the turn's user message
+            // instead (`build_turn_reference`); what stays here is the static
+            // prose above, which does not move.
             prompt.push('\n');
         }
 
         prompt
     }
 
+    /// Build the per-turn runtime reference: the parts of what the model needs
+    /// to know that change as the instance runs — the subagents this topic
+    /// spawned, and the channels and topics it can address.
+    ///
+    /// Both used to live in the system prompt. That made the system prompt
+    /// change whenever any topic appeared or disappeared, which is frequent
+    /// (spawning a reviewer, closing a watcher) and which costs twice over:
+    /// the changed bytes are re-sent on every later call of the turn, and for
+    /// providers with automatic prefix caching the whole prompt's cache entry
+    /// is invalidated, not just the tail.
+    ///
+    /// They ride the current turn's user message instead: that message is new
+    /// on every turn anyway, so churn here lands past the cached prefix
+    /// regardless of how often it changes, while the system prompt stays
+    /// byte-stable and its cache entry survives from turn to turn.
+    ///
+    /// Returns an empty string when there is nothing volatile to report, so the
+    /// caller can prepend unconditionally.
+    pub(crate) async fn build_turn_reference(&self, topic_name: &str) -> String {
+        let mut body = String::new();
+
+        // Subagents this topic spawned (their directories are the grants the
+        // system prompt's access boundary lists). Naming them every turn, from
+        // the same lineage the spawn cap check reads, is what stops the model
+        // from spawning a duplicate for work one of them already holds.
+        let subagents = jyc_core::command::spawn_handler::subagents_of(topic_name);
+        if !subagents.is_empty() {
+            body.push_str(&Self::format_subagents_section(&subagents));
+        }
+
+        // The addressing table for `jyc_send_to_topic` / `jyc_send_message`:
+        // channels and their active topics. Names only — all this list needs;
+        // `list_topic_names` documents what resolving each state dir would cost.
+        let managers_opt = self
+            .topic_managers
+            .lock()
+            .expect("topic_managers poisoned")
+            .clone();
+        if let Some(ref managers) = managers_opt {
+            body.push_str("Available channels and their active topics:\n");
+            for tm in managers.all().iter() {
+                body.push_str(&format!(
+                    "- Channel \"{}\" ({})\n",
+                    tm.channel_name(),
+                    tm.channel_type()
+                ));
+                let topics = tm.list_topic_names().await;
+                if topics.is_empty() {
+                    body.push_str("    (no active topics)\n");
+                } else {
+                    for name in &topics {
+                        body.push_str(&format!("  - {}\n", name));
+                    }
+                }
+            }
+        }
+
+        if body.is_empty() {
+            return String::new();
+        }
+        if !body.ends_with('\n') {
+            body.push('\n');
+        }
+
+        format!(
+            "<runtime-state>\n\
+             Auto-generated snapshot taken at the start of this turn. It is not a \
+             message from the user, and it can go stale within a long turn.\n\
+             {body}</runtime-state>\n\n"
+        )
+    }
+
     /// Build the user prompt text (header + body) from an inbound message.
+    ///
+    /// `turn_reference` is the runtime snapshot from `build_turn_reference`
+    /// (subagents + channel/topic roster), prepended here so it travels with
+    /// the one block that is new every turn. Empty means "nothing volatile to
+    /// report" and contributes nothing.
     pub(crate) fn build_user_prompt_text(
         &self,
         message: &InboundMessage,
         mode_override: Option<&str>,
+        turn_reference: &str,
     ) -> String {
         let mut prompt = String::new();
+
+        // Volatile runtime state first, so the model reads it as standing
+        // context rather than as part of the inbound message below.
+        if !turn_reference.is_empty() {
+            prompt.push_str(turn_reference);
+            prompt.push('\n');
+        }
 
         prompt.push_str("## Incoming Message\n");
         prompt.push_str(&format!(
@@ -427,8 +495,10 @@ impl JycAgentService {
     }
 
     /// The subagent section: who this topic already spawned, and the reuse rule.
-    /// Names only — the directories are the grants the boundary section above
-    /// already lists. `/spawn` counts here too: the section reports what is.
+    /// Names only — the directories are the grants the system prompt's access
+    /// boundary lists. `/spawn` counts here too: the section reports what is.
+    /// Ships in the turn reference, not the system prompt, so spawning or
+    /// closing a child does not invalidate the system prompt's cache prefix.
     pub(crate) fn format_subagents_section(subagents: &[(String, std::path::PathBuf)]) -> String {
         format!(
             "Your subagents ({}): {}.\n\
@@ -583,12 +653,13 @@ impl JycAgentService {
         message: &InboundMessage,
         supports_images: bool,
         mode_override: Option<&str>,
+        turn_reference: &str,
     ) -> Vec<crate::types::ContentBlock> {
         use crate::types::{ContentBlock, ImageSource};
         use base64::Engine as _;
 
         let mut blocks = vec![ContentBlock::Text {
-            text: self.build_user_prompt_text(message, mode_override),
+            text: self.build_user_prompt_text(message, mode_override, turn_reference),
         }];
 
         // Per-pattern opt-in. Default false when the message did not match a

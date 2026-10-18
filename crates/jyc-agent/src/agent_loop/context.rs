@@ -1579,7 +1579,7 @@ mod render_raw_context_tests {
         );
     }
 
-    /// ── max_history_tokens ────────────────────────────────────────────
+    // ── max_history_tokens ───────────────────────────────────────────
 
     /// The estimator is the CJK-aware one this project needs: a Chinese
     /// glyph costs about what a short English word costs, so counting it as

@@ -21,10 +21,11 @@ reqwest = { version = "0.13", default-features = false, features = [
     "form",
     # The hub uses native-tls so rustls (and its aws-lc-rs C dependency) stays
     # out of the jyc binary's link graph. reqwest 0.13's `default-tls` feature
-    # *is* rustls, so the default features are dropped and the rest of them
-    # (charset, http2, system-proxy) are re-listed explicitly.
+    # *is* rustls, so the default features are dropped and what is needed is
+    # re-listed explicitly. `charset` is deliberately left out: it decodes
+    # non-UTF-8 response bodies, everything jyc fetches over HTTP is UTF-8
+    # JSON, and it links encoding_rs into the binary.
     "native-tls",
-    "charset",
     "http2",
     "system-proxy",
 ] }

@@ -20,6 +20,20 @@ Three core principles govern the whole system:
 3. **Token budgets are enforced in layers.** Beyond the configured
    strategy, independent token monitors compress or reset the session
    before the provider can reject an oversized request (API 400).
+4. **The system prompt is byte-stable; volatile state rides the turn.**
+   Every LLM call re-sends the whole prefix, and providers that cache by
+   prefix only reuse what did not change. The system prompt therefore
+   holds only content that changes when config or files do. Runtime
+   state that moves while the instance runs — the subagent roster and
+   the channel/topic roster — is built by `build_turn_reference()`
+   (`crates/jyc-agent/src/service/prompt.rs`) and prepended to the
+   current turn's user message inside a `<runtime-state>` block, framed
+   as an auto-generated snapshot. That block sits past the cached
+   prefix either way (the user message is new every turn), so topics
+   appearing and closing no longer invalidate the system prompt's cache
+   entry. The per-turn `prompt_hash` on the `System prompt built` trace
+   line is the regression tripwire. Layout diagrams:
+   [DESIGN.md §8](../../DESIGN.md).
 
 ## Data Plane
 
@@ -454,6 +468,10 @@ auto-reset).
 
 Key changes, newest first (see CHANGELOG.md for full entries):
 
+- **system prompt stability** — the subagent roster and the channel/topic
+  roster left the system prompt for a `<runtime-state>` block on the
+  turn's user message, so topic churn no longer invalidates the cached
+  prefix; `prompt_hash` on the `System prompt built` trace line guards it.
 - **#651** — recent `note_window` turns are sent **verbatim** (structured
   `tool_calls` + results) instead of user-role text history notes — text
   notes taught thinking models to write their process as content (the

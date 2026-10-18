@@ -2341,6 +2341,85 @@ JYC uses the following subset of the agent service API:
    Full mechanism reference (turn pairing, history notes, token safety
    nets, configuration): [docs/architecture/context.md](docs/architecture/context.md).
 
+   **System Prompt Stability (2026-10-18).** The system prompt is
+   **byte-stable across turns of a topic on purpose**: providers that
+   cache by prefix (OpenAI-compat: DashScope/DeepSeek/MiniMax/Kimi
+   automatic context caching; Anthropic: explicit `cache_control`
+   breakpoints) only reuse a cached span when its bytes are unchanged.
+   Anything that changes while the instance runs therefore belongs in
+   the turn's **user message**, which is new every turn anyway and so
+   sits past the cached prefix regardless of how often it churns:
+
+   | Content | Home | Why |
+   |---------|------|-----|
+   | Access boundaries, skills, `AGENTS.md`, reply/history/VCS rules, static cross-topic prose | system prompt | Changes only when config or files do |
+   | Mode block (`<mode>`) | user message | `BUILD`↔`PLAN` switches per turn |
+   | Subagent roster (`Your subagents (N): …`) | user message | A child is spawned or closed |
+   | Channel/topic roster (`Available channels and their active topics:`) | user message | Any topic appears or disappears — the most frequent churn of all |
+
+   The last two travel together in a `<runtime-state>` block
+   (`build_turn_reference()`), prepended to the user message and framed
+   as an auto-generated snapshot that is not user text and may go stale
+   within a long turn. `build_system_prompt()` emits neither.
+
+   The per-turn `prompt_hash` in the `System prompt built` trace line
+   is the tripwire for this property: on an otherwise idle topic the
+   hash must not move. A hash that changes means volatile state leaked
+   back into the system prompt and is paying for cache misses.
+
+**Payload Layout After The Change:**
+
+```
+tokens ↓
+┌─ tools ───────────────────────────────── ~2-3k ─┐
+│  ~20 内建工具 + MCP 工具的 schema，按名排序      │ ◇断点1  跨 topic 全进程一致
+├─ system prompt ──────────────────────── ~6-9k ─┤
+│  · File access boundaries                        │ ◇断点2  ★字节全稳定★
+│  · Skills 清单 + AGENTS.md(项目指令)             │
+│  · Reply instructions / History format / VCS     │
+├─ messages ──────────────────────────────────────┤
+│  region ① 压缩历史          ~25-35k              │
+│  └ 窗口内旧轮次: user/assistant 文本原样,         │ ← 每轮的"头块"：滑窗滑动
+│    tool call 折叠成 note (最近 M 对带 note)        │    几乎每轮都变 → 缓存止于此
+│                                                   │
+│  region ② verbatim 前窗     ~10-15k              │
+│  └ 全结构保留, tool result 每块 ≤ tool_result_cap │ ← 轮间整体后移, 内容稳定
+│                                                   │
+│  region ③ 当前轮            0 → 增长             │
+│  ├ user: <runtime-state> 参考块 ~300B ★易变★     │ ★新位置★
+│  │        + 入站消息(含 <mode> 块) + 附件          │
+│  ├ assistant: tool_call                          │ ◇断点3 (n-3)
+│  ├ tool: result  ★ 当前轮恒不截断 ★               │ ◇断点4 (n-2)
+│  ├   …(一轮内多轮工具调用, 每块结果原样携带)…      │
+│  └ assistant: 最终回复(不进后续 call 的输入)      │
+└──────────────────────────────────────────────────┘
+```
+
+`◇` = Anthropic `cache_control` breakpoint; `★` = 本次改动的位置。
+参考块虽易变，但落在 region ③ 最前——这个位置反正每轮都是新的，
+所以它的易变性对缓存的损失为零，这正是选这个注入点的原因。
+
+**Cross-Turn Cache Reuse (prefix-caching providers):**
+
+```
+改动前 (易变内容在 system 内)              改动后 (易变内容随 user 消息)
+turn N+1 的第一个 call:                    turn N+1 的第一个 call:
+┌────────────────┐                         ┌────────────────┐
+│ tools      ✗全价│  前缀匹配 = 0           │ tools      ✓缓存│
+│ system     ✗全价│  (topic 生灭/子 agent   │ system     ✓缓存│ ← 字节全同
+│                │   变化使其改变)         │ 历史头块   ✗全价│ ← 滑窗滑动,
+│ 历史头块   ✗全价│                        │ …          ✗全价│    无法避免
+│ …          ✗全价│                        │                │
+└────────────────┘                         └────────────────┘
+命中 0                                     命中 ~8-12k (tools+system)
+全价 ~53-64k                               全价 ~45-55k
+```
+
+对应 Anthropic：改动前断点 2 随任一易变项失效，A+B 两个 span 同时
+作废；改动后 span A+B 跨轮稳定，span C/D 照旧在轮内逐 call 点亮。
+改动**没有**减少 region ① 的体量(本话题实测最大的一块)——那是 token
+预算窗口的课题。
+
 **Context Limits:**
 pub const MAX_BODY_IN_PROMPT: usize = 2000;
 

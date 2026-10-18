@@ -599,7 +599,17 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # turn_tool_result_cap instead)
 # at N bytes. Truncated
 # results are suffixed with '… [truncated N bytes]'. Default: 2048.
+# turn_tool_result_cap: same, for the current turn (region ③), keeping the
+# head and tail of an oversized result. Unset by default (region ③ is the
+# turn in flight, so trimming it is opt-in).
+# max_history_tokens: token budget for the two history regions (① compacted
+# + ② verbatim). window counts turns, so 10 turns may weigh 2k tokens or
+# 200k; this caps the weight instead — the oldest history is dropped first
+# (region ① oldest pairs, then region ② oldest whole turns). The estimate
+# is heuristic (CJK characters ~1 token, other bytes ~1/4), not a tokenizer.
+# The current turn is not part of it. Unset by default.
 # context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048 }
+# context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048, max_history_tokens = 30000 }
 
 
 [ai.attachments]

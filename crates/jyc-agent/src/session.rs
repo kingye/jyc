@@ -2673,6 +2673,7 @@ mod tests {
             note_window: Some(2),
             tool_result_cap: None,
             turn_tool_result_cap: None,
+            max_history_tokens: None,
         };
         let wire = vec![serde_json::json!({"role":"user","content":"hi"})];
         let regions = vec![3u8];
@@ -2729,6 +2730,7 @@ mod tests {
             note_window: None,
             tool_result_cap: None,
             turn_tool_result_cap: None,
+            max_history_tokens: None,
         };
         let empty_wire: Vec<serde_json::Value> = vec![];
         let empty_regions: Vec<u8> = vec![];

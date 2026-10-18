@@ -2341,6 +2341,19 @@ JYC uses the following subset of the agent service API:
    Full mechanism reference (turn pairing, history notes, token safety
    nets, configuration): [docs/architecture/context.md](docs/architecture/context.md).
 
+   **`max_history_tokens` (2026-10-18).** `window` counts turns, so
+   `window = 10` costs 2k tokens on a quiet topic and 200k on one whose
+   turns carry huge tool results. The budget is the orthogonal lever: it
+   caps what regions ① + ② weigh together, dropping the oldest history
+   first (region ①'s oldest pairs, then region ②'s oldest **whole**
+   turns — a partial cut would orphan a tool result from its
+   `tool_use`, which providers reject). Region ③ is excluded: the turn in
+   flight has `turn_tool_result_cap`. The estimate is a heuristic, not a
+   tokenizer — CJK characters ×1, other bytes ÷4, plus a small
+   per-message constant — because a tokenizer dependency would buy
+   precision this knob does not need. Unset by default: without it the
+   payload is byte-identical to today's.
+
    **System Prompt Stability (2026-10-18).** The system prompt is
    **unchanged by runtime churn on purpose** — everything except the
    boundary's access-grant lines, which track enforcement by design.
@@ -2397,9 +2410,11 @@ tokens ↓
 │  region ① 压缩历史          ~25-35k              │
 │  └ 窗口内旧轮次: user/assistant 文本原样,         │ ← 每轮的"头块"：滑窗滑动
 │    tool call 折叠成 note (最近 M 对带 note)        │    几乎每轮都变 → 缓存止于此
+│  ★超 max_history_tokens 时从这里最老端开始丢       │
 │                                                   │
 │  region ② verbatim 前窗     ~10-15k              │
 │  └ 全结构保留, tool result 每块 ≤ tool_result_cap │ ← 轮间整体后移, 内容稳定
+│  ★超预算时丢最老的"整轮"(半个轮次不可丢)          │
 │                                                   │
 │  region ③ 当前轮            0 → 增长             │
 │  ├ user: <runtime-state> 参考块 ~300B ★易变★     │ ★新位置★

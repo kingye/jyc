@@ -3882,23 +3882,42 @@ table, not a special case in `jyc-cli`.
   which both the popup's flag level and the parser read — so the popup cannot
   offer a spelling a handler does not accept, and a short spelling is not prose
   in a description. What a value *means* stays with the command.
-- **A command's argument shape is declared once, on its row.** The built-in
-  table (`command/builtin.rs`) already named each command and described it; a
-  row now also declares its `shape` (`command/spec.rs`: no arguments, fixed
-  positionals, one positional then trailing text, or a subcommand) and hands its
-  flags to the table through the projection of the one typed declaration its
-  handler matches on — a projection rather than a second copy, because only that
-  command knows its own flag enum. One parser (`spec::parse`) reads a command
-  line through that shape and **records**: which flags appeared with what values,
-  which words were positional, where the trailing text begins. Which arguments a
-  command *needs*, and what a value means, stay with the command — those
-  sentences are its user interface. The refusals the shape itself can raise (a
-  spelling nobody declared, a value that did not arrive, a repeat the
-  declaration forbids, a value handed to a switch, a word too many) are worded
-  once, in `spec::ArgError`, because they are the same mistake in every command —
-  and where a line used to be quietly ignored, it is now refused. The usage line
-  is derived from the same declaration, so the popup, `/?` and a handler's own
-  refusals cannot advertise a syntax the parser refuses.
+- **A command's argument shape and its values are one declaration.** The
+  built-in table (`command/builtin.rs`) already named each command and
+  described it; a row now also declares its `shape` (`command/spec.rs`: no
+  arguments, fixed positionals, one positional then trailing text, or a
+  subcommand) and the values its first argument level offers (`args`, one
+  declaration per command in `command/args.rs`: key, description, and what the
+  key opens) — and hands its flags to the table through the projection of the
+  one typed declaration its handler matches on — a projection rather than a
+  second copy, because only that command knows its own flag enum. One parser
+  (`spec::parse`) reads a command line through that shape and **records**: which
+  flags appeared with what values, which words were positional, where the
+  trailing text begins. Which arguments a command *needs*, and what a value
+  means, stay with the command — those sentences are its user interface. The
+  refusals the shape itself can raise (a spelling nobody declared, a value that
+  did not arrive, a repeat the declaration forbids, a value handed to a switch,
+  a word too many) are worded once, in `spec::ArgError`, because they are the
+  same mistake in every command — and where a line used to be quietly ignored,
+  it is now refused. The usage line is derived from the same declaration, so the
+  popup, `/?` and a handler's own refusals cannot advertise a syntax the parser
+  refuses.
+- **The value set is declared once, and read twice.** A subcommand's choice set
+  used to be written in `Shape::Subcommand::values` *and* in the `command_args`
+  match arm, with a guard test asserting the two lists agreed — the duplication
+  was visible enough to need a test to hold it together. It is now one list
+  (`CommandSpec::args`) with two projections: the popup resolves it against
+  per-topic state (`ArgSource::Provided`/`Mixed` fill in the values only the
+  topic knows — a topic's skills, the installed role names, a long model list),
+  while the usage line names the same keys — for a `Shape::Args` row too, where
+  the declared values are folded into the slot the label names (`/model`'s
+  `reset` is read from `args`, not spelled a second time in the label). A level
+  only per-topic state can produce takes its slot from the shape's label
+  instead, since the usage line has no state to read. The one remaining seam is
+  `usage_words` — words the popup *cannot* offer, like `/bill`'s `today` and the
+  `YYYY-MM` pattern, which stand in for the months the popup offers instead —
+  and a test refuses a word that also names a value the popup offers, at any
+  level, which is what would make it a second copy.
 - **Trade-off**: the values are computed per topic on every ~500 ms overview
   poll and serialized per topic, so a long model list is repeated for every
   topic (`topics × models`). Leaf entries omit their empty `description`/`args`

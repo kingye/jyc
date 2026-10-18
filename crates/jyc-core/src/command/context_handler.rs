@@ -317,7 +317,7 @@ impl CommandHandler for ContextCommandHandler {
             other => Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/context: unknown argument '{other}'. Use: /context full | sliding [N] [M] [CAP] [TURNCAP] [MAXHIST] | reset | dump [on|off]"
+                    "/context: unknown argument '{other}'. Use: /context sliding [N] [M] [CAP] [TURNCAP] [MAXHIST] | full | reset | dump [on|off]"
                 ),
                 error: None,
                 append_body: None,

@@ -30,6 +30,9 @@ pub enum Shape {
     /// Fixed positional words, with flags allowed anywhere among them
     /// (`/spawn`, `/close`, `/grant`). A label names one slot in the usage line,
     /// and may spell its choices (`subagent|all`) where they are few and fixed.
+    /// Choices the row *declares* are not spelled here: [`Syntax::args_groups`]
+    /// reads them from [`Syntax::args`], so a label names only what the
+    /// declaration cannot see (`/model`'s `model`).
     Args { labels: &'static [&'static str] },
     /// One positional word, then the rest of the line is literal text, dashes
     /// and all (`/send`). `--` ends the leading flags explicitly, for text that
@@ -44,14 +47,214 @@ pub enum Shape {
     /// trailing text (`/skill`, `/mcp`, `/bill`, `/backlog`). A first word
     /// outside the set is recorded, not refused: whether the command knows it is
     /// the command's business.
+    ///
+    /// The set itself is not here. It is [`Syntax::args`], the one declaration
+    /// that also carries what the popup offers, so a word cannot be advertised
+    /// in the usage line and missing from the popup (or the reverse).
     Subcommand {
-        /// The words the first slot offers.
-        values: &'static [&'static str],
         /// Further positional words, after the subcommand.
         labels: &'static [&'static str],
         /// What the text after those is called, when there is any.
         rest: Option<&'static str>,
     },
+}
+
+/// A command's argument syntax: how the parser reads its line, and what its
+/// first argument level offers.
+///
+/// The two halves answer the same sentence for different readers — the parser
+/// needs to know how many words have room, the usage line needs to name the
+/// choices, the popup needs those choices with a description each. They are
+/// bound together because they are one declaration, and split across two files
+/// they drift: `/context`'s usage line once read `<full|sliding|reset|dump>`
+/// while the popup offered `<sliding|full|reset|dump>`, and a guard test was
+/// written to catch exactly that.
+#[derive(Clone, Copy, Debug)]
+pub struct Syntax {
+    /// How the parser reads the line.
+    pub shape: Shape,
+    /// What the first argument level offers.
+    pub args: ArgSource,
+    /// Usage-line words the popup cannot offer: patterns (`YYYY-MM`) and
+    /// values the popup replaces with better choices (`today` becomes this
+    /// month's dates). May not name a value [`ArgSource::Declared`] offers —
+    /// that overlap is what makes it a second copy, and a test refuses it.
+    pub usage_words: &'static [&'static str],
+}
+
+impl Syntax {
+    /// No arguments at all: the shape of a command that takes flags only.
+    pub const EMPTY: Syntax = Syntax {
+        shape: Shape::None,
+        args: ArgSource::Declared(&[]),
+        usage_words: &[],
+    };
+
+    /// The value words the usage line lists, in order: the ones only the line
+    /// knows, then the ones the popup offers.
+    pub fn usage_keys(&self) -> Vec<&'static str> {
+        let declared = self.args.declared_keys();
+        self.usage_words
+            .iter()
+            .copied()
+            .chain(declared.iter().map(|arg| arg.value))
+            .collect()
+    }
+
+    /// The words a [`Shape::Args`] level names, one entry per group the line
+    /// renders in brackets.
+    ///
+    /// A declared value is offered in the slot the shape's label names, so the
+    /// line reads it from `args` and the label keeps naming only what it cannot
+    /// see (`/model`'s `model`). Writing it into the label instead — the
+    /// `model|reset` this replaced — is the second copy `args` exists to delete.
+    fn args_groups(&self, labels: &[&'static str]) -> Vec<String> {
+        let declared: Vec<&str> = self
+            .args
+            .declared_keys()
+            .iter()
+            .map(|arg| arg.value)
+            .collect();
+        if declared.is_empty() {
+            return labels.iter().map(|label| label.to_string()).collect();
+        }
+        let mut words: Vec<&str> = labels.to_vec();
+        words.extend(declared);
+        vec![words.join("|")]
+    }
+
+    /// Resolve the first level against per-topic state.
+    pub fn resolve(&self, ctx: &super::args::ArgCtx) -> Vec<jyc_types::CommandArg> {
+        self.args.resolve(ctx)
+    }
+}
+
+/// Where a command's first argument level comes from.
+#[derive(Clone, Copy, Debug)]
+pub enum ArgSource {
+    /// A declared spine, whose values may in turn open dynamic levels. A
+    /// `Shape::Subcommand` level is always this or [`Self::Mixed`]: its usage
+    /// line names the same values the popup offers.
+    Declared(&'static [ArgDef]),
+    /// A static spine with one dynamic run spliced into it: `/model`'s names
+    /// ahead of `reset`, `/bill`'s months ahead of `all`. The run contributes no
+    /// declared key, so the usage line names the slot by its shape's label.
+    Mixed(
+        &'static [ArgDef],
+        fn(&super::args::ArgCtx) -> Vec<jyc_types::CommandArg>,
+        &'static [ArgDef],
+    ),
+    /// A level only per-topic state can produce, down to its keys (`/send`'s
+    /// agents, `/close`'s subagents, a command's flag rows). The usage line
+    /// cannot see it, so such a command takes its slot from its shape's label.
+    Provided(fn(&super::args::ArgCtx) -> Vec<jyc_types::CommandArg>),
+}
+
+impl ArgSource {
+    /// The declared values, in the order they are offered. Empty for a
+    /// [`Self::Provided`] level.
+    pub fn declared_keys(&self) -> Vec<&'static ArgDef> {
+        match self {
+            Self::Declared(args) => args.iter().collect(),
+            Self::Mixed(before, _, after) => before.iter().chain(after.iter()).collect(),
+            Self::Provided(_) => Vec::new(),
+        }
+    }
+
+    /// The level itself, with every dynamic part filled in.
+    pub fn resolve(&self, ctx: &super::args::ArgCtx) -> Vec<jyc_types::CommandArg> {
+        match self {
+            Self::Declared(args) => args.iter().flat_map(|arg| arg.resolve(ctx)).collect(),
+            Self::Mixed(before, provide, after) => {
+                let mut out: Vec<jyc_types::CommandArg> =
+                    before.iter().flat_map(|arg| arg.resolve(ctx)).collect();
+                out.extend(provide(ctx));
+                out.extend(after.iter().flat_map(|arg| arg.resolve(ctx)));
+                out
+            }
+            Self::Provided(provide) => provide(ctx),
+        }
+    }
+}
+
+/// One value a command's first argument level offers.
+///
+/// `description` is popup-only text; `value` is what the command is given.
+#[derive(Clone, Copy, Debug)]
+pub struct ArgDef {
+    /// The word the command takes.
+    pub value: &'static str,
+    /// What the popup says about it.
+    pub description: &'static str,
+    /// What it opens, if anything.
+    pub level: ArgLevel,
+}
+
+impl ArgDef {
+    /// A value with nothing behind it.
+    pub const fn leaf(value: &'static str, description: &'static str) -> ArgDef {
+        ArgDef {
+            value,
+            description,
+            level: ArgLevel::Leaf,
+        }
+    }
+
+    /// A value that opens a fixed set of further values.
+    pub const fn opening(
+        value: &'static str,
+        description: &'static str,
+        next: &'static [ArgDef],
+    ) -> ArgDef {
+        ArgDef {
+            value,
+            description,
+            level: ArgLevel::Static(next),
+        }
+    }
+
+    /// A value that opens values read from per-topic state at resolve time.
+    ///
+    /// The usage line cannot see these, so a command whose choices are only
+    /// dynamic declares a [`Syntax::usage_words`] placeholder for the slot
+    /// instead.
+    pub const fn dynamic(
+        value: &'static str,
+        description: &'static str,
+        provide: fn(&super::args::ArgCtx) -> Vec<jyc_types::CommandArg>,
+    ) -> ArgDef {
+        ArgDef {
+            value,
+            description,
+            level: ArgLevel::Dynamic(provide),
+        }
+    }
+
+    /// This value alone, or everything behind it, resolved.
+    pub fn resolve(&self, ctx: &super::args::ArgCtx) -> Vec<jyc_types::CommandArg> {
+        let next = match self.level {
+            ArgLevel::Leaf => Vec::new(),
+            ArgLevel::Static(next) => next.iter().flat_map(|arg| arg.resolve(ctx)).collect(),
+            ArgLevel::Dynamic(provide) => provide(ctx),
+        };
+        vec![jyc_types::CommandArg {
+            value: self.value.to_string(),
+            description: self.description.to_string(),
+            args: next,
+        }]
+    }
+}
+
+/// What a value opens behind it.
+#[derive(Clone, Copy, Debug)]
+pub enum ArgLevel {
+    /// Nothing.
+    Leaf,
+    /// A further declared set, resolved the same way.
+    Static(&'static [ArgDef]),
+    /// Values only per-topic state knows (`/model`'s models, `/bill`'s months,
+    /// a flag set projected from [`super::flags`]).
+    Dynamic(fn(&super::args::ArgCtx) -> Vec<jyc_types::CommandArg>),
 }
 
 /// What a command line carried, in the order it carried it.
@@ -156,13 +359,13 @@ impl fmt::Display for ArgError {
 
 impl std::error::Error for ArgError {}
 
-/// Read `args` through `shape` and the command's flag declarations.
+/// Read `args` through `syntax` and the command's flag declarations.
 ///
 /// Every word is accounted for: a declared flag is recorded with its value, a
 /// dash-word that is no flag is refused, a word the shape has room for is
 /// positional, and one past that room is refused rather than dropped.
 pub fn parse<F: Copy + PartialEq>(
-    shape: Shape,
+    syntax: Syntax,
     flags: &[(F, FlagSpec)],
     args: &[String],
 ) -> Result<Parsed<F>, ArgError> {
@@ -171,6 +374,7 @@ pub fn parse<F: Copy + PartialEq>(
         positionals: Vec::new(),
         body: None,
     };
+    let shape = syntax.shape;
     let slots = shape.slots();
     let keeps_text = shape.keeps_text();
     let mut in_text = false;
@@ -225,7 +429,7 @@ pub fn parse<F: Copy + PartialEq>(
         if looks_like_a_flag(arg) || (arg == "-" && !keeps_text) {
             return Err(ArgError::UnknownFlag {
                 spelling: arg.to_string(),
-                hint: unknown_hint(flags, shape),
+                hint: unknown_hint(flags, syntax),
             });
         }
 
@@ -236,7 +440,7 @@ pub fn parse<F: Copy + PartialEq>(
             parsed.push_text(arg);
         } else {
             return Err(ArgError::TooMany {
-                expected: shape.expected(),
+                expected: syntax.expected(),
             });
         }
     }
@@ -244,41 +448,41 @@ pub fn parse<F: Copy + PartialEq>(
     Ok(parsed)
 }
 
-/// Read `name`'s command line: the shape its row declares, and the flag
+/// Read `name`'s command line: the syntax its row declares, and the flag
 /// declarations its handler owns.
 ///
-/// This is what a handler calls — the shape is not repeated in the handler, so
+/// This is what a handler calls — the syntax is not repeated in the handler, so
 /// the line it accepts is the line the popup offers.
 pub fn parse_command<F: Copy + PartialEq>(
     name: &str,
     flags: &[(F, FlagSpec)],
     args: &[String],
 ) -> Result<Parsed<F>, ArgError> {
-    parse(super::builtin::shape_of(name), flags, args)
+    parse(super::builtin::syntax_of(name), flags, args)
 }
 
 /// Read a command line for a command that declares no flags of its own.
 ///
 /// `/ungrant` takes a path and nothing else, so it has no typed set to name —
-/// but it still reads its line through the same shape, which is what refuses a
+/// but it still reads its line through the same syntax, which is what refuses a
 /// dash-word nobody declared.
 pub fn parse_plain(name: &str, args: &[String]) -> Result<Parsed<()>, ArgError> {
-    parse_with(super::builtin::shape_of(name), args)
+    parse_with(super::builtin::syntax_of(name), args)
 }
 
-/// Read a command line through a shape the caller already holds, for a handler
+/// Read a command line through a syntax the caller already holds, for a handler
 /// that reads one declaration for the commands it serves.
-pub fn parse_with(shape: Shape, args: &[String]) -> Result<Parsed<()>, ArgError> {
-    parse::<()>(shape, &[], args)
+pub fn parse_with(syntax: Syntax, args: &[String]) -> Result<Parsed<()>, ArgError> {
+    parse::<()>(syntax, &[], args)
 }
 
-/// The usage line for a command: its name, what its shape accepts, and its
+/// The usage line for a command: its name, what its syntax accepts, and its
 /// flags.
 ///
 /// This is the one place `/close [subagent|all] [--force] [--purge]` is written
 /// down. The command's own description, `/?` and the popup all read it, so the
 /// line cannot say one thing where the parser does another.
-pub fn usage(name: &str, shape: Shape, specs: &[&FlagSpec]) -> String {
+pub fn usage(name: &str, syntax: Syntax, specs: &[&FlagSpec]) -> String {
     let flags: Vec<String> = specs
         .iter()
         .map(|spec| match spec.value {
@@ -287,6 +491,7 @@ pub fn usage(name: &str, shape: Shape, specs: &[&FlagSpec]) -> String {
         })
         .collect();
     let mut parts = vec![name.to_string()];
+    let shape = syntax.shape;
     // Where the shape keeps trailing text, a flag is read only until that text
     // starts — so the flags come first, or the line would advertise a flag the
     // parser reads as text.
@@ -296,7 +501,14 @@ pub fn usage(name: &str, shape: Shape, specs: &[&FlagSpec]) -> String {
     match shape {
         Shape::None => {}
         Shape::Args { labels } => {
-            parts.extend(labels.iter().map(|label| format!("[{label}]")));
+            // The declared values join the slot the label names — one
+            // declaration read twice, not a word written down again.
+            parts.extend(
+                syntax
+                    .args_groups(labels)
+                    .into_iter()
+                    .map(|group| format!("[{group}]")),
+            );
         }
         Shape::ThenBody { label, body } => {
             parts.push(format!("<{label}>"));
@@ -305,12 +517,9 @@ pub fn usage(name: &str, shape: Shape, specs: &[&FlagSpec]) -> String {
             parts.push("[--]".to_string());
             parts.push(format!("<{body}>"));
         }
-        Shape::Subcommand {
-            values,
-            labels,
-            rest,
-        } => {
-            parts.push(format!("<{}>", values.join("|")));
+        Shape::Subcommand { labels, rest } => {
+            // The value set is the popup's own, not a second copy of it.
+            parts.push(format!("<{}>", syntax.usage_keys().join("|")));
             parts.extend(labels.iter().map(|label| format!("[{label}]")));
             // No `[--]` here even where `rest` exists (`/backlog`, `/context`):
             // neither reads its line through this module, so the marker would
@@ -383,11 +592,11 @@ fn known_list<F>(flags: &[(F, FlagSpec)]) -> String {
 /// Without the second case a dash-led typo at `/thinking` (which has no flags)
 /// would read `unknown flag -x` and say nothing about `show`/`hide`; before this
 /// change that command answered by naming them.
-fn unknown_hint<F>(flags: &[(F, FlagSpec)], shape: Shape) -> String {
+fn unknown_hint<F>(flags: &[(F, FlagSpec)], syntax: Syntax) -> String {
     if !flags.is_empty() {
         return format!("known: {}", known_list(flags));
     }
-    let expected = shape.expected();
+    let expected = syntax.expected();
     if expected.is_empty() {
         String::new()
     } else {
@@ -414,19 +623,25 @@ impl Shape {
             Self::Subcommand { rest, .. } => rest.is_some(),
         }
     }
+}
 
-    /// What the shape had room for, for the refusal that says so.
-    fn expected(self) -> String {
-        match self {
-            Self::None => String::new(),
-            Self::Args { labels } => labels.join(" "),
-            Self::ThenBody { label, .. } => label.to_string(),
-            Self::Subcommand { values, labels, .. } => {
-                let mut parts = vec![values.join("|")];
-                parts.extend(labels.iter().map(|label| (*label).to_string()));
-                parts.join(" ")
-            }
+impl Syntax {
+    /// What this command had room for, for the refusal that says so: its
+    /// positional labels, prefixed by the value set its shape offers.
+    pub fn expected(&self) -> String {
+        let mut parts = Vec::new();
+        if matches!(self.shape, Shape::Subcommand { .. }) {
+            parts.push(self.usage_keys().join("|"));
         }
+        if let Shape::Subcommand { labels, .. } = self.shape {
+            parts.extend(labels.iter().map(|label| label.to_string()));
+        }
+        if let Shape::Args { labels } = self.shape {
+            // The same projection the usage line renders, so the refusal names
+            // the values the popup offers (`/model a b` expects `model|reset`).
+            parts.extend(self.args_groups(labels));
+        }
+        parts.join(" ")
     }
 }
 
@@ -437,9 +652,13 @@ mod tests {
         CLOSE_FLAGS, CloseFlag, SEND_FLAGS, SPAWN_FLAGS, SendFlag, SpawnFlag,
     };
 
-    /// The shape `/close` declares on its table row.
-    const CLOSE_ARGS: Shape = Shape::Args {
-        labels: &["subagent|all"],
+    /// The syntax `/close` declares on its table row.
+    const CLOSE_ARGS: Syntax = Syntax {
+        shape: Shape::Args {
+            labels: &["subagent|all"],
+        },
+        args: ArgSource::Declared(&[]),
+        usage_words: &[],
     };
 
     fn args(list: &[&str]) -> Vec<String> {
@@ -469,16 +688,20 @@ mod tests {
             "unknown flag --froce (known: --force, --purge)"
         );
         // A command with no flags says so by naming none.
-        let none = parse::<CloseFlag>(Shape::None, &[], &args(&["-x"])).unwrap_err();
+        let none = parse::<CloseFlag>(Syntax::EMPTY, &[], &args(&["-x"])).unwrap_err();
         assert_eq!(none.to_string(), "unknown flag -x");
     }
 
     #[test]
     fn a_lone_dash_is_a_word_only_where_text_is_kept() {
         // `/send`'s shape keeps text, so there the dash is a message word.
-        const SEND: Shape = Shape::ThenBody {
-            label: "agent",
-            body: "message",
+        const SEND: Syntax = Syntax {
+            shape: Shape::ThenBody {
+                label: "agent",
+                body: "message",
+            },
+            args: ArgSource::Declared(&[]),
+            usage_words: &[],
         };
         let parsed = parse(SEND, SEND_FLAGS, &args(&["joe", "-"])).unwrap();
         assert_eq!(parsed.body.as_deref(), Some("-"));
@@ -499,20 +722,28 @@ mod tests {
     /// than staying silent or listing flags that do not exist.
     #[test]
     fn an_unknown_flag_falls_back_to_what_the_shape_expects() {
-        const SHAPE: Shape = Shape::Subcommand {
-            values: &["show", "hide"],
-            labels: &[],
-            rest: None,
+        // The hint names the values from the row's own declaration — the same
+        // list the popup offers, so it cannot name a word that is not there.
+        const THINKING: Syntax = Syntax {
+            shape: Shape::Subcommand {
+                labels: &[],
+                rest: None,
+            },
+            args: ArgSource::Declared(&[
+                ArgDef::leaf("show", "Show reasoning content"),
+                ArgDef::leaf("hide", "Hide reasoning content"),
+            ]),
+            usage_words: &[],
         };
         assert_eq!(
-            parse::<CloseFlag>(SHAPE, &[], &args(&["-x"]))
+            parse::<CloseFlag>(THINKING, &[], &args(&["-x"]))
                 .unwrap_err()
                 .to_string(),
             "unknown flag -x (expected: show|hide)"
         );
         // With nothing to expect either, it says only what it saw.
         assert_eq!(
-            parse::<CloseFlag>(Shape::None, &[], &args(&["-x"]))
+            parse::<CloseFlag>(Syntax::EMPTY, &[], &args(&["-x"]))
                 .unwrap_err()
                 .to_string(),
             "unknown flag -x"
@@ -531,7 +762,11 @@ mod tests {
     /// refused where a repeat of the switches is not.
     #[test]
     fn a_value_takes_the_next_word_and_a_once_flag_refuses_a_repeat() {
-        const SHAPE: Shape = Shape::Args { labels: &["type"] };
+        const SHAPE: Syntax = Syntax {
+            shape: Shape::Args { labels: &["type"] },
+            args: ArgSource::Declared(&[]),
+            usage_words: &[],
+        };
         let parsed = parse(SHAPE, SPAWN_FLAGS, &args(&["-n", "joe", "researcher"])).unwrap();
         assert_eq!(parsed.positionals, ["researcher"]);
         assert_eq!(parsed.value(SpawnFlag::Name), Some("joe"));
@@ -557,9 +792,13 @@ mod tests {
 
     #[test]
     fn then_body_keeps_the_rest_verbatim() {
-        const SHAPE: Shape = Shape::ThenBody {
-            label: "agent",
-            body: "message",
+        const SHAPE: Syntax = Syntax {
+            shape: Shape::ThenBody {
+                label: "agent",
+                body: "message",
+            },
+            args: ArgSource::Declared(&[]),
+            usage_words: &[],
         };
         let parsed = parse(SHAPE, SEND_FLAGS, &args(&["joe", "/close", "--force"])).unwrap();
         assert_eq!(parsed.positionals, ["joe"]);
@@ -581,7 +820,7 @@ mod tests {
             "too many arguments (expected: subagent|all)"
         );
         assert_eq!(
-            parse::<CloseFlag>(Shape::None, &[], &args(&["joe"]))
+            parse::<CloseFlag>(Syntax::EMPTY, &[], &args(&["joe"]))
                 .unwrap_err()
                 .to_string(),
             "too many arguments: this command takes none"
@@ -590,10 +829,17 @@ mod tests {
 
     #[test]
     fn a_subcommand_records_its_word_and_what_follows() {
-        const SHAPE: Shape = Shape::Subcommand {
-            values: &["on", "off", "reset"],
-            labels: &["name"],
-            rest: None,
+        const SHAPE: Syntax = Syntax {
+            shape: Shape::Subcommand {
+                labels: &["name"],
+                rest: None,
+            },
+            args: ArgSource::Declared(&[
+                ArgDef::leaf("on", ""),
+                ArgDef::leaf("off", ""),
+                ArgDef::leaf("reset", ""),
+            ]),
+            usage_words: &[],
         };
         let parsed = parse::<CloseFlag>(SHAPE, &[], &args(&["on", "ponytail"])).unwrap();
         assert_eq!(parsed.positionals, ["on", "ponytail"]);
@@ -623,6 +869,10 @@ mod tests {
         );
         assert_eq!(usage_of("/build"), "/build");
         assert_eq!(usage_of("/skill"), "/skill <on|off|reset> [name]");
+        // The declared values are folded into the shape's label, so these two
+        // lines read exactly as they did when the label spelled them out.
+        assert_eq!(usage_of("/model"), "/model [model|reset]");
+        assert_eq!(usage_of("/template"), "/template [name|update]");
         // No `[--]`: `/backlog` does not read its line through the shape, so it
         // has no separator to advertise.
         assert_eq!(

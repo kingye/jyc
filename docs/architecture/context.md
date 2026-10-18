@@ -415,8 +415,12 @@ user/assistant pairs, no tool results to cap.
 `ContextStrategyConfig` (override file → matched pattern → first
 pattern → `[ai]` → built-in default). The CLI arg
 `/context sliding N M CAP` sets the third positional; absent means
-"use configured". The CLI enforces `0 ≤ CAP ≤ 1 MiB`; larger caps
-must go through `config.toml` or `.jyc/context-strategy.json`.
+"use configured". "Configured" here is the config part of that chain
+only (`config.toml` → pattern → `[ai]`): an absent slot does *not* pick
+up a value an earlier `/context` call wrote into the override file,
+even though that file still governs the turn itself. The CLI enforces
+`0 ≤ CAP ≤ 1 MiB`; larger caps must go through `config.toml` or
+`.jyc/context-strategy.json`.
 
 ## `turn_tool_result_cap` — bounding region ③
 

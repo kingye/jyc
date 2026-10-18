@@ -23,9 +23,12 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///     oversized result keeps its head and tail with the middle replaced
 ///     by a paging marker. Unset by default.
 ///
-///     Per-slot semantics: an absent slot keeps the configured value, and
-///     `0` explicitly disables the cap. (M is an ordinary value — 0 there
-///     means "text-only window".)
+///     Per-slot semantics: an absent slot falls back to the *configured*
+///     value (the config.toml chain) — not to whatever an earlier
+///     `/context` call left in the runtime override, so changing one slot
+///     does not preserve the others you set before it — and `0`
+///     explicitly disables a cap. (M is an ordinary value — 0 there means
+///     "text-only window".)
 ///   /context reset        Remove runtime override (revert to configured default)
 ///   /context dump [on|off]
 ///     Toggle wire-payload debug dump. When on, every LLM call appends
@@ -772,20 +775,41 @@ mode = "agent"
     }
 
     #[tokio::test]
-    async fn test_sliding_turn_cap_omitted_keeps_configured_value() {
-        // An absent 4th slot must not reset a turn cap set earlier — the
-        // same "absent = keep" convention the other slots follow.
+    async fn test_sliding_turn_cap_omitted_falls_back_to_configured_not_override() {
+        // An absent 4th slot falls back to the *configured* value, not to
+        // whatever an earlier `/context` call left in the runtime override —
+        // the convention `full` already follows (see
+        // `test_full_uses_configured_tool_result_cap_not_prior_override`).
+        // So a topic configured with 16384 keeps 16384 even while an
+        // override holds 4096, and that is the behaviour worth pinning: it
+        // is the one a reader would otherwise assume to go the other way.
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_sliding_turn_cap_omitted_keeps_configured_value";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let topic = "test_sliding_turn_cap_omitted_falls_back_to_configured_not_override";
+        let state_dir = tmp.path().join(".jyc");
+        jyc_types::state_dir::register(topic, &state_dir);
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(
+            state_dir.join("config.toml"),
+            "[context_strategy]\n\
+             mode = \"sliding_window\"\n\
+             window = 7\n\
+             note_window = 3\n\
+             tool_result_cap = 2048\n\
+             turn_tool_result_cap = 16384\n",
+        )
+        .await
+        .unwrap();
+
         let handler = ContextCommandHandler;
+        // First call writes an override whose turn cap differs from the
+        // configured one, so the fallback below cannot pass by accident.
         let mut set = test_context(topic, tmp.path());
         set.args = vec![
             "sliding".into(),
             "10".into(),
             "3".into(),
             "2048".into(),
-            "16384".into(),
+            "4096".into(),
         ];
         assert!(handler.execute(set).await.unwrap().success);
 
@@ -793,13 +817,20 @@ mode = "agent"
         again.args = vec!["sliding".into(), "12".into()];
         assert!(handler.execute(again).await.unwrap().success);
         let v: serde_json::Value = serde_json::from_str(
-            &tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
+            &tokio::fs::read_to_string(state_dir.join("context-strategy.json"))
                 .await
                 .unwrap(),
         )
         .unwrap();
         assert_eq!(v["window"], 12, "the given slot still applies");
-        assert_eq!(v["turn_tool_result_cap"], 16384, "the omitted slot is kept");
+        assert_eq!(
+            v["note_window"], 3,
+            "note_window is configured, not overridden"
+        );
+        assert_eq!(
+            v["turn_tool_result_cap"], 16384,
+            "omitted slot falls back to the configured value, not the prior override"
+        );
     }
 
     #[tokio::test]

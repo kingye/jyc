@@ -358,8 +358,9 @@ impl AgentService for JycAgentService {
         let additional_read_roots = self.resolve_additional_read_roots(message, topic_path);
         let additional_write_roots = self.resolve_additional_write_roots(message, topic_path);
         // 3a. Build system prompt (boundaries, skills, AGENTS.md, static
-        //     cross-topic prose). Everything in it is byte-stable across
-        //     turns on purpose: providers that cache by prefix reuse the
+        //     cross-topic prose). Everything in it is unchanged by runtime
+        //     churn on purpose — the boundary's grant lines excepted, since
+        //     those track enforcement: providers that cache by prefix reuse the
         //     whole entry for as long as these bytes do not move.
         let system_prompt = self
             .build_system_prompt(

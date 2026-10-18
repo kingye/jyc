@@ -2342,11 +2342,13 @@ JYC uses the following subset of the agent service API:
    nets, configuration): [docs/architecture/context.md](docs/architecture/context.md).
 
    **System Prompt Stability (2026-10-18).** The system prompt is
-   **byte-stable across turns of a topic on purpose**: providers that
-   cache by prefix (OpenAI-compat: DashScope/DeepSeek/MiniMax/Kimi
-   automatic context caching; Anthropic: explicit `cache_control`
-   breakpoints) only reuse a cached span when its bytes are unchanged.
-   Anything that changes while the instance runs therefore belongs in
+   **unchanged by runtime churn on purpose** — everything except the
+   boundary's access-grant lines, which track enforcement by design.
+   Providers that cache by prefix (OpenAI-compat: DashScope/DeepSeek/
+   MiniMax/Kimi automatic context caching; Anthropic: explicit
+   `cache_control` breakpoints) only reuse a cached span when its bytes
+   are unchanged. Anything else that changes while the instance runs
+   therefore belongs in
    the turn's **user message**, which is new every turn anyway and so
    sits past the cached prefix regardless of how often it churns:
 

@@ -20,12 +20,14 @@ Three core principles govern the whole system:
 3. **Token budgets are enforced in layers.** Beyond the configured
    strategy, independent token monitors compress or reset the session
    before the provider can reject an oversized request (API 400).
-4. **The system prompt is byte-stable; volatile state rides the turn.**
-   Every LLM call re-sends the whole prefix, and providers that cache by
-   prefix only reuse what did not change. The system prompt therefore
-   holds only content that changes when config or files do. Runtime
-   state that moves while the instance runs — the subagent roster and
-   the channel/topic roster — is built by `build_turn_reference()`
+4. **The system prompt is unchanged by runtime churn; volatile state
+   rides the turn.** Every LLM call re-sends the whole prefix, and
+   providers that cache by prefix only reuse what did not change, so the
+   system prompt holds only content that changes when config or files do
+   — the one exception being the access boundary's grant lines, which
+   have to track what the tool layer enforces. Runtime state that moves
+   while the instance runs — the subagent roster and the channel/topic
+   roster — is built by `build_turn_reference()`
    (`crates/jyc-agent/src/service/prompt.rs`) and prepended to the
    current turn's user message inside a `<runtime-state>` block, framed
    as an auto-generated snapshot. That block sits past the cached

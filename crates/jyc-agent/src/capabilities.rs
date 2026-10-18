@@ -307,12 +307,15 @@ mod tests {
     }
 
     #[test]
-    fn prompt_section_leaves_the_choice_to_the_model() {
+    fn prompt_section_does_not_hedge_the_rule() {
         let section = prompt_section(&[&HELPERS[0]]).expect("section");
 
+        // Advisory wording shipped with the feature and was read as advice:
+        // the section was received, quoted back, and then ignored. Guard the
+        // specific regression of re-adding a hedge while the imperative stays.
         assert!(
-            section.contains("your call"),
-            "the section informs, it does not instruct"
+            !section.contains("your call") && !section.contains("not an instruction"),
+            "the section states the rule instead of offering it as a choice (#941)"
         );
     }
 }

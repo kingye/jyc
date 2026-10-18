@@ -42,7 +42,12 @@ jobs:
       - name: Install protoc (Linux)
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-      - uses: taiki-e/install-action@cargo-bloat
+      # `uses: taiki-e/install-action@cargo-bloat` (tool name as the ref) does
+      # not resolve: the runner looks `cargo-bloat` up as a git ref. Pass the
+      # tool as an input and pin the action by version instead.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-bloat
 
       - name: Binary size as shipped
         # The stripped artifact release.yml ships — the number to compare with

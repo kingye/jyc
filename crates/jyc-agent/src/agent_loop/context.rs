@@ -113,9 +113,11 @@ fn format_cleaned_message(
 /// When `strategy.tool_result_cap` is `Some(cap > 0)`, every tool result
 /// in region ② is truncated to at most `cap` bytes with the standard
 /// `… [truncated N bytes]` marker. Region ③ (the current turn) is
-/// never truncated — the model is reasoning over those tool results
-/// mid-loop, so they must stay complete. `Some(0)` or `None` disables
-/// capping everywhere.
+/// uncapped by default — the model is reasoning over those tool results
+/// mid-loop, so they must stay complete — and bounded by the separate,
+/// opt-in `strategy.turn_tool_result_cap`, which keeps head and tail
+/// instead of the head alone. `Some(0)` or `None` disables capping
+/// everywhere.
 pub(crate) fn build_send_context_with_regions<'a>(
     provider: &dyn Provider,
     raw_context: &'a [serde_json::Value],
@@ -185,13 +187,21 @@ pub(crate) fn build_send_context_with_regions<'a>(
                 regions.push(2);
             }
 
-            // Current turn verbatim — never truncated. The model is
-            // reasoning over these tool results mid-loop, so they must
-            // stay complete. `0` is the explicit-off sentinel in
-            // `cap_tool_result_content` (see doc on
-            // `build_send_context_with_regions` above).
+            // Current turn. Verbatim by default (`turn_tool_result_cap`
+            // unset, so `0` short-circuits): the model is reasoning over
+            // these tool results mid-loop, so they normally stay
+            // complete. When the cap is configured, oversized results
+            // keep head and tail with the middle dropped — what a result
+            // is read for usually sits at the ends, and the marker tells
+            // the model how to page the gap. Both sentinel and default
+            // mean off; see the doc above.
+            let turn_cap = strategy.turn_tool_result_cap.unwrap_or(0);
             for msg in current {
-                out.push(cap_tool_result_content(msg, 0));
+                out.push(cap_tool_result_content_with(
+                    msg,
+                    turn_cap,
+                    crate::session::truncate_text_keeping_edges,
+                ));
                 regions.push(3);
             }
             (Cow::Owned(out), regions)
@@ -199,9 +209,16 @@ pub(crate) fn build_send_context_with_regions<'a>(
     }
 }
 
-/// Truncate oversized tool-result `content` to `cap` bytes. Returns the
-/// input unchanged for non-tool messages and for `cap == 0` (the
-/// explicit-off sentinel). Handles both wire formats:
+/// Truncate oversized tool-result `content` to `cap` bytes, head-only.
+/// Region ②'s cap; see [`cap_tool_result_content_with`].
+fn cap_tool_result_content(msg: &serde_json::Value, cap: usize) -> serde_json::Value {
+    cap_tool_result_content_with(msg, cap, crate::session::truncate_text)
+}
+
+/// Truncate oversized tool-result `content` to `cap` bytes with the given
+/// `truncate` strategy (head-only for region ②, head+tail for region ③).
+/// Returns the input unchanged for non-tool messages and for `cap == 0`
+/// (the explicit-off sentinel). Handles both wire formats:
 ///
 /// - OpenAI / simple: `{"role":"tool","content":"<string>"}` — the string
 ///   is truncated in place.
@@ -210,7 +227,11 @@ pub(crate) fn build_send_context_with_regions<'a>(
 ///   `content` is truncated. Non-`tool_result` blocks (text/image) and
 ///   block-level array `content` are left untouched (rare for tool
 ///   results, and the truncate_text marker is string-specific).
-fn cap_tool_result_content(msg: &serde_json::Value, cap: usize) -> serde_json::Value {
+fn cap_tool_result_content_with(
+    msg: &serde_json::Value,
+    cap: usize,
+    truncate: fn(&str, usize) -> String,
+) -> serde_json::Value {
     if cap == 0 {
         return msg.clone();
     }
@@ -222,7 +243,7 @@ fn cap_tool_result_content(msg: &serde_json::Value, cap: usize) -> serde_json::V
             let Some(content) = new_msg.get("content").and_then(|c| c.as_str()) else {
                 return new_msg;
             };
-            let capped = crate::session::truncate_text(content, cap);
+            let capped = truncate(content, cap);
             if capped == content {
                 return new_msg;
             }
@@ -243,7 +264,7 @@ fn cap_tool_result_content(msg: &serde_json::Value, cap: usize) -> serde_json::V
                 let Some(content) = block.get("content").and_then(|c| c.as_str()) else {
                     continue;
                 };
-                let capped = crate::session::truncate_text(content, cap);
+                let capped = truncate(content, cap);
                 if capped == content {
                     continue;
                 }
@@ -274,11 +295,12 @@ fn dump_send_context(
     let (sent, regions) =
         build_send_context_with_regions(provider, raw_context, prior_len, strategy);
     let mut s = format!(
-        "=== context sent to LLM (strategy={:?} window={} note_window={:?}) ===\n\
+        "=== context sent to LLM (strategy={:?} window={} note_window={:?} turn_cap={:?}) ===\n\
          {} msgs, ~{} bytes\n\n",
         strategy.mode,
         strategy.window,
         strategy.note_window,
+        strategy.turn_tool_result_cap,
         sent.len(),
         serde_json::to_string(sent.as_ref())
             .map(|s| s.len())
@@ -574,6 +596,7 @@ mod render_raw_context_tests {
             window: 10,
             note_window: None,
             tool_result_cap: None,
+            turn_tool_result_cap: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg).0;
         assert!(matches!(sent, Cow::Borrowed(_)));
@@ -610,6 +633,7 @@ mod render_raw_context_tests {
             window: 2,
             note_window: Some(1),
             tool_result_cap: None,
+            turn_tool_result_cap: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg).0;
         let sent = sent.into_owned();
@@ -645,6 +669,7 @@ mod render_raw_context_tests {
             window: 5,
             note_window: None,
             tool_result_cap: None,
+            turn_tool_result_cap: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, 99, &cfg)
             .0
@@ -667,6 +692,7 @@ mod render_raw_context_tests {
             window: 10,
             note_window: None,
             tool_result_cap: None,
+            turn_tool_result_cap: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, 0, &cfg)
             .0
@@ -709,6 +735,7 @@ mod render_raw_context_tests {
             window: 4,
             note_window: Some(1),
             tool_result_cap: None,
+            turn_tool_result_cap: None,
         };
         let sent = build_send_context_with_regions(&anthropic(), &ctx, prior_len, &cfg)
             .0
@@ -783,6 +810,7 @@ mod render_raw_context_tests {
             window: 5,
             note_window: Some(1),
             tool_result_cap: None,
+            turn_tool_result_cap: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg)
             .0
@@ -828,6 +856,7 @@ mod render_raw_context_tests {
             window: 10,
             note_window: Some(5),
             tool_result_cap: None,
+            turn_tool_result_cap: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg)
             .0
@@ -865,6 +894,7 @@ mod render_raw_context_tests {
             window: 10,
             note_window: None,
             tool_result_cap: None,
+            turn_tool_result_cap: None,
         };
         let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, 0, &cfg);
         assert_eq!(sent.len(), 3);
@@ -898,6 +928,7 @@ mod render_raw_context_tests {
             window: 2,
             note_window: Some(1),
             tool_result_cap: None,
+            turn_tool_result_cap: None,
         };
         let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, prior.len(), &cfg);
         assert_eq!(sent.len(), 6);
@@ -935,6 +966,7 @@ mod render_raw_context_tests {
             window: 1,
             note_window: Some(1),
             tool_result_cap: None,
+            turn_tool_result_cap: None,
         };
         let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, prior.len(), &cfg);
         assert_eq!(sent.len(), 3);
@@ -971,6 +1003,7 @@ mod render_raw_context_tests {
             window: 2,
             note_window: Some(1),
             tool_result_cap: None,
+            turn_tool_result_cap: None,
         };
 
         let (sent1, _) = build_send_context_with_regions(&prov(), &prior1, prior1.len(), &cfg);
@@ -1000,6 +1033,7 @@ mod render_raw_context_tests {
             window: 10,
             note_window: None,
             tool_result_cap: None,
+            turn_tool_result_cap: None,
         };
         let (sent, _) = build_send_context_with_regions(&prov(), &ctx, 0, &cfg);
         let texts: Vec<&str> = sent.iter().filter_map(|m| m["content"].as_str()).collect();
@@ -1127,6 +1161,7 @@ mod render_raw_context_tests {
             window: 5,
             note_window: Some(5),
             tool_result_cap: None,
+            turn_tool_result_cap: None,
         };
         let (uncapped, _) =
             build_send_context_with_regions(&prov(), &ctx, prior_len, &uncapped_cfg);
@@ -1184,6 +1219,7 @@ mod render_raw_context_tests {
             window: 5,
             note_window: Some(5),
             tool_result_cap: Some(50), // cap is ON
+            turn_tool_result_cap: None,
         };
         let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
         let wire = serde_json::to_string(out.as_ref()).unwrap();
@@ -1209,6 +1245,135 @@ mod render_raw_context_tests {
         );
     }
 
+    /// With `turn_tool_result_cap` set, region ③ is bounded too — head and
+    /// tail kept, middle dropped with a paging marker — while region ② stays
+    /// governed by `tool_result_cap` alone.
+    #[test]
+    fn build_send_context_caps_current_turn_when_turn_cap_set() {
+        let big = "z".repeat(4000) + "ERROR: the tail matters";
+        let prior = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+        ];
+        let current = vec![
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "", "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": big}),
+        ];
+        let mut ctx = prior.clone();
+        ctx.extend(current);
+        let prior_len = prior.len();
+
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 5,
+            note_window: Some(5),
+            // region ② cap is OFF, so anything trimmed below must be the
+            // turn cap, not this one.
+            tool_result_cap: None,
+            turn_tool_result_cap: Some(600),
+        };
+        let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
+        let wire = serde_json::to_string(out.as_ref()).unwrap();
+
+        assert!(
+            wire.contains("dropped from the middle"),
+            "turn cap must produce the middle-drop marker: {wire}"
+        );
+        assert!(
+            wire.contains("ERROR: the tail matters"),
+            "turn cap must keep the tail — that is the point of it: {wire}"
+        );
+        assert!(
+            !wire.contains(&"z".repeat(4000)),
+            "the oversized middle must be gone: {wire}"
+        );
+        let tool_idx = out
+            .iter()
+            .position(|m| m["role"] == "tool")
+            .expect("tool result must be in output");
+        assert_eq!(regions[tool_idx], 3, "capped result stays region ③");
+        // The capped result must respect the byte bound it was given.
+        let content = out[tool_idx]["content"].as_str().unwrap();
+        assert!(
+            content.len() <= 600,
+            "region ③ content must honour the cap: {}",
+            content.len()
+        );
+    }
+
+    /// The turn cap must not leak into region ② — a prior-turn result stays
+    /// whole while the turn cap is on and `tool_result_cap` is off.
+    #[test]
+    fn build_send_context_turn_cap_does_not_touch_prior_turn() {
+        let big = "w".repeat(3000);
+        let prior = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2", "tool_calls": [{"id":"9","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "9", "content": big.clone()}),
+            json!({"role": "assistant", "content": "a3"}),
+        ];
+        let current = vec![json!({"role": "user", "content": "u3"})];
+        let mut ctx = prior.clone();
+        ctx.extend(current);
+        let prior_len = prior.len();
+
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 10,
+            note_window: Some(10),
+            tool_result_cap: None,
+            turn_tool_result_cap: Some(600),
+        };
+        let (out, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
+        let wire = serde_json::to_string(out.as_ref()).unwrap();
+        assert!(
+            wire.contains(&big),
+            "region ② must stay untouched by the turn cap: {}",
+            &wire[..wire.len().min(200)]
+        );
+    }
+
+    /// `Some(0)` is the explicit-off sentinel and must behave exactly like
+    /// `None` — the "switch off" path the command writes.
+    #[test]
+    fn build_send_context_turn_cap_zero_is_off() {
+        let big = "q".repeat(4000);
+        let prior = vec![json!({"role": "user", "content": "u1"})];
+        let current = vec![
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "tool", "tool_call_id": "1", "content": big}),
+        ];
+        let mut ctx = prior.clone();
+        ctx.extend(current);
+        let prior_len = prior.len();
+
+        let none_cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 5,
+            note_window: Some(5),
+            tool_result_cap: Some(2048),
+            turn_tool_result_cap: None,
+        };
+        let zero_cfg = ContextStrategyConfig {
+            turn_tool_result_cap: Some(0),
+            ..none_cfg.clone()
+        };
+        let (a, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &none_cfg);
+        let (b, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &zero_cfg);
+        assert_eq!(
+            serde_json::to_string(a.as_ref()).unwrap(),
+            serde_json::to_string(b.as_ref()).unwrap(),
+            "Some(0) must behave identically to None"
+        );
+        assert!(
+            serde_json::to_string(b.as_ref()).unwrap().contains(&big),
+            "turn cap 0 must leave the current turn whole"
+        );
+    }
+
     #[test]
     fn build_send_context_cap_zero_is_passthrough() {
         // Some(0) is the explicit-off sentinel — must match None behavior.
@@ -1226,6 +1391,7 @@ mod render_raw_context_tests {
             window: 5,
             note_window: Some(5),
             tool_result_cap: None,
+            turn_tool_result_cap: None,
         };
         let cfg_zero = ContextStrategyConfig {
             tool_result_cap: Some(0),

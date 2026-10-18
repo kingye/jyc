@@ -796,6 +796,26 @@ pub struct ContextStrategyConfig {
     /// compatible.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_tool_result_cap: Option<usize>,
+    /// Token budget for the two history regions — ① compacted text history
+    /// plus ② verbatim prior turns — in `sliding_window` mode.
+    /// `None` (the default) sends the whole windowed history, byte for byte
+    /// what an unconfigured build sends; `Some(0)` means the same.
+    ///
+    /// `window` counts turns, so a window of 10 still costs whatever those
+    /// 10 turns happen to weigh — a handful of small ones, or a few turns
+    /// carrying megabyte-sized tool results. This budget caps that weight
+    /// directly: when ①+② estimate over budget, the oldest content goes
+    /// first — ① loses its oldest pairs, then ② loses its oldest whole
+    /// turns. Region ③ (the current turn) is never touched; it has
+    /// `turn_tool_result_cap` for that.
+    ///
+    /// The estimate is heuristic (CJK characters ×1, other bytes ÷4), not a
+    /// tokenizer: it bounds history, and a few percent of drift is fine for
+    /// that. Only meaningful when `mode = "sliding_window"`. Omitted from
+    /// serialized override files when unset so existing readers stay
+    /// compatible.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_history_tokens: Option<usize>,
 }
 
 impl Default for ContextStrategyConfig {
@@ -810,6 +830,10 @@ impl Default for ContextStrategyConfig {
             // here, but silently trimming results the model is still
             // working through is the more damaging default — so it is opt-in.
             turn_tool_result_cap: None,
+            // History weight is unbounded by default: `window` is the lever
+            // users already know, and a token budget silently truncating
+            // history is the more surprising default.
+            max_history_tokens: None,
         }
     }
 }
@@ -1168,6 +1192,61 @@ topic_path = "~/projects/jyc"
             serde_json::from_str(&serde_json::to_string(&cfg0).unwrap()).unwrap();
         assert_eq!(cfg0_back.turn_tool_result_cap, Some(0));
         assert_ne!(cfg0_back.turn_tool_result_cap, None);
+    }
+
+    #[test]
+    fn test_context_strategy_max_history_tokens_defaults_to_none() {
+        // Unset by default: history weight is bounded by `window` alone
+        // until someone asks for a token budget.
+        assert_eq!(ContextStrategyConfig::default().max_history_tokens, None);
+
+        // A config file written before this field existed must load with
+        // None rather than failing — override files on disk are exactly
+        // that shape.
+        let cfg: ContextStrategyConfig =
+            toml::from_str("mode = \"sliding_window\"\nwindow = 10\n").unwrap();
+        assert_eq!(cfg.max_history_tokens, None);
+
+        // And it must stay out of the serialized form when unset, so a
+        // round-trip through an old reader loses nothing.
+        let serialized = toml::to_string(&ContextStrategyConfig::default()).unwrap();
+        assert!(
+            !serialized.contains("max_history_tokens"),
+            "unset max_history_tokens must not serialize: {serialized}"
+        );
+    }
+
+    #[test]
+    fn test_context_strategy_max_history_tokens_roundtrip() {
+        let cfg = ContextStrategyConfig {
+            max_history_tokens: Some(30_000),
+            ..ContextStrategyConfig::default()
+        };
+        let serialized = toml::to_string(&cfg).unwrap();
+        assert!(
+            serialized.contains("max_history_tokens = 30000"),
+            "max_history_tokens should serialize in TOML, got: {serialized}"
+        );
+        let deserialized: ContextStrategyConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized, cfg);
+
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(
+            json.contains("\"max_history_tokens\":30000"),
+            "max_history_tokens should serialize in JSON as snake_case, got: {json}"
+        );
+        let cfg2: ContextStrategyConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg2, cfg);
+
+        // Some(0) is the explicit-off sentinel, distinct from None.
+        let cfg0 = ContextStrategyConfig {
+            max_history_tokens: Some(0),
+            ..ContextStrategyConfig::default()
+        };
+        let cfg0_back: ContextStrategyConfig =
+            serde_json::from_str(&serde_json::to_string(&cfg0).unwrap()).unwrap();
+        assert_eq!(cfg0_back.max_history_tokens, Some(0));
+        assert_ne!(cfg0_back.max_history_tokens, None);
     }
 
     fn message_with_sender(sender_address: &str) -> InboundMessage {

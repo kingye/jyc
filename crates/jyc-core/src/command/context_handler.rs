@@ -13,7 +13,7 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 /// Usage:
 ///   /context              Show current strategy
 ///   /context full         Switch to full context (send everything)
-///   /context sliding [N] [M] [CAP] [TURNCAP]
+///   /context sliding [N] [M] [CAP] [TURNCAP] [MAXHIST]
 ///     Switch to sliding window (default N = 10 turns). M is the optional
 ///     note window: only the most recent M windowed turns carry tool-call
 ///     history notes (default: 5). CAP is the optional per-tool-result
@@ -21,14 +21,16 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///     TURNCAP is the optional per-tool-result byte cap on the current
 ///     turn (region ③), which CAP deliberately leaves uncapped; an
 ///     oversized result keeps its head and tail with the middle replaced
-///     by a paging marker. Unset by default.
+///     by a paging marker. Unset by default. MAXHIST is the optional token
+///     budget for the two history regions (① + ②): when they estimate over
+///     it, the oldest history is dropped first. Unset by default.
 ///
 ///     Per-slot semantics: an absent slot falls back to the *configured*
 ///     value (the config.toml chain) — not to whatever an earlier
 ///     `/context` call left in the runtime override, so changing one slot
 ///     does not preserve the others you set before it — and `0`
 ///     explicitly disables a cap. (M is an ordinary value — 0 there means
-///     "text-only window".)
+///     "text-only window"; MAXHIST follows CAP, so 0 there means "off".)
 ///   /context reset        Remove runtime override (revert to configured default)
 ///   /context dump [on|off]
 ///     Toggle wire-payload debug dump. When on, every LLM call appends
@@ -51,6 +53,11 @@ const MAX_TOOL_RESULT_CAP: usize = 1024 * 1024;
 /// Upper bound for the current-turn cap. Same 1 MiB ceiling as
 /// `MAX_TOOL_RESULT_CAP` — past that the result is not the problem.
 const MAX_TURN_TOOL_RESULT_CAP: usize = 1024 * 1024;
+/// Upper bound for the history token budget accepted from the user via
+/// `/context sliding N M CAP TURNCAP MAXHIST`. Past 4M tokens a history
+/// window is not what is costing money — the per-result caps are the lever
+/// there — so a larger value would only disguise a misconfiguration.
+const MAX_HISTORY_TOKENS: usize = 4_000_000;
 
 #[async_trait]
 impl CommandHandler for ContextCommandHandler {
@@ -117,6 +124,7 @@ impl CommandHandler for ContextCommandHandler {
                         note_window: configured.note_window,
                         tool_result_cap: configured.tool_result_cap,
                         turn_tool_result_cap: configured.turn_tool_result_cap,
+                        max_history_tokens: configured.max_history_tokens,
                     },
                 )
                 .await?;
@@ -254,12 +262,48 @@ impl CommandHandler for ContextCommandHandler {
                 };
                 let turn_tool_result_cap =
                     turn_tool_result_cap.unwrap_or(configured.turn_tool_result_cap);
+                // Optional history token budget MAXHIST (args[5]): bounds
+                // regions ①+② by weight rather than by turn count, dropping
+                // the oldest history first. 0 is the explicit "off"
+                // sentinel (same convention as CAP); absent = keep the
+                // configured value, which for a topic that never set one is
+                // None.
+                let max_history_tokens = if let Some(arg) = context.args.get(5) {
+                    match arg.parse::<usize>() {
+                        Ok(t) if t <= MAX_HISTORY_TOKENS => Some(Some(t)),
+                        Ok(_) => {
+                            return Ok(CommandResult {
+                                success: false,
+                                message: format!(
+                                    "/context: max_history_tokens must be between 0 and {MAX_HISTORY_TOKENS} tokens"
+                                ),
+                                error: None,
+                                append_body: None,
+                            });
+                        }
+                        Err(_) => {
+                            return Ok(CommandResult {
+                                success: false,
+                                message: format!(
+                                    "/context: invalid max_history_tokens '{arg}', expected a non-negative integer"
+                                ),
+                                error: None,
+                                append_body: None,
+                            });
+                        }
+                    }
+                } else {
+                    None
+                };
+                let max_history_tokens =
+                    max_history_tokens.unwrap_or(configured.max_history_tokens);
                 let cfg = ContextStrategyConfig {
                     mode: ContextStrategy::SlidingWindow,
                     window,
                     note_window,
                     tool_result_cap,
                     turn_tool_result_cap,
+                    max_history_tokens,
                 };
                 write_override(&state_dir, &override_path, cfg.clone()).await?;
                 Ok(CommandResult {
@@ -273,7 +317,7 @@ impl CommandHandler for ContextCommandHandler {
             other => Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/context: unknown argument '{other}'. Use: /context full | sliding [N] [M] [CAP] [TURNCAP] | reset | dump [on|off]"
+                    "/context: unknown argument '{other}'. Use: /context full | sliding [N] [M] [CAP] [TURNCAP] [MAXHIST] | reset | dump [on|off]"
                 ),
                 error: None,
                 append_body: None,
@@ -357,6 +401,9 @@ fn describe_strategy(cfg: &ContextStrategyConfig) -> String {
             }
             if let Some(c) = cfg.turn_tool_result_cap {
                 s.push_str(&format!(", turn_tool_result_cap={c}"));
+            }
+            if let Some(t) = cfg.max_history_tokens {
+                s.push_str(&format!(", max_history_tokens={t}"));
             }
             s.push(')');
             s
@@ -1014,10 +1061,237 @@ mode = "agent"
             note_window: Some(3),
             tool_result_cap: Some(5000),
             turn_tool_result_cap: None,
+            max_history_tokens: None,
         };
         let s = describe_strategy(&cfg);
         assert!(s.contains("window=10"));
         assert!(s.contains("note_window=3"));
         assert!(s.contains("tool_result_cap=5000"));
+    }
+
+    #[tokio::test]
+    async fn test_sliding_with_max_history_tokens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_with_max_history_tokens";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec![
+            "sliding".into(),
+            "10".into(),
+            "3".into(),
+            "2048".into(),
+            "32768".into(),
+            "30000".into(),
+        ];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        assert!(
+            result.message.contains("max_history_tokens=30000"),
+            "message: {}",
+            result.message
+        );
+        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v["window"], 10);
+        assert_eq!(v["turn_tool_result_cap"], 32768);
+        assert_eq!(v["max_history_tokens"], 30000);
+    }
+
+    #[tokio::test]
+    async fn test_sliding_max_history_tokens_zero_is_explicit_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_max_history_tokens_zero_is_explicit_off";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec![
+            "sliding".into(),
+            "10".into(),
+            "3".into(),
+            "2048".into(),
+            "32768".into(),
+            "0".into(),
+        ];
+        assert!(handler.execute(ctx).await.unwrap().success);
+        let v: serde_json::Value = serde_json::from_str(
+            &tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(v["max_history_tokens"], 0);
+
+        let mut show = test_context(topic, tmp.path());
+        show.args = vec![];
+        let shown = handler.execute(show).await.unwrap();
+        assert!(
+            shown.message.contains("max_history_tokens=0"),
+            "{}",
+            shown.message
+        );
+    }
+
+    /// An absent 5th slot falls back to the *configured* value, not to
+    /// whatever an earlier `/context` call left in the runtime override —
+    /// the same convention the other slots follow (#936 pinned it for the
+    /// 4th).
+    #[tokio::test]
+    async fn test_sliding_max_history_tokens_omitted_falls_back_to_configured_not_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_max_hist_omitted_falls_back_to_configured";
+        let state_dir = tmp.path().join(".jyc");
+        jyc_types::state_dir::register(topic, &state_dir);
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(
+            state_dir.join("config.toml"),
+            "[context_strategy]\n\
+             mode = \"sliding_window\"\n\
+             window = 7\n\
+             max_history_tokens = 50000\n",
+        )
+        .await
+        .unwrap();
+
+        let handler = ContextCommandHandler;
+        let mut set = test_context(topic, tmp.path());
+        set.args = vec![
+            "sliding".into(),
+            "10".into(),
+            "3".into(),
+            "2048".into(),
+            "32768".into(),
+            "1000".into(),
+        ];
+        assert!(handler.execute(set).await.unwrap().success);
+
+        // Second call omits the slot: it must come back as the configured
+        // 50000, not the 1000 the previous call left behind.
+        let mut again = test_context(topic, tmp.path());
+        again.args = vec!["sliding".into(), "12".into()];
+        assert!(handler.execute(again).await.unwrap().success);
+        let v: serde_json::Value = serde_json::from_str(
+            &tokio::fs::read_to_string(state_dir.join("context-strategy.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(v["window"], 12, "the given slot still applies");
+        assert_eq!(
+            v["max_history_tokens"], 50000,
+            "omitted slot falls back to the configured value, not the prior override"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sliding_max_history_tokens_above_max_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_max_history_tokens_above_max_rejected";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec![
+            "sliding".into(),
+            "10".into(),
+            "3".into(),
+            "2048".into(),
+            "32768".into(),
+            (MAX_HISTORY_TOKENS + 1).to_string(),
+        ];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(!result.success);
+        assert!(
+            result.message.contains("max_history_tokens"),
+            "error must name the slot: {}",
+            result.message
+        );
+        assert!(
+            !tmp.path().join(".jyc/context-strategy.json").exists(),
+            "a rejected slot must leave no override behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sliding_max_history_tokens_invalid_rejected() {
+        for bad in ["abc", "-5"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let topic = format!("test_sliding_max_history_tokens_invalid_{bad}");
+            jyc_types::state_dir::register(&topic, &tmp.path().join(".jyc"));
+            let handler = ContextCommandHandler;
+            let mut ctx = test_context(&topic, tmp.path());
+            ctx.args = vec![
+                "sliding".into(),
+                "10".into(),
+                "3".into(),
+                "2048".into(),
+                "32768".into(),
+                bad.into(),
+            ];
+            let result = handler.execute(ctx).await.unwrap();
+            assert!(!result.success, "{bad} must be rejected");
+            assert!(
+                result.message.contains("max_history_tokens"),
+                "error must name the slot: {}",
+                result.message
+            );
+            assert!(
+                !tmp.path().join(".jyc/context-strategy.json").exists(),
+                "a rejected slot must leave no override behind"
+            );
+        }
+    }
+
+    /// `/context full` keeps the configured budget, so switching back to
+    /// sliding later does not silently lose it.
+    #[tokio::test]
+    async fn test_full_preserves_configured_max_history_tokens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_full_preserves_configured_max_history_tokens";
+        let state_dir = tmp.path().join(".jyc");
+        jyc_types::state_dir::register(topic, &state_dir);
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(
+            state_dir.join("config.toml"),
+            "[context_strategy]\nmax_history_tokens = 42000\n",
+        )
+        .await
+        .unwrap();
+
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec!["full".into()];
+        assert!(handler.execute(ctx).await.unwrap().success);
+
+        let v: serde_json::Value = serde_json::from_str(
+            &tokio::fs::read_to_string(state_dir.join("context-strategy.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(v["mode"], "full");
+        assert_eq!(v["max_history_tokens"], 42000);
+    }
+
+    #[test]
+    fn describe_strategy_shows_max_history_tokens() {
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 10,
+            note_window: Some(3),
+            tool_result_cap: Some(2048),
+            turn_tool_result_cap: None,
+            max_history_tokens: Some(30000),
+        };
+        assert!(describe_strategy(&cfg).contains("max_history_tokens=30000"));
+
+        // Unset reads as "off" by absence, exactly like turn_tool_result_cap.
+        let unset = ContextStrategyConfig {
+            turn_tool_result_cap: None,
+            max_history_tokens: None,
+            ..cfg.clone()
+        };
+        assert!(!describe_strategy(&unset).contains("max_history_tokens"));
     }
 }

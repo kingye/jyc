@@ -1675,6 +1675,7 @@ mode = "agent"
             note_window: None,
             tool_result_cap: None,
             turn_tool_result_cap: None,
+            max_history_tokens: None,
         };
         let app = config_with_strategies(vec![("a", None), ("b", Some(slide.clone()))], None);
         let resolved = resolve_context_strategy(&app, "c", Some("b"), None);
@@ -1690,6 +1691,7 @@ mode = "agent"
             note_window: None,
             tool_result_cap: None,
             turn_tool_result_cap: None,
+            max_history_tokens: None,
         };
         let app = config_with_strategies(vec![("a", Some(slide.clone()))], None);
         let resolved = resolve_context_strategy(&app, "c", None, None);
@@ -1705,6 +1707,7 @@ mode = "agent"
             note_window: None,
             tool_result_cap: None,
             turn_tool_result_cap: None,
+            max_history_tokens: None,
         };
         let app = config_with_strategies(vec![], Some(slide.clone()));
         let resolved = resolve_context_strategy(&app, "c", Some("a"), None);
@@ -1733,6 +1736,7 @@ mode = "agent"
             note_window: None,
             tool_result_cap: Some(2048),
             turn_tool_result_cap: None,
+            max_history_tokens: None,
         };
         let app = config_with_strategies(vec![("a", Some(pattern))], None);
         let topic_strategy = ContextStrategyConfig {
@@ -1741,6 +1745,7 @@ mode = "agent"
             note_window: Some(0),
             tool_result_cap: Some(512),
             turn_tool_result_cap: None,
+            max_history_tokens: None,
         };
 
         let resolved = resolve_context_strategy(&app, "c", Some("a"), Some(&topic_strategy));
@@ -1838,6 +1843,7 @@ mode = "agent"
             note_window: None,
             tool_result_cap: Some(8192),
             turn_tool_result_cap: None,
+            max_history_tokens: None,
         };
         let app = config_with_strategies(vec![], Some(slide));
         let resolved = resolve_context_strategy(&app, "c", Some("a"), None);
@@ -1852,6 +1858,7 @@ mode = "agent"
             note_window: None,
             tool_result_cap: Some(2048),
             turn_tool_result_cap: None,
+            max_history_tokens: None,
         };
         let global = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
@@ -1859,6 +1866,7 @@ mode = "agent"
             note_window: None,
             tool_result_cap: Some(8192),
             turn_tool_result_cap: None,
+            max_history_tokens: None,
         };
         let app = config_with_strategies(vec![("a", Some(pattern))], Some(global));
         let resolved = resolve_context_strategy(&app, "c", Some("a"), None);

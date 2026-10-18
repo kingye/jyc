@@ -472,6 +472,48 @@ results readable while bounding the total. A global token budget on
 the wire payload is a separate concern (`max_input_tokens` +
 auto-reset).
 
+## `max_history_tokens` — bounding regions ① + ② by weight
+
+`window` counts turns, so the same `window = 10` costs 2k tokens on a
+quiet topic and 200k on one whose turns carry megabyte-sized tool
+results. `max_history_tokens` is the second, orthogonal lever: it caps
+what the two history regions weigh **together**, not how many turns
+they hold.
+
+```toml
+context_strategy = { …, max_history_tokens = 30000 }
+```
+
+When the estimate is over budget the oldest history goes first:
+
+1. Region ① sheds its oldest messages. The leading history marker
+   survives — it is what explains the text-only block.
+2. Region ② sheds its oldest **whole** turns. Whole turns are the unit
+   because a partial cut leaves a tool result whose `tool_use` is gone,
+   which providers reject.
+
+Region ③ is never part of the budget: it is the turn in flight, and
+`turn_tool_result_cap` is its lever. A budget smaller than the marker
+alone still sends the marker — that is the floor region ① trims to.
+
+**The estimate is heuristic, not a tokenizer.** CJK characters count one
+token each (a Chinese glyph costs about what a short English word does,
+so a plain bytes÷4 estimate undercounts mixed CJK/English transcripts by
+a quarter), everything else a quarter token per byte, plus a small
+per-message constant. Object keys are ignored. This bounds history
+weight — it is not billing, and a few percent of drift is fine for
+that.
+
+Set it from a command: `/context sliding 10 5 2048 0 30000` (fifth
+positional; `0` switches it off, omitting it keeps the configured value,
+ceiling 4M tokens). Unset by default: the windowed history is sent
+byte-for-byte as before until you ask for a budget.
+
+**Interplay:** the budget is independent of `window` and
+`note_window` — a generous budget changes nothing about which turns are
+verbatim, it only bounds how much of the history survives when the
+weight runs away.
+
 **Resolution chain** (highest wins):
 
 1. Runtime override `.jyc/context-strategy.json` (written by `/context`)
@@ -480,7 +522,7 @@ auto-reset).
 3. Matched pattern's `context_strategy` (or synthesized `[agents.<name>]`)
 4. First pattern fallback
 5. Global `[ai].context_strategy`
-6. Built-in default: `sliding_window` / `window = 10` / `note_window = 3` / `tool_result_cap = 2048`
+6. Built-in default: `sliding_window` / `window = 10` / `note_window = 3` / `tool_result_cap = 2048` / `max_history_tokens` unset
 
 **Runtime commands:**
 
@@ -488,7 +530,7 @@ auto-reset).
 |---------|--------|
 | `/context` | Show current strategy and its source (`override` / `default`) |
 | `/context full` | Send the full context |
-| `/context sliding [N] [M] [CAP]` | Sliding window, N turns (default 10, max 200); M = note window (default 3, max 200); CAP = tool-result byte cap on verbatim region (0..1 MiB, default 2048) |
+| `/context sliding [N] [M] [CAP] [TURNCAP] [MAXHIST]` | Sliding window, N turns (default 10, max 200); M = note window (default 3, max 200); CAP = tool-result byte cap on verbatim region (0..1 MiB, default 2048); TURNCAP = same for the current turn (0..1 MiB, unset by default); MAXHIST = token budget for regions ① + ② (0..4M, unset by default). An absent slot falls back to the configured value; `0` switches a cap off |
 | `/context reset` | Remove the runtime override, revert to configured default |
 
 ## Code map

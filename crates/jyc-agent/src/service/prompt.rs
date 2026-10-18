@@ -195,9 +195,7 @@ impl JycAgentService {
         //
         // Process-stable (PATH does not change under a running instance), so
         // like the sections above it never churns the cached prefix.
-        if let Some(helpers) = capabilities::prompt_section(capabilities::available()) {
-            prompt.push_str(&helpers);
-        }
+        push_cli_helpers_section(&mut prompt, capabilities::available());
 
         // Cross-Topic Communication section (when topic managers are available)
         let managers_opt = self
@@ -806,4 +804,20 @@ fn expand_path(p: &str) -> PathBuf {
         return PathBuf::from(home);
     }
     PathBuf::from(p)
+}
+
+/// Append the `## CLI Helpers` section for `helpers`, when there are any.
+///
+/// Takes the helpers as an argument instead of probing PATH here, so the
+/// injection itself is testable with fixtures: otherwise the positive path
+/// would only ever run on a machine that happens to have ripgrep installed,
+/// and the test would quietly degrade to one vacuous assertion on one that
+/// does not. `available()` is what the caller passes — see `capabilities`.
+pub(super) fn push_cli_helpers_section(
+    prompt: &mut String,
+    helpers: &[&crate::capabilities::Helper],
+) {
+    if let Some(section) = crate::capabilities::prompt_section(helpers) {
+        prompt.push_str(&section);
+    }
 }

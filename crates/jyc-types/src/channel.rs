@@ -780,6 +780,22 @@ pub struct ContextStrategyConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub tool_result_cap: Option<usize>,
+    /// Byte cap on each tool result in the current turn
+    /// (`sliding_window` mode). `None` (the default) sends the current
+    /// turn uncapped — the model is reasoning over these results
+    /// mid-loop, so a long one (a big file read, a verbose command)
+    /// rides every remaining call of the turn. Setting a cap trims each
+    /// oversized result to at most `Some(cap)` bytes — marker included —
+    /// keeping its head and tail with the middle replaced by a paging
+    /// marker, since what a result is usually read for (the command that
+    /// ran, the error, the summary line) sits at the ends. Below ~128
+    /// bytes there is no room for both ends, so the head-only cut takes
+    /// over and its own marker sits on top of `cap`. `Some(0)` disables
+    /// capping, same as `None`. Only meaningful when `mode = "sliding_window"`. Omitted
+    /// from serialized override files when unset so existing readers stay
+    /// compatible.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_tool_result_cap: Option<usize>,
 }
 
 impl Default for ContextStrategyConfig {
@@ -789,6 +805,11 @@ impl Default for ContextStrategyConfig {
             window: default_context_window_size(),
             note_window: default_note_window(),
             tool_result_cap: default_tool_result_cap(),
+            // Current turn uncapped by default: the mid-loop reasoning
+            // argument for region ②'s cap does not automatically extend
+            // here, but silently trimming results the model is still
+            // working through is the more damaging default — so it is opt-in.
+            turn_tool_result_cap: None,
         }
     }
 }
@@ -1092,6 +1113,61 @@ topic_path = "~/projects/jyc"
         let cfg2: ContextStrategyConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(cfg2.tool_result_cap, Some(0));
         assert_ne!(cfg2.tool_result_cap, None);
+    }
+
+    #[test]
+    fn test_context_strategy_turn_tool_result_cap_defaults_to_none() {
+        // Unset by default: region ③ (the current turn) must stay
+        // uncapped unless someone opts in.
+        assert_eq!(ContextStrategyConfig::default().turn_tool_result_cap, None);
+
+        // A config file written before this field existed must load with
+        // None rather than failing — override files on disk are exactly
+        // that shape.
+        let cfg: ContextStrategyConfig =
+            toml::from_str("mode = \"sliding_window\"\nwindow = 10\n").unwrap();
+        assert_eq!(cfg.turn_tool_result_cap, None);
+
+        // And it must stay out of the serialized form when unset, so a
+        // round-trip through an old reader loses nothing.
+        let serialized = toml::to_string(&ContextStrategyConfig::default()).unwrap();
+        assert!(
+            !serialized.contains("turn_tool_result_cap"),
+            "unset turn_tool_result_cap must not serialize: {serialized}"
+        );
+    }
+
+    #[test]
+    fn test_context_strategy_turn_tool_result_cap_roundtrip() {
+        let cfg = ContextStrategyConfig {
+            turn_tool_result_cap: Some(32768),
+            ..ContextStrategyConfig::default()
+        };
+        let serialized = toml::to_string(&cfg).unwrap();
+        assert!(
+            serialized.contains("turn_tool_result_cap = 32768"),
+            "turn_tool_result_cap should serialize in TOML, got: {serialized}"
+        );
+        let deserialized: ContextStrategyConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized, cfg);
+
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(
+            json.contains("\"turn_tool_result_cap\":32768"),
+            "turn_tool_result_cap should serialize in JSON as snake_case, got: {json}"
+        );
+        let cfg2: ContextStrategyConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg2, cfg);
+
+        // Some(0) is the explicit-off sentinel, distinct from None.
+        let cfg0 = ContextStrategyConfig {
+            turn_tool_result_cap: Some(0),
+            ..ContextStrategyConfig::default()
+        };
+        let cfg0_back: ContextStrategyConfig =
+            serde_json::from_str(&serde_json::to_string(&cfg0).unwrap()).unwrap();
+        assert_eq!(cfg0_back.turn_tool_result_cap, Some(0));
+        assert_ne!(cfg0_back.turn_tool_result_cap, None);
     }
 
     fn message_with_sender(sender_address: &str) -> InboundMessage {

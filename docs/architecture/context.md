@@ -391,10 +391,9 @@ spawns many tool calls.
 `tool_result_cap: N` caps each tool result in region ② (the verbatim
 prior region) at `N` bytes, suffixed with the standard `… [truncated N bytes]`
 marker (same format as the existing compaction truncation, so the model
-sees consistent truncation across all boundaries). **Region ③ (the
-current turn) is never truncated** — the model is reasoning over those
-tool results mid-loop, so they must stay complete. Only string content
-is capped:
+sees consistent truncation across all boundaries). Region ③ (the current
+turn) is untouched by it — see `turn_tool_result_cap` below. Only
+string content is capped:
 
 - OpenAI / simple wire format (`role: "tool"`, string `content`) —
   the string is truncated in place.
@@ -410,14 +409,56 @@ user/assistant pairs, no tool results to cap.
 |-------|----------|
 | unset / absent | Every tool result is sent in full. |
 | `Some(0)` | Explicit "off" sentinel — same as unset. |
-| `Some(N > 0)` | Cap each tool result in region ② (verbatim prior) at `N` bytes. The current turn (region ③) is never truncated. Default `2048`. |
+| `Some(N > 0)` | Cap each tool result in region ② (verbatim prior) at `N` bytes. Region ③ is governed by `turn_tool_result_cap`. Default `2048`. |
 
 **Resolution layer:** follows the same chain as the rest of
 `ContextStrategyConfig` (override file → matched pattern → first
 pattern → `[ai]` → built-in default). The CLI arg
 `/context sliding N M CAP` sets the third positional; absent means
-"use configured". The CLI enforces `0 ≤ CAP ≤ 1 MiB`; larger caps
-must go through `config.toml` or `.jyc/context-strategy.json`.
+"use configured". "Configured" here is the config part of that chain
+only (`config.toml` → pattern → `[ai]`): an absent slot does *not* pick
+up a value an earlier `/context` call wrote into the override file,
+even though that file still governs the turn itself. The CLI enforces
+`0 ≤ CAP ≤ 1 MiB`; larger caps must go through `config.toml` or
+`.jyc/context-strategy.json`.
+
+## `turn_tool_result_cap` — bounding region ③
+
+Region ③ is uncapped by default: the model is mid-reasoning over those
+tool results, and silently trimming what it is still working through is
+the more damaging failure. The cost is that one verbose result — a
+`read` of a large file, a chatty command — rides every remaining call
+of the turn, at full price each time.
+
+`turn_tool_result_cap: N` opts into a bound on region ③. An oversized
+result keeps its **head and tail** with the middle replaced by
+
+```
+… [N bytes dropped from the middle — re-read with offset/limit to see the gap] …
+```
+
+Head-only truncation would hide what a result is usually read for: the
+error at the bottom of a command's output, the totals of a grep. The
+marker states how much is missing and how to page it, so the cost of
+the cut is one extra tool call the model chooses to make. Unlike
+`tool_result_cap`, whose marker sits on top of `N`, this cap counts the
+marker **inside** `N` — the caller gets the byte bound it asked for.
+
+| Value | Behavior |
+|-------|----------|
+| unset (default) | Region ③ sent in full. |
+| `Some(0)` | Explicit "off" sentinel — same as unset. |
+| `Some(N > 0)` | Each region ③ tool result keeps head + tail within `N` bytes total. Below ~128 bytes there is no room for both ends, so it degrades to the plain head-only cut. |
+
+Both wire shapes are handled exactly as for `tool_result_cap` (string
+`content` in place, or per-`tool_result`-block for Anthropic), and the
+cap is per result block, not per turn — a turn with ten tool calls can
+still exceed `N` in total.
+
+Set it from a command: `/context sliding 10 5 2048 32768` (fourth
+positional; `0` switches it off, omitting it keeps the configured
+value, ceiling 1 MiB), or from config as
+`context_strategy = { …, turn_tool_result_cap = 32768 }`.
 
 **Interplay with `note_window`:** the cap only applies to messages in
 the verbatim region. If `note_window = 0` (text-only window) or

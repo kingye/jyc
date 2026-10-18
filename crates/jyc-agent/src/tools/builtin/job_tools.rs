@@ -101,7 +101,7 @@ impl Tool for JobCreateTool {
             "properties": {
                 "cron": {
                     "type": "string",
-                    "description": "Cron expression for a RECURRING job (7-field: 'sec min hour dom mon dow year'). Provide either this or 'at', never both."
+                    "description": "Cron expression for a RECURRING job (7-field: 'sec min hour dom mon dow year', e.g. '0 0 8 * * * *'). Provide either this or 'at', never both."
                 },
                 "at": {
                     "type": "string",

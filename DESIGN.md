@@ -2401,19 +2401,23 @@ JYC uses the following subset of the agent service API:
    budgeted.** The `tools` array is sent on every call, which makes
    every character of a tool description a standing per-call cost
    even for a tool the topic never invokes.
-   `crates/jyc-agent/tests/tool_schema_budget.rs` pins the
-   in-process set **by name** (a rename or a drop is an API change,
-   and it moves the prefix too) and **budgets** its description
-   text: the 2026-10-18 slimming pass took the natural language
-   from 10,108 to 8,349 chars (-17.4%) by cutting examples and
-   redundant prose while leaving every name, parameter, type and
+   `crates/jyc-agent/tests/tool_schema_budget.rs` derives the
+   expected built-in set from the same calls
+   `JycAgentService::build_tool_registry` makes (so registering a
+   tool without budgeting it fails the test) and **budgets** its
+   description text: the 2026-10-18 slimming pass took the natural
+   language from 10,108 to 8,349 chars (-17.4%) by cutting examples
+   and redundant prose while leaving every name, parameter, type and
    `required` list untouched. Editing a description thus costs one
    round of prefix-cache misses — make such an edit its own change,
-   where the diff shows it on its own. One description is
-   deliberately *not* budgeted:
-   `jyc_spawn_subagent`'s `type` ends with the role catalog of the
-   machine it runs on, so its length is configuration. MCP server
-   tools are passed through as their server describes them.
+   where the diff shows it on its own. Every built-in tool is
+   budgeted, including `jyc_send_message` — the MCP **bridge** tool
+   `register_mcp_tools` adds to every registry, whose schema is ours
+   rather than a server's. Two things sit outside the budget: MCP
+   **server** tools, whose schemas belong to whoever runs the server,
+   and `jyc_spawn_subagent`'s `type` description, which ends with the
+   role catalog of the machine the agent runs on — configuration, not
+   text we may pin.
 
 **Payload Layout After The Change:**
 

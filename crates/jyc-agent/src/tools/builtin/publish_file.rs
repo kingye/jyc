@@ -35,8 +35,9 @@ impl Tool for PublishFileTool {
 
     fn description(&self) -> &str {
         "Publish a file from the topic directory as an exchange HTTP link. Copies \
-         by default, move=true moves it. Returns a URL protected by an access token. \
-         Use when the user needs to download or view a generated file (report, PDF, image)."
+         by default, move=true moves it (the source disappears). Returns a URL protected by \
+         an access token. Use when the user needs to download or view a generated file \
+         (report, PDF, image)."
     }
 
     fn input_schema(&self) -> Value {

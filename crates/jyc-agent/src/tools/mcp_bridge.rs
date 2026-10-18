@@ -58,16 +58,16 @@ impl Tool for SendMessageTool {
                 },
                 "channel": {
                     "type": "string",
-                    "description": "Optional target channel name for cross-channel sending. \
-                                     When omitted, uses the current channel. \
-                                     The recipient format must match the target channel type."
+                    "description": "Optional target channel name for cross-channel sending; \
+                                     defaults to the current channel, and the recipient format \
+                                     must match that channel type."
                 },
                 "attachments": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Optional list of file paths within the working directory to attach. \
-                                     Supported by the email, feishu and wecom_bot channels; every \
-                                     other channel rejects the send."
+                    "description": "Optional file paths within the working directory to attach. \
+                                     Supported by email, feishu and wecom_bot; every other \
+                                     channel rejects the send."
                 }
             },
             "required": ["recipient", "message"]

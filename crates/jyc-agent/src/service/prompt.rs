@@ -5,6 +5,8 @@
 use jyc_types::state_dir::resolve_state_dir;
 use std::path::{Path, PathBuf};
 
+use crate::capabilities;
+
 use jyc_types::InboundMessage;
 use jyc_types::TopicConfig;
 
@@ -184,6 +186,16 @@ impl JycAgentService {
                  before `git add .`, check that it will not include `.jyc/`.\n\n",
             );
         }
+
+        // CLI helpers installed on this machine (rg, fd, fzf, jq — whichever
+        // of the list this machine actually has). The model reaches for the
+        // tools its training named; without this it runs `grep -r` on a box
+        // that has ripgrep. Absent when nothing is installed, so the prompt
+        // never names a tool that is not there.
+        //
+        // Process-stable (PATH does not change under a running instance), so
+        // like the sections above it never churns the cached prefix.
+        push_cli_helpers_section(&mut prompt, capabilities::available());
 
         // Cross-Topic Communication section (when topic managers are available)
         let managers_opt = self
@@ -792,4 +804,20 @@ fn expand_path(p: &str) -> PathBuf {
         return PathBuf::from(home);
     }
     PathBuf::from(p)
+}
+
+/// Append the `## CLI Helpers` section for `helpers`, when there are any.
+///
+/// Takes the helpers as an argument instead of probing PATH here, so the
+/// injection itself is testable with fixtures: otherwise the positive path
+/// would only ever run on a machine that happens to have ripgrep installed,
+/// and the test would quietly degrade to one vacuous assertion on one that
+/// does not. `available()` is what the caller passes — see `capabilities`.
+pub(super) fn push_cli_helpers_section(
+    prompt: &mut String,
+    helpers: &[&crate::capabilities::Helper],
+) {
+    if let Some(section) = crate::capabilities::prompt_section(helpers) {
+        prompt.push_str(&section);
+    }
 }

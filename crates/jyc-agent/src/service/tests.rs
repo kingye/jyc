@@ -1,3 +1,4 @@
+use super::prompt::push_cli_helpers_section;
 use super::*;
 use arc_swap::ArcSwap;
 use jyc_types::{ChannelConfig, ChannelPattern, ChannelType, McpServerConfig};
@@ -1242,6 +1243,73 @@ async fn topic_config_instructions_reach_the_system_prompt() {
         .await;
     assert!(prompt.contains("## Topic Instructions"), "{prompt}");
     assert!(prompt.contains("report findings only, change nothing"));
+}
+
+/// The injection itself, driven by fixtures rather than by whatever this
+/// machine has installed — so the positive path is asserted everywhere, not
+/// only on a box that happens to have ripgrep.
+#[test]
+fn cli_helpers_section_is_injected_only_when_there_are_helpers() {
+    let rg = crate::capabilities::HELPERS
+        .iter()
+        .find(|h| h.name == "rg")
+        .expect("rg listed");
+    let jq = crate::capabilities::HELPERS
+        .iter()
+        .find(|h| h.name == "jq")
+        .expect("jq listed");
+
+    let mut prompt = String::from("head\n");
+    push_cli_helpers_section(&mut prompt, &[rg, jq]);
+
+    assert!(prompt.starts_with("head\n\n## CLI Helpers\n\n"), "{prompt}");
+    assert!(prompt.contains("- `rg` —"), "{prompt}");
+    assert!(prompt.contains("- `jq` —"), "{prompt}");
+
+    // Nothing to announce leaves the prompt byte-for-byte alone: a section
+    // naming tools this machine does not have is worse than no section.
+    let mut untouched = String::from("head\n");
+    push_cli_helpers_section(&mut untouched, &[]);
+    assert_eq!(untouched, "head\n");
+}
+
+/// The `## CLI Helpers` section in the real prompt lists exactly the helpers
+/// this machine has — no more (the prompt must never send the model after a
+/// tool that is not installed), no fewer. The injection is covered
+/// unconditionally by `cli_helpers_section_is_injected_only_when_there_are_helpers`;
+/// this covers the call site, i.e. that `build_system_prompt` passes
+/// `available()` and lands the section in the assembled prompt.
+#[tokio::test]
+async fn cli_helper_section_lists_exactly_what_is_installed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let topic = "cli_helper_section_lists_exactly_what_is_installed";
+    // build_system_prompt reads the topic's toggle overrides, and every topic
+    // must have its state dir registered before state is touched — there is
+    // deliberately no `topic_dir/.jyc` fallback (#825).
+    let state = tmp.path().join(".jyc");
+    std::fs::create_dir_all(&state).unwrap();
+    jyc_types::state_dir::register(topic, &state);
+
+    let svc = service_with_skills(vec![], None, None);
+    let prompt = svc
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[])
+        .await;
+
+    let installed = crate::capabilities::available();
+    if installed.is_empty() {
+        assert!(!prompt.contains("## CLI Helpers"), "{prompt}");
+        return;
+    }
+    assert!(prompt.contains("## CLI Helpers"), "{prompt}");
+    for helper in crate::capabilities::HELPERS {
+        let listed = prompt.contains(&format!("- `{}` —", helper.name));
+        assert_eq!(
+            listed,
+            installed.iter().any(|found| found.name == helper.name),
+            "{}: listed={listed} but the probe disagreed\n{prompt}",
+            helper.name
+        );
+    }
 }
 
 /// The volatile runtime state — subagents and the channel/topic roster — must

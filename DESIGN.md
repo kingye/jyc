@@ -2345,10 +2345,11 @@ JYC uses the following subset of the agent service API:
    `window = 10` costs 2k tokens on a quiet topic and 200k on one whose
    turns carry huge tool results. The budget is the orthogonal lever: it
    caps what regions ① + ② weigh together, dropping the oldest history
-   first (region ①'s oldest pairs, then region ②'s oldest **whole**
-   turns — a partial cut would orphan a tool result from its
-   `tool_use`, which providers reject). Region ③ is excluded: the turn in
-   flight has `turn_tool_result_cap`. The estimate is a heuristic, not a
+   first (region ①'s oldest messages — the drop is per message, so a pair
+   can be split; then region ②'s oldest **whole** turns — a partial cut
+   would orphan a tool result from its `tool_use`, which providers
+   reject). Region ③ is excluded: the turn in flight has
+   `turn_tool_result_cap`. The estimate is a heuristic, not a
    tokenizer — CJK characters ×1, other bytes ÷4, plus a small
    per-message constant — because a tokenizer dependency would buy
    precision this knob does not need. Unset by default: without it the

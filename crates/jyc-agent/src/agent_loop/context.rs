@@ -1593,6 +1593,36 @@ mod render_raw_context_tests {
         assert_eq!(est_text_tokens(""), 0);
     }
 
+    /// The wide-character ranges have to land where the actual characters
+    /// are, or the estimate quietly drifts by a factor of four on the text
+    /// that matters most here. Both edges of each boundary are pinned.
+    #[test]
+    fn wide_char_boundaries_are_where_the_characters_are() {
+        // Full-width forms: （U+FF08） and ！（U+FF01） are wide; the
+        // half-width katakana that starts right after them is not.
+        assert!(is_wide_char('！'));
+        assert!(is_wide_char('（'));
+        assert!(
+            !is_wide_char('\u{FF61}'),
+            "half-width katakana is ASCII-cost"
+        );
+        // CJK unified ideographs: ext-A ends at U+4DBF, base block starts at
+        // U+4E00.
+        assert!(is_wide_char('\u{4DBF}'));
+        assert!(is_wide_char('\u{4E00}'));
+        // Ideographic space sits below the radicals block.
+        assert!(is_wide_char('\u{3000}'));
+        // Plain ASCII prose stays narrow.
+        assert!(!is_wide_char('a'));
+        assert!(!is_wide_char('7'));
+        assert!(!is_wide_char(' '));
+        assert_eq!(
+            est_text_tokens("！\u{FF61}"),
+            1,
+            "one wide + one narrow byte"
+        );
+    }
+
     /// Strings nested in blocks (tool results, content arrays) are counted;
     /// object keys and bare numbers are not — they cost less than the text
     /// they carry, and this bounds history rather than billing it.
@@ -1789,6 +1819,64 @@ mod render_raw_context_tests {
         assert_eq!(text_of(&out[0]), crate::session::HISTORY_MARKER_TEXT);
         assert_eq!(text_of(&out[1]), "current-turn");
         assert_eq!(regions, vec![1, 3]);
+    }
+
+    /// The two rungs have to compose: region ① runs out (down to the
+    /// marker) and the budget is *still* over, so region ② must then shed
+    /// its oldest turn — while the newest verbatim turn survives. The
+    /// expected payload is stated outright, so the assertion pins the whole
+    /// shape rather than a count.
+    #[test]
+    fn max_history_tokens_falls_through_region_1_into_region_2() {
+        let prior = vec![
+            json!({"role": "user", "content": "compacted-user"}),
+            json!({"role": "assistant", "content": "compacted-reply"}),
+            json!({"role": "user", "content": "turn-2-user"}),
+            json!({"role": "assistant", "content": "", "tool_calls": [{"id": "t1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "t1", "content": "old result"}),
+            json!({"role": "assistant", "content": "turn-2-final"}),
+            json!({"role": "user", "content": "turn-3-user"}),
+            json!({"role": "assistant", "content": "", "tool_calls": [{"id": "t2", "type": "function", "function": {"name": "bash", "arguments": "{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "t2", "content": "recent result"}),
+            json!({"role": "assistant", "content": "turn-3-final"}),
+        ];
+        let current = vec![json!({"role": "user", "content": "current-turn"})];
+        let prior_len = prior.len();
+        let mut ctx = prior;
+        ctx.extend(current);
+
+        let base = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 10,
+            note_window: Some(2),
+            tool_result_cap: None,
+            turn_tool_result_cap: None,
+            max_history_tokens: None,
+        };
+        let (uncapped, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &base);
+        let expected: Vec<serde_json::Value> = uncapped
+            .iter()
+            .filter(|m| {
+                let m = serde_json::to_string(m).unwrap();
+                !m.contains("compacted") && !m.contains("t1") && !m.contains("turn-2")
+            })
+            .cloned()
+            .collect();
+        assert_eq!(
+            expected.len(),
+            5,
+            "marker + the newest verbatim turn (3) + the current turn: {expected:?}"
+        );
+        let budget: usize = expected.iter().map(est_message_tokens).sum();
+
+        let tight = ContextStrategyConfig {
+            max_history_tokens: Some(budget),
+            ..base
+        };
+        let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &tight);
+        assert_eq!(out.into_owned(), expected);
+        // marker ①, three messages of the newest turn ②, current turn ③
+        assert_eq!(regions, vec![1, 2, 2, 2, 2, 3]);
     }
 
     /// A region ② that opens with tool results whose `tool_use` fell outside

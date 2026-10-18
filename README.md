@@ -352,34 +352,23 @@ jyc-pipe               # Peripheral pipe process (separate binary, not a `jyc`
                        #   --no-idle           Use polling instead of IMAP IDLE (email)
                        #   --reset             Reset mailbox state before starting (email)
 jyc token show         # Print the dashboard authorization token
-jyc patterns list      # List configured patterns
-                       #   --config <FILE>   Config file path (default: as serve)
-jyc agents list        # List available agent templates
-                       #   --source <DIR>   Source dir containing templates/ (default: CWD)
-jyc agents install [name]   # Install agent template(s) (omit name = all)
-                       #   --source <DIR>   Source dir (default: CWD)
-                       #   --target <DIR>   Target dir (default: platform config home)
-jyc skills list        # List available skills
-                       #   --source <DIR>   Source dir containing skills/ (default: CWD)
-jyc skills install [name]   # Install skill(s) (omit name = all)
-                       #   --source <DIR>   Source dir (default: CWD)
-                       #   --target <DIR>   Target dir (default: platform config home)
 jyc plugins install <archive>   # Install a plugin bundle into the config dir
                        #   <archive>        A .tar.gz (or a directory) holding
-                       #                    skills/ subagents/ hooks/ at its root
+                       #                    skills/ subagents/ hooks/ templates/
+                       #                    at its root
                        #   --target <DIR>   Target dir (default: platform config home)
 ```
 
 The `dashboard` command requires the `[inspect]` section to be enabled in config.
 
-**Plugins**: a *plugin bundle* is a gzipped tar with `skills/`, `subagents/` and
-`hooks/` at its root — the three user-editable collections this repo ships —
-and `jyc plugins install` writes them into the config dir (a plain directory
-laid out the same way works too). Every release publishes one as
+**Plugins**: a *plugin bundle* is a gzipped tar with `skills/`, `subagents/`,
+`hooks/` and `templates/` at its root — the four user-editable collections this
+repo ships — and `jyc plugins install` writes them into the config dir (a plain
+directory laid out the same way works too). Every release publishes one as
 `jyc-plugins.tar.gz`, which is the shortest way to put those skills, subagent
-roles and hook scripts in place: `skills/` and `subagents/` are picked up by a
-directory scan, while an installed `hooks/*.sh` runs only once a `[[hooks]]`
-entry in `config.toml` names it.
+roles, hook scripts and templates in place: `skills/`, `subagents/` and
+`templates/` are picked up by a directory scan, while an installed
+`hooks/*.sh` runs only once a `[[hooks]]` entry in `config.toml` names it.
 
 ```bash
 curl -LO https://github.com/kingye/jyc/releases/latest/download/jyc-plugins.tar.gz
@@ -671,9 +660,8 @@ This is useful for diagnosing reply delivery failures.
 ### Common Issues
 
 **JYC starts but no emails are processed:**
-- Check pattern matching: `jyc patterns list --data-dir /path/to/data`
 - Verify IMAP connection in logs (look for `IMAP connected and authenticated`)
-- Check that sender/subject rules match incoming emails
+- Check that the `[[channels.<name>.patterns]]` rules in `config.toml` match the incoming emails
 
 **AI replies are not sent:**
 - Check JYC logs for AI provider/API errors

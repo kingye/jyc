@@ -1,28 +1,19 @@
-//! Shared logic for the `agents`, `skills` and `plugins` subcommands.
+//! Shared install helpers behind the `plugins` subcommand.
 //!
-//! The first two install named directories from a *source* directory
-//! (e.g. the jyc repo checkout) into a *target* directory (a config
-//! dir or data dir layer):
-//!
-//! - `jyc agents` operates on `<source>/templates/` → `<target>/templates/`
-//! - `jyc skills` operates on `<source>/skills/` → `<target>/skills/`
-//!
-//! `jyc plugins` feeds both helpers from a plugin bundle instead: this one for
-//! `skills/` and `subagents/`, and `overwrite_template_files` for `hooks/`,
-//! whose entries are flat files rather than one directory per name.
+//! `jyc plugins install` feeds these from a plugin bundle rather than from a
+//! checkout: `install_entries` for `skills/`, `subagents/` and `templates/`,
+//! whose entries are one directory per name (replaced cleanly, one copied over
+//! the other), and `overwrite_template_files` for `hooks/`, whose entries are
+//! flat files rather than one directory per name.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use jyc_core::template_utils::overwrite_template_files;
 
-/// Resolve the source directory: explicit `--source`, else the current
-/// working directory.
-pub fn resolve_source(explicit: Option<&Path>) -> Result<PathBuf> {
-    match explicit {
-        Some(d) => Ok(jyc_utils::paths::expand_tilde(&d.to_string_lossy())),
-        None => std::env::current_dir().context("failed to get current working directory"),
-    }
+/// Expand a user-typed source path, which may carry a leading `~`.
+pub fn resolve_source(source: &Path) -> PathBuf {
+    jyc_utils::paths::expand_tilde(&source.to_string_lossy())
 }
 
 /// Resolve the target directory: explicit `--target`, else the platform
@@ -41,7 +32,7 @@ pub fn resolve_target(explicit: Option<&Path>) -> Result<PathBuf> {
 /// List the names of subdirectories in `<source>/<collection>/`.
 ///
 /// Returns an error when the collection directory does not exist.
-pub async fn list_entries(source: &Path, collection: &str) -> Result<Vec<String>> {
+async fn list_entries(source: &Path, collection: &str) -> Result<Vec<String>> {
     let dir = source.join(collection);
     let mut entries = tokio::fs::read_dir(&dir)
         .await
@@ -175,8 +166,8 @@ mod tests {
     }
 
     #[test]
-    fn resolve_source_explicit() {
-        let p = resolve_source(Some(Path::new("/tmp/x"))).unwrap();
+    fn resolve_source_untouched() {
+        let p = resolve_source(Path::new("/tmp/x"));
         assert_eq!(p, PathBuf::from("/tmp/x"));
     }
 

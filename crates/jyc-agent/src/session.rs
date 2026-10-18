@@ -1997,34 +1997,48 @@ mod tests {
         let s = "H".repeat(2000) + "TAIL-MARKER";
         let out = truncate_text_keeping_edges(&s, 600);
 
-        assert!(out.starts_with(&"H".repeat(300)), "head must survive");
+        // Cut the result open on the marker: the head is whatever precedes
+        // it, the tail whatever follows. Asserting the conservation
+        // invariant rather than hardcoded sizes keeps this pinned to the
+        // arithmetic without restating it — a split that dropped or
+        // duplicated bytes fails here whatever it does to the numbers.
+        let (head, rest) = out.split_once("\n… [").expect("marker opener");
+        let (count, rest) = rest
+            .split_once(" bytes dropped from the middle")
+            .expect("marker body");
+        let dropped: usize = count.parse().expect("marker must state a byte count");
+        let tail = rest
+            .strip_prefix(" — re-read with offset/limit to see the gap] …\n")
+            .expect("marker tail");
+
         assert!(
-            out.ends_with("TAIL-MARKER"),
-            "tail must survive, got: {}",
-            &out[out.len().saturating_sub(40)..]
+            head.chars().all(|c| c == 'H') && !head.is_empty(),
+            "head must be the content's start: {head}"
+        );
+        // The tail is the last slice of the content, so it carries the end
+        // plus whatever preceded it inside the budget — what matters is
+        // that the end survived at all.
+        assert!(
+            tail.ends_with("TAIL-MARKER"),
+            "tail must carry the content's end, got: {}",
+            &tail[tail.len().saturating_sub(20)..]
         );
         assert!(
-            out.contains("dropped from the middle"),
-            "missing gap marker: {out}"
+            tail.chars().all(|c| c == 'H' || "TAIL-MARKER".contains(c)),
+            "tail must be the content's end plus its run-up: {tail}"
         );
         assert!(
-            out.contains("offset/limit"),
-            "marker must tell the model how to page the gap: {out}"
+            head.len() > tail.len(),
+            "head takes two thirds of the budget, tail one: {} vs {}",
+            head.len(),
+            tail.len()
+        );
+        assert_eq!(
+            dropped + head.len() + tail.len(),
+            s.len(),
+            "every byte is either kept or counted"
         );
         assert!(out.len() <= 600, "cap must hold, got {}", out.len());
-        // The dropped count has to be real, or the model cannot tell how
-        // much it is missing.
-        let dropped: usize = out
-            .split("dropped from the middle — ")
-            .nth(1)
-            .and_then(|r| r.split(' ').next())
-            .and_then(|n| n.parse().ok())
-            .expect("marker must state a byte count");
-        assert_eq!(
-            dropped,
-            s.len() - 300 - "TAIL-MARKER".len(),
-            "dropped count must match the missing middle"
-        );
     }
 
     /// Short input is returned untouched — the cap never pads.
@@ -2056,12 +2070,17 @@ mod tests {
     /// plain head-only cut rather than returning something over the cap.
     #[test]
     fn truncate_text_keeping_edges_falls_back_when_cap_tiny() {
-        let s = "z".repeat(500);
+        let s = "z".repeat(500) + "TAIL";
         for max in [1usize, 8, 40, 120] {
+            let out = truncate_text_keeping_edges(&s, max);
             assert_eq!(
-                truncate_text_keeping_edges(&s, max),
+                out,
                 truncate_text(&s, max),
                 "max={max} must fall back to the plain cut"
+            );
+            assert!(
+                !out.contains("TAIL"),
+                "a head-only cut cannot have kept the tail"
             );
         }
     }

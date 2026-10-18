@@ -148,6 +148,8 @@ pipe = { agent = "jin" }
 # '… [N bytes dropped from the middle — re-read with offset/limit to
 # see the gap] …', because a result is usually read for what sits at
 # its ends (the error at the bottom of a command, the totals of a grep).
+# Below ~128 bytes there is no room for both ends, so the head-only cut
+# takes over and its own marker sits on top of N.
 # Unset by default: the model is still reasoning over these results
 # mid-loop, so nothing is cut until you ask for it. Worth setting where
 # one verbose result (a big file read, a chatty command) would otherwise

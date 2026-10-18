@@ -785,11 +785,13 @@ pub struct ContextStrategyConfig {
     /// turn uncapped — the model is reasoning over these results
     /// mid-loop, so a long one (a big file read, a verbose command)
     /// rides every remaining call of the turn. Setting a cap trims each
-    /// oversized result to `Some(cap)` bytes keeping its head and tail
-    /// with the middle replaced by a paging marker, since what a result
-    /// is usually read for — the command that ran, the error, the
-    /// summary line — sits at the ends. `Some(0)` disables capping, same
-    /// as `None`. Only meaningful when `mode = "sliding_window"`. Omitted
+    /// oversized result to at most `Some(cap)` bytes — marker included —
+    /// keeping its head and tail with the middle replaced by a paging
+    /// marker, since what a result is usually read for (the command that
+    /// ran, the error, the summary line) sits at the ends. Below ~128
+    /// bytes there is no room for both ends, so the head-only cut takes
+    /// over and its own marker sits on top of `cap`. `Some(0)` disables
+    /// capping, same as `None`. Only meaningful when `mode = "sliding_window"`. Omitted
     /// from serialized override files when unset so existing readers stay
     /// compatible.
     #[serde(skip_serializing_if = "Option::is_none")]

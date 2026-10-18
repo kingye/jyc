@@ -3,6 +3,7 @@
 //! A self-contained Rust agent that runs LLM inference and tool execution in-process.
 
 pub mod agent_loop;
+pub mod capabilities;
 pub mod provider;
 pub mod service;
 pub mod session;

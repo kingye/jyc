@@ -1244,6 +1244,42 @@ async fn topic_config_instructions_reach_the_system_prompt() {
     assert!(prompt.contains("report findings only, change nothing"));
 }
 
+/// The `## CLI Helpers` section lists exactly the helpers this machine has —
+/// no more (the prompt must never send the model after a tool that is not
+/// installed) and no fewer (a helper that is there but unmentioned is a
+/// helper the model keeps not reaching for).
+///
+/// Expectations come from `capabilities::available()` rather than a hardcoded
+/// list, so the assertions are the same on a box with ripgrep and one without:
+/// the section's presence follows the probe, and its contents follow the
+/// probe's output.
+#[tokio::test]
+async fn cli_helper_section_lists_exactly_what_is_installed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let topic = "cli_helper_section_lists_exactly_what_is_installed";
+
+    let svc = service_with_skills(vec![], None, None);
+    let prompt = svc
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[])
+        .await;
+
+    let installed = crate::capabilities::available();
+    if installed.is_empty() {
+        assert!(!prompt.contains("## CLI Helpers"), "{prompt}");
+        return;
+    }
+    assert!(prompt.contains("## CLI Helpers"), "{prompt}");
+    for helper in crate::capabilities::HELPERS {
+        let listed = prompt.contains(&format!("- `{}` —", helper.name));
+        assert_eq!(
+            listed,
+            installed.iter().any(|found| found.name == helper.name),
+            "{}: listed={listed} but the probe disagreed\n{prompt}",
+            helper.name
+        );
+    }
+}
+
 /// The volatile runtime state — subagents and the channel/topic roster — must
 /// NOT land in the system prompt: any byte of churn there invalidates the
 /// provider's cached prefix on every call of every later turn.

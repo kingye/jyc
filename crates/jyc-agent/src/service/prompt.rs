@@ -5,6 +5,8 @@
 use jyc_types::state_dir::resolve_state_dir;
 use std::path::{Path, PathBuf};
 
+use crate::capabilities;
+
 use jyc_types::InboundMessage;
 use jyc_types::TopicConfig;
 
@@ -183,6 +185,18 @@ impl JycAgentService {
                  NEVER stage or commit it: do not run `git add .jyc`, do not run `git add -f` on it, and\n\
                  before `git add .`, check that it will not include `.jyc/`.\n\n",
             );
+        }
+
+        // CLI helpers installed on this machine (rg, fd, fzf, jq — whichever
+        // of the list this machine actually has). The model reaches for the
+        // tools its training named; without this it runs `grep -r` on a box
+        // that has ripgrep. Absent when nothing is installed, so the prompt
+        // never names a tool that is not there.
+        //
+        // Process-stable (PATH does not change under a running instance), so
+        // like the sections above it never churns the cached prefix.
+        if let Some(helpers) = capabilities::prompt_section(capabilities::available()) {
+            prompt.push_str(&helpers);
         }
 
         // Cross-Topic Communication section (when topic managers are available)

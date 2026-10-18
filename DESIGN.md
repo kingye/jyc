@@ -2352,20 +2352,34 @@ JYC uses the following subset of the agent service API:
 
    | Content | Home | Why |
    |---------|------|-----|
-   | Access boundaries, skills, `AGENTS.md`, reply/history/VCS rules, static cross-topic prose | system prompt | Changes only when config or files do |
+   | Access boundaries, skills, `AGENTS.md`, reply/history/VCS rules, static cross-topic prose | system prompt | Changes only when config or files do — **except** the boundary's runtime grant lines, below |
    | Mode block (`<mode>`) | user message | `BUILD`↔`PLAN` switches per turn |
    | Subagent roster (`Your subagents (N): …`) | user message | A child is spawned or closed |
    | Channel/topic roster (`Available channels and their active topics:`) | user message | Any topic appears or disappears — the most frequent churn of all |
 
-   The last two travel together in a `<runtime-state>` block
+   **What still moves the prompt, and why that is correct.** Spawning a
+   child calls `access_grants::grant_subagent()`, which registers the
+   child's directory as a read+write grant; the root resolvers fold
+   granted paths into the additional roots and `format_access_boundary()`
+   prints each as its own line. Closing the child drops the grant and the
+   line with it, so `prompt_hash` moves. That text must describe exactly
+   the roots the tool layer enforces — a boundary that drifts from
+   enforcement is a security bug, not a cache problem — so it stays where
+   it is. (`share_topic_path = true` children are already excluded: their
+   directory is the parent's own, and the resolver skips it.) The win is
+   therefore specifically the churn that changes **no** access: topics
+   appearing and disappearing, which is the frequent case.
+
+   The two rosters travel together in a `<runtime-state>` block
    (`build_turn_reference()`), prepended to the user message and framed
    as an auto-generated snapshot that is not user text and may go stale
    within a long turn. `build_system_prompt()` emits neither.
 
    The per-turn `prompt_hash` in the `System prompt built` trace line
    is the tripwire for this property: on an otherwise idle topic the
-   hash must not move. A hash that changes means volatile state leaked
-   back into the system prompt and is paying for cache misses.
+   hash must not move. A hash that changes with no `/grant` and no
+   spawn or close behind it means volatile state leaked back into the
+   system prompt and is paying for cache misses.
 
 **Payload Layout After The Change:**
 
@@ -2406,7 +2420,7 @@ tokens ↓
 turn N+1 的第一个 call:                    turn N+1 的第一个 call:
 ┌────────────────┐                         ┌────────────────┐
 │ tools      ✗全价│  前缀匹配 = 0           │ tools      ✓缓存│
-│ system     ✗全价│  (topic 生灭/子 agent   │ system     ✓缓存│ ← 字节全同
+│ system     ✗全价│  (topic 生灭/子 agent   │ system     ✓缓存│ ← 字节全同*
 │                │   变化使其改变)         │ 历史头块   ✗全价│ ← 滑窗滑动,
 │ 历史头块   ✗全价│                        │ …          ✗全价│    无法避免
 │ …          ✗全价│                        │                │
@@ -2414,6 +2428,9 @@ turn N+1 的第一个 call:                    turn N+1 的第一个 call:
 命中 0                                     命中 ~8-12k (tools+system)
 全价 ~53-64k                               全价 ~45-55k
 ```
+
+* 两张图都假设这两个 call 之间**没有** spawn/close 或 `/grant` —— 那类变动
+仍会移动 boundary 段（见上文），属预期而非回归。
 
 对应 Anthropic：改动前断点 2 随任一易变项失效，A+B 两个 span 同时
 作废；改动后 span A+B 跨轮稳定，span C/D 照旧在轮内逐 call 点亮。

@@ -384,7 +384,11 @@ impl AgentService for JycAgentService {
         );
         // `prompt_hash` is the tripwire for the byte-stability property above:
         // a hash that changes between turns of an otherwise idle topic means
-        // something volatile crept back into the system prompt.
+        // something volatile crept back into the system prompt. Two movers
+        // are legitimate and expected, and the reader has to exclude them by
+        // context rather than by this line: a `/grant`, and a spawn/close
+        // (the child's directory is an access grant, and the boundary section
+        // must list exactly the roots the tool layer enforces).
         tracing::debug!(
             topic = %topic_name,
             prompt_len = system_prompt.len(),

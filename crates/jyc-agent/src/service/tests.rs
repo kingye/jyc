@@ -1244,20 +1244,38 @@ async fn topic_config_instructions_reach_the_system_prompt() {
     assert!(prompt.contains("report findings only, change nothing"));
 }
 
-/// The volatile runtime state — subagents and the channel/topic roster —
-/// must NOT land in the system prompt: any byte of churn there invalidates the
+/// The volatile runtime state — subagents and the channel/topic roster — must
+/// NOT land in the system prompt: any byte of churn there invalidates the
 /// provider's cached prefix on every call of every later turn.
+///
+/// The fixture is built so that **both** sections would have been emitted by
+/// the pre-refactor code, so the negative assertions fail on it rather than
+/// passing vacuously: the topic managers exist (the roster header is written
+/// before the iteration, so an empty set still produces the header) and a real
+/// child grant with a lineage breadcrumb is registered. The positive half pins
+/// that the information still reaches the model — on the turn's user message.
 #[tokio::test]
-async fn system_prompt_carries_no_volatile_runtime_state() {
+async fn volatile_runtime_state_rides_the_turn_not_the_system_prompt() {
     let tmp = tempfile::tempdir().unwrap();
-    let topic = "system_prompt_carries_no_volatile_runtime_state";
+    let topic = "volatile_runtime_state_rides_the_turn_not_the_system_prompt";
     jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
 
+    // A child as `spawn` leaves it: a grant in the parent's registry plus the
+    // `spawned-from` breadcrumb the subagent listing filters on.
+    let child = "reviewer-fixture";
+    let child_dir = tmp.path().join("child");
+    let child_state = child_dir.join(".jyc");
+    std::fs::create_dir_all(&child_state).unwrap();
+    std::fs::write(child_state.join("spawned-from"), topic).unwrap();
+    jyc_types::state_dir::register(child, &child_state);
+    jyc_types::access_grants::grant_subagent(topic, child, child_dir);
+
     let svc = service_with_skills(vec![], None, None);
+    svc.set_topic_managers(Arc::new(TopicManagers::new()));
+
     let prompt = svc
         .build_system_prompt(topic, tmp.path(), None, None, &[], &[])
         .await;
-
     assert!(
         !prompt.contains("Your subagents"),
         "subagent roster leaked into the system prompt:\n{prompt}"
@@ -1266,6 +1284,24 @@ async fn system_prompt_carries_no_volatile_runtime_state() {
         !prompt.contains("Available channels and their active topics"),
         "channel/topic roster leaked into the system prompt:\n{prompt}"
     );
+
+    let reference = svc.build_turn_reference(topic).await;
+    assert!(
+        reference.contains("Your subagents (1): reviewer-fixture."),
+        "the reference must still name the child:\n{reference}"
+    );
+    assert!(
+        reference.contains("Available channels and their active topics"),
+        "the reference must still carry the channel/topic roster:\n{reference}"
+    );
+    assert!(
+        reference.starts_with("<runtime-state>")
+            && reference.contains("not a message from the user"),
+        "the reference must be framed as auto-generated:\n{reference}"
+    );
+
+    // The grant registry is process-wide; leave it as we found it.
+    jyc_types::access_grants::ungrant_subagent(topic, child);
 }
 
 /// With no subagents and no topic managers there is nothing volatile to

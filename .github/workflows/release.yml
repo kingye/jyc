@@ -97,7 +97,7 @@ jobs:
       - name: Package plugin archive
         run: |
           mkdir -p dist
-          tar -czf dist/jyc-plugins.tar.gz skills subagents hooks
+          tar -czf dist/jyc-plugins.tar.gz skills subagents hooks templates
 
       - name: Download all artifacts
         uses: actions/download-artifact@v8

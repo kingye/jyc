@@ -1,20 +1,20 @@
 //! `jyc plugins` — install a plugin archive into the config dir.
 //!
 //! A plugin archive is the `dist/jyc-plugins.tar.gz` the release workflow
-//! builds out of this repo: a gzipped tar holding `skills/`, `subagents/` and
-//! `hooks/` at its root. A plain directory laid out the same way is accepted
-//! too, so a bundle can be installed before it is ever packed.
+//! builds out of this repo: a gzipped tar holding `skills/`, `subagents/`,
+//! `hooks/` and `templates/` at its root. A plain directory laid out the same
+//! way is accepted too, so a bundle can be installed before it is ever packed.
 //!
 //! Every collection the source carries is installed into `<target>/<name>/`
-//! (default: the platform config home, e.g. `~/.config/jyc/`): `skills/` and
-//! `subagents/` entry by entry, one subdirectory per name and each replaced
-//! cleanly, and `hooks/` file by file — its entries are flat shell scripts, not
-//! one directory per name. A collection
-//! the source does not carry is skipped, and a directory this command does
-//! not know (e.g. a `scripts/` that only makes sense in the repo) is named in
-//! a printed line and left alone. Unlike `skills/` and `subagents/`, `hooks/`
-//! is not picked up by a directory scan: a `[[hooks]]` entry in `config.toml`
-//! has to name the installed script.
+//! (default: the platform config home, e.g. `~/.config/jyc/`):
+//! `skills/`, `subagents/` and `templates/` entry by entry, one subdirectory
+//! per name and each replaced cleanly, and `hooks/` file by file — its entries
+//! are flat shell scripts, not one directory per name. A collection the source
+//! does not carry is skipped, and a directory this command does not know
+//! (e.g. a `scripts/` that only makes sense in the repo) is named in a printed
+//! line and left alone. Unlike `skills/` and `subagents/`, `hooks/` is not
+//! picked up by a directory scan: a `[[hooks]]` entry in `config.toml` has to
+//! name the installed script.
 
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use super::install;
 
 /// The collections a plugin archive may carry, as `<name>` under the root.
-const COLLECTIONS: &[&str] = &["skills", "subagents", "hooks"];
+const COLLECTIONS: &[&str] = &["skills", "subagents", "hooks", "templates"];
 
 /// The one collection whose entries are flat files rather than one directory
 /// per name, and which is therefore installed file by file.
@@ -213,6 +213,7 @@ mod tests {
             ("skills/demo", "SKILL.md"),
             ("subagents/role", "config.toml"),
             ("hooks", "bell.sh"),
+            ("templates/invoice", "AGENTS.md"),
         ] {
             let path = root.join(dir);
             std::fs::create_dir_all(&path).unwrap();
@@ -221,7 +222,7 @@ mod tests {
         }
     }
 
-    /// Pack `root`'s three collections into a gzipped tar at `archive`.
+    /// Pack `root`'s collections into a gzipped tar at `archive`.
     fn write_archive(root: &Path, archive: &Path) {
         let file = std::fs::File::create(archive).unwrap();
         let enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
@@ -253,10 +254,14 @@ mod tests {
 
         install_plugins(&source, &target).await.unwrap();
 
-        assert_eq!(installed(&target), ["hooks", "skills", "subagents"]);
+        assert_eq!(
+            installed(&target),
+            ["hooks", "skills", "subagents", "templates"]
+        );
         assert!(target.join("skills/demo/SKILL.md").is_file());
         assert!(target.join("subagents/role/config.toml").is_file());
         assert!(target.join("hooks/bell.sh").is_file());
+        assert!(target.join("templates/invoice/AGENTS.md").is_file());
     }
 
     #[tokio::test]
@@ -273,6 +278,7 @@ mod tests {
         assert!(target.join("skills/demo/SKILL.md").is_file());
         assert!(target.join("subagents/role/config.toml").is_file());
         assert!(target.join("hooks/bell.sh").is_file());
+        assert!(target.join("templates/invoice/AGENTS.md").is_file());
     }
 
     #[tokio::test]
@@ -300,7 +306,10 @@ mod tests {
 
         install_plugins(&source, &target).await.unwrap();
 
-        assert_eq!(installed(&target), ["hooks", "skills", "subagents"]);
+        assert_eq!(
+            installed(&target),
+            ["hooks", "skills", "subagents", "templates"]
+        );
     }
 
     #[tokio::test]

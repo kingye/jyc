@@ -354,20 +354,21 @@ jyc-pipe               # Peripheral pipe process (separate binary, not a `jyc`
 jyc token show         # Print the dashboard authorization token
 jyc plugins install <archive>   # Install a plugin bundle into the config dir
                        #   <archive>        A .tar.gz (or a directory) holding
-                       #                    skills/ subagents/ hooks/ at its root
+                       #                    skills/ subagents/ hooks/ templates/
+                       #                    at its root
                        #   --target <DIR>   Target dir (default: platform config home)
 ```
 
 The `dashboard` command requires the `[inspect]` section to be enabled in config.
 
-**Plugins**: a *plugin bundle* is a gzipped tar with `skills/`, `subagents/` and
-`hooks/` at its root — the three user-editable collections this repo ships —
-and `jyc plugins install` writes them into the config dir (a plain directory
-laid out the same way works too). Every release publishes one as
+**Plugins**: a *plugin bundle* is a gzipped tar with `skills/`, `subagents/`,
+`hooks/` and `templates/` at its root — the four user-editable collections this
+repo ships — and `jyc plugins install` writes them into the config dir (a plain
+directory laid out the same way works too). Every release publishes one as
 `jyc-plugins.tar.gz`, which is the shortest way to put those skills, subagent
-roles and hook scripts in place: `skills/` and `subagents/` are picked up by a
-directory scan, while an installed `hooks/*.sh` runs only once a `[[hooks]]`
-entry in `config.toml` names it.
+roles, hook scripts and templates in place: `skills/`, `subagents/` and
+`templates/` are picked up by a directory scan, while an installed
+`hooks/*.sh` runs only once a `[[hooks]]` entry in `config.toml` names it.
 
 ```bash
 curl -LO https://github.com/kingye/jyc/releases/latest/download/jyc-plugins.tar.gz

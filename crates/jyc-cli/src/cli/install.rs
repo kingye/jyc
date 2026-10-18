@@ -1,10 +1,10 @@
 //! Shared install helpers behind the `plugins` subcommand.
 //!
 //! `jyc plugins install` feeds these from a plugin bundle rather than from a
-//! checkout: `install_entries` for `skills/` and `subagents/`, whose entries
-//! are one directory per name (replaced cleanly, one copied over the other),
-//! and `overwrite_template_files` for `hooks/`, whose entries are flat files
-//! rather than one directory per name.
+//! checkout: `install_entries` for `skills/`, `subagents/` and `templates/`,
+//! whose entries are one directory per name (replaced cleanly, one copied over
+//! the other), and `overwrite_template_files` for `hooks/`, whose entries are
+//! flat files rather than one directory per name.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};

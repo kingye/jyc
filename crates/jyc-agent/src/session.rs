@@ -1438,6 +1438,43 @@ pub(crate) fn truncate_text(s: &str, max: usize) -> String {
     }
 }
 
+/// Truncate `s` to at most `max` bytes keeping both ends: the head gets
+/// two thirds of the content budget, the tail one third, and the dropped
+/// middle is replaced by a marker saying how much is missing and how to
+/// get it. Unlike [`truncate_text`] — where `max` is the content budget
+/// and the marker sits on top of it — the marker is inside `max` here,
+/// so the caller gets the byte bound it asked for.
+///
+/// Tail-keeping is the point: a head-only cut hides what a tool result is
+/// usually read for (the error at the end of a command's output, the
+/// totals of a grep). Falls back to [`truncate_text`] when `max` is too
+/// small to hold the marker plus both ends.
+pub(crate) fn truncate_text_keeping_edges(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    // Reserve room for the marker so the result really fits in `max`.
+    // The marker is 107 bytes with a 20-digit count (a 10 EiB result is
+    // not a real case, but the reserve has to cover the format either
+    // way), so the head+tail split below always leaves room for it.
+    const MARKER_RESERVE: usize = 128;
+    let budget = max.saturating_sub(MARKER_RESERVE);
+    if budget == 0 {
+        return truncate_text(s, max);
+    }
+    let head_end = s.floor_char_boundary(budget * 2 / 3);
+    let tail_start = s.ceil_char_boundary(s.len() - (budget - head_end));
+    if head_end == 0 || head_end >= tail_start {
+        return truncate_text(s, max);
+    }
+    let dropped = tail_start - head_end;
+    let marker = format!(
+        "\n… [{dropped} bytes dropped from the middle — re-read with \
+         offset/limit to see the gap] …\n"
+    );
+    format!("{}{marker}{}", &s[..head_end], &s[tail_start..])
+}
+
 /// Render a JSON value as text, truncating at `max` bytes (on a char
 /// boundary) with `…` when it is longer.
 fn truncate_json_value(value: &serde_json::Value, max: usize) -> String {
@@ -1948,7 +1985,86 @@ async fn save_session_state(path: &Path, state: &SessionState) {
 
 #[cfg(test)]
 mod tests {
+    use super::{truncate_text, truncate_text_keeping_edges};
     use serde_json::json;
+
+    /// Head+tail truncation keeps both ends: the head carries the start of
+    /// the content, the tail the end (where errors and totals live), and the
+    /// gap is announced with a paging hint. The result fits in `max` —
+    /// the marker is inside the budget, unlike [`truncate_text`].
+    #[test]
+    fn truncate_text_keeping_edges_keeps_both_ends() {
+        let s = "H".repeat(2000) + "TAIL-MARKER";
+        let out = truncate_text_keeping_edges(&s, 600);
+
+        assert!(out.starts_with(&"H".repeat(300)), "head must survive");
+        assert!(
+            out.ends_with("TAIL-MARKER"),
+            "tail must survive, got: {}",
+            &out[out.len().saturating_sub(40)..]
+        );
+        assert!(
+            out.contains("dropped from the middle"),
+            "missing gap marker: {out}"
+        );
+        assert!(
+            out.contains("offset/limit"),
+            "marker must tell the model how to page the gap: {out}"
+        );
+        assert!(out.len() <= 600, "cap must hold, got {}", out.len());
+        // The dropped count has to be real, or the model cannot tell how
+        // much it is missing.
+        let dropped: usize = out
+            .split("dropped from the middle — ")
+            .nth(1)
+            .and_then(|r| r.split(' ').next())
+            .and_then(|n| n.parse().ok())
+            .expect("marker must state a byte count");
+        assert_eq!(
+            dropped,
+            s.len() - 300 - "TAIL-MARKER".len(),
+            "dropped count must match the missing middle"
+        );
+    }
+
+    /// Short input is returned untouched — the cap never pads.
+    #[test]
+    fn truncate_text_keeping_edges_passthrough_when_short() {
+        assert_eq!(truncate_text_keeping_edges("short", 100), "short");
+        // Exactly at the cap is not "longer than".
+        let exact = "x".repeat(100);
+        assert_eq!(truncate_text_keeping_edges(&exact, 100), exact);
+    }
+
+    /// Multi-byte characters must never be split: the cut points land on
+    /// char boundaries, so indexing the result cannot panic and the tail is
+    /// intact.
+    #[test]
+    fn truncate_text_keeping_edges_respects_char_boundaries() {
+        let s = "中".repeat(500) + "END";
+        let out = truncate_text_keeping_edges(&s, 400);
+        assert!(out.starts_with('中'), "head must survive");
+        assert!(
+            out.ends_with("END"),
+            "tail must survive, got: {}",
+            &out[out.len() - 20..]
+        );
+        assert!(out.len() <= 400, "cap must hold, got {}", out.len());
+    }
+
+    /// A cap too small to hold the marker plus both ends degrades to the
+    /// plain head-only cut rather than returning something over the cap.
+    #[test]
+    fn truncate_text_keeping_edges_falls_back_when_cap_tiny() {
+        let s = "z".repeat(500);
+        for max in [1usize, 8, 40, 120] {
+            assert_eq!(
+                truncate_text_keeping_edges(&s, max),
+                truncate_text(&s, max),
+                "max={max} must fall back to the plain cut"
+            );
+        }
+    }
 
     /// Anthropic-shaped context (array content): assistant text pairs
     /// correctly; tool_result user-role wrappers are skipped; the whole
@@ -2537,6 +2653,7 @@ mod tests {
             window: 5,
             note_window: Some(2),
             tool_result_cap: None,
+            turn_tool_result_cap: None,
         };
         let wire = vec![serde_json::json!({"role":"user","content":"hi"})];
         let regions = vec![3u8];
@@ -2592,6 +2709,7 @@ mod tests {
             window: 10,
             note_window: None,
             tool_result_cap: None,
+            turn_tool_result_cap: None,
         };
         let empty_wire: Vec<serde_json::Value> = vec![];
         let empty_regions: Vec<u8> = vec![];

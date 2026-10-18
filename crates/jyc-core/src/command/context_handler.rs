@@ -13,12 +13,19 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 /// Usage:
 ///   /context              Show current strategy
 ///   /context full         Switch to full context (send everything)
-///   /context sliding [N] [M] [CAP]
+///   /context sliding [N] [M] [CAP] [TURNCAP]
 ///     Switch to sliding window (default N = 10 turns). M is the optional
 ///     note window: only the most recent M windowed turns carry tool-call
 ///     history notes (default: 5). CAP is the optional per-tool-result
-///     byte cap on the verbatim prior region (region ②; current turn is never
-///     truncated) (default: 2048). 0 in any slot keeps the configured value.
+///     byte cap on the verbatim prior region (region ②; default: 2048).
+///     TURNCAP is the optional per-tool-result byte cap on the current
+///     turn (region ③), which CAP deliberately leaves uncapped; an
+///     oversized result keeps its head and tail with the middle replaced
+///     by a paging marker. Unset by default.
+///
+///     Per-slot semantics: an absent slot keeps the configured value, and
+///     `0` explicitly disables the cap. (M is an ordinary value — 0 there
+///     means "text-only window".)
 ///   /context reset        Remove runtime override (revert to configured default)
 ///   /context dump [on|off]
 ///     Toggle wire-payload debug dump. When on, every LLM call appends
@@ -38,6 +45,9 @@ const MAX_WINDOW: usize = 200;
 /// here. Users needing larger caps can edit `.jyc/context-strategy.json`
 /// directly.
 const MAX_TOOL_RESULT_CAP: usize = 1024 * 1024;
+/// Upper bound for the current-turn cap. Same 1 MiB ceiling as
+/// `MAX_TOOL_RESULT_CAP` — past that the result is not the problem.
+const MAX_TURN_TOOL_RESULT_CAP: usize = 1024 * 1024;
 
 #[async_trait]
 impl CommandHandler for ContextCommandHandler {
@@ -97,12 +107,13 @@ impl CommandHandler for ContextCommandHandler {
                     &override_path,
                     ContextStrategyConfig {
                         mode: ContextStrategy::Full,
-                        // Preserve the configured window/note_window/tool_result_cap
-                        // so toggling full → sliding later still has sensible
+                        // Preserve the configured window/note_window/caps so
+                        // toggling full → sliding later still has sensible
                         // defaults.
                         window: configured.window,
                         note_window: configured.note_window,
                         tool_result_cap: configured.tool_result_cap,
+                        turn_tool_result_cap: configured.turn_tool_result_cap,
                     },
                 )
                 .await?;
@@ -205,11 +216,47 @@ impl CommandHandler for ContextCommandHandler {
                     None
                 };
                 let tool_result_cap = tool_result_cap.unwrap_or(configured.tool_result_cap);
+                // Optional current-turn tool-result byte cap TURNCAP
+                // (args[4]): bounds the results the model is still
+                // reasoning over, which CAP leaves alone because it is
+                // uncapped by default. 0 is the explicit "off" sentinel
+                // (same convention as CAP); absent = keep configured
+                // value, which for a topic that never set it is None.
+                let turn_tool_result_cap = if let Some(arg) = context.args.get(4) {
+                    match arg.parse::<usize>() {
+                        Ok(c) if c <= MAX_TURN_TOOL_RESULT_CAP => Some(Some(c)),
+                        Ok(_) => {
+                            return Ok(CommandResult {
+                                success: false,
+                                message: format!(
+                                    "/context: turn_tool_result_cap must be between 0 and {MAX_TURN_TOOL_RESULT_CAP} bytes"
+                                ),
+                                error: None,
+                                append_body: None,
+                            });
+                        }
+                        Err(_) => {
+                            return Ok(CommandResult {
+                                success: false,
+                                message: format!(
+                                    "/context: invalid turn_tool_result_cap '{arg}', expected a non-negative integer"
+                                ),
+                                error: None,
+                                append_body: None,
+                            });
+                        }
+                    }
+                } else {
+                    None
+                };
+                let turn_tool_result_cap =
+                    turn_tool_result_cap.unwrap_or(configured.turn_tool_result_cap);
                 let cfg = ContextStrategyConfig {
                     mode: ContextStrategy::SlidingWindow,
                     window,
                     note_window,
                     tool_result_cap,
+                    turn_tool_result_cap,
                 };
                 write_override(&state_dir, &override_path, cfg.clone()).await?;
                 Ok(CommandResult {
@@ -223,7 +270,7 @@ impl CommandHandler for ContextCommandHandler {
             other => Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/context: unknown argument '{other}'. Use: /context full | sliding [N] [M] [CAP] | reset | dump [on|off]"
+                    "/context: unknown argument '{other}'. Use: /context full | sliding [N] [M] [CAP] [TURNCAP] | reset | dump [on|off]"
                 ),
                 error: None,
                 append_body: None,
@@ -304,6 +351,9 @@ fn describe_strategy(cfg: &ContextStrategyConfig) -> String {
             }
             if let Some(c) = cfg.tool_result_cap {
                 s.push_str(&format!(", tool_result_cap={c}"));
+            }
+            if let Some(c) = cfg.turn_tool_result_cap {
+                s.push_str(&format!(", turn_tool_result_cap={c}"));
             }
             s.push(')');
             s
@@ -655,6 +705,152 @@ mode = "agent"
     }
 
     #[tokio::test]
+    async fn test_sliding_with_turn_tool_result_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_with_turn_tool_result_cap";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec![
+            "sliding".into(),
+            "10".into(),
+            "3".into(),
+            "2048".into(),
+            "32768".into(),
+        ];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        assert!(
+            result.message.contains("turn_tool_result_cap=32768"),
+            "message: {}",
+            result.message
+        );
+        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v["window"], 10);
+        assert_eq!(v["note_window"], 3);
+        assert_eq!(v["tool_result_cap"], 2048);
+        assert_eq!(v["turn_tool_result_cap"], 32768);
+    }
+
+    #[tokio::test]
+    async fn test_sliding_turn_cap_zero_is_explicit_off() {
+        // `/context sliding 10 5 2048 0` — the user's way of switching
+        // current-turn truncation off. Must persist as 0, and re-reading
+        // must keep it at 0 rather than snapping back to the default.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_turn_cap_zero_is_explicit_off";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec![
+            "sliding".into(),
+            "10".into(),
+            "3".into(),
+            "2048".into(),
+            "0".into(),
+        ];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v["turn_tool_result_cap"], 0);
+
+        // Reading it back shows the off state.
+        let mut show = test_context(topic, tmp.path());
+        show.args = vec![];
+        let shown = handler.execute(show).await.unwrap();
+        assert!(
+            shown.message.contains("turn_tool_result_cap=0"),
+            "{}",
+            shown.message
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sliding_turn_cap_omitted_keeps_configured_value() {
+        // An absent 4th slot must not reset a turn cap set earlier — the
+        // same "absent = keep" convention the other slots follow.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_turn_cap_omitted_keeps_configured_value";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let handler = ContextCommandHandler;
+        let mut set = test_context(topic, tmp.path());
+        set.args = vec![
+            "sliding".into(),
+            "10".into(),
+            "3".into(),
+            "2048".into(),
+            "16384".into(),
+        ];
+        assert!(handler.execute(set).await.unwrap().success);
+
+        let mut again = test_context(topic, tmp.path());
+        again.args = vec!["sliding".into(), "12".into()];
+        assert!(handler.execute(again).await.unwrap().success);
+        let v: serde_json::Value = serde_json::from_str(
+            &tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(v["window"], 12, "the given slot still applies");
+        assert_eq!(v["turn_tool_result_cap"], 16384, "the omitted slot is kept");
+    }
+
+    #[tokio::test]
+    async fn test_sliding_turn_cap_invalid_rejected() {
+        for bad in ["abc", "-5"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let topic = format!("test_sliding_turn_cap_invalid_rejected_{bad}");
+            jyc_types::state_dir::register(&topic, &tmp.path().join(".jyc"));
+            let handler = ContextCommandHandler;
+            let mut ctx = test_context(&topic, tmp.path());
+            ctx.args = vec![
+                "sliding".into(),
+                "10".into(),
+                "3".into(),
+                "2048".into(),
+                bad.into(),
+            ];
+            let result = handler.execute(ctx).await.unwrap();
+            assert!(!result.success, "{bad} must be rejected");
+            assert!(
+                result.message.contains("turn_tool_result_cap"),
+                "error must name the slot: {}",
+                result.message
+            );
+            // A rejected slot must leave no override behind.
+            assert!(
+                !tmp.path().join(".jyc/context-strategy.json").exists(),
+                "rejected input must not write an override"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sliding_turn_cap_above_max_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_turn_cap_above_max_rejected";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec![
+            "sliding".into(),
+            "10".into(),
+            "3".into(),
+            "2048".into(),
+            (MAX_TURN_TOOL_RESULT_CAP + 1).to_string(),
+        ];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(!result.success);
+    }
+
+    #[tokio::test]
     async fn test_sliding_with_tool_result_cap() {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_sliding_with_tool_result_cap";
@@ -786,6 +982,7 @@ mode = "agent"
             window: 10,
             note_window: Some(3),
             tool_result_cap: Some(5000),
+            turn_tool_result_cap: None,
         };
         let s = describe_strategy(&cfg);
         assert!(s.contains("window=10"));

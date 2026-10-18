@@ -137,11 +137,23 @@ pipe = { agent = "jin" }
 # turns carry tool-call history notes; older turns are text-only.
 # Default: 5. 0 = no notes at all.
 # tool_result_cap: in sliding_window mode, cap each tool result in the
-# verbatim prior region (region ②; the current turn is never truncated)
+# verbatim prior region (region ②; the current turn is governed by
+# turn_tool_result_cap instead)
 # at N bytes. Truncated
 # results are suffixed with '… [truncated N bytes]'. Only meaningful
 # when note_window > 0 (otherwise nothing is verbatim). Default: 2048.
+# turn_tool_result_cap: in sliding_window mode, cap each tool result in
+# the CURRENT turn (region ③) at N bytes, the marker included. An
+# oversized result keeps its head and tail with the middle replaced by
+# '… [N bytes dropped from the middle — re-read with offset/limit to
+# see the gap] …', because a result is usually read for what sits at
+# its ends (the error at the bottom of a command, the totals of a grep).
+# Unset by default: the model is still reasoning over these results
+# mid-loop, so nothing is cut until you ask for it. Worth setting where
+# one verbose result (a big file read, a chatty command) would otherwise
+# ride every remaining call of the turn.
 # context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048 }
+# context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048, turn_tool_result_cap = 32768 }
 
 # Custom filesystem path for the topic directory.
 # When set, the topic's working directory is this path instead of the
@@ -581,7 +593,8 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # turns carry tool-call history notes; older turns are text-only.
 # Default: 5. 0 = no notes at all.
 # tool_result_cap: in sliding_window mode, cap each tool result in the
-# verbatim prior region (region ②; the current turn is never truncated)
+# verbatim prior region (region ②; the current turn is governed by
+# turn_tool_result_cap instead)
 # at N bytes. Truncated
 # results are suffixed with '… [truncated N bytes]'. Default: 2048.
 # context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048 }
@@ -1287,7 +1300,8 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # turns carry tool-call history notes; older turns are text-only.
 # Default: 5. 0 = no notes at all.
 # tool_result_cap: in sliding_window mode, cap each tool result in the
-# verbatim prior region (region ②; the current turn is never truncated)
+# verbatim prior region (region ②; the current turn is governed by
+# turn_tool_result_cap instead)
 # at N bytes. Truncated results are suffixed with
 # '… [truncated N bytes]'. Default: 2048.
 # context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048 }
@@ -1386,6 +1400,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #   # window = 3
 #   # note_window = 0        # 0 = keep no tool-call history notes at all
 #   # tool_result_cap = 512  # 0 = no cap (full tool results), not "no results"
+#   # turn_tool_result_cap   # unset = current turn uncapped; 0 = off
 #
 #   # Default: additive. Adds a topic-only MCP without dropping inherited ones.
 #   [[mcps]]

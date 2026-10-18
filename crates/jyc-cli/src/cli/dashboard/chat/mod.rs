@@ -442,11 +442,13 @@ pub(super) fn wrap_text_to_width(text: &str, max_width: usize) -> Vec<String> {
     out
 }
 
-/// Markdown render options for chat messages: Base16MochaDark code theme.
-/// The highlighter emits foreground colors only — the terminal background
-/// is kept, so the theme cannot clash with the TUI.
+/// Markdown render options for chat messages.
+///
+/// The defaults are all there is: tui-markdown is built without its
+/// `highlight-code` feature, so `code_theme` does not exist and fenced code
+/// renders as plain text in the default stylesheet (see jyc-cli's Cargo.toml).
 pub(super) fn chat_markdown_options() -> tui_markdown::Options {
-    tui_markdown::Options::default().code_theme(tui_markdown::BuiltinCodeTheme::Base16MochaDark)
+    tui_markdown::Options::default()
 }
 
 /// Rewrites markdown soft breaks (`\n` inside a paragraph) into hard breaks

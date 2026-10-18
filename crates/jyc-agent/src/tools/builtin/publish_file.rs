@@ -34,11 +34,10 @@ impl Tool for PublishFileTool {
     }
 
     fn description(&self) -> &str {
-        "Publish a file from the topic directory to make it accessible via an \
-         exchange HTTP link. Copies the file by default; set move=true to move \
-         it (the source file disappears). Returns a shareable URL protected \
-         by an access token. Use when the user needs to download or view a \
-         generated file (report, PDF, image) via a link."
+        "Publish a file from the topic directory as an exchange HTTP link. Copies \
+         by default, move=true moves it (the source disappears). Returns a URL protected by \
+         an access token. Use when the user needs to download or view a generated file \
+         (report, PDF, image)."
     }
 
     fn input_schema(&self) -> Value {
@@ -51,7 +50,7 @@ impl Tool for PublishFileTool {
                 },
                 "name": {
                     "type": "string",
-                    "description": "Optional published filename. Defaults to the source file's basename."
+                    "description": "Optional published filename; defaults to the source basename."
                 },
                 "move": {
                     "type": "boolean",

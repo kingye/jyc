@@ -357,7 +357,11 @@ impl AgentService for JycAgentService {
         // the boundaries the tool layer enforces (same Vecs, single source).
         let additional_read_roots = self.resolve_additional_read_roots(message, topic_path);
         let additional_write_roots = self.resolve_additional_write_roots(message, topic_path);
-        // 3a. Build system prompt (available channels, skills, AGENTS.md, etc.)
+        // 3a. Build system prompt (boundaries, skills, AGENTS.md, static
+        //     cross-topic prose). Everything in it is unchanged by runtime
+        //     churn on purpose — the boundary's grant lines excepted, since
+        //     those track enforcement: providers that cache by prefix reuse the
+        //     whole entry for as long as these bytes do not move.
         let system_prompt = self
             .build_system_prompt(
                 topic_name,
@@ -368,11 +372,30 @@ impl AgentService for JycAgentService {
                 &additional_write_roots,
             )
             .await;
+        // 3b. The volatile half — subagents and the channel/topic roster —
+        //     rides the turn's user message instead of the system prompt, so
+        //     a topic appearing or closing costs no cached prefix.
+        let turn_reference = self.build_turn_reference(topic_name).await;
         let t_prompt = std::time::Instant::now();
+        let current_mode = resolve_turn_mode(
+            jyc_core::session_state::read_mode_override(topic_name, topic_path).await,
+            topic_cfg.as_ref().and_then(|c| c.mode.clone()),
+            pattern.and_then(|p| p.mode.clone()),
+            scheduled,
+        );
+        // `prompt_hash` is the tripwire for the byte-stability property above:
+        // a hash that changes between turns of an otherwise idle topic means
+        // something volatile crept back into the system prompt. Two movers
+        // are legitimate and expected, and the reader has to exclude them by
+        // context rather than by this line: a `/grant`, and a spawn/close
+        // (the child's directory is an access grant, and the boundary section
+        // must list exactly the roots the tool layer enforces).
         tracing::debug!(
             topic = %topic_name,
             prompt_len = system_prompt.len(),
-            has_plan_mode = system_prompt.contains("PLAN MODE"),
+            prompt_hash = prompt_hash(&system_prompt),
+            reference_len = turn_reference.len(),
+            mode = %current_mode.as_deref().unwrap_or("-"),
             "System prompt built"
         );
         tracing::trace!(
@@ -380,14 +403,12 @@ impl AgentService for JycAgentService {
             prompt = %system_prompt,
             "Full system prompt (enable RUST_LOG=trace to see)"
         );
-        let current_mode = resolve_turn_mode(
-            jyc_core::session_state::read_mode_override(topic_name, topic_path).await,
-            topic_cfg.as_ref().and_then(|c| c.mode.clone()),
-            pattern.and_then(|p| p.mode.clone()),
-            scheduled,
+        let user_blocks = self.build_user_blocks(
+            message,
+            provider.supports_images(),
+            current_mode.as_deref(),
+            &turn_reference,
         );
-        let user_blocks =
-            self.build_user_blocks(message, provider.supports_images(), current_mode.as_deref());
 
         // 5. Build tool registry (cached per (topic, config snapshot) so
         //    MCP subprocess spawn + handshake only runs when configs change).
@@ -744,6 +765,19 @@ impl AgentService for JycAgentService {
 /// from `jyc_types`, where it now lives because `jyc_core`'s model resolution
 /// needs the same derivation.
 pub use jyc_types::derive_agent_config;
+
+/// Content hash of the system prompt, logged per turn so its byte-stability is
+/// observable: a hash that moves between two turns of an idle topic means
+/// volatile state leaked back into the prompt and is costing prefix-cache
+/// hits. Not a security primitive and not stable across Rust releases —
+/// compare values within one running instance only.
+fn prompt_hash(prompt: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    prompt.hash(&mut hasher);
+    hasher.finish()
+}
 
 #[cfg(test)]
 mod mcp_load_tests;

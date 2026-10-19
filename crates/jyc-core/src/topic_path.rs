@@ -43,12 +43,11 @@ pub const INBOUND_DIR_NAME: &str = ".inbound";
 /// in `spawn_common`), so `<home>/.data` can never be a sibling topic's home.
 pub const TOPIC_DIR_NAME: &str = ".data";
 
-/// The agents dir this process resolves to from its data dir, or `None` when
-/// no data dir is configured — in which case no topic home can be located
-/// under one either.
+/// The agents dir the platform data home points at, or `None` when it
+/// cannot be derived — in which case nothing under it can be located either.
 ///
-/// For callers that hold no data dir of their own (the inspect payload
-/// builder); anyone who does has [`agents_dir`].
+/// A caller that holds a data dir of its own wants [`resolve_agents_dir`]
+/// instead: it falls back to that data dir rather than giving up.
 pub fn process_agents_dir() -> Option<PathBuf> {
     jyc_utils::paths::data_dir().map(|home| home.join("agents"))
 }

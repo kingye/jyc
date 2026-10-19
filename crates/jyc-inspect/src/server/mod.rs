@@ -131,6 +131,16 @@ pub struct InspectContext {
     /// axum's `with_graceful_shutdown` to complete instead of waiting
     /// forever on still-open WS connections.
     pub ws_shutdown: CancellationToken,
+    /// The agents dir this instance creates topic homes under
+    /// (`resolve_agents_dir(data_dir)` at startup) — the root a topic's home,
+    /// and the state dir inside it, sit under.
+    ///
+    /// Read to name a topic's owning agent by stripping this prefix off that
+    /// home. It has to be the instance's own dir rather than a process-wide
+    /// default: where the platform data home is unavailable, homes still land
+    /// in `<data dir>/agents`, and every topic would otherwise read as
+    /// agentless.
+    pub agents_dir: PathBuf,
 }
 
 /// TCP-based inspect server.
@@ -270,9 +280,11 @@ impl InspectServer {
         );
         let agents = agents_of(&topics);
         // The agents dir carries each topic's owning agent in its home's first
-        // path segment; resolved once for the whole poll. `None` without a data
-        // dir, which leaves every `agent` field empty rather than guessed.
-        let agents_dir = jyc_core::topic_path::process_agents_dir();
+        // path segment. The instance's own dir, as resolved from its data dir
+        // at startup: a process-wide default would name no agent at all where
+        // the platform data home is unavailable, and read a home outside it as
+        // agentless.
+        let agents_dir = context.agents_dir.clone();
         let mut summaries: Vec<TopicSummary> = topics
             .into_iter()
             .map(|t| {
@@ -300,9 +312,7 @@ impl InspectServer {
                 // The agent from the home the state dir sits in — by name
                 // rather than by `topic_path`, which a pinned topic points
                 // outside the agents dir.
-                let agent = agents_dir
-                    .as_deref()
-                    .and_then(|dir| agent_of_topic(&t.name, dir));
+                let agent = agent_of_topic(&t.name, &agents_dir);
                 TopicSummary {
                     name: t.name,
                     channel: t.channel,
@@ -912,6 +922,7 @@ mod exchange_route_auth_tests {
             auth_token: token.map(String::from),
             inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(1).0),
             ws_shutdown: CancellationToken::new(),
+            agents_dir: PathBuf::from("/nonexistent/agents"),
         })
     }
 

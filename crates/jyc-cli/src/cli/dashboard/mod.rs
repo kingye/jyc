@@ -2378,8 +2378,9 @@ mod tests {
                 .map(|x| buffer[(x, y)].symbol().to_string())
                 .collect()
         };
-        // The `→ ` gutter is reserved on the header row too, so the labels
-        // start two columns in.
+        // Nothing is selected here, so ratatui reserves no `→ ` gutter at all
+        // and the header starts at x=0; the assertions trim rather than pin an
+        // offset, which a selection would shift.
         let header = row(0);
         assert!(header.trim_start().starts_with("Agent"), "got: {header:?}");
         assert!(header.contains("Topic"), "got: {header:?}");

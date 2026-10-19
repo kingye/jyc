@@ -372,10 +372,10 @@ impl TopicManager {
                 let state = resolved.join(".jyc");
                 jyc_types::state_dir::register_if_absent(pin_name, &state);
                 work_dir = crate::topic_path::topic_work_dir_at(&resolved, pin_name);
-                if state.is_dir() {
-                    if let Err(e) = crate::topic_path::record_topic_work_dir(&state, &work_dir) {
-                        tracing::debug!(error = %e, "Could not record a restored topic's working dir");
-                    }
+                if state.is_dir()
+                    && let Err(e) = crate::topic_path::record_topic_work_dir(&state, &work_dir)
+                {
+                    tracing::debug!(error = %e, "Could not record a restored topic's working dir");
                 }
                 pin_name.to_string()
             };

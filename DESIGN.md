@@ -3121,29 +3121,97 @@ wscat -c ws://127.0.0.1:9876/ws/feishu_bot/issue-42 \
 
 ### TUI Dashboard Layout
 
+The TUI has two screens and one set of pane renderers: the **overview** (topics
+table, topic info pane, activity pane) and the **chat screen** (explorer,
+conversation, and the same two panes). Nothing is drawn inside a frame of its
+own — a pane draws only the edges that separate it from a neighbour, and leaves
+the ones that sit on the screen boundary open. Every border goes through
+`pane_border_style`: `PANE_BORDER` (DarkGray) at rest, `PANE_BORDER_FOCUSED`
+(cyan) while that pane owns the keys. No pane carries a title.
+
+#### Overview
+
 ```
-┌─ JYC Dashboard ──────────────────────────────────────────────────┐
-│ ┌─ Channels ──────────────────────────────────────────────────┐  │
-│ │ ● emf (github)     ● networkcalc (github)                   │  │
-│ └─────────────────────────────────────────────────────────────┘  │
-│ ┌─ Topics (4) ───────────────────────────────────────────────┐  │
-│ │ Topic          Channel     Pattern     Status     Tokens   │  │
-│ │ issue-42        emf         planner     Processing 45K/120K │  │
-│ │ pr-43           emf         developer   Idle       12K/120K │  │
-│ │ review-pr-43    emf         reviewer    Queued     -        │  │
-│ │ issue-55        networkcalc planner     Processing 89K/120K │  │
-│ └─────────────────────────────────────────────────────────────┘  │
-│ ┌─ Details: issue-42 ─────────────────────────────────────────┐  │
-│ │ Channel: emf  Pattern: planner                               │  │
-│ │ Model: anthropic/claude-opus-4-6  Mode: build                    │  │
-│ │ Tokens: 45231 / 120000 (37%)                                 │  │
-│ │ Status: Processing                                           │  │
-│ └─────────────────────────────────────────────────────────────┘  │
-│ 2 active / 4 topics │ 156 recv │ 2 err │ up 1h03m │ v0.2.1   │
-└──────────────────────────────────────────────────────────────────┘
+Not connected: connection refused
+
+  Agent     Topic       Pattern    Status     Context    Last Active  
+──────────────────────────────────────────────────────────────────────
+→ jyc       jyc         pipe       idle       0/120K     2m ago       │ Topic: issue-42       
+  invoice   invoice     feishu     processing 45K/120K   now          │ Channel: emf          
+                                                                      │ Pattern: planner      
+                                                                      │ Model: claude-opus-4-8
+                                                                      │ Mode: build           
+                                                                      │ Branch: feat/issue-42 
+                                                                      │ Tokens: 45231/120000  
+                                                                      │ Total input: 90311    
+                                                                      │ Cache hits: 80120     
+                                                                      │ Changed files (2):    
+                                                                      │   crates/…/mod.rs     
+                                                                      │ ───────────────────── 
+                                                                      │ JYC AI v0.6.0         
+                                                                      │ 2 active / 4 thread   
+──────────────────────────────────────────────────────────────────────────────────────────────
+2m  reply sent · emf
+2m  err  ·  emf  ·  unhandled
 ```
 
-Key bindings: `q`/`Esc` quit, `↑`/`↓`/`j`/`k` select topic, `r` force refresh.
+- **Status strip** — one line at the very top, drawn *only* when there is
+  something to report: `Not connected: …` in red while the poll is failing,
+  `Connecting…` before the first poll lands. A loaded overview leaves the row
+  blank and the table starts below it.
+- **Topics table** (80% wide, borderless, no title) — one blank row of top
+  padding, then the header, then a full-width rule under it in `PANE_BORDER`,
+  then the topics. The `→ ` gutter plus `DIM` marks the selected row, and the
+  gutter is reserved on every row so a selection never shifts the columns.
+  Columns: Agent, Topic, Pattern, Status, Context, Last Active. Agent and Topic
+  share the width the dropped Channel column gave up.
+- **Topic info pane** (right 20%) — left border only, one row of top padding.
+  The topic detail (channel, pattern, model, mode, branch, token counts,
+  changed files) scrolls; the status sub-pane is pinned to the bottom behind a
+  gray top edge, carrying `JYC AI v<version>` plus the server stats in gray. A
+  transient message replaces that block with one yellow line for a few seconds.
+- **Activity pane** (bottom 20%) — top border only, because the other edges are
+  the screen edge or sit against the pane above. Internal entries and thinking
+  heartbeats are filtered out: they are dozens of identical markers that would
+  crowd out the events worth reading.
+
+#### Chat screen
+
+```
+┌────────────────────┬───────────────────────────────────────┬──────────────┐
+│ explorer           │ conversation (borderless)             │ topic info   │
+│ ● issue-42         │ message                               │ Topic: …     │
+│   └ sub-42         │ reply                                 │ Channel: …   │
+│ ● issue-55         │ progress tail                         │ Model: …     │
+│                    │ input                                 │              │
+├────────────────────┤──────────────────────────────────────────────────────┤
+│                    │ activity pane (20% / 80% / full)
+└────────────────────┴──────────────────────────────────────────────────────┘
+```
+
+- **Explorer** (left 20%, leader `e`) — the topic tree, with a subagent nested
+  under the topic that spawned it.
+- **Conversation** (80%) — borderless; messages, the progress tail and the
+  input field.
+- **Topic info pane** and **activity pane** are the same renderers the overview
+  uses. The activity pane takes 20% / 80% / the full height (leader `a`), and
+  there is no bottom status bar here: the status sub-pane lives inside the info
+  pane, and zen mode (leader `z`) hides every pane and restores them on exit.
+
+#### Keys
+
+Overview: `↑`/`↓`/`j`/`k` move the cursor, `Enter` opens the selected topic's
+chat, `Tab` cycles focus (table → info pane → activity pane), `R` reloads the
+server config, `gg`/`G` jump to the top/bottom of the focused pane and
+`PageUp`/`PageDown`/`Ctrl+B`/`Ctrl+F` scroll it. `Ctrl+P` opens the leader
+popup, `Ctrl+Q` quits.
+
+Leader (`Ctrl+P`): `c` open chat (focus chat on the chat screen) · `r` reload
+config · `q` quit · `e` explorer · `a` activity pane · `i` info pane · `s`
+status sub-pane · `z` zen · `m` mouse capture · `t` thinking · `T` tool detail ·
+`p` minimal progress · `o` open in `$EDITOR` · `x` clear input · `d` back to the
+overview · `gg`/`G` scroll to top/bottom. Chat adds `Ctrl+C` to cancel the
+topic's in-flight turn.
 
 ### Dashboard Cross-Channel Topic Chat
 

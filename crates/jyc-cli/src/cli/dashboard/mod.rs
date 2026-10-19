@@ -1550,8 +1550,9 @@ fn render_status_line(frame: &mut Frame, area: Rect, line: Line<'static>) {
 ///
 /// The table carries no border and no title: the info pane's left border is the
 /// divider on its right and the activity pane's top border the one below, so a
-/// frame of its own would only double them up. With the channels bar gone the
-/// table starts at the top of the screen instead of below a closed edge.
+/// frame of its own would only double them up. Its first row is the blank
+/// padding the info pane's own content also starts below, and the rule under
+/// the header is drawn in the same resting border colour as the pane borders.
 fn render_topics(frame: &mut Frame, area: Rect, app: &mut App) {
     // Nothing loaded yet — the panes around it still draw.
     let Some(state) = &app.state else {

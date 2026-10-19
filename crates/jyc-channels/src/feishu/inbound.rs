@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use jyc_types::{
     ChannelMatcher, ChannelPattern, InboundAdapterOptions, InboundMessage, PatternMatch,
+    match_keywords,
 };
 use jyc_utils::helpers::sanitize_for_filesystem;
 
@@ -168,20 +169,13 @@ pub fn feishu_match_message(
                 .text
                 .as_deref()
                 .or(message.content.markdown.as_deref())
-                .unwrap_or("")
-                .to_lowercase();
+                .unwrap_or("");
 
-            let keyword_matches = keywords.iter().any(|kw| body.contains(&kw.to_lowercase()));
-
-            if !keyword_matches {
-                matches = false;
-            } else {
-                let matched_kw: Vec<&str> = keywords
-                    .iter()
-                    .filter(|kw| body.contains(&kw.to_lowercase()))
-                    .map(|s| s.as_str())
-                    .collect();
-                match_details.insert("keywords".to_string(), matched_kw.join(","));
+            match match_keywords(keywords, body) {
+                Some(hits) => {
+                    match_details.insert("keywords".to_string(), hits);
+                }
+                None => matches = false,
             }
         }
 

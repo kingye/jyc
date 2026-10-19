@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use jyc_types::{
     ChannelMatcher, ChannelPattern, InboundAdapter, InboundAdapterOptions, InboundMessage,
-    PatternMatch,
+    PatternMatch, match_keywords,
 };
 use jyc_utils::helpers::sanitize_for_filesystem;
 
@@ -101,18 +101,18 @@ pub fn wecom_match_message(
 
         // --- Keywords rule ---
         if let Some(ref keywords) = pattern.rules.keywords {
+            // An empty list reads as "not configured" here rather than
+            // "matches nothing": skip the pattern instead of the message.
             if keywords.is_empty() {
                 continue;
             }
 
-            let body_lower = message.content.text.as_deref().unwrap_or("").to_lowercase();
+            let body = message.content.text.as_deref().unwrap_or("");
 
-            let keyword_match = keywords
-                .iter()
-                .any(|k| body_lower.contains(&k.to_lowercase()));
-            if !keyword_match {
+            if match_keywords(keywords, body).is_none() {
                 matches = false;
             } else {
+                // WeCom records every configured keyword, not just the hits.
                 match_details.insert("keywords".to_string(), keywords.join(","));
             }
         }

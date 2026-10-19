@@ -66,8 +66,26 @@ pub(crate) fn branch_for_topic_path(path: &Path) -> Option<String> {
     }
 }
 
-/// Run `git diff --name-only <revspec>` in `cwd` and return the trimmed
-/// stdout lines, or `None` on spawn / non-zero exit / non-UTF8.
+/// Run `git <args>` in `cwd` and return its stdout when git exits 0.
+///
+/// `None` on spawn failure or non-zero exit. stdout is captured (never
+/// inherited), so a query that prints on success — `rev-parse` does — cannot
+/// leak into jyc's own output. Invalid UTF-8 is replaced rather than
+/// rejected: git paths are bytes, and a mangled display name beats dropping
+/// the whole diff. Read-only queries deliberately carry no error detail —
+/// "no repo", "no commits" and "git missing" all read the same to callers.
+fn git_stdout(cwd: &Path, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 /// Run `git diff --numstat <revspec>` and parse each line as
 /// `(path, counts)`. A binary file reports `-`/`-` and is skipped
 /// entirely — it has no line counts to show. Run with `--no-renames` so
@@ -75,16 +93,9 @@ pub(crate) fn branch_for_topic_path(path: &Path) -> Option<String> {
 /// delete+add pair, which is also what the counts describe. Returns
 /// `None` on spawn / non-zero exit, like the other diff runners.
 fn run_git_diff_numstat(cwd: &Path, revspec: &str) -> Option<Vec<(String, LineStats)>> {
-    let output = std::process::Command::new("git")
-        .args(["diff", "--numstat", "--no-renames", revspec])
-        .current_dir(cwd)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
+    let stdout = git_stdout(cwd, &["diff", "--numstat", "--no-renames", revspec])?;
     let mut out = Vec::new();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
+    for line in stdout.lines() {
         let mut fields = line.split('\t');
         let (Some(insertions), Some(deletions), Some(path)) =
             (fields.next(), fields.next(), fields.next())
@@ -119,16 +130,9 @@ fn run_git_diff_numstat(cwd: &Path, revspec: &str) -> Option<Vec<(String, LineSt
 /// surface (YAGNI for now). For renames / copies, the LAST
 /// tab-separated field is the post-rename path; the old name is dropped.
 fn run_git_diff_name_status(cwd: &Path, revspec: &str) -> Option<Vec<(ChangeKind, String)>> {
-    let output = std::process::Command::new("git")
-        .args(["diff", "--name-status", revspec])
-        .current_dir(cwd)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
+    let stdout = git_stdout(cwd, &["diff", "--name-status", revspec])?;
     let mut out = Vec::new();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
+    for line in stdout.lines() {
         // `<status>\t<path>` for most kinds, `<status>\t<old>\t<new>` for renames/copies.
         let mut fields = line.split('\t');
         let Some(status) = fields.next() else {
@@ -182,15 +186,10 @@ fn diff_rows(cwd: &Path, revspec: &str) -> Option<Vec<(ChangeKind, String, Optio
 /// default branch has another name and no origin remote.
 fn base_ref(cwd: &Path) -> Option<String> {
     for candidate in ["origin/HEAD", "main", "master"] {
-        // `.output()` (not `.status()`) so the child's stdout is captured:
-        // a successful `rev-parse` prints the resolved SHA, which an
-        // inherited stdout would leak into jyc's own output.
-        let out = std::process::Command::new("git")
-            .args(["rev-parse", "--verify", "--quiet", candidate])
-            .current_dir(cwd)
-            .output()
-            .ok()?;
-        if out.status.success() {
+        // `git_stdout` captures stdout (it never inherits it), so a
+        // successful `rev-parse` — which prints the resolved SHA — stays
+        // out of jyc's own output.
+        if git_stdout(cwd, &["rev-parse", "--verify", "--quiet", candidate]).is_some() {
             return Some(candidate.to_string());
         }
     }
@@ -367,8 +366,21 @@ mod branch_resolution_tests {
 mod changed_files_resolution_tests {
     use super::{branch_for_topic_path, changed_files_for_topic_path};
     use jyc_types::{ChangeKind, ChangedFileEntry, LineStats};
+    use std::path::Path;
     use std::process::Command;
     use tempfile::tempdir;
+
+    /// Run `git <args>` in `dir`. Panics only when git cannot be spawned —
+    /// a non-zero exit is returned to the caller, which is what lets the
+    /// tests script a repo without asserting on every step. Each test binds
+    /// it to its own dir as `let run = |args| git_cmd(dir.path(), args);`.
+    fn git_cmd(dir: &Path, args: &[&str]) -> std::process::Output {
+        Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git failed")
+    }
 
     /// Init a git repo with a `main` branch and an initial empty commit.
     /// Returns the tempdir; caller is responsible for keeping it alive
@@ -381,13 +393,7 @@ mod changed_files_resolution_tests {
     /// empty commit.
     fn git_init_with_branch(branch: &str) -> tempfile::TempDir {
         let dir = tempdir().unwrap();
-        let run = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(dir.path())
-                .output()
-                .expect("git failed")
-        };
+        let run = |args: &[&str]| git_cmd(dir.path(), args);
         // Ensure deterministic branch name + committer across CI hosts.
         run(&["init", "-q", "-b", branch]);
         run(&[
@@ -411,13 +417,7 @@ mod changed_files_resolution_tests {
     #[test]
     fn changed_files_and_branch_work_in_a_git_worktree() {
         let repo = git_init_with_main();
-        let run = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(repo.path())
-                .output()
-                .expect("git failed")
-        };
+        let run = |args: &[&str]| git_cmd(repo.path(), args);
         std::fs::write(repo.path().join("a.txt"), "base\n").unwrap();
         run(&["add", "a.txt"]);
         run(&[
@@ -483,13 +483,7 @@ mod changed_files_resolution_tests {
     #[test]
     fn lists_files_against_master_default_branch() {
         let dir = git_init_with_branch("master");
-        let run = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(dir.path())
-                .output()
-                .expect("git failed")
-        };
+        let run = |args: &[&str]| git_cmd(dir.path(), args);
         run(&["checkout", "-q", "-b", "feature"]);
         std::fs::write(dir.path().join("alpha.rs"), "fn a() {}").unwrap();
         run(&["add", "alpha.rs"]);
@@ -522,13 +516,7 @@ mod changed_files_resolution_tests {
     #[test]
     fn prefers_origin_head_over_local_main() {
         let dir = git_init_with_main();
-        let run = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(dir.path())
-                .output()
-                .expect("git failed")
-        };
+        let run = |args: &[&str]| git_cmd(dir.path(), args);
         // A `master` branch that `main` does not contain, then point
         // origin/HEAD at it — the base probe must pick master, not main.
         run(&["checkout", "-q", "-b", "master"]);
@@ -583,13 +571,7 @@ mod changed_files_resolution_tests {
     #[test]
     fn falls_back_to_dirty_only_when_no_base_resolves() {
         let dir = git_init_with_branch("develop");
-        let run = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(dir.path())
-                .output()
-                .expect("git failed")
-        };
+        let run = |args: &[&str]| git_cmd(dir.path(), args);
         std::fs::write(dir.path().join("tracked.rs"), "v1").unwrap();
         run(&["add", "tracked.rs"]);
         run(&[
@@ -624,13 +606,7 @@ mod changed_files_resolution_tests {
     #[test]
     fn lists_files_committed_on_feature_branch() {
         let dir = git_init_with_main();
-        let run = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(dir.path())
-                .output()
-                .expect("git failed")
-        };
+        let run = |args: &[&str]| git_cmd(dir.path(), args);
         // Create a feature branch with two commits touching distinct files.
         run(&["checkout", "-q", "-b", "feature"]);
         std::fs::write(dir.path().join("alpha.rs"), "fn a() {}").unwrap();
@@ -691,13 +667,7 @@ mod changed_files_resolution_tests {
         let outer = tempdir().unwrap();
         let repo = outer.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
-        let run = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(&repo)
-                .output()
-                .expect("git failed")
-        };
+        let run = |args: &[&str]| git_cmd(&repo, args);
         run(&["init", "-q", "-b", "main"]);
         run(&[
             "-c",
@@ -748,13 +718,7 @@ mod changed_files_resolution_tests {
         // collapse this to `None` — that would hide the entire
         // section just because `main` is missing.
         let dir = git_init_with_main();
-        let run = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(dir.path())
-                .output()
-                .expect("git failed")
-        };
+        let run = |args: &[&str]| git_cmd(dir.path(), args);
         // Drop `main` so the branch-diff fails, but keep HEAD valid.
         run(&["branch", "-D", "main"]);
         assert_eq!(
@@ -772,13 +736,7 @@ mod changed_files_resolution_tests {
         // dirty pass used `--name-only`, so every such row fell back to
         // `Modified` and lost its glyph until the commit landed.
         let dir = git_init_with_main();
-        let run = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(dir.path())
-                .output()
-                .expect("git failed")
-        };
+        let run = |args: &[&str]| git_cmd(dir.path(), args);
         run(&["checkout", "-q", "-b", "feature"]);
         std::fs::write(dir.path().join("draft.rs"), "fn d() {}").unwrap();
         // Stage but don't commit — leaves it tracked + dirty.
@@ -804,13 +762,7 @@ mod changed_files_resolution_tests {
         // Path committed earlier on the branch AND edited again since.
         // The single entry must have `uncommitted: true` (more-noisy wins).
         let dir = git_init_with_main();
-        let run = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(dir.path())
-                .output()
-                .expect("git failed")
-        };
+        let run = |args: &[&str]| git_cmd(dir.path(), args);
         run(&["checkout", "-q", "-b", "feature"]);
         std::fs::write(dir.path().join("shared.rs"), "fn s() {}\n").unwrap();
         run(&["add", "shared.rs"]);
@@ -848,13 +800,7 @@ mod changed_files_resolution_tests {
         // --name-status main...HEAD`). The entry must surface with
         // `change: ChangeKind::Deleted`.
         let dir = git_init_with_main();
-        let run = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(dir.path())
-                .output()
-                .expect("git failed")
-        };
+        let run = |args: &[&str]| git_cmd(dir.path(), args);
         // Seed `main` with a tracked file so there's something to delete.
         std::fs::write(dir.path().join("doomed.rs"), "fn d() {}\n").unwrap();
         run(&["add", "doomed.rs"]);
@@ -904,13 +850,7 @@ mod changed_files_resolution_tests {
         // (the new path) and labels the kind as `Modified` (per YAGNI
         // — no separate `Renamed` variant).
         let dir = git_init_with_main();
-        let run = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(dir.path())
-                .output()
-                .expect("git failed")
-        };
+        let run = |args: &[&str]| git_cmd(dir.path(), args);
         // Seed `main` with a tracked file.
         std::fs::write(dir.path().join("original.rs"), "fn o() {}\n").unwrap();
         run(&["add", "original.rs"]);
@@ -964,13 +904,7 @@ mod changed_files_resolution_tests {
         // `Modified`, and the numstat pass on the same revspec supplies
         // its counts.
         let dir = git_init_with_main();
-        let run = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(dir.path())
-                .output()
-                .expect("git failed")
-        };
+        let run = |args: &[&str]| git_cmd(dir.path(), args);
         // Seed `main` with a tracked file.
         std::fs::write(dir.path().join("existing.rs"), "fn e() {}\n").unwrap();
         run(&["add", "existing.rs"]);
@@ -1009,13 +943,7 @@ mod changed_files_resolution_tests {
         // `git rm` but not yet committed must show `-` and its counts
         // before the commit, not a blank prefix.
         let dir = git_init_with_main();
-        let run = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(dir.path())
-                .output()
-                .expect("git failed")
-        };
+        let run = |args: &[&str]| git_cmd(dir.path(), args);
         std::fs::write(dir.path().join("doomed.rs"), "fn d() {}\n").unwrap();
         run(&["add", "doomed.rs"]);
         run(&[
@@ -1050,13 +978,7 @@ mod changed_files_resolution_tests {
         // `--numstat` prints `-`/`-` for a binary file. The row must
         // ship without counts rather than with a made-up `+0 -0`.
         let dir = git_init_with_main();
-        let run = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(dir.path())
-                .output()
-                .expect("git failed")
-        };
+        let run = |args: &[&str]| git_cmd(dir.path(), args);
         run(&["checkout", "-q", "-b", "feature"]);
         // The NUL byte is what makes git call it binary.
         std::fs::write(dir.path().join("blob.bin"), [0u8, 1, 2, 0, 255, 10]).unwrap();

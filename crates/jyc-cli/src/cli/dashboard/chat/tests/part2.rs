@@ -188,9 +188,9 @@ fn hiding_explorer_returns_focus_to_chat_pane() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.toggle_explorer();
-    app.chat.focus = ChatFocus::ExplorerPane;
+    app.chat.focus = Focus::ExplorerPane;
     app.chat.toggle_explorer();
-    assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    assert_eq!(app.chat.focus, Focus::ChatPane);
 }
 
 #[test]
@@ -201,26 +201,26 @@ fn focus_cycle_includes_explorer_only_when_visible() {
 
     // Hidden: ChatPane → MessageArea → ChatPane (no activity pane).
     app.chat.toggle_focus();
-    assert_eq!(app.chat.focus, ChatFocus::MessageArea);
+    assert_eq!(app.chat.focus, Focus::MessageArea);
     app.chat.toggle_focus();
-    assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    assert_eq!(app.chat.focus, Focus::ChatPane);
 
     // Opening the explorer jumps focus straight into it so j/k/Enter
     // are immediately usable; Tab then returns to the chat input.
     app.chat.toggle_explorer();
-    assert_eq!(app.chat.focus, ChatFocus::ExplorerPane);
+    assert_eq!(app.chat.focus, Focus::ExplorerPane);
     app.chat.toggle_focus();
-    assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    assert_eq!(app.chat.focus, Focus::ChatPane);
 }
 
 #[test]
 fn opening_explorer_moves_focus_into_it() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
-    assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    assert_eq!(app.chat.focus, Focus::ChatPane);
     app.chat.toggle_explorer();
     assert!(app.chat.explorer_visible);
-    assert_eq!(app.chat.focus, ChatFocus::ExplorerPane);
+    assert_eq!(app.chat.focus, Focus::ExplorerPane);
 }
 
 #[tokio::test]
@@ -301,7 +301,7 @@ async fn explorer_switch_sets_pending_hydrate_and_hides_explorer() {
 
     assert!(!app.chat.explorer_visible);
     assert_eq!(app.chat.topic.as_deref(), Some("other"));
-    assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    assert_eq!(app.chat.focus, Focus::ChatPane);
     assert_eq!(
         app.pending_hydrate.as_ref(),
         Some(&("local_dev".to_string(), "other".to_string()))
@@ -371,10 +371,10 @@ fn toggle_info_pane_independent_and_refocuses() {
 
     // Hiding the info pane while focused moves focus to the chat pane.
     app.chat.toggle_info_pane();
-    app.chat.focus = ChatFocus::InfoPane;
+    app.chat.focus = Focus::InfoPane;
     app.chat.toggle_info_pane();
     assert!(!app.chat.info_visible);
-    assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    assert_eq!(app.chat.focus, Focus::ChatPane);
 }
 
 #[test]
@@ -426,7 +426,7 @@ fn explorer_selection_uses_arrow_gutter_and_keeps_status_dot() {
     let mut app = App::new(rx, None);
     app.chat.explorer_visible = true;
     // Focus stays on the chat input: only the border color reacts to focus.
-    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.focus = Focus::ChatPane;
     app.state = Some(jyc_types::InspectOverview {
         topics: vec![explorer_topic("selected"), explorer_topic("other")],
         ..Default::default()
@@ -503,7 +503,7 @@ fn explorer_scrolls_to_keep_the_cursor_visible() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.explorer_visible = true;
-    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.focus = Focus::ChatPane;
     app.state = Some(jyc_types::InspectOverview {
         topics: (0..20)
             .map(|i| explorer_topic(&format!("t{i:02}")))
@@ -2327,13 +2327,13 @@ fn pane_borders_share_the_palette_resting_and_focused() {
     let (w, h) = (40, 12);
 
     // Explorer: bordered on its right edge only.
-    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.focus = Focus::ChatPane;
     assert_eq!(
         border_fg_at(w, h, w - 1, 3, |f, a| render_explorer(f, a, &app)),
         PANE_BORDER,
         "the resting explorer border carries the shared colour"
     );
-    app.chat.focus = ChatFocus::ExplorerPane;
+    app.chat.focus = Focus::ExplorerPane;
     assert_eq!(
         border_fg_at(w, h, w - 1, 3, |f, a| render_explorer(f, a, &app)),
         PANE_BORDER_FOCUSED,
@@ -2341,13 +2341,13 @@ fn pane_borders_share_the_palette_resting_and_focused() {
     );
 
     // Topic info pane: bordered on its left edge only on the chat screen.
-    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.focus = Focus::ChatPane;
     assert_eq!(
         border_fg_at(w, h, 0, 3, |f, a| render_topic_info_pane(f, a, &mut app)),
         PANE_BORDER,
         "the info pane used to inherit the terminal default here"
     );
-    app.chat.focus = ChatFocus::InfoPane;
+    app.chat.focus = Focus::InfoPane;
     assert_eq!(
         border_fg_at(w, h, 0, 3, |f, a| render_topic_info_pane(f, a, &mut app)),
         PANE_BORDER_FOCUSED
@@ -2363,8 +2363,6 @@ fn pane_borders_share_the_palette_resting_and_focused() {
                 0,
                 0,
                 focused,
-                Borders::TOP,
-                false,
             )),
             want,
             "activity border should be {want:?} when focused={focused}"
@@ -2392,16 +2390,7 @@ fn activity_rows_render_the_same_instant_identically() {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_activity_log_inner(
-                    frame,
-                    area,
-                    std::slice::from_ref(&entry),
-                    0,
-                    0,
-                    false,
-                    Borders::TOP,
-                    false,
-                );
+                render_activity_log_inner(frame, area, std::slice::from_ref(&entry), 0, 0, false);
             })
             .expect("draw");
         terminal.backend().buffer().clone()
@@ -2428,7 +2417,7 @@ fn chat_screen_separators_all_rest_in_one_colour() {
     app.chat.visible = true;
     app.chat.explorer_visible = true;
     app.chat.toggle_activity(); // bottom 20%
-    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.focus = Focus::ChatPane;
 
     // Explorer = 20% of the width; info pane = 20% of the remaining 80%;
     // activity pane = the bottom 20% of the right column.

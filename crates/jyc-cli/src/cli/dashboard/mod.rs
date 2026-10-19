@@ -2470,7 +2470,7 @@ mod tests {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
-        let draw = |mut app: App| -> (String, String) {
+        let draw = |mut app: App| -> (String, String, String) {
             let backend = TestBackend::new(40, 8);
             let mut terminal = Terminal::new(backend).expect("terminal");
             terminal
@@ -2482,23 +2482,28 @@ mod tests {
                     .map(|x| buffer[(x, y)].symbol().to_string())
                     .collect()
             };
-            (row(0), row(1))
+            // The table takes the left 80% of the screen and the info pane's
+            // left border sits at column 32, so only the table's own columns
+            // can be blank — the full row is never empty.
+            let table_row = |y: u16| -> String { row(y).chars().take(32).collect() };
+            (row(0), table_row(0), row(1))
         };
 
         let mut loading = make_test_app();
-        let (top, _) = draw(make_test_app());
+        let (top, _, _) = draw(make_test_app());
         assert!(top.starts_with("Connecting..."), "got: {top:?}");
 
         // Loaded: no status line, so the table's own header takes the first
         // row the column has, below the blank one.
         loading.state = Some(make_overview_with_topics(&["alpha"]));
-        let (blank, header) = draw(loading);
+        let (full_blank, blank, header) = draw(loading);
         assert!(blank.trim().is_empty(), "got: {blank:?}");
+        assert_eq!(full_blank.chars().nth(32), Some('│'), "got: {full_blank:?}");
         assert!(header.trim_start().starts_with("Agent"), "got: {header:?}");
 
         let mut broken = make_test_app();
         broken.error = Some("connection refused".to_string());
-        let (top, _) = draw(broken);
+        let (top, _, _) = draw(broken);
         assert!(top.starts_with("Not connected:"), "got: {top:?}");
     }
 

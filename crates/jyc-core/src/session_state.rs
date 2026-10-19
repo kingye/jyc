@@ -208,16 +208,12 @@ struct AgentSessionState {
     #[serde(default)]
     context_input_tokens: u64,
     #[serde(default)]
-    #[allow(dead_code)]
     total_input_tokens: u64,
     #[serde(default)]
-    #[allow(dead_code)]
     total_output_tokens: u64,
     #[serde(default)]
-    #[allow(dead_code)]
     total_cache_hit_tokens: u64,
     #[serde(default)]
-    #[allow(dead_code)]
     total_cache_creation_tokens: u64,
     #[serde(default)]
     total_reasoning_tokens: u64,

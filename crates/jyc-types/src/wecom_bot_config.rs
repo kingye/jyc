@@ -20,10 +20,6 @@ fn default_auth_timeout() -> u64 {
     10
 }
 
-fn default_true() -> bool {
-    true
-}
-
 /// WeCom Smart Robot (wecom_bot) configuration for a channel.
 ///
 /// Uses WebSocket long connection (`wss://openws.work.weixin.qq.com`)
@@ -63,7 +59,7 @@ pub struct WecomBotConfig {
     pub auth_timeout_secs: u64,
 
     /// Whether to auto-reconnect on disconnect (default: true)
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::default_true")]
     pub auto_reconnect: bool,
 }
 

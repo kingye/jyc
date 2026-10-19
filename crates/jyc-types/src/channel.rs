@@ -234,9 +234,36 @@ pub struct InboundAdapterOptions {
     pub attachment_config: Option<InboundAttachmentConfig>,
 }
 
+/// Match a message body against a pattern's keyword list.
+///
+/// Case-insensitive substring match, OR within the list: any hit satisfies
+/// the rule. Returns the comma-joined keywords that actually hit — for
+/// [`PatternMatch::matches`] details — or `None` when none did. An empty
+/// list matches nothing (it is not "no constraint").
+///
+/// Callers pass the body in rather than an [`InboundMessage`] because
+/// channels disagree on what counts as the body: some fall back to markdown,
+/// some use plain text only, and WeCom treats an empty keyword list as
+/// "not configured" (skip the pattern) rather than as a non-match.
+pub fn match_keywords(keywords: &[String], body: &str) -> Option<String> {
+    let body_lower = body.to_lowercase();
+    let matched: Vec<&str> = keywords
+        .iter()
+        .filter(|kw| body_lower.contains(&kw.to_lowercase()))
+        .map(String::as_str)
+        .collect();
+
+    if matched.is_empty() {
+        None
+    } else {
+        Some(matched.join(","))
+    }
+}
+
 /// Channel-specific message matching and topic name derivation.
 ///
 /// Pure-logic trait used by MessageRouter. Every channel type implements this.
+///
 /// Separated from InboundAdapter to allow use without the lifecycle (start/stop) —
 /// e.g., email uses ImapMonitor for the connection lifecycle but EmailMatcher
 /// for pattern matching and topic name derivation.
@@ -1006,6 +1033,24 @@ impl LabelRule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_match_keywords() {
+        let kws = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        // Hits keep configuration order, join with commas, and match
+        // case-insensitively on both sides.
+        assert_eq!(
+            match_keywords(&kws(&["deploy", "Release"]), "time to RELEASE now"),
+            Some("Release".to_string())
+        );
+
+        // No hit means no match and no details.
+        assert_eq!(match_keywords(&kws(&["deploy"]), "nothing here"), None);
+
+        // An empty list matches nothing — it is not "no constraint".
+        assert_eq!(match_keywords(&[], "anything"), None);
+    }
 
     #[test]
     fn test_topic_path_deserialization() {

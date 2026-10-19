@@ -101,20 +101,20 @@ undo/redo, and standard readline-style editing keys.
 | `/` popup: `Tab` | Complete the highlighted row — writes it into the input followed by one space, which opens the next level (or closes the popup when nothing is left to complete) |
 | `/` popup: `Enter` | Sends the command at the first (command) level. Below it `Enter` behaves like `Tab`, so sending a command with arguments takes a second `Enter`; with nothing to select it sends what was typed |
 | `Esc` | Message-area focus: drops an open selection first, the next `Esc` goes back to the input. Explorer focus → back to input. Does not close the chat — use the palette (`open dashboard`) |
-| `Ctrl+P` | Open the leader-key popup: navigation (`open dashboard`, `reload config`, `quit`), pane actions (`z` zen, `e` explorer, `a` activity, `s` status bar, `i` topic info, `o` editor, scroll), and `toggle mouse` (flips terminal mouse capture for the chat message area; off restores tmux/terminal-native text selection) |
+| `Ctrl+P` | Open the leader-key popup: navigation (`open dashboard`, `reload config`, `quit`), pane actions (`z` zen, `e` explorer, `a` activity, `s` status block, `i` topic info, `o` editor, scroll), and `toggle mouse` (flips terminal mouse capture for the chat message area; off restores tmux/terminal-native text selection) |
 | `Ctrl+P` → `o` | Open `$VISUAL` / `$EDITOR` (fallback: `vi`) to edit the chat input |
 | `Ctrl+P` → `/` | Open the `/` command popup (same as typing `/` in an empty input, but works from any focus) |
-| `Tab` | Cycle focus: Input → Message area → Info pane → Activity pane → Explorer pane (each skipped when hidden) |
+| `Tab` | Cycle focus: Input → Message area → Info pane → Activity pane → Explorer pane (each skipped when hidden). On the overview screen: Topics table → Info pane → Activity pane |
 | `PgUp` / `PgDn` (or `Ctrl+B` / `Ctrl+F`) | Scroll focused pane. In the message pane the cursor travels with the view, so it keeps the screen row it was on |
 | Digits before a movement or yank key | Count rows: `5j` moves five, `y3y` copies three, `20k` moves twenty up (capped at 999) |
 | `yy` / `y3y` / `3yy` | Copy that many transcript rows, starting at the message cursor, to the clipboard |
 | `y` with a selection | Copy every selected row (both ends included), then drop the selection and move the cursor to its first row |
 | `Ctrl+P` → `a` | Toggle activity pane: hidden ↔ bottom 20% |
 | `Ctrl+P` → `e` | Toggle the topic explorer pane (left side); `Enter` in it switches the chat to the selected topic. Subagents are nested under the topic that spawned them — a tree, deepest last |
-| `Ctrl+P` → `s` | Toggle the bottom status bar |
+| `Ctrl+P` → `s` | Toggle the status block pinned to the bottom of the topic info pane |
 | `Ctrl+P` → `i` | Toggle the topic info pane (right side). It lists the selected topic's subagents as a tree, each with the explorer's status dot |
 | `Ctrl+P` → `c` | Focus the chat message area, which shows the cursor bar (j/k/arrows move it, Shift selects, `y` copies); pressing any other key returns focus to the input (the key itself is consumed) |
-| `Ctrl+P` → `z` | Toggle zen mode: snapshot and hide all aux panes (activity, topic info, status bar, explorer); pressing again restores the exact pre-zen state |
+| `Ctrl+P` → `z` | Toggle zen mode: snapshot and hide all aux panes (activity, topic info, status block, explorer); pressing again restores the exact pre-zen state |
 | `Ctrl+P` → `p` | Toggle minimal progress mode (on by default): the chat progress tail collapses to a single animated line (`⠹ 12.4s · thinking... | bash` — spinner, loop elapsed, current phase, with the most recent tool kept after `|` so a thinking streak does not overwrite it), and the completed-turn thinking line is left out of the history |
 | `Ctrl+P` → `t` / `T` | Expand/collapse the thinking display (live tail and completed turns) / show the full multi-line tool-call input instead of the one-line summary |
 | `Ctrl+C` | Cancel current AI processing |
@@ -163,28 +163,40 @@ yanking there says `Nothing to copy`.
 
 ### Interface Layout
 
-Normal mode (default):
+Normal mode (default). The panes are the chat screen's own renderers — the
+same topic info pane, the same activity pane, the same status block — so
+the two screens cannot drift apart:
 
 ```
 ┌────────────────────────┐
 │ Channels bar           │
 ├────────────────────────┤
-│ Topics table          │
-├────────────────────────┤
-│ Detail panel (8 lines) │
-├────────────────────────┤
-│ Activity log           │
-├────────────────────────┤
-│ Help bar               │
-└────────────────────────┘
+│ Topics table          ││ Topic info  │
+│                        ││  (20% wide) │
+│                        ││  + status   │
+├────────────────────────┴┤             │
+│ Activity pane (20%)     │             │
+└────────────────────────┴─────────────┘
 ```
 
+`Tab` cycles the focus between the topics table, the info pane and the
+activity pane — all three are always on screen here. The info and activity
+panes take the chat screen's scroll keys (`j`/`k`, `↑`/`↓`, `PgUp`/`PgDn`,
+`G`, `gg`); the table keeps `j`/`k` for the row cursor and `Enter` to open
+the highlighted topic. The activity pane is keyboard-only — the overview
+does not answer the mouse wheel.
+
+The overview has no way to close any of its three panes: the visibility
+toggles belong to the chat screen, which is the only screen offering them.
+
 Chat mode (`c` toggled on). The channel bar is hidden; chat, topic info
-pane, activity pane, explorer pane, and status bar are individually
-togglable (`Ctrl+P` then `i` / `a` / `e` / `s`). The topic info pane
-and status bar are visible by default; zen mode (`Ctrl+P` then `z`)
-hides all auxiliary UI and restores the previous state when pressed
-again. `Ctrl+P` then `c` focuses the message area for keyboard
+pane, activity pane, explorer pane, and the info pane's status block are
+individually togglable (`Ctrl+P` then `i` / `a` / `e` / `s`). The topic
+info pane and status block are visible by default, the activity pane is
+not; opening a chat restores those defaults, so each one starts from them.
+zen mode (`Ctrl+P` then `z`) hides all auxiliary UI and restores the
+previous state when pressed again. `Ctrl+P` then `c` focuses the message
+area for keyboard
 scrolling; from any focused pane (message area, topic info, activity,
 explorer) pressing any key refocuses the input; the first keypress is
 consumed, so no stray characters land in the input. Each chat round has

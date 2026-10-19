@@ -3686,7 +3686,6 @@ impl ChatState {
 
     /// Handle a parsed `{"type":"activity",...}` or similar WS payload.
     /// Filters out duplicate / older events using `last_seen_id`.
-    #[allow(dead_code)]
     pub(super) fn handle_live_event(&mut self, payload: &serde_json::Value) {
         let channel = match payload.get("channel").and_then(|v| v.as_str()) {
             Some(c) => c.to_string(),
@@ -3870,7 +3869,6 @@ impl ChatState {
     /// Iterate over the live chat messages for the given (channel, topic).
     /// Used by the dashboard's poll loop to append new messages to the
     /// `chat.messages` vec shown in the chat pane.
-    #[allow(dead_code)]
     pub(super) fn live_chat_for(
         &self,
         channel: &str,

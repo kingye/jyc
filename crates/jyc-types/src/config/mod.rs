@@ -1284,16 +1284,6 @@ fn default_sse_read_timeout() -> u64 {
     120
 }
 
-#[allow(dead_code)]
-fn default_1_0() -> f64 {
-    1.0
-}
-
-#[allow(dead_code)]
-fn default_120_0() -> f64 {
-    120.0
-}
-
 fn default_auto_reset_threshold() -> f64 {
     0.95
 }

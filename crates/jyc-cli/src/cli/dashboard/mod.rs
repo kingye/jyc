@@ -2321,6 +2321,15 @@ mod tests {
                 .map(|x| buffer[(x, y)].symbol().to_string())
                 .collect()
         };
+        // Where a string starts, as a column: a row is one symbol per column
+        // but `→` is three bytes in a single one, so a byte offset is not an
+        // x — the two rows would read two apart with the columns aligned.
+        let column_of = |s: &str, needle: &str| -> u16 {
+            let at = s
+                .find(needle)
+                .unwrap_or_else(|| panic!("{needle:?} is not in {s:?}"));
+            s[..at].chars().count() as u16
+        };
         // Borderless: the table starts at the area's own x=0, the header on
         // y=0 and the first data row on y=1 — the `→ ` gutter occupies the
         // first two columns, then the Agent column, and only then the names.
@@ -2328,7 +2337,7 @@ mod tests {
         // changing the columns does not silently move what this pins.
         assert_eq!(buffer[(0, 1)].symbol(), "→", "selected row needs the arrow");
         let first = row(1);
-        let name_x = first.find("alpha").expect("the first topic's name") as u16;
+        let name_x = column_of(&first, "alpha");
         assert!(
             name_x > 2,
             "the name sits past the arrow gutter, at x={name_x}"
@@ -2347,7 +2356,7 @@ mod tests {
             "gutter stays blank off-cursor"
         );
         let second = row(2);
-        assert_eq!(second.find("beta").map(|x| x as u16), Some(name_x));
+        assert_eq!(column_of(&second, "beta"), name_x);
         assert!(!buffer[(name_x, 2)].modifier.contains(Modifier::DIM));
     }
 

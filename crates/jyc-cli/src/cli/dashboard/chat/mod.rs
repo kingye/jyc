@@ -3637,7 +3637,6 @@ impl ChatState {
     /// Seed the live activity/chat buffers with the result of a REST hydrate
     /// (initial fetch on topic selection). Sets `last_seen_id` to the
     /// highest id seen so duplicate WS events are dropped.
-    #[allow(dead_code)]
     pub(super) fn seed_live(
         &mut self,
         channel: &str,
@@ -3683,21 +3682,6 @@ impl ChatState {
         // the previous visit's max id here would skip every hydrated
         // historical row whose id ≤ old max.
         self.last_pushed_chat_id.insert(key, 0);
-    }
-
-    /// Handle a `{"type":"resync", "channel":..., "topic":...}` event by
-    /// clearing the live buffers for that topic. The caller should re-run
-    /// the REST hydrate (`get_topic_activity` + `get_topic_chat`) and
-    /// re-seed via `seed_live`.
-    #[allow(dead_code)]
-    pub(super) fn clear_live(&mut self, channel: &str, topic: &str) {
-        let key = (channel.to_string(), topic.to_string());
-        self.live_activity.remove(&key);
-        self.live_chat.remove(&key);
-        self.live_thinking.remove(&key);
-        self.live_processing.remove(&key);
-        self.last_seen_id.remove(&key);
-        self.last_pushed_chat_id.remove(&key);
     }
 
     /// Handle a parsed `{"type":"activity",...}` or similar WS payload.
@@ -3847,7 +3831,6 @@ impl ChatState {
 
     /// Get a snapshot of the live activity buffer for the given (channel, topic).
     /// Returns an empty slice if no live data has been seeded yet.
-    #[allow(dead_code)]
     pub(super) fn live_activity_for(
         &self,
         channel: &str,

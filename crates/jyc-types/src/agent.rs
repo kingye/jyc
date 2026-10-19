@@ -24,7 +24,6 @@ pub struct SkillMeta {
 pub struct QueueItem {
     pub topic_name: String,
     pub message: InboundMessage,
-    #[allow(dead_code)]
     pub pattern_match: PatternMatch,
     pub attachment_config: Option<InboundAttachmentConfig>,
     pub template: Option<String>,

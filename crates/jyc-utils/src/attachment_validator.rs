@@ -26,14 +26,9 @@ pub enum AttachmentValidationError {
 
     #[error("file not found: {0}")]
     FileNotFound(String),
-
-    #[error("cannot read file metadata: {0}")]
-    #[allow(dead_code)]
-    FileMetadataError(String),
 }
 
 /// Validates a single file against inbound attachment configuration.
-#[allow(dead_code)]
 pub async fn validate_inbound_file(
     file_path: &Path,
     filename: &str,

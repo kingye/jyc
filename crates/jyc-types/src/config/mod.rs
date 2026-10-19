@@ -56,7 +56,7 @@ pub enum McpServerKind {
     },
     Remote {
         url: String,
-        #[serde(default = "default_true")]
+        #[serde(default = "crate::default_true")]
         enabled: bool,
         /// Bearer token for authentication (without "Bearer " prefix).
         /// Sent as `Authorization: Bearer <token>` header with every request.
@@ -531,7 +531,7 @@ impl Default for GeneralConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct FooterConfig {
     /// Whether the footer is appended to replies (default: true)
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::default_true")]
     pub enabled: bool,
 }
 
@@ -639,7 +639,7 @@ pub struct ImapConfig {
     pub host: String,
     #[serde(default = "default_993")]
     pub port: u16,
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::default_true")]
     pub tls: bool,
     pub auth_timeout_ms: Option<u64>,
     pub username: String,
@@ -652,7 +652,7 @@ pub struct SmtpConfig {
     pub host: String,
     #[serde(default = "default_465")]
     pub port: u16,
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::default_true")]
     pub secure: bool,
     pub username: String,
     pub password: String,
@@ -718,7 +718,7 @@ pub struct VisionConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct AiConfig {
     /// Whether AI replies are enabled
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::default_true")]
     pub enabled: bool,
 
     /// Reply mode: "agent" or "static"
@@ -1212,7 +1212,7 @@ fn default_inspect_bind() -> String {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SchedulerConfig {
     /// Whether the job scheduler is enabled (default: true).
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::default_true")]
     pub enabled: bool,
 
     /// How often (in seconds) the scheduler scans for due jobs (default: 60).
@@ -1244,9 +1244,6 @@ fn default_10_jobs() -> usize {
 
 // --- Default value functions ---
 
-fn default_true() -> bool {
-    true
-}
 fn default_3() -> usize {
     3
 }
@@ -1314,7 +1311,7 @@ pub struct UnifiedAttachmentConfig {
 /// Configuration for inbound attachment downloading.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InboundAttachmentConfig {
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::default_true")]
     pub enabled: bool,
 
     /// Allowed file extensions (e.g., [".pdf", ".docx"])
@@ -1335,7 +1332,7 @@ pub struct InboundAttachmentConfig {
 /// Configuration for outbound attachment sending.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboundAttachmentConfig {
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::default_true")]
     pub enabled: bool,
 
     /// Allowed file extensions (e.g., [".pdf", ".docx"])

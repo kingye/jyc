@@ -35,7 +35,7 @@ pub struct FeishuConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WebSocketConfig {
     /// Whether WebSocket is enabled (default: true)
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::default_true")]
     pub enabled: bool,
 
     /// Reconnect delay in seconds (default: 5)
@@ -69,7 +69,7 @@ impl Default for FeishuConfig {
 impl Default for WebSocketConfig {
     fn default() -> Self {
         Self {
-            enabled: default_true(),
+            enabled: crate::default_true(),
             reconnect_delay_secs: default_reconnect_delay(),
             max_reconnect_attempts: default_max_reconnect_attempts(),
             heartbeat_interval_secs: default_heartbeat_interval(),
@@ -80,10 +80,6 @@ impl Default for WebSocketConfig {
 // Default value functions
 fn default_base_url() -> String {
     "https://open.feishu.cn".to_string()
-}
-
-fn default_true() -> bool {
-    true
 }
 
 fn default_reconnect_delay() -> u64 {

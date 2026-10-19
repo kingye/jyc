@@ -53,7 +53,7 @@ pub struct AgentConfig {
     /// When true (default), new messages arriving while the AI is
     /// processing are injected into the active session immediately.
     /// When false, messages queue and are processed sequentially.
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::default_true")]
     pub live_injection: bool,
 
     /// Whether to auto-inject inbound `image/*` attachments into the
@@ -151,10 +151,6 @@ pub struct AgentConfig {
     /// never see these.
     #[serde(default)]
     pub hooks: Vec<crate::config::HookConfig>,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 impl AgentConfig {

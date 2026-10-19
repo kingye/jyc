@@ -269,6 +269,10 @@ impl InspectServer {
             jyc_utils::paths::config_dir().as_deref(),
         );
         let agents = agents_of(&topics);
+        // The agents dir carries each topic's owning agent in its home's first
+        // path segment; resolved once for the whole poll. `None` without a data
+        // dir, which leaves every `agent` field empty rather than guessed.
+        let agents_dir = jyc_core::topic_path::process_agents_dir();
         let mut summaries: Vec<TopicSummary> = topics
             .into_iter()
             .map(|t| {
@@ -293,9 +297,16 @@ impl InspectServer {
                     .topic_path
                     .as_deref()
                     .and_then(|path| spawned_from(&t.name, path));
+                // The agent from the home the state dir sits in — by name
+                // rather than by `topic_path`, which a pinned topic points
+                // outside the agents dir.
+                let agent = agents_dir
+                    .as_deref()
+                    .and_then(|dir| agent_of_topic(&t.name, dir));
                 TopicSummary {
                     name: t.name,
                     channel: t.channel,
+                    agent,
                     pattern: t.pattern.clone(),
                     status: t.status,
                     model: t.model,
@@ -509,6 +520,20 @@ pub(crate) fn build_channels(
     channels
 }
 
+/// The agent a listed topic belongs to, read off the state dir registered
+/// under its name (`<home>/.jyc`, hence `home` is its parent).
+///
+/// By name, never by the topic's `topic_path`: a pinned topic works in a
+/// directory of the user's choosing, outside the agents dir, while its state
+/// — and with it the agent — stays under the agents dir where the home is.
+/// `None` for a topic with no registration, which the renderers show as a dash.
+fn agent_of_topic(name: &str, agents_dir: &Path) -> Option<String> {
+    let home = jyc_types::state_dir::registered_state(name)?
+        .parent()?
+        .to_path_buf();
+    jyc_core::topic_path::agent_of_home(&home, agents_dir)
+}
+
 /// The agents `/send` can address, by name: the active topics of the agents
 /// channel, read off a snapshot the caller already holds — the payload builder
 /// lists every manager's topics in one pass, and `TopicInfo.channel` is the
@@ -698,6 +723,60 @@ pub(crate) fn seed_next_id_from_disk(
 /// (overview activity pane, chat activity pane, chat progress, REST API).
 ///
 /// Filter chat messages by `since` timestamp (RFC 3339 string).
+#[cfg(test)]
+mod agent_of_topic_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    /// The agent comes from the home the registered state dir sits in, for
+    /// both home shapes: an agent-keyed topic's own directory, and a dynamic
+    /// topic nested under its agent.
+    #[test]
+    fn agent_keyed_and_dynamic_homes_both_name_their_agent() {
+        let tmp = tempdir().expect("tempdir");
+        let agents = tmp.path().join("agents");
+
+        jyc_types::state_dir::register(
+            "agent-of-topic-keyed",
+            &agents.join("invoice").join(".jyc"),
+        );
+        jyc_types::state_dir::register(
+            "agent-of-topic-dynamic",
+            &agents.join("invoice").join("issue-42").join(".jyc"),
+        );
+
+        assert_eq!(
+            agent_of_topic("agent-of-topic-keyed", &agents).as_deref(),
+            Some("invoice"),
+        );
+        assert_eq!(
+            agent_of_topic("agent-of-topic-dynamic", &agents).as_deref(),
+            Some("invoice"),
+        );
+
+        jyc_types::state_dir::unregister("agent-of-topic-keyed");
+        jyc_types::state_dir::unregister("agent-of-topic-dynamic");
+    }
+
+    /// A topic with no registered state names no agent, and one whose state
+    /// sits outside the agents dir (a legacy layout) does not either — the
+    /// renderers show both as a dash.
+    #[test]
+    fn unregistered_and_foreign_homes_name_no_agent() {
+        let tmp = tempdir().expect("tempdir");
+        let agents = tmp.path().join("agents");
+
+        assert_eq!(agent_of_topic("agent-of-topic-missing", &agents), None);
+
+        jyc_types::state_dir::register(
+            "agent-of-topic-legacy",
+            &tmp.path().join("legacy").join(".jyc"),
+        );
+        assert_eq!(agent_of_topic("agent-of-topic-legacy", &agents), None);
+        jyc_types::state_dir::unregister("agent-of-topic-legacy");
+    }
+}
+
 #[cfg(test)]
 mod no_reply_rendering_tests {
     use super::*;

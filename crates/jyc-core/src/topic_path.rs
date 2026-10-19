@@ -43,6 +43,16 @@ pub const INBOUND_DIR_NAME: &str = ".inbound";
 /// in `spawn_common`), so `<home>/.data` can never be a sibling topic's home.
 pub const TOPIC_DIR_NAME: &str = ".data";
 
+/// The agents dir this process resolves to from its data dir, or `None` when
+/// no data dir is configured — in which case no topic home can be located
+/// under one either.
+///
+/// For callers that hold no data dir of their own (the inspect payload
+/// builder); anyone who does has [`agents_dir`].
+pub fn process_agents_dir() -> Option<PathBuf> {
+    jyc_utils::paths::data_dir().map(|home| home.join("agents"))
+}
+
 /// Resolve the agents dir: the root holding every agent's subtree.
 ///
 /// Each agent's topics live one level deeper, at
@@ -56,11 +66,12 @@ pub const TOPIC_DIR_NAME: &str = ".data";
 /// using the data dir (the instance root) instead of cwd so multi-instance
 /// setups don't accidentally share state.
 pub fn resolve_agents_dir(data_dir: &Path) -> PathBuf {
-    if let Some(home) = jyc_utils::paths::data_dir() {
-        home.join("agents")
-    } else {
-        tracing::warn!("data_dir() returned None; falling back to <data dir>/agents");
-        data_dir.join("agents")
+    match process_agents_dir() {
+        Some(dir) => dir,
+        None => {
+            tracing::warn!("data_dir() returned None; falling back to <data dir>/agents");
+            data_dir.join("agents")
+        }
     }
 }
 
@@ -146,6 +157,26 @@ pub fn topic_home(topic_dir: &Path) -> &Path {
         Some(name) if name == TOPIC_DIR_NAME => topic_dir.parent().unwrap_or(topic_dir),
         _ => topic_dir,
     }
+}
+
+/// The agent a topic's `home` belongs to: its first path segment under the
+/// agents dir.
+///
+/// The home is where the agents dir encodes the ownership — `<agent>` for an
+/// agent-keyed topic (a 1:1 topic and a `/spawn` child each own their own
+/// home), `<agent>/<topic>` for a pipe-routed dynamic topic. So the first
+/// segment names the agent in both shapes.
+///
+/// `None` for a home outside the agents dir — the shape a pre-agents-dir topic
+/// keeps, where there is no agent to name.
+pub fn agent_of_home(home: &Path, agents_dir: &Path) -> Option<String> {
+    home.strip_prefix(agents_dir)
+        .ok()?
+        .components()
+        .next()?
+        .as_os_str()
+        .to_str()
+        .map(str::to_owned)
 }
 
 /// The working directory of a topic whose home is `home`.
@@ -419,6 +450,34 @@ mod tests {
     use jyc_types::{ChannelPattern, InboundMessage, MessageContent};
     use std::collections::HashMap;
     use tempfile::tempdir;
+
+    /// An agent-keyed home names the agent itself; a pipe-routed home nests the
+    /// topic under its agent. Both resolve to the first segment.
+    #[test]
+    fn agent_of_home_reads_the_first_segment_under_the_agents_dir() {
+        let agents = Path::new("/data/agents");
+        assert_eq!(
+            agent_of_home(Path::new("/data/agents/invoice"), agents).as_deref(),
+            Some("invoice"),
+        );
+        assert_eq!(
+            agent_of_home(Path::new("/data/agents/jyc/review-7"), agents).as_deref(),
+            Some("jyc"),
+        );
+    }
+
+    /// A home outside the agents dir (a pre-agents-dir topic) names no agent.
+    #[test]
+    fn agent_of_home_is_none_outside_the_agents_dir() {
+        assert_eq!(
+            agent_of_home(Path::new("/elsewhere/agents/x"), Path::new("/data/agents")),
+            None
+        );
+        assert_eq!(
+            agent_of_home(Path::new("/data/agents"), Path::new("/data/agents")),
+            None
+        );
+    }
 
     fn make_message(channel: &str, topic: &str) -> InboundMessage {
         InboundMessage {

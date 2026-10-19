@@ -1668,6 +1668,7 @@ fn app_with_topic_summary() -> App {
             tasks: Default::default(),
             name: "jyc".to_string(),
             channel: "agents".to_string(),
+            agent: None,
             pattern: None,
             status: jyc_types::TopicStatus::Idle,
             model: Some("kimi/kimi-for-coding".to_string()),

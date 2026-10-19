@@ -2332,23 +2332,25 @@ mod tests {
             .expect("draw");
 
         let buffer = terminal.backend().buffer().clone();
-        // Borderless: the header sits on y=0 and the first data row on y=1.
-        assert_eq!(buffer[(1, 1)].symbol(), "→", "selected row needs the arrow");
-        assert_eq!(buffer[(3, 1)].symbol(), "a");
+        // Borderless: the table starts at the area's own x=0, the header on
+        // y=0 and the first data row on y=1 — the `→ ` gutter occupies the
+        // first two columns, so the names start at x=2.
+        assert_eq!(buffer[(0, 1)].symbol(), "→", "selected row needs the arrow");
+        assert_eq!(buffer[(2, 1)].symbol(), "a");
         assert_eq!(
-            buffer[(3, 1)].bg,
+            buffer[(2, 1)].bg,
             Color::Reset,
             "selection paints no background"
         );
-        assert!(buffer[(3, 1)].modifier.contains(Modifier::DIM));
+        assert!(buffer[(2, 1)].modifier.contains(Modifier::DIM));
         // The unselected row keeps the gutter width and stays undimmed.
         assert_eq!(
-            buffer[(1, 2)].symbol(),
+            buffer[(0, 2)].symbol(),
             " ",
             "gutter stays blank off-cursor"
         );
-        assert_eq!(buffer[(3, 2)].symbol(), "b");
-        assert!(!buffer[(3, 2)].modifier.contains(Modifier::DIM));
+        assert_eq!(buffer[(2, 2)].symbol(), "b");
+        assert!(!buffer[(2, 2)].modifier.contains(Modifier::DIM));
     }
 
     // --- refresh_chat_commands uses chat.topic, not table_state.selected() ---

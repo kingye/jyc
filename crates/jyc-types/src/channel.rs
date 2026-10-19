@@ -237,6 +237,32 @@ pub struct InboundAdapterOptions {
 /// Channel-specific message matching and topic name derivation.
 ///
 /// Pure-logic trait used by MessageRouter. Every channel type implements this.
+/// Match a message body against a pattern's keyword list.
+///
+/// Case-insensitive substring match, OR within the list: any hit satisfies
+/// the rule. Returns the comma-joined keywords that actually hit — for
+/// [`PatternMatch::matches`] details — or `None` when none did. An empty
+/// list matches nothing (it is not "no constraint").
+///
+/// Callers pass the body in rather than an [`InboundMessage`] because
+/// channels disagree on what counts as the body: some fall back to markdown,
+/// some use plain text only, and WeCom treats an empty keyword list as
+/// "not configured" (skip the pattern) rather than as a non-match.
+pub fn match_keywords(keywords: &[String], body: &str) -> Option<String> {
+    let body_lower = body.to_lowercase();
+    let matched: Vec<&str> = keywords
+        .iter()
+        .filter(|kw| body_lower.contains(&kw.to_lowercase()))
+        .map(String::as_str)
+        .collect();
+
+    if matched.is_empty() {
+        None
+    } else {
+        Some(matched.join(","))
+    }
+}
+
 /// Separated from InboundAdapter to allow use without the lifecycle (start/stop) —
 /// e.g., email uses ImapMonitor for the connection lifecycle but EmailMatcher
 /// for pattern matching and topic name derivation.

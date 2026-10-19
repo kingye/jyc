@@ -38,6 +38,7 @@ fn ctx() -> Arc<InspectContext> {
         auth_token: Some("topsecret".into()),
         inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(1).0),
         ws_shutdown: tokio_util::sync::CancellationToken::new(),
+        agents_dir: std::path::PathBuf::from("/nonexistent/agents"),
     })
 }
 
@@ -162,6 +163,7 @@ async fn ws_topic_route_propagates_scoped_topic() {
         auth_token: Some("topsecret".into()),
         inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(1).0),
         ws_shutdown: tokio_util::sync::CancellationToken::new(),
+        agents_dir: std::path::PathBuf::from("/nonexistent/agents"),
     });
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

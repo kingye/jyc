@@ -111,6 +111,7 @@ mod tests {
             auth_token: token.map(String::from),
             inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(1).0),
             ws_shutdown: tokio_util::sync::CancellationToken::new(),
+            agents_dir: std::path::PathBuf::from("/nonexistent/agents"),
         })
     }
 

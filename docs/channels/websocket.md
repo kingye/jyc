@@ -180,18 +180,23 @@ the two screens cannot drift apart:
 ```
 
 `Tab` cycles the focus between the topics table, the info pane and the
-activity pane, skipping the hidden ones (`Ctrl+P` then `i` / `a`). The
-info and activity panes take the chat screen's scroll keys (`j`/`k`,
-`↑`/`↓`, `PgUp`/`PgDn`, `G`, `gg`); the table keeps `j`/`k` for the row
-cursor and `Enter` to open the highlighted topic. The activity pane is
-keyboard-only — the overview does not answer the mouse wheel.
+activity pane — all three are always on screen here. The info and activity
+panes take the chat screen's scroll keys (`j`/`k`, `↑`/`↓`, `PgUp`/`PgDn`,
+`G`, `gg`); the table keeps `j`/`k` for the row cursor and `Enter` to open
+the highlighted topic. The activity pane is keyboard-only — the overview
+does not answer the mouse wheel.
+
+The overview has no way to close any of its three panes: the visibility
+toggles belong to the chat screen, which is the only screen offering them.
 
 Chat mode (`c` toggled on). The channel bar is hidden; chat, topic info
 pane, activity pane, explorer pane, and the info pane's status block are
 individually togglable (`Ctrl+P` then `i` / `a` / `e` / `s`). The topic
-info pane and status block are visible by default; zen mode (`Ctrl+P`
-then `z`) hides all auxiliary UI and restores the previous state when
-pressed again. `Ctrl+P` then `c` focuses the message area for keyboard
+info pane and status block are visible by default, the activity pane is
+not; opening a chat restores those defaults, so each one starts from them.
+zen mode (`Ctrl+P` then `z`) hides all auxiliary UI and restores the
+previous state when pressed again. `Ctrl+P` then `c` focuses the message
+area for keyboard
 scrolling; from any focused pane (message area, topic info, activity,
 explorer) pressing any key refocuses the input; the first keypress is
 consumed, so no stray characters land in the input. Each chat round has

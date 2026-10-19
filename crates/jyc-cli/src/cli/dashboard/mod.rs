@@ -1345,6 +1345,11 @@ async fn handle_normal_keys(
         return;
     }
 
+    // `gg`: a second consecutive `g` jumps to the top, any other key resets
+    // the sequence — the same state machine the chat runs, stepped on every
+    // key so a half-typed `g` never survives, whichever pane owns the keys.
+    let gg_jump = app.chat.gg_step(key.code == KeyCode::Char('g'));
+
     match app.chat.focus {
         // Keys the table answers. The table is the overview's cursor, so
         // Enter opens the highlighted topic and `j`/`k` move the cursor.
@@ -1367,53 +1372,32 @@ async fn handle_normal_keys(
         // The info and activity panes are the chat module's panes, so their
         // keys are the chat's: `scroll_pane_key` is the one key map and reads
         // `app.chat.focus`, the focus both screens share.
-        _ => {
-            // `gg`: a second consecutive `g` jumps to the top, any other key
-            // resets the sequence — the same state machine the chat runs,
-            // stepped on every key so a half-typed `g` never survives.
-            let gg_jump = app.chat.gg_step(key.code == KeyCode::Char('g'));
-            match key.code {
-                KeyCode::Tab => cycle_overview_focus(app),
-                KeyCode::PageUp => app.chat.page_up(),
-                KeyCode::PageDown => app.chat.page_down(),
-                KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.chat.page_up()
-                }
-                KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.chat.page_down()
-                }
-                _ => {
-                    app.chat.scroll_pane_key(key, gg_jump);
-                }
+        _ => match key.code {
+            KeyCode::Tab => cycle_overview_focus(app),
+            KeyCode::PageUp => app.chat.page_up(),
+            KeyCode::PageDown => app.chat.page_down(),
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.chat.page_up()
             }
-        }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.chat.page_down()
+            }
+            _ => {
+                app.chat.scroll_pane_key(key, gg_jump);
+            }
+        },
     }
 }
 
-/// Move the overview's pane focus to the next visible pane: the topics
-/// table, then the info pane, then the activity pane, skipping the ones
-/// that are hidden (leader `i` hides the info pane, the activity pane's
-/// split is 0 when closed). The overview's panes differ from the chat
-/// screen's, so the cycle is its own — the panes themselves, and the focus
-/// state, are shared.
+/// Move the overview's pane focus to the next pane: the topics table, then
+/// the info pane, then the activity pane. All three are always on screen
+/// here, so the cycle visits all three unconditionally — unlike the chat
+/// screen's, which skips whatever `Ctrl+P` `i` / `a` has closed. The panes
+/// themselves and the focus state are still the shared ones.
 fn cycle_overview_focus(app: &mut App) {
     app.chat.focus = match app.chat.focus {
-        Focus::TopicsTable => {
-            if app.chat.info_visible {
-                Focus::InfoPane
-            } else if app.chat.activity_split != 0 {
-                Focus::ActivityPane
-            } else {
-                Focus::TopicsTable
-            }
-        }
-        Focus::InfoPane => {
-            if app.chat.activity_split != 0 {
-                Focus::ActivityPane
-            } else {
-                Focus::TopicsTable
-            }
-        }
+        Focus::TopicsTable => Focus::InfoPane,
+        Focus::InfoPane => Focus::ActivityPane,
         // The chat screen's own panes: the overview never cycles into them,
         // and leaving the overview puts focus back on its table.
         Focus::ActivityPane | Focus::ChatPane | Focus::MessageArea | Focus::ExplorerPane => {
@@ -1472,43 +1456,28 @@ fn ui_normal_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     // No bottom status bar: version, server stats and transient messages
     // render in the info pane's status sub-pane (see `chat_status_block`),
     // the same block the chat screen pins to the bottom of that column.
-    let show_activity = app.chat.activity_split != 0;
-    let activity_pct = match app.chat.activity_split {
-        1 => 20,
-        2 => 80,
-        3 => 100,
-        _ => 0,
-    };
-    let constraints: Vec<Constraint> = if show_activity {
-        vec![
-            Constraint::Length(3),
-            Constraint::Min(0),
-            Constraint::Percentage(activity_pct),
-        ]
-    } else {
-        vec![Constraint::Length(3), Constraint::Min(0)]
-    };
+    //
+    // Both panes are always here and the screen has no way to close them:
+    // the visibility flags behind `Ctrl+P` `i` / `a` / `s` belong to the chat
+    // screen, which is the only screen that offers those commands, so the
+    // overview does not read them. What the two screens share is the renderers
+    // and the focus, not the toggles.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(constraints)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Percentage(20),
+        ])
         .split(area);
 
     render_channels(frame, chunks[0], app);
 
-    let middle = if app.chat.info_visible {
-        Layout::horizontal([Constraint::Percentage(80), Constraint::Percentage(20)])
-            .split(chunks[1])
-    } else {
-        Layout::horizontal([Constraint::Percentage(100)]).split(chunks[1])
-    };
+    let middle = Layout::horizontal([Constraint::Percentage(80), Constraint::Percentage(20)])
+        .split(chunks[1]);
     render_topics(frame, middle[0], app);
-    if app.chat.info_visible {
-        render_topic_info_pane(frame, middle[1], app);
-    }
-
-    if show_activity {
-        render_activity_log(frame, chunks[2], app);
-    }
+    render_topic_info_pane(frame, middle[1], app);
+    render_activity_log(frame, chunks[2], app);
 
     // Leader-key popup overlay (dashboard + shared commands).
     if let Some(ref leader) = app.leader {
@@ -2581,7 +2550,12 @@ mod tests {
         let mut app = make_test_app();
         app.state = Some(make_overview_with_topics(&["alpha"]));
         app.table_state.select(Some(0));
-        app.chat.activity_split = 1;
+        // The chat screen's visibility flags are all in their "closed" state
+        // here: they are its own commands' state, and the overview must
+        // render its three panes regardless of them.
+        app.chat.activity_split = 0;
+        app.chat.info_visible = false;
+        app.chat.status_visible = false;
 
         let width: u16 = 100;
         let height: u16 = 24;
@@ -2632,6 +2606,33 @@ mod tests {
             !activity_row.contains("Activity"),
             "the activity pane should keep the untitled chat-screen look, got: {activity_row:?}"
         );
+    }
+
+    /// The overview's three panes are always on screen, so `Tab` cycles
+    /// through all of them without consulting the chat screen's visibility
+    /// flags — and the chat screen's own panes stay out of the cycle.
+    #[test]
+    fn overview_focus_cycles_all_three_panes_whatever_the_chat_flags_say() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(rx, None);
+        // Every one of these would close a pane on the chat screen.
+        app.chat.activity_split = 0;
+        app.chat.info_visible = false;
+        app.chat.status_visible = false;
+
+        assert_eq!(app.chat.focus, Focus::TopicsTable);
+        cycle_overview_focus(&mut app);
+        assert_eq!(app.chat.focus, Focus::InfoPane);
+        cycle_overview_focus(&mut app);
+        assert_eq!(app.chat.focus, Focus::ActivityPane);
+        cycle_overview_focus(&mut app);
+        assert_eq!(app.chat.focus, Focus::TopicsTable);
+
+        // A focus left on one of the chat screen's panes — leaving a chat
+        // with the info pane focused, say — comes back to the table.
+        app.chat.focus = Focus::ExplorerPane;
+        cycle_overview_focus(&mut app);
+        assert_eq!(app.chat.focus, Focus::TopicsTable);
     }
 
     /// A `last_active_at` ahead of the viewer's clock — hub/TUI clock skew, or

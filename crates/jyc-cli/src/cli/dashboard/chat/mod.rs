@@ -1683,9 +1683,10 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
     // The status block (version + gray stats, or a transient message) gets its
     // own sub-pane pinned to the bottom of the info column, separated by a
     // gray top border. It never scrolls — wheel and keys only move the topic
-    // info above it (leader `s` hides the block, handing the whole column back
-    // to the topic info). Both screens render it from [`chat_status_block`];
-    // there is no overview-only variant.
+    // info above it. On the chat screen leader `s` hides the block, handing
+    // the whole column back to the topic info; the overview has no such
+    // command, so the block is always part of its info column. Both screens
+    // render it from [`chat_status_block`]; there is no overview-only variant.
     //
     // The stats wrap to the pane's inner width, so the block is built once the
     // inner region is known. The sub-pane renders inside the border, pinned to
@@ -1693,7 +1694,9 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
     // first so its left border runs the full height, and only the inner region
     // is split into the borderless topic sub-pane and the status sub-pane.
     let inner = block.inner(area);
-    let status = if app.chat.status_visible {
+    // `Ctrl+P` `s` is a chat-screen command, so it decides for the chat
+    // screen only; the overview's info column always carries the block.
+    let status = if !app.chat.visible || app.chat.status_visible {
         chat_status_block(app, inner.width)
     } else {
         Vec::new()

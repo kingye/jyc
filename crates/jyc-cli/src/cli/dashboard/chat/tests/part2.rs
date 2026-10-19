@@ -413,6 +413,29 @@ fn toggle_resets_after_zen_mode() {
     assert_eq!(app.chat.activity_split, 1);
 }
 
+/// Opening a chat restores the chat screen's own defaults: the topic info
+/// pane and the status block are there, the activity pane is not. Those
+/// flags are the chat screen's only — the overview keeps all three panes
+/// and offers no way to close them — so each chat starts from them rather
+/// than from whatever the previous one left closed.
+#[test]
+fn opening_a_chat_restores_the_chat_screens_own_pane_defaults() {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    // Close what `Ctrl+P` can close; the activity pane already starts closed.
+    app.chat.toggle_info_pane();
+    app.chat.toggle_status_bar();
+    assert!(!app.chat.info_visible);
+    assert!(!app.chat.status_visible);
+    assert_eq!(app.chat.activity_split, 0);
+
+    app.chat.reset_chat_state("topic-a");
+
+    assert!(app.chat.info_visible);
+    assert!(app.chat.status_visible);
+    assert_eq!(app.chat.activity_split, 0);
+}
+
 /// Regression: the explorer row under the cursor marks the selection with the
 /// same two-column `→` gutter + DIM as the command/question popups — no
 /// background fill, and the status dot keeps its own color. The gutter is
@@ -2341,7 +2364,7 @@ fn pane_borders_share_the_palette_resting_and_focused() {
         "the focused pane lights up in the shared focus colour"
     );
 
-    // Topic info pane: bordered on its left edge only on the chat screen.
+    // Topic info pane: bordered on its left edge only, on both screens.
     app.chat.focus = Focus::ChatPane;
     assert_eq!(
         border_fg_at(w, h, 0, 3, |f, a| render_topic_info_pane(f, a, &mut app)),

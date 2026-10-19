@@ -2316,25 +2316,39 @@ mod tests {
             .expect("draw");
 
         let buffer = terminal.backend().buffer().clone();
+        let row = |y: u16| -> String {
+            (0..area.width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect()
+        };
         // Borderless: the table starts at the area's own x=0, the header on
         // y=0 and the first data row on y=1 — the `→ ` gutter occupies the
-        // first two columns, so the names start at x=2.
+        // first two columns, then the Agent column, and only then the names.
+        // Read the name's column off the row instead of hardcoding it, so
+        // changing the columns does not silently move what this pins.
         assert_eq!(buffer[(0, 1)].symbol(), "→", "selected row needs the arrow");
-        assert_eq!(buffer[(2, 1)].symbol(), "a");
+        let first = row(1);
+        let name_x = first.find("alpha").expect("the first topic's name") as u16;
+        assert!(
+            name_x > 2,
+            "the name sits past the arrow gutter, at x={name_x}"
+        );
         assert_eq!(
-            buffer[(2, 1)].bg,
+            buffer[(name_x, 1)].bg,
             Color::Reset,
             "selection paints no background"
         );
-        assert!(buffer[(2, 1)].modifier.contains(Modifier::DIM));
-        // The unselected row keeps the gutter width and stays undimmed.
+        assert!(buffer[(name_x, 1)].modifier.contains(Modifier::DIM));
+        // The unselected row keeps the gutter width and stays undimmed, with
+        // its name in the very column the selected row's is in.
         assert_eq!(
             buffer[(0, 2)].symbol(),
             " ",
             "gutter stays blank off-cursor"
         );
-        assert_eq!(buffer[(2, 2)].symbol(), "b");
-        assert!(!buffer[(2, 2)].modifier.contains(Modifier::DIM));
+        let second = row(2);
+        assert_eq!(second.find("beta").map(|x| x as u16), Some(name_x));
+        assert!(!buffer[(name_x, 2)].modifier.contains(Modifier::DIM));
     }
 
     /// The table leads with the two identities a topic has — the agent and the
@@ -2396,7 +2410,10 @@ mod tests {
             .expect("draw");
 
         let buffer = terminal.backend().buffer().clone();
-        let first: String = (2..area.width)
+        // Sampled from x=0 and trimmed: with no selected row the gutter is not
+        // reserved at all, and with one it sits in front — the dash is the
+        // first thing in the row either way.
+        let first: String = (0..area.width)
             .map(|x| buffer[(x, 1)].symbol().to_string())
             .collect();
         assert!(first.trim_start().starts_with('-'), "got: {first:?}");

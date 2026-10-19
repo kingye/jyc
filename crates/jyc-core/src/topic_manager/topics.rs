@@ -366,12 +366,11 @@ impl TopicManager {
                 }
                 name
             } else {
-                // Unpinned agents-channel topic: its dir under the agents
-                // root is jyc-owned, so state lives in-dir — registered
-                // explicitly here (activation registration, no fallback).
-                // The pattern's dir is the topic's *home*; what it works in is
-                // resolved exactly like the router resolves it — the record in
-                // the state dir first, then the layout on disk.
+                // Restore only: a missing state dir means never activated;
+                // the enqueue funnel creates it on the first message.
+                if !resolved.join(".jyc").is_dir() {
+                    continue;
+                }
                 jyc_types::state_dir::register_if_absent(pin_name, &resolved.join(".jyc"));
                 work_dir = crate::topic_path::topic_work_dir_at(&resolved, pin_name);
                 if let Err(e) =

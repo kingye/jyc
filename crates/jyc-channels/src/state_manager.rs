@@ -224,12 +224,6 @@ impl StateManager {
         self.state.uid_validity = Some(validity);
     }
 
-    /// Get the current state (for display).
-    #[allow(dead_code)]
-    pub fn state(&self) -> &MonitorState {
-        &self.state
-    }
-
     /// Get the number of processed UIDs.
     pub fn processed_uid_count(&self) -> usize {
         self.processed_uids.len()

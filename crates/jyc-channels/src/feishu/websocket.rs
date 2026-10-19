@@ -804,8 +804,6 @@ mod tests {
             key: "@_user_1".to_string(),
             id: MentionIds {
                 open_id: Some("ou_xxx".to_string()),
-                user_id: None,
-                union_id: None,
             },
             name: "jyc".to_string(),
         }];
@@ -858,8 +856,6 @@ mod tests {
             key: "@_user_1".to_string(),
             id: MentionIds {
                 open_id: Some("ou_xxx".to_string()),
-                user_id: None,
-                union_id: None,
             },
             name: "jyc".to_string(),
         }];
@@ -876,8 +872,6 @@ mod tests {
                 key: "@_user_1".to_string(),
                 id: MentionIds {
                     open_id: Some("ou_aaa".to_string()),
-                    user_id: None,
-                    union_id: None,
                 },
                 name: "bot".to_string(),
             },
@@ -885,8 +879,6 @@ mod tests {
                 key: "@_user_2".to_string(),
                 id: MentionIds {
                     open_id: Some("ou_bbb".to_string()),
-                    user_id: None,
-                    union_id: None,
                 },
                 name: "admin".to_string(),
             },

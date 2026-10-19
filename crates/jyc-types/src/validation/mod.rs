@@ -778,22 +778,6 @@ fn validate_outbound_attachment_config(
     }
 }
 
-/// Convenience: validate and return a Result.
-#[allow(dead_code)]
-pub fn validate_config_strict(config: &AppConfig, builtin_names: &[&str]) -> Result<()> {
-    let errors = validate_config(config, builtin_names);
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        let msg = errors
-            .iter()
-            .map(|e| e.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        anyhow::bail!("Configuration validation failed:\n{msg}")
-    }
-}
-
 /// Validate one `[[commands]]` entry (global or per-agent).
 ///
 /// `seen` is a per-scope dedup list: the caller owns a fresh `Vec`

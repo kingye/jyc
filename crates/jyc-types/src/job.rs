@@ -28,7 +28,7 @@ pub struct JobConfig {
     pub at: Option<DateTime<Utc>>,
 
     /// Whether the job is currently enabled (default: true).
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::default_true")]
     pub enabled: bool,
 
     /// The topic name to inject the fired job message into.
@@ -132,10 +132,6 @@ impl JobConfig {
             self.next_fire_at = None;
         }
     }
-}
-
-fn default_true() -> bool {
-    true
 }
 
 /// Parse a cron expression and compute the next DateTime after `from`.

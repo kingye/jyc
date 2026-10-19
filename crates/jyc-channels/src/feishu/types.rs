@@ -26,10 +26,8 @@ pub struct EventHeader {
     /// Event type, e.g. "im.message.receive_v1"
     pub event_type: String,
     /// Event creation time (Unix timestamp string in milliseconds)
-    #[allow(dead_code)]
     pub create_time: Option<String>,
     /// App ID that received the event
-    #[allow(dead_code)]
     pub app_id: Option<String>,
     /// Tenant key
     #[allow(dead_code)]
@@ -60,20 +58,13 @@ pub struct ChatDisbandedEvent {
 pub struct EventSender {
     pub sender_id: SenderIds,
     /// "user" or "bot"
-    #[allow(dead_code)]
     pub sender_type: Option<String>,
-    #[allow(dead_code)]
-    pub tenant_key: Option<String>,
 }
 
 /// Sender ID fields — Feishu provides multiple ID formats.
 #[derive(Debug, Deserialize)]
 pub struct SenderIds {
     pub open_id: Option<String>,
-    #[allow(dead_code)]
-    pub user_id: Option<String>,
-    #[allow(dead_code)]
-    pub union_id: Option<String>,
 }
 
 /// Message data from the event payload.
@@ -114,10 +105,6 @@ pub struct EventMention {
 #[derive(Debug, Deserialize)]
 pub struct MentionIds {
     pub open_id: Option<String>,
-    #[allow(dead_code)]
-    pub user_id: Option<String>,
-    #[allow(dead_code)]
-    pub union_id: Option<String>,
 }
 
 // --- Message content types ---

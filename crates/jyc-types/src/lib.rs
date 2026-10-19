@@ -16,6 +16,11 @@ pub mod wecom_bot_config;
 pub mod wecom_config;
 pub mod wecom_kf_config;
 
+/// Serde default for boolean flags that are on unless configured otherwise.
+pub(crate) fn default_true() -> bool {
+    true
+}
+
 pub use agent::*;
 pub use channel::*;
 pub use config::*;

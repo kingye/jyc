@@ -438,7 +438,6 @@ impl SmtpClient {
     }
 
     /// Check if the client is connected.
-    #[allow(dead_code)]
     pub fn is_connected(&self) -> bool {
         self.transport.is_some()
     }

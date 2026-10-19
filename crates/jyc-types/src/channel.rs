@@ -143,7 +143,6 @@ pub struct MessageAttachment {
     /// Binary content — transient, only present during processing.
     /// Freed after saving to disk.
     #[serde(skip)]
-    #[allow(dead_code)]
     pub content: Option<Vec<u8>>,
     /// Path where the attachment was saved (set after saving to disk)
     pub saved_path: Option<PathBuf>,
@@ -230,7 +229,6 @@ pub struct InboundAdapterOptions {
     /// templates for that number and close those topics in the hub.
     pub on_close_event: Option<CloseEventCallback>,
     /// Callback for errors
-    #[allow(dead_code)]
     pub on_error: Box<dyn Fn(anyhow::Error) + Send + Sync>,
     /// Attachment download configuration
     pub attachment_config: Option<InboundAttachmentConfig>,
@@ -487,7 +485,7 @@ pub struct ChannelPattern {
     #[serde(default)]
     pub channel: ChannelType,
     /// Whether this pattern is active
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::default_true")]
     pub enabled: bool,
     /// Pipe messages matching this pattern into another (websocket) channel's
     /// topic.
@@ -550,7 +548,7 @@ pub struct ChannelPattern {
     /// When true (default), new messages arriving while the AI is processing
     /// are injected into the active session immediately.
     /// When false, messages queue and are processed sequentially.
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::default_true")]
     pub live_injection: bool,
     /// Whether to auto-inject inbound `image/*` attachments into the first
     /// user turn of the agent loop as multimodal content blocks.
@@ -1003,10 +1001,6 @@ impl LabelRule {
             }),
         }
     }
-}
-
-fn default_true() -> bool {
-    true
 }
 
 #[cfg(test)]

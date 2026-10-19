@@ -1522,7 +1522,7 @@ pub(super) fn pane_border_style(focused: bool) -> Style {
 }
 
 /// What the one-line status strip says, or `None` when there is nothing to
-/// report and the topics table may start at the top of the screen.
+/// report — in which case the topics table takes the whole body.
 ///
 /// The reachability half of what the channels bar used to say, kept without the
 /// bar: an unreachable server and a not-yet-loaded poll are both reasons the

@@ -2599,9 +2599,8 @@ mod tests {
         let info_border: String = (3..12)
             .map(|y| buffer[(info_x, y)].symbol().to_string())
             .collect();
-        assert_eq!(
+        assert!(
             info_border.chars().all(|c| c == '\u{2502}'),
-            true,
             "the info pane should keep the chat screen's left border, got: {info_border:?}"
         );
 
@@ -2623,9 +2622,8 @@ mod tests {
         let activity_row: String = (0..width)
             .map(|x| buffer[(x, activity_top)].symbol().to_string())
             .collect();
-        assert_eq!(
+        assert!(
             activity_row.chars().all(|c| c == '\u{2500}'),
-            true,
             "the activity pane should be closed off by its top border, got: {activity_row:?}"
         );
         assert!(

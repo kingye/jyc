@@ -520,7 +520,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // top rule (time on the left) and a horizontal bottom rule (duration
     // right-aligned). When the chat pane is focused, draw a faint
     // background so the cursor position is still discoverable.
-    if app.chat.focus == ChatFocus::ChatPane {
+    if app.chat.focus == Focus::ChatPane {
         let bg = Block::default().style(Style::default().bg(Color::Reset));
         frame.render_widget(bg, area);
     }
@@ -896,7 +896,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // routes that do not go through `refocus_input` (`Tab`, a click, the
     // explorer), and a selection left behind is invisible yet still live: it
     // would pin the cursor against `carry_cursor` and could be yanked later.
-    if app.chat.focus != ChatFocus::MessageArea {
+    if app.chat.focus != Focus::MessageArea {
         app.chat.selection_anchor = None;
     }
     // Clone only the visible window (≤ inner_height lines) — the
@@ -921,7 +921,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // rows are selected is in the status line, so a second colour would be noise.
     let cursor = app.chat.cursor_line;
     let selection = app.chat.selection_range();
-    if app.chat.focus == ChatFocus::MessageArea {
+    if app.chat.focus == Focus::MessageArea {
         let bar = Style::default().bg(SELECT_BG);
         let selected_bar = bar.fg(Color::White);
         for (row, line) in visible_lines.iter_mut().enumerate() {
@@ -953,13 +953,14 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             Style::default()
         } else {
             match app.chat.focus {
-                ChatFocus::ChatPane => Style::default()
+                Focus::ChatPane => Style::default()
                     .add_modifier(Modifier::REVERSED)
                     .add_modifier(Modifier::SLOW_BLINK),
-                ChatFocus::MessageArea
-                | ChatFocus::ActivityPane
-                | ChatFocus::ExplorerPane
-                | ChatFocus::InfoPane => Style::default(),
+                Focus::MessageArea
+                | Focus::ActivityPane
+                | Focus::ExplorerPane
+                | Focus::InfoPane
+                | Focus::TopicsTable => Style::default(),
             }
         });
     let [top_rule_area, body_area, bottom_rule_area] = Layout::vertical([
@@ -968,7 +969,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         Constraint::Length(1),
     ])
     .areas(chunks[1]);
-    let focused = app.chat.focus == ChatFocus::ChatPane;
+    let focused = app.chat.focus == Focus::ChatPane;
     // Both rules share one style: sapphire + bold when focused, inactive
     // #393552 when focus moves away — the field's frame dims together.
     let rule_style = if focused {

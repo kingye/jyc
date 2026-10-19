@@ -11,7 +11,7 @@ use crossterm::{
 use jyc_core::duration::{DurationStyle, format_duration_secs};
 use ratatui::{
     Frame, Terminal,
-    layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
+    layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Padding, Paragraph, Row, Table, TableState, Wrap},
@@ -157,6 +157,27 @@ struct App {
 /// knows one); otherwise it is the row under the dashboard cursor. Both the
 /// renderers (`chat::selected_topic_summary`) and the detail fetch go through
 /// this, so they cannot disagree about which topic is on screen.
+/// Which pane owns the keys. One enum for both screens: the chat screen's
+/// panes, plus [`Focus::TopicsTable`] for the overview's topic table. The
+/// state lives in [`ChatState::focus`] — the panes it names are the chat
+/// module's renderers on both screens, so the table is the only overview-only
+/// entry and the two screens cannot disagree about what "focused" means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    /// The chat input field.
+    ChatPane,
+    /// The scrollable message area above the input field.
+    MessageArea,
+    /// The right-hand topic info pane (topic metadata + changed files).
+    InfoPane,
+    /// The activity log pane.
+    ActivityPane,
+    /// The left-side topic explorer pane.
+    ExplorerPane,
+    /// The overview's topic table.
+    TopicsTable,
+}
+
 fn shown_topic_key(app: &App) -> Option<(String, String)> {
     let state = app.state.as_ref()?;
     let summary = if app.chat.visible {
@@ -902,7 +923,7 @@ pub async fn run(
                 for _ in 0..64 {
                     match event::read()? {
                         Event::Paste(data)
-                            if app.chat.visible && app.chat.focus == ChatFocus::ChatPane =>
+                            if app.chat.visible && app.chat.focus == Focus::ChatPane =>
                         {
                             // Bracketed paste delivers the whole pasted chunk as
                             // one event. Forward it to the editor so it never
@@ -1324,21 +1345,65 @@ async fn handle_normal_keys(
         return;
     }
 
-    match key.code {
-        KeyCode::Enter => {
-            open_selected_topic_chat(app, client, addr).await;
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            app.next_topic();
-        }
-        KeyCode::Up | KeyCode::Char('k') => {
-            app.prev_topic();
-        }
-        KeyCode::Char('R') => {
-            reload_server_config(app, client, last_poll).await;
-        }
-        _ => {}
+    // `gg`: a second consecutive `g` jumps to the top, any other key resets
+    // the sequence — the same state machine the chat runs, stepped on every
+    // key so a half-typed `g` never survives, whichever pane owns the keys.
+    let gg_jump = app.chat.gg_step(key.code == KeyCode::Char('g'));
+
+    match app.chat.focus {
+        // Keys the table answers. The table is the overview's cursor, so
+        // Enter opens the highlighted topic and `j`/`k` move the cursor.
+        Focus::TopicsTable => match key.code {
+            KeyCode::Tab => cycle_overview_focus(app),
+            KeyCode::Enter => {
+                open_selected_topic_chat(app, client, addr).await;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.next_topic();
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.prev_topic();
+            }
+            KeyCode::Char('R') => {
+                reload_server_config(app, client, last_poll).await;
+            }
+            _ => {}
+        },
+        // The info and activity panes are the chat module's panes, so their
+        // keys are the chat's: `scroll_pane_key` is the one key map and reads
+        // `app.chat.focus`, the focus both screens share.
+        _ => match key.code {
+            KeyCode::Tab => cycle_overview_focus(app),
+            KeyCode::PageUp => app.chat.page_up(),
+            KeyCode::PageDown => app.chat.page_down(),
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.chat.page_up()
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.chat.page_down()
+            }
+            _ => {
+                app.chat.scroll_pane_key(key, gg_jump);
+            }
+        },
     }
+}
+
+/// Move the overview's pane focus to the next pane: the topics table, then
+/// the info pane, then the activity pane. All three are always on screen
+/// here, so the cycle visits all three unconditionally — unlike the chat
+/// screen's, which skips whatever `Ctrl+P` `i` / `a` has closed. The panes
+/// themselves and the focus state are still the shared ones.
+fn cycle_overview_focus(app: &mut App) {
+    app.chat.focus = match app.chat.focus {
+        Focus::TopicsTable => Focus::InfoPane,
+        Focus::InfoPane => Focus::ActivityPane,
+        // The chat screen's own panes: the overview never cycles into them,
+        // and leaving the overview puts focus back on its table.
+        Focus::ActivityPane | Focus::ChatPane | Focus::MessageArea | Focus::ExplorerPane => {
+            Focus::TopicsTable
+        }
+    };
 }
 
 /// Flip the terminal mouse-capture mode (used by the `toggle mouse`
@@ -1382,21 +1447,37 @@ fn ui(frame: &mut Frame, app: &mut App) {
 }
 
 fn ui_normal_mode(frame: &mut Frame, area: Rect, app: &mut App) {
-    // Main layout: channels bar | topics table | detail panel | status bar
+    // Main layout, the chat screen's shape: channels bar on top, the topics
+    // table beside the topic info pane, and the activity pane across the
+    // bottom. Both panes are the chat module's own renderers (see
+    // `chat::render_topic_info_pane` and `chat::render_activity_log`), so the
+    // overview shows the same panes instead of a second set of lookalikes.
+    //
+    // No bottom status bar: version, server stats and transient messages
+    // render in the info pane's status sub-pane (see `chat_status_block`),
+    // the same block the chat screen pins to the bottom of that column.
+    //
+    // Both panes are always here and the screen has no way to close them:
+    // the visibility flags behind `Ctrl+P` `i` / `a` / `s` belong to the chat
+    // screen, which is the only screen that offers those commands, so the
+    // overview does not read them. What the two screens share is the renderers
+    // and the focus, not the toggles.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),      // Channels bar
-            Constraint::Percentage(40), // Topics table
-            Constraint::Percentage(60), // Detail panel + activity log
-            Constraint::Length(1),      // Status bar
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Percentage(20),
         ])
         .split(area);
 
     render_channels(frame, chunks[0], app);
-    render_topics(frame, chunks[1], app);
-    render_details(frame, chunks[2], app);
-    render_status_bar(frame, chunks[3], app);
+
+    let middle = Layout::horizontal([Constraint::Percentage(80), Constraint::Percentage(20)])
+        .split(chunks[1]);
+    render_topics(frame, middle[0], app);
+    render_topic_info_pane(frame, middle[1], app);
+    render_activity_log(frame, chunks[2], app);
 
     // Leader-key popup overlay (dashboard + shared commands).
     if let Some(ref leader) = app.leader {
@@ -1558,201 +1639,6 @@ fn render_topics(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_stateful_widget(table, area, &mut app.table_state);
 }
 
-fn render_details(frame: &mut Frame, area: Rect, app: &App) {
-    let state = match &app.state {
-        Some(s) => s,
-        None => {
-            let block = Block::default()
-                .title(" Details ")
-                .borders(Borders::ALL)
-                .border_style(pane_border_style(false));
-            frame.render_widget(block, area);
-            return;
-        }
-    };
-
-    let selected = app.table_state.selected().and_then(|i| state.topics.get(i));
-
-    let selected = match selected {
-        Some(t) => t,
-        None => {
-            let block = Block::default()
-                .title(" Details ")
-                .borders(Borders::ALL)
-                .border_style(pane_border_style(false));
-            let text = Paragraph::new("Select a topic with ↑/↓").block(block);
-            frame.render_widget(text, area);
-            return;
-        }
-    };
-
-    // Split detail area: info (4 lines) + activity log (remaining)
-    let detail_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(9), // Topic info (Branch row conditionally added)
-            Constraint::Min(4),    // Activity log
-        ])
-        .split(area);
-
-    // Topic info panel, fully enclosed: TOP closes the gap against the topics
-    // table above, LEFT/RIGHT frame the sides, BOTTOM closes the pane off from
-    // the activity panel below.
-    let info_block = Block::default()
-        .title(format!(" {} ", selected.name))
-        .borders(Borders::ALL)
-        .border_style(pane_border_style(false));
-
-    let mut info_lines = vec![];
-
-    // Branch is stamped onto the row from the per-topic detail for the topic
-    // the screen shows (the overview poll leaves it `None`).
-    // Render only when present — most chat-channel topics (feishu/wecom)
-    // have a topic_path that isn't a git repo, so an absent row keeps
-    // noise down for them.
-    if let Some(branch) = selected.branch.as_deref() {
-        info_lines.push(Line::from(vec![
-            Span::styled("Branch: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(branch),
-        ]));
-    }
-
-    info_lines.push(Line::from(vec![
-        Span::styled("Channel: ", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(&selected.channel),
-        Span::raw("  "),
-        Span::styled("Pattern: ", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(selected.pattern.as_deref().unwrap_or("-")),
-    ]));
-
-    info_lines.push(Line::from(vec![
-        Span::styled("Model: ", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(selected.model.as_deref().unwrap_or("(default)")),
-        Span::raw("  "),
-        Span::styled("Mode: ", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(selected.mode.as_deref().unwrap_or("build")),
-    ]));
-
-    // Skills line
-    if selected.skills.is_empty() {
-        info_lines.push(Line::from(vec![
-            Span::styled("Skills: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::styled("(none)", Style::default().fg(Color::DarkGray)),
-        ]));
-    } else {
-        info_lines.push(Line::from(vec![
-            Span::styled(
-                format!("Skills ({}): ", selected.skills.len()),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(selected.skills.join(", ")),
-        ]));
-    }
-
-    let mut status_line = vec![
-        Span::styled("Status: ", Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled(
-            format!("{}", selected.status),
-            match selected.status {
-                TopicStatus::Processing => Style::default().fg(Color::Green),
-                TopicStatus::Queued => Style::default().fg(Color::Yellow),
-                TopicStatus::Idle => Style::default().fg(Color::DarkGray),
-                TopicStatus::Error => Style::default().fg(Color::Red),
-            },
-        ),
-    ];
-    // Live-duration ticker. While the agent loop is alive, append a
-    // yellow italic `(12.4s)` suffix to the status chip so the dashboard
-    // shows wall-clock elapsed time even during silent LLM/tool work.
-    if selected.status == TopicStatus::Processing
-        && let Some(ms) = app.chat.live_tick_ms_for(&selected.channel, &selected.name)
-    {
-        status_line.push(Span::styled(
-            format!(" ({})", chat::format_elapsed_ms(ms)),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::ITALIC),
-        ));
-    }
-
-    // "Tokens: X / Y (Z%)" — shared with the chat info pane via the
-    // `token_render` module. Prepend a 2-space gap so it doesn't sit
-    // flush against the status chip on the same line.
-    if let (Some(_), Some(_)) = (selected.context_input_tokens, selected.max_tokens) {
-        status_line.push(Span::raw(token_render::STATUS_SEP));
-        token_render::push_tokens_span(&mut status_line, selected);
-    }
-    if selected.output_tokens.is_some() {
-        status_line.push(Span::raw(token_render::STATUS_SEP));
-        token_render::push_output_span(&mut status_line, selected);
-    }
-    if selected.total_input_tokens.is_some() {
-        status_line.push(Span::raw(token_render::STATUS_SEP));
-        token_render::push_total_input_span(&mut status_line, selected);
-    }
-    if selected.total_cache_hit_tokens.is_some() {
-        status_line.push(Span::raw(token_render::STATUS_SEP));
-        token_render::push_cache_hit_span(&mut status_line, selected);
-    }
-    if token_render::cache_util_pct(selected).is_some() {
-        status_line.push(Span::raw(token_render::STATUS_SEP));
-        token_render::push_cache_utilization_span(&mut status_line, selected);
-    }
-    if selected.total_cache_creation_tokens.is_some() {
-        status_line.push(Span::raw(token_render::STATUS_SEP));
-        token_render::push_cache_creation_span(&mut status_line, selected);
-    }
-    if selected.cost.is_some() {
-        status_line.push(Span::raw(token_render::STATUS_SEP));
-        token_render::push_cost_span(&mut status_line, selected);
-    }
-    if selected.avg_call_ms.is_some() {
-        status_line.push(Span::raw(token_render::STATUS_SEP));
-        token_render::push_latency_span(&mut status_line, selected);
-    }
-    info_lines.push(Line::from(status_line));
-
-    info_lines.push(Line::from(vec![
-        Span::styled(
-            "Last Active: ",
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(format_last_active(selected.last_active_at.as_deref())),
-    ]));
-
-    let info = Paragraph::new(info_lines).block(info_block);
-    frame.render_widget(info, detail_chunks[0]);
-
-    // Activity log panel — read from the WS-fed live buffer for this topic.
-    // LEFT/RIGHT continue the info pane's side borders; TOP sits under the
-    // info pane's BOTTOM border.
-    let activity_vec: Vec<jyc_types::ActivityEntry> = app
-        .chat
-        .live_activity_for(&selected.channel, &selected.name)
-        .cloned()
-        .collect();
-    render_activity_log_inner(
-        frame,
-        detail_chunks[1],
-        &activity_vec,
-        0,
-        0,
-        false,
-        Borders::TOP | Borders::LEFT | Borders::RIGHT,
-        true,
-    );
-}
-
-/// Open (or swap to a new) overview WS for the selected topic.
-///
-/// If `app.overview_ws_target` already matches the new (channel, topic),
-/// this is a no-op. Otherwise the previous overview WS is gracefully
-/// closed (sends `disconnect` so the spawned task exits), and a new WS
-/// task is spawned against `/ws/<channel>/<topic>`.
-///
-/// `cmd_tx` is kept in `App.overview_ws_tx` so the task can keep
-/// reconnecting on transient errors (the `cmd_rx.recv() = None` path
-/// only triggers on graceful close, not idle timeouts).
 fn ensure_overview_ws(app: &mut App, addr: &str, channel: &str, topic: &str) {
     if let Some((c, t)) = app.overview_ws_target.as_ref()
         && c == channel
@@ -1855,91 +1741,6 @@ fn chat_status_block(app: &App, width: u16) -> Vec<Line<'_>> {
             .map(|row| Line::from(Span::styled(row, Style::default().fg(Color::DarkGray)))),
     );
     lines
-}
-
-fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
-    // Shortcuts live in the leader-key popup (Ctrl+P); the status
-    // bar only advertises how to reach them.
-    let help_text = "[^P]leader [^Q]quit".to_string();
-
-    // Right-aligned chip: the mouse-capture chip is always visible
-    // (8 cells, global terminal state) and sits at the rightmost edge.
-    let mouse_width: u16 = 8;
-    let [left_area, mouse_area] =
-        Layout::horizontal([Constraint::Min(0), Constraint::Length(mouse_width)]).areas(area);
-
-    let state = match &app.state {
-        Some(s) => s,
-        None => {
-            let bar = Paragraph::new(format!(" {help_text}"))
-                .style(Style::default().bg(Color::DarkGray).fg(Color::White));
-            frame.render_widget(bar, left_area);
-            render_mouse_chip(frame, mouse_area, app.mouse_capture_enabled);
-            return;
-        }
-    };
-
-    let stats = &state.stats;
-
-    let status_part = if let Some((msg, _)) = &app.status_message {
-        Span::styled(msg.as_str(), Style::default().fg(Color::Yellow))
-    } else {
-        Span::raw(format!(
-            "{} active / {} thr │ {} recv │ {} err │ up {} │ jyc ai v{}",
-            stats.active_workers,
-            stats.total_topics,
-            stats.messages_received,
-            stats.errors,
-            format_duration_secs(state.uptime_secs, DurationStyle::Coarse),
-            state.version,
-        ))
-    };
-
-    let bar = Paragraph::new(Line::from({
-        let mut spans = vec![Span::raw(" ")];
-        if app.chat.visible {
-            if app.chat.ws_connected {
-                spans.push(Span::styled("●", Style::default().fg(Color::Green)));
-            } else {
-                spans.push(Span::styled("●", Style::default().fg(Color::Red)));
-            }
-            spans.push(Span::raw(" "));
-        }
-        spans.push(Span::raw(format!("{help_text}  ")));
-        spans.push(status_part);
-        spans
-    }))
-    .style(Style::default().bg(Color::DarkGray).fg(Color::White));
-
-    frame.render_widget(bar, left_area);
-
-    render_mouse_chip(frame, mouse_area, app.mouse_capture_enabled);
-}
-
-/// Render the right-aligned mouse-capture chip. Same 8-cell padded
-/// format as the other status-bar chips (see `render_status_bar`). Peach means
-/// capture is on (wheel scrolls, tmux select disabled); overlay0 means
-/// off (tmux select works, wheel ignored).
-fn render_mouse_chip(frame: &mut Frame, area: Rect, mouse_capture_enabled: bool) {
-    let (label, bg, fg) = if mouse_capture_enabled {
-        (
-            " MOUSE+ ",
-            Color::Rgb(250, 179, 135), // Catppuccin Mocha peach
-            Color::Rgb(30, 30, 46),    // Catppuccin Mocha base
-        )
-    } else {
-        (
-            " MOUSE- ",
-            Color::Rgb(108, 112, 134), // Catppuccin Mocha overlay0
-            Color::Rgb(205, 214, 244), // Catppuccin Mocha text
-        )
-    };
-    let chip = Paragraph::new(Span::styled(
-        label,
-        Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
-    ))
-    .alignment(Alignment::Center);
-    frame.render_widget(chip, area);
 }
 
 fn format_last_active(value: Option<&str>) -> String {
@@ -2736,120 +2537,102 @@ mod tests {
         assert_eq!(app.chat.commands.len(), builtins.len());
     }
 
-    /// Regression: the dashboard **overview** Details panel fully encloses the
-    /// topic info pane (`Borders::ALL`) and frames the activity log in
-    /// `Borders::TOP | Borders::LEFT | Borders::RIGHT`, giving a continuous
-    /// left/right edge with no gap at the top or bottom of the info pane.
-    /// Drives `render_details` end-to-end (rather than calling the inner
-    /// renderers directly) so the assertions pin the *call-site* wiring: if
-    /// either caller drops a border flag, the corresponding
-    /// `│` / `┌` / `┐` / `└` / `┘` cells disappear.
+    /// The overview renders the chat screen's panes, not lookalikes: the
+    /// topic info pane on the right with the chat screen's left border and
+    /// the status block pinned inside it, and the activity pane across the
+    /// bottom with the chat screen's untitled top border. Driven through
+    /// `ui_normal_mode` so the assertions pin the layout *and* the wiring.
     #[test]
-    fn overview_details_panes_have_continuous_side_borders() {
+    fn overview_renders_the_chat_panes() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
         let mut app = make_test_app();
         app.state = Some(make_overview_with_topics(&["alpha"]));
         app.table_state.select(Some(0));
+        // The chat screen's visibility flags are all in their "closed" state
+        // here: they are its own commands' state, and the overview must
+        // render its three panes regardless of them.
+        app.chat.activity_split = 0;
+        app.chat.info_visible = false;
+        app.chat.status_visible = false;
 
-        let width: u16 = 40;
-        let height: u16 = 20;
+        let width: u16 = 100;
+        let height: u16 = 24;
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|frame| render_details(frame, frame.area(), &app))
+            .draw(|frame| ui_normal_mode(frame, frame.area(), &mut app))
             .expect("draw");
-
         let buffer = terminal.backend().buffer().clone();
-        // detail_chunks: info pane occupies y = 0..9, activity pane y = 9..
-        // Info pane has Borders::ALL:
-        //   y = 0     → top corners ┌ / ┐
-        //   y = 1..8  → side borders │ / │
-        //   y = 8     → bottom corners └ / ┘
-        assert_eq!(buffer[(0, 0)].symbol(), "┌", "info pane top-left corner");
-        assert_eq!(
-            buffer[(width - 1, 0)].symbol(),
-            "┐",
-            "info pane top-right corner"
-        );
-        let info_bottom: u16 = 8;
-        assert_eq!(
-            buffer[(0, info_bottom)].symbol(),
-            "└",
-            "info pane bottom-left corner"
-        );
-        assert_eq!(
-            buffer[(width - 1, info_bottom)].symbol(),
-            "┘",
-            "info pane bottom-right corner"
-        );
-        // Activity pane has TOP | LEFT | RIGHT (no BOTTOM):
-        //   y = 9              → top corners ┌ / ┐
-        //   y = 10 .. height   → side borders │ / │
-        let activity_top: u16 = 9;
-        assert_eq!(
-            buffer[(0, activity_top)].symbol(),
-            "┌",
-            "activity pane top-left corner"
-        );
-        assert_eq!(
-            buffer[(width - 1, activity_top)].symbol(),
-            "┐",
-            "activity pane top-right corner"
-        );
-        // Every other row in both panes carries continuous side borders.
-        for y in (1..height).filter(|y| *y != info_bottom && *y != activity_top) {
-            let left = buffer[(0, y)].symbol();
-            let right = buffer[(width - 1, y)].symbol();
-            assert_eq!(left, "│", "row {y} left edge should be `│`, got {left:?}");
-            assert_eq!(
-                right, "│",
-                "row {y} right edge should be `│`, got {right:?}"
-            );
-        }
-    }
 
-    /// Regression: the dashboard/overview activity pane keeps its `Activity`
-    /// title in the top border, using the same plain ` Text ` format as the
-    /// other dashboard panes (Channels / Topics / Details). PR #669 removed
-    /// the title from the shared `render_activity_log_inner`, stripping it
-    /// from the dashboard too. The title must stay on the dashboard (only the
-    /// chat screen drops it).
-    #[test]
-    fn overview_activity_pane_keeps_title() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
+        // Info pane: 20% of the width, so its left border sits at 80% of
+        // the screen. Every row below the channels bar must carry the
+        // chat screen's vertical border there.
+        let info_x = width * 80 / 100;
+        let info_border: String = (3..12)
+            .map(|y| buffer[(info_x, y)].symbol().to_string())
+            .collect();
+        assert!(
+            info_border.chars().all(|c| c == '\u{2502}'),
+            "the info pane should keep the chat screen's left border, got: {info_border:?}"
+        );
 
-        let mut app = make_test_app();
-        app.state = Some(make_overview_with_topics(&["alpha"]));
-        app.table_state.select(Some(0));
+        // The status sub-pane is the chat screen's own block (its version
+        // line), rendered inside the info column on both screens. It is
+        // pinned to the *bottom* of the column with its version line first,
+        // so the whole column is sampled rather than one guessed row.
+        let activity_top = height - height / 5 - 1;
+        let info_text: String = (3..activity_top)
+            .flat_map(|y| (info_x + 1..width).map(move |x| (x, y)))
+            .map(|(x, y)| buffer[(x, y)].symbol().to_string())
+            .collect();
+        assert!(
+            info_text.contains("JYC AI v"),
+            "the info pane should carry the shared status block, got: {info_text:?}"
+        );
 
-        let width: u16 = 40;
-        let height: u16 = 20;
-        let backend = TestBackend::new(width, height);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| render_details(frame, frame.area(), &app))
-            .expect("draw");
-
-        let buffer = terminal.backend().buffer().clone();
-        // Activity pane top border is at y = 9 (info pane occupies 0..9).
-        let activity_top: u16 = 9;
-        let title_row: String = (0..width)
+        // Activity pane: the top border closes off the bottom strip, and
+        // it carries no title - the chat screen's look, which PR #669
+        // restored for both screens.
+        let activity_row: String = (0..width)
             .map(|x| buffer[(x, activity_top)].symbol().to_string())
             .collect();
         assert!(
-            title_row.contains("Activity"),
-            "dashboard activity pane should keep its `Activity` title, got: {title_row:?}"
+            activity_row.chars().all(|c| c == '\u{2500}'),
+            "the activity pane should be closed off by its top border, got: {activity_row:?}"
         );
-        // The title must use the plain dashboard format (` Text `, like the
-        // Channels/Topics/Details panes), not the chat-screen `── Activity `
-        // box-drawing prefix that leaves leading dashes.
         assert!(
-            !title_row.contains("── Activity"),
-            "dashboard activity title should not carry the `── ` box-drawing prefix, got: {title_row:?}"
+            !activity_row.contains("Activity"),
+            "the activity pane should keep the untitled chat-screen look, got: {activity_row:?}"
         );
+    }
+
+    /// The overview's three panes are always on screen, so `Tab` cycles
+    /// through all of them without consulting the chat screen's visibility
+    /// flags — and the chat screen's own panes stay out of the cycle.
+    #[test]
+    fn overview_focus_cycles_all_three_panes_whatever_the_chat_flags_say() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(rx, None);
+        // Every one of these would close a pane on the chat screen.
+        app.chat.activity_split = 0;
+        app.chat.info_visible = false;
+        app.chat.status_visible = false;
+
+        assert_eq!(app.chat.focus, Focus::TopicsTable);
+        cycle_overview_focus(&mut app);
+        assert_eq!(app.chat.focus, Focus::InfoPane);
+        cycle_overview_focus(&mut app);
+        assert_eq!(app.chat.focus, Focus::ActivityPane);
+        cycle_overview_focus(&mut app);
+        assert_eq!(app.chat.focus, Focus::TopicsTable);
+
+        // A focus left on one of the chat screen's panes — leaving a chat
+        // with the info pane focused, say — comes back to the table.
+        app.chat.focus = Focus::ExplorerPane;
+        cycle_overview_focus(&mut app);
+        assert_eq!(app.chat.focus, Focus::TopicsTable);
     }
 
     /// A `last_active_at` ahead of the viewer's clock — hub/TUI clock skew, or

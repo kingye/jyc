@@ -180,12 +180,6 @@ pub(super) fn push_latency_span(spans: &mut Vec<Span>, t: &TopicSummary) {
     }
 }
 
-/// Two-space gap used by the dashboard status line between adjacent
-/// chips. Callers on a flat status line prepend this manually before
-/// each row (the chat info pane stacks rows on separate lines and
-/// doesn't need it).
-pub(super) const STATUS_SEP: &str = "  ";
-
 #[cfg(test)]
 mod tests {
     use super::*;

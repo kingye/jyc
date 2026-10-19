@@ -190,7 +190,7 @@ fn scroll_to_top_and_bottom_follow_focus() {
     let mut app = App::new(rx, None);
 
     // Chat pane focused
-    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.focus = Focus::ChatPane;
     app.chat.scroll_to_top();
     assert_eq!(app.chat.scroll, usize::MAX);
     assert_eq!(app.chat.activity_scroll, 0);
@@ -198,7 +198,7 @@ fn scroll_to_top_and_bottom_follow_focus() {
     assert_eq!(app.chat.scroll, 0);
 
     // Activity pane focused
-    app.chat.focus = ChatFocus::ActivityPane;
+    app.chat.focus = Focus::ActivityPane;
     app.chat.scroll_to_top();
     assert_eq!(app.chat.activity_scroll, usize::MAX);
     assert_eq!(app.chat.scroll, 0);
@@ -214,15 +214,15 @@ fn tab_cycles_input_messages_activity_when_activity_visible() {
 
     // info pane is visible by default → full cycle:
     // Chat → MessageArea → InfoPane → ActivityPane → Chat.
-    assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    app.chat.focus = Focus::ChatPane;
     app.chat.toggle_focus();
-    assert_eq!(app.chat.focus, ChatFocus::MessageArea);
+    assert_eq!(app.chat.focus, Focus::MessageArea);
     app.chat.toggle_focus();
-    assert_eq!(app.chat.focus, ChatFocus::InfoPane);
+    assert_eq!(app.chat.focus, Focus::InfoPane);
     app.chat.toggle_focus();
-    assert_eq!(app.chat.focus, ChatFocus::ActivityPane);
+    assert_eq!(app.chat.focus, Focus::ActivityPane);
     app.chat.toggle_focus();
-    assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    assert_eq!(app.chat.focus, Focus::ChatPane);
 }
 
 #[test]
@@ -233,14 +233,15 @@ fn tab_skips_hidden_activity_pane() {
 
     // MessageArea → InfoPane (visible by default) → Chat: the hidden
     // activity pane must be skipped.
+    app.chat.focus = Focus::ChatPane;
     app.chat.toggle_focus();
-    assert_eq!(app.chat.focus, ChatFocus::MessageArea);
+    assert_eq!(app.chat.focus, Focus::MessageArea);
     app.chat.toggle_focus();
-    assert_eq!(app.chat.focus, ChatFocus::InfoPane);
+    assert_eq!(app.chat.focus, Focus::InfoPane);
     app.chat.toggle_focus();
     assert_eq!(
         app.chat.focus,
-        ChatFocus::ChatPane,
+        Focus::ChatPane,
         "activity pane must be skipped when activity_split=0"
     );
 }
@@ -251,18 +252,18 @@ fn hiding_activity_refocuses_input() {
     let mut app = App::new(rx, None);
     // Activity visible and focused.
     app.chat.activity_split = 1;
-    app.chat.focus = ChatFocus::ActivityPane;
+    app.chat.focus = Focus::ActivityPane;
     // Toggle off — focus must fall back to the input field.
     app.chat.toggle_activity();
     assert_eq!(app.chat.activity_split, 0);
-    assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    assert_eq!(app.chat.focus, Focus::ChatPane);
 
     // Same guard when entering zen mode with the activity pane focused.
     app.chat.activity_split = 1;
     app.chat.info_visible = true;
-    app.chat.focus = ChatFocus::ActivityPane;
+    app.chat.focus = Focus::ActivityPane;
     app.chat.toggle_zen_mode();
-    assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    assert_eq!(app.chat.focus, Focus::ChatPane);
 }
 
 #[test]
@@ -272,13 +273,13 @@ fn tab_cycles_through_info_pane_when_visible() {
     app.chat.info_visible = true; // also the default; set explicitly for clarity
     // activity hidden, explorer hidden → cycle is Chat → MessageArea
     // → InfoPane → Chat (per the skip rules).
-    assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    app.chat.focus = Focus::ChatPane;
     app.chat.toggle_focus();
-    assert_eq!(app.chat.focus, ChatFocus::MessageArea);
+    assert_eq!(app.chat.focus, Focus::MessageArea);
     app.chat.toggle_focus();
-    assert_eq!(app.chat.focus, ChatFocus::InfoPane);
+    assert_eq!(app.chat.focus, Focus::InfoPane);
     app.chat.toggle_focus();
-    assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    assert_eq!(app.chat.focus, Focus::ChatPane);
 }
 
 #[test]
@@ -287,13 +288,13 @@ fn tab_skips_info_pane_when_hidden() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.info_visible = false;
-    assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    app.chat.focus = Focus::ChatPane;
     app.chat.toggle_focus();
-    assert_eq!(app.chat.focus, ChatFocus::MessageArea);
+    assert_eq!(app.chat.focus, Focus::MessageArea);
     app.chat.toggle_focus();
     assert_eq!(
         app.chat.focus,
-        ChatFocus::ChatPane,
+        Focus::ChatPane,
         "info pane must be skipped when info_visible=false"
     );
 }
@@ -302,7 +303,7 @@ fn tab_skips_info_pane_when_hidden() {
 fn info_pane_scroll_uses_offset_from_top() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
-    app.chat.focus = ChatFocus::InfoPane;
+    app.chat.focus = Focus::InfoPane;
     assert_eq!(app.chat.info_scroll, 0);
     // scroll_down → later rows → larger offset.
     app.chat.scroll_down();
@@ -327,11 +328,11 @@ fn hiding_info_pane_via_zen_falls_back_to_chat() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.info_visible = true;
-    app.chat.focus = ChatFocus::InfoPane;
+    app.chat.focus = Focus::InfoPane;
     app.chat.toggle_zen_mode();
     assert_eq!(
         app.chat.focus,
-        ChatFocus::ChatPane,
+        Focus::ChatPane,
         "info-focused pane must not be left dangling when zen hides it"
     );
 }
@@ -346,17 +347,17 @@ fn hiding_activity_refocuses_input_from_info_pane() {
     let mut app = App::new(rx, None);
     app.chat.activity_split = 1;
     app.chat.info_visible = true;
-    app.chat.focus = ChatFocus::InfoPane;
+    app.chat.focus = Focus::InfoPane;
     app.chat.toggle_activity();
     assert_eq!(app.chat.activity_split, 0);
-    assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    assert_eq!(app.chat.focus, Focus::ChatPane);
 }
 
 #[test]
 fn message_area_scrolls_chat_history() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
-    app.chat.focus = ChatFocus::MessageArea;
+    app.chat.focus = Focus::MessageArea;
     // Render stores the max before input; mirror that here.
     app.chat.last_max_scroll = 10;
     app.chat.scroll_to_top();
@@ -373,7 +374,7 @@ fn message_area_scrolls_chat_history() {
 fn message_area_scroll_up_clamps_at_rendered_max() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
-    app.chat.focus = ChatFocus::MessageArea;
+    app.chat.focus = Focus::MessageArea;
     app.chat.last_max_scroll = 5;
     for _ in 0..10 {
         app.chat.scroll_up();
@@ -585,7 +586,7 @@ fn esc_does_not_close_chat_with_input_focused() {
     let mut app = App::new(rx, None);
     app.chat.visible = true;
     app.chat.topic = Some("jyc".to_string());
-    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.focus = Focus::ChatPane;
 
     handle_chat_keys(&mut app, esc_key(), &mut test_terminal());
     assert!(app.chat.visible, "Esc must not close the chat screen");
@@ -597,11 +598,11 @@ fn esc_does_not_close_chat_in_activity_pane() {
     let mut app = App::new(rx, None);
     app.chat.visible = true;
     app.chat.topic = Some("jyc".to_string());
-    app.chat.focus = ChatFocus::ActivityPane;
+    app.chat.focus = Focus::ActivityPane;
 
     handle_chat_keys(&mut app, esc_key(), &mut test_terminal());
     assert!(app.chat.visible, "Esc must not close the chat screen");
-    assert_eq!(app.chat.focus, ChatFocus::ActivityPane);
+    assert_eq!(app.chat.focus, Focus::ActivityPane);
 }
 
 fn chatting_app() -> App {
@@ -609,6 +610,12 @@ fn chatting_app() -> App {
     let mut app = App::new(rx, None);
     app.chat.visible = true;
     app.chat.topic = Some("jyc".to_string());
+    // A fresh `App` starts on the overview screen, so its focus is the topics
+    // table — a chat screen is never drawn in that state (opening one moves the
+    // focus to the input). Keys that mean something only on the chat screen
+    // (the `/` popup, typing) are gated on the input having the focus, so put
+    // the app where the screen would before handing it keys.
+    app.chat.focus = Focus::ChatPane;
     app
 }
 
@@ -627,7 +634,7 @@ fn leader_c_focuses_message_area() {
         &mut test_terminal(),
     );
     assert!(app.chat.leader.is_none());
-    assert_eq!(app.chat.focus, ChatFocus::MessageArea);
+    assert_eq!(app.chat.focus, Focus::MessageArea);
 }
 
 /// `ctrl+p /` is gone. The popup has no field of its own — it filters
@@ -1790,10 +1797,10 @@ fn input_field_has_a_top_and_bottom_rule() {
 #[test]
 fn printable_key_refocuses_input_without_inserting() {
     for focus in [
-        ChatFocus::MessageArea,
-        ChatFocus::InfoPane,
-        ChatFocus::ActivityPane,
-        ChatFocus::ExplorerPane,
+        Focus::MessageArea,
+        Focus::InfoPane,
+        Focus::ActivityPane,
+        Focus::ExplorerPane,
     ] {
         for ch in ['i', 'a', 'x'] {
             let mut app = chatting_app();
@@ -1803,7 +1810,7 @@ fn printable_key_refocuses_input_without_inserting() {
                 crossterm::event::KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
                 &mut test_terminal(),
             );
-            assert_eq!(app.chat.focus, ChatFocus::ChatPane, "{focus:?} {ch:?}");
+            assert_eq!(app.chat.focus, Focus::ChatPane, "{focus:?} {ch:?}");
             assert!(
                 app.chat.text().is_empty(),
                 "{focus:?} {ch:?}: refocus key must be consumed, not inserted"
@@ -1815,10 +1822,10 @@ fn printable_key_refocuses_input_without_inserting() {
 #[test]
 fn local_scroll_keys_do_not_refocus() {
     for focus in [
-        ChatFocus::MessageArea,
-        ChatFocus::InfoPane,
-        ChatFocus::ActivityPane,
-        ChatFocus::ExplorerPane,
+        Focus::MessageArea,
+        Focus::InfoPane,
+        Focus::ActivityPane,
+        Focus::ExplorerPane,
     ] {
         let mut app = chatting_app();
         app.chat.focus = focus;
@@ -1857,7 +1864,7 @@ fn mouse_scroll_in_message_area_advances_scroll_offset() {
     // Focus the input so the wheel hit-test is the only thing moving
     // focus, mirroring the user experience of scrolling with the
     // cursor over the message area while typing into the input.
-    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.focus = Focus::ChatPane;
     app.chat.scroll = 0;
     // Enough messages to overflow the 24-row pane, so the rendered
     // scroll maximum (last_max_scroll) is non-zero.
@@ -1909,7 +1916,7 @@ fn wheel_over_info_pane_scrolls_the_info_pane() {
     app.chat.visible = true;
     app.chat.info_visible = true;
     app.chat.topic = Some("jyc".to_string());
-    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.focus = Focus::ChatPane;
 
     terminal
         .draw(|f| ui_chat_mode(f, f.area(), &mut app))
@@ -1933,7 +1940,7 @@ fn wheel_over_info_pane_scrolls_the_info_pane() {
     // moving focus: pulling it away from the editor mid-typing is the failure
     // this guards.
     assert!(
-        matches!(app.chat.focus, ChatFocus::ChatPane),
+        matches!(app.chat.focus, Focus::ChatPane),
         "scrolling the info pane must not take focus"
     );
     // Its offset counts from the top, so wheel-up moves earlier.
@@ -1956,7 +1963,7 @@ fn mouse_scroll_ignored_when_chat_hidden() {
     // not change focus or scroll state.
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
-    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.focus = Focus::ChatPane;
     app.chat.scroll = 0;
 
     handle_chat_mouse(&mut app, mouse_event(MouseEventKind::ScrollUp, 10, 10));
@@ -2003,7 +2010,7 @@ fn mouse_scroll_ignored_when_capture_disabled() {
     let mut app = App::new(rx, None);
     app.chat.visible = true;
     app.chat.topic = Some("jyc".to_string());
-    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.focus = Focus::ChatPane;
     app.chat.scroll = 0;
     app.chat.messages.push(ChatMessage {
         sender: "user".into(),
@@ -2088,7 +2095,7 @@ fn mouse_scroll_over_message_area_moves_focus_from_other_panes() {
     }
 
     // --- ActivityPane focus ---
-    app.chat.focus = ChatFocus::ActivityPane;
+    app.chat.focus = Focus::ActivityPane;
     app.chat.scroll = 0;
     app.chat.activity_scroll = 0;
     terminal
@@ -2101,7 +2108,7 @@ fn mouse_scroll_over_message_area_moves_focus_from_other_panes() {
     );
     assert_eq!(
         app.chat.focus,
-        ChatFocus::MessageArea,
+        Focus::MessageArea,
         "focus moves to MessageArea"
     );
     assert_eq!(app.chat.scroll, 1, "message scroll advances");
@@ -2120,7 +2127,7 @@ fn mouse_scroll_over_message_area_moves_focus_from_other_panes() {
             timestamp: Some("2026-01-01T00:00:00Z".into()),
         });
     }
-    app2.chat.focus = ChatFocus::ExplorerPane;
+    app2.chat.focus = Focus::ExplorerPane;
     app2.chat.scroll = 0;
     terminal
         .draw(|f| ui_chat_mode(f, f.area(), &mut app2))
@@ -2132,7 +2139,7 @@ fn mouse_scroll_over_message_area_moves_focus_from_other_panes() {
     );
     assert_eq!(
         app2.chat.focus,
-        ChatFocus::MessageArea,
+        Focus::MessageArea,
         "focus moves to MessageArea"
     );
     assert_eq!(app2.chat.scroll, 1, "message scroll advances");
@@ -2173,7 +2180,7 @@ fn close_returns_to_overview_from_ws_chat() {
     // spawns a tokio task requiring a runtime.
     app.chat.visible = true;
     app.chat.topic = Some("jyc".to_string());
-    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.focus = Focus::ChatPane;
     let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     app.chat.ws_tx = Some(cmd_tx);
 
@@ -3127,7 +3134,7 @@ fn cursor_app() -> App {
     app.chat.messages = (0..40)
         .map(|i| history_msg("user", &format!("message {i:02}"), None))
         .collect();
-    app.chat.focus = ChatFocus::MessageArea;
+    app.chat.focus = Focus::MessageArea;
     let _ = draw_80x24(&mut app);
     assert!(
         app.chat.last_total_lines > 30,
@@ -3150,7 +3157,7 @@ fn section_app() -> App {
         history_msg("user", "three", None),
         history_msg("ai", "gamma", None),
     ];
-    app.chat.focus = ChatFocus::MessageArea;
+    app.chat.focus = Focus::MessageArea;
     let _ = draw_80x24(&mut app);
     app
 }
@@ -3253,7 +3260,7 @@ fn bracket_on_empty_input_focuses_message_area_on_previous_turn() {
     let turns = recorded_turns(&app);
     // `section_app` leaves the message pane focused; the shortcut exists on
     // the input side.
-    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.focus = Focus::ChatPane;
     assert_eq!(
         app.chat.text(),
         "",
@@ -3262,7 +3269,7 @@ fn bracket_on_empty_input_focuses_message_area_on_previous_turn() {
 
     press(&mut app, '[');
 
-    assert_eq!(app.chat.focus, ChatFocus::MessageArea);
+    assert_eq!(app.chat.focus, Focus::MessageArea);
     assert_eq!(app.chat.text(), "", "the bracket is a movement, not text");
     assert_eq!(
         app.chat.cursor_line, turns[2],
@@ -3277,7 +3284,7 @@ fn bracket_on_empty_input_focuses_message_area_on_previous_turn() {
 #[test]
 fn question_box_keeps_the_slash_and_bracket_shortcuts_out() {
     let mut app = chatting_app();
-    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.focus = Focus::ChatPane;
     app.chat.questions = vec![PendingQuestion {
         topic: "jyc".to_string(),
         context: None,
@@ -3305,7 +3312,7 @@ fn question_box_keeps_the_slash_and_bracket_shortcuts_out() {
     press(&mut app, '[');
     assert_eq!(
         app.chat.focus,
-        ChatFocus::ChatPane,
+        Focus::ChatPane,
         "the box owns the keyboard: the bracket does not leave the input"
     );
 }
@@ -3315,17 +3322,13 @@ fn question_box_keeps_the_slash_and_bracket_shortcuts_out() {
 #[test]
 fn bracket_with_a_non_empty_input_is_typed() {
     let mut app = chatting_app();
-    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.focus = Focus::ChatPane;
     press(&mut app, 'x');
 
     press(&mut app, '[');
 
     assert_eq!(app.chat.text(), "x[", "the bracket is inserted as text");
-    assert_eq!(
-        app.chat.focus,
-        ChatFocus::ChatPane,
-        "focus stays on the input"
-    );
+    assert_eq!(app.chat.focus, Focus::ChatPane, "focus stays on the input");
 }
 
 /// Send one key to the chat screen the way the event loop does.
@@ -3392,7 +3395,7 @@ fn focusing_the_message_area_resets_the_cursor() {
     app.chat.selection_anchor = Some(2);
     app.chat.pending_y = true;
     app.chat.pending_count = 3;
-    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.focus = Focus::ChatPane;
 
     app.chat.focus_message_area();
     draw_80x24(&mut app);
@@ -3420,12 +3423,12 @@ fn tab_cycling_into_the_message_area_resets_the_cursor() {
     app.chat.selection_anchor = Some(2);
     app.chat.pending_y = true;
     app.chat.pending_count = 3;
-    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.focus = Focus::ChatPane;
 
     app.chat.toggle_focus();
     draw_80x24(&mut app);
 
-    assert_eq!(app.chat.focus, ChatFocus::MessageArea);
+    assert_eq!(app.chat.focus, Focus::MessageArea);
     let rows = transcript_rows(&app);
     assert_eq!(
         Some(app.chat.cursor_line),
@@ -3444,7 +3447,7 @@ fn tab_cycling_into_the_message_area_resets_the_cursor() {
 fn refocus_while_scrolled_up_lands_on_the_bottom_visible_row() {
     let mut app = cursor_app();
     app.chat.scroll = 5;
-    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.focus = Focus::ChatPane;
 
     app.chat.focus_message_area();
     draw_80x24(&mut app);
@@ -3683,11 +3686,11 @@ fn refocusing_the_input_drops_a_half_typed_yank() {
         press(&mut app, c);
     }
     press(&mut app, 'x'); // any other key goes back to the input
-    assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    assert_eq!(app.chat.focus, Focus::ChatPane);
     assert!(!app.chat.pending_y);
     assert_eq!(app.chat.pending_count, 0);
 
-    app.chat.focus = ChatFocus::MessageArea;
+    app.chat.focus = Focus::MessageArea;
     press(&mut app, 'y');
     assert!(app.chat.pending_y, "it arms again rather than copying");
     assert!(app.chat.pending_clipboard.is_none());
@@ -3745,7 +3748,7 @@ fn the_cursor_bar_spans_the_row_only_while_the_pane_has_focus() {
          while you are only reading"
     );
 
-    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.focus = Focus::ChatPane;
     let buffer = draw_80x24(&mut app);
     assert_ne!(buffer[(area.left(), y)].style().bg, Some(SELECT_BG));
 }
@@ -3952,10 +3955,10 @@ fn esc_leaves_the_selection_before_it_leaves_the_pane() {
         "`Esc` drops the selection where it is — unlike `y`, it is not a copy, so \
          the cursor keeps the row it moved to"
     );
-    assert_eq!(app.chat.focus, ChatFocus::MessageArea);
+    assert_eq!(app.chat.focus, Focus::MessageArea);
 
     press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-    assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    assert_eq!(app.chat.focus, Focus::ChatPane);
 }
 
 /// Scrolling to look around while a selection is open changes nothing about it:
@@ -4045,11 +4048,11 @@ fn leaving_the_pane_drops_the_selection() {
     press_shift(&mut app, 'J');
     assert!(app.chat.selection_range().is_some());
 
-    app.chat.focus = ChatFocus::InfoPane;
+    app.chat.focus = Focus::InfoPane;
     let _ = draw_80x24(&mut app);
     assert_eq!(app.chat.selection_range(), None, "dropped with the focus");
 
-    app.chat.focus = ChatFocus::MessageArea;
+    app.chat.focus = Focus::MessageArea;
     let _ = draw_80x24(&mut app);
     press(&mut app, 'y');
     assert!(

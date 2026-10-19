@@ -51,7 +51,11 @@ glob = "0.3"
 regex = "1"
 base64 = "0.23"
 cron = { version = "0.17", default-features = false, features = ["serde"] }
-rmcp = { version = "3.1", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "auth"] }
+# Production uses rmcp as an MCP *client* only: no default features, so the
+# server side (schemars, rmcp-macros/pastey) stays out of the shipped binary.
+# The fixture server needed by the mcp_client round-trip test is pulled in by
+# the dev-dependency below instead.
+rmcp = { version = "3.1", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "auth"] }
 http = "1"
 
 [dev-dependencies]

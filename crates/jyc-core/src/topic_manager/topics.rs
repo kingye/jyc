@@ -366,17 +366,16 @@ impl TopicManager {
                 }
                 name
             } else {
-                // Restore only: a missing state dir means never activated;
-                // the enqueue funnel creates it on the first message.
-                if !resolved.join(".jyc").is_dir() {
-                    continue;
-                }
-                jyc_types::state_dir::register_if_absent(pin_name, &resolved.join(".jyc"));
+                // Unpinned agents-channel topic: state lives in-dir. Restore
+                // only — recording is what creates it, and a missing state dir
+                // means the default topic never ran.
+                let state = resolved.join(".jyc");
+                jyc_types::state_dir::register_if_absent(pin_name, &state);
                 work_dir = crate::topic_path::topic_work_dir_at(&resolved, pin_name);
-                if let Err(e) =
-                    crate::topic_path::record_topic_work_dir(&resolved.join(".jyc"), &work_dir)
-                {
-                    tracing::debug!(error = %e, "Could not record a restored topic's working dir");
+                if state.is_dir() {
+                    if let Err(e) = crate::topic_path::record_topic_work_dir(&state, &work_dir) {
+                        tracing::debug!(error = %e, "Could not record a restored topic's working dir");
+                    }
                 }
                 pin_name.to_string()
             };

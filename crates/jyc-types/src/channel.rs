@@ -234,9 +234,6 @@ pub struct InboundAdapterOptions {
     pub attachment_config: Option<InboundAttachmentConfig>,
 }
 
-/// Channel-specific message matching and topic name derivation.
-///
-/// Pure-logic trait used by MessageRouter. Every channel type implements this.
 /// Match a message body against a pattern's keyword list.
 ///
 /// Case-insensitive substring match, OR within the list: any hit satisfies
@@ -263,6 +260,10 @@ pub fn match_keywords(keywords: &[String], body: &str) -> Option<String> {
     }
 }
 
+/// Channel-specific message matching and topic name derivation.
+///
+/// Pure-logic trait used by MessageRouter. Every channel type implements this.
+///
 /// Separated from InboundAdapter to allow use without the lifecycle (start/stop) —
 /// e.g., email uses ImapMonitor for the connection lifecycle but EmailMatcher
 /// for pattern matching and topic name derivation.
@@ -1032,6 +1033,24 @@ impl LabelRule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_match_keywords() {
+        let kws = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        // Hits keep configuration order, join with commas, and match
+        // case-insensitively on both sides.
+        assert_eq!(
+            match_keywords(&kws(&["deploy", "Release"]), "time to RELEASE now"),
+            Some("Release".to_string())
+        );
+
+        // No hit means no match and no details.
+        assert_eq!(match_keywords(&kws(&["deploy"]), "nothing here"), None);
+
+        // An empty list matches nothing — it is not "no constraint".
+        assert_eq!(match_keywords(&[], "anything"), None);
+    }
 
     #[test]
     fn test_topic_path_deserialization() {

@@ -86,8 +86,6 @@ fn git_stdout(cwd: &Path, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Run `git diff --name-only <revspec>` in `cwd` and return the trimmed
-/// stdout lines, or `None` on spawn / non-zero exit / non-UTF8.
 /// Run `git diff --numstat <revspec>` and parse each line as
 /// `(path, counts)`. A binary file reports `-`/`-` and is skipped
 /// entirely — it has no line counts to show. Run with `--no-renames` so

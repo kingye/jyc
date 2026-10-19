@@ -56,6 +56,16 @@ jobs:
           cargo build --release -p jyc-cli
           ls -l target/release/jyc
 
+      - name: Per-section breakdown
+        # cargo-bloat attributes .text only — 46.7% of the shipped file. The
+        # other half (.rodata string tables, .data, .bss) is invisible there,
+        # so size the sections of the artifact as shipped before picking a
+        # lever. Must stay before the bloat step: that one relinks the binary
+        # unstripped.
+        run: |
+          size target/release/jyc
+          size -A target/release/jyc
+
       - name: Per-crate attribution
         # The same binary, kept unstripped: cargo-bloat attributes by symbol
         # table and the release profile's strip = "symbols" would leave it

@@ -171,11 +171,11 @@ the two screens cannot drift apart:
 ┌────────────────────────┐
 │ Channels bar           │
 ├────────────────────────┤
-│ Topics table          ││ Topic info  │
-│                        ││  (20% wide) │
-│                        ││  + status   │
-├────────────────────────┴┤             │
-│ Activity pane (20%)     │             │
+│ Topics table           │ Topic info
+│  (no border, no title) │  (20% wide)
+│                        │  + status
+├────────────────────────┤
+│ Activity pane (20%)     │
 └────────────────────────┴─────────────┘
 ```
 

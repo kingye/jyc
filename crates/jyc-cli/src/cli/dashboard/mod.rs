@@ -1564,17 +1564,16 @@ fn render_channels(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(channels_para, inner);
 }
 
+/// Draw the overview's topic table.
+///
+/// The table carries no border and no title: the channels bar's box already
+/// closes the top edge, the info pane's left border is the divider on its
+/// right and the activity pane's top border the one below, so a frame of its
+/// own would only double them up.
 fn render_topics(frame: &mut Frame, area: Rect, app: &mut App) {
-    let state = match &app.state {
-        Some(s) => s,
-        None => {
-            let block = Block::default()
-                .title(" Topics ")
-                .borders(Borders::ALL)
-                .border_style(pane_border_style(false));
-            frame.render_widget(block, area);
-            return;
-        }
+    // Nothing loaded yet — the panes around it still draw.
+    let Some(state) = &app.state else {
+        return;
     };
 
     let header = Row::new(vec![
@@ -1627,12 +1626,6 @@ fn render_topics(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let table = Table::new(rows, widths)
         .header(header)
-        .block(
-            Block::default()
-                .title(format!(" Topics ({}) ", state.topics.len()))
-                .borders(Borders::ALL)
-                .border_style(pane_border_style(false)),
-        )
         .row_highlight_style(Style::default().add_modifier(Modifier::DIM))
         .highlight_symbol("→ ");
 
@@ -2339,23 +2332,25 @@ mod tests {
             .expect("draw");
 
         let buffer = terminal.backend().buffer().clone();
-        // Border, then the header on y=1 and the first data row on y=2.
-        assert_eq!(buffer[(1, 2)].symbol(), "→", "selected row needs the arrow");
-        assert_eq!(buffer[(3, 2)].symbol(), "a");
+        // Borderless: the table starts at the area's own x=0, the header on
+        // y=0 and the first data row on y=1 — the `→ ` gutter occupies the
+        // first two columns, so the names start at x=2.
+        assert_eq!(buffer[(0, 1)].symbol(), "→", "selected row needs the arrow");
+        assert_eq!(buffer[(2, 1)].symbol(), "a");
         assert_eq!(
-            buffer[(3, 2)].bg,
+            buffer[(2, 1)].bg,
             Color::Reset,
             "selection paints no background"
         );
-        assert!(buffer[(3, 2)].modifier.contains(Modifier::DIM));
+        assert!(buffer[(2, 1)].modifier.contains(Modifier::DIM));
         // The unselected row keeps the gutter width and stays undimmed.
         assert_eq!(
-            buffer[(1, 3)].symbol(),
+            buffer[(0, 2)].symbol(),
             " ",
             "gutter stays blank off-cursor"
         );
-        assert_eq!(buffer[(3, 3)].symbol(), "b");
-        assert!(!buffer[(3, 3)].modifier.contains(Modifier::DIM));
+        assert_eq!(buffer[(2, 2)].symbol(), "b");
+        assert!(!buffer[(2, 2)].modifier.contains(Modifier::DIM));
     }
 
     // --- refresh_chat_commands uses chat.topic, not table_state.selected() ---

@@ -54,6 +54,16 @@ pub struct TopicSummary {
     pub name: String,
     /// Channel this topic belongs to
     pub channel: String,
+    /// The agent this topic belongs to — the first path segment of its home
+    /// under the agents dir (`<agents dir>/<agent>/…`), resolved server-side.
+    /// `None` when the home cannot be located (e.g. a topic registered
+    /// outside the agents dir).
+    ///
+    /// Equal to `name` for an agent-keyed topic (a 1:1 topic and a `/spawn`
+    /// child each own their own home); it differs for a pipe-routed dynamic
+    /// topic, whose home nests it under its agent.
+    #[serde(default)]
+    pub agent: Option<String>,
     /// Pattern that created this topic (from `.jyc/pattern`)
     pub pattern: Option<String>,
     /// Current processing status
@@ -850,6 +860,7 @@ mod tests {
             tasks: Default::default(),
             name: "issue-42".to_string(),
             channel: "emf".to_string(),
+            agent: Some("invoice".to_string()),
             pattern: Some("planner".to_string()),
             status: TopicStatus::Processing,
             model: Some("claude-opus".to_string()),
@@ -877,6 +888,7 @@ mod tests {
         let parsed: TopicSummary = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.name, "issue-42");
         assert_eq!(parsed.status, TopicStatus::Processing);
+        assert_eq!(parsed.agent.as_deref(), Some("invoice"));
         // TopicSummary must not serialize activity/messages/thinking fields
         assert!(!json.contains("activity"));
         assert!(!json.contains("recent_messages"));

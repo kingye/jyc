@@ -502,6 +502,7 @@ pub async fn run(
             inspect_broadcast: inspect_broadcast.clone(),
             auth_token: Some(auth_token),
             ws_shutdown: cancel.clone(),
+            agents_dir: jyc_core::topic_path::resolve_agents_dir(data_dir),
         });
 
         // Restore custom topic_path mappings from disk so topics with

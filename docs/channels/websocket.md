@@ -169,8 +169,6 @@ the two screens cannot drift apart:
 
 ```
 ┌────────────────────────┐
-│ Channels bar           │
-├────────────────────────┤
 │ Topics table           │ Topic info
 │  (no border, no title) │  (20% wide)
 │                        │  + status
@@ -178,6 +176,21 @@ the two screens cannot drift apart:
 │ Activity pane (20%)     │
 └────────────────────────┴─────────────┘
 ```
+
+The channels bar is gone. It listed the channels *this* process runs, which
+on a hub is the single synthesized `agents` channel — the real channels live
+in the pipe process, and their state is not the hub's to claim. What the bar
+still had to say survives as a single unbordered line at the top, shown only
+while it applies: `Not connected: …` when the overview cannot reach the
+server, `Connecting...` before the first poll lands. A loaded overview spends
+no line on it and the table starts at the top.
+
+The table's first two columns are the two identities a topic has — `Agent`
+and `Topic` — followed by `Pattern`, `Status`, `Context` and `Last Active`.
+The `Channel` column is gone: every topic in the overview sits on one channel,
+so the column only repeated itself. `Agent` comes from the topic's home under
+the agents dir (`<agents dir>/<agent>/…`), so for an agent-keyed topic it is
+the same string as `Topic`; a topic whose home cannot be resolved shows `-`.
 
 `Tab` cycles the focus between the topics table, the info pane and the
 activity pane — all three are always on screen here. The info and activity

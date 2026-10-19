@@ -196,6 +196,7 @@ mod tests {
             tasks: Default::default(),
             name: "t".into(),
             channel: "c".into(),
+            agent: None,
             pattern: None,
             status: jyc_types::TopicStatus::Idle,
             model: None,

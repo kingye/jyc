@@ -1447,11 +1447,18 @@ fn ui(frame: &mut Frame, app: &mut App) {
 }
 
 fn ui_normal_mode(frame: &mut Frame, area: Rect, app: &mut App) {
-    // Main layout, the chat screen's shape: channels bar on top, the topics
+    // Main layout, the chat screen's shape without its channel row: the topics
     // table beside the topic info pane, and the activity pane across the
     // bottom. Both panes are the chat module's own renderers (see
     // `chat::render_topic_info_pane` and `chat::render_activity_log`), so the
     // overview shows the same panes instead of a second set of lookalikes.
+    //
+    // The channels bar is gone: it listed the channels *this* process runs,
+    // which on a hub is the single synthesized `agents` channel — the real
+    // channels live in the pipe process, and their state is not the hub's to
+    // claim. What the bar still had to say (that the overview is unreachable,
+    // or that its first poll has not landed) is the one line it may still take,
+    // at the top and only when there is something to report.
     //
     // No bottom status bar: version, server stats and transient messages
     // render in the info pane's status sub-pane (see `chat_status_block`),
@@ -1462,22 +1469,27 @@ fn ui_normal_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     // screen, which is the only screen that offers those commands, so the
     // overview does not read them. What the two screens share is the renderers
     // and the focus, not the toggles.
+    let line = status_line(app);
+    let mut constraints = Vec::with_capacity(3);
+    if line.is_some() {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Min(0));
+    constraints.push(Constraint::Percentage(20));
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(0),
-            Constraint::Percentage(20),
-        ])
+        .constraints(constraints)
         .split(area);
+    if let Some(ref line) = line {
+        render_status_line(frame, chunks[0], line.clone());
+    }
+    let body = &chunks[usize::from(line.is_some())..];
 
-    render_channels(frame, chunks[0], app);
-
-    let middle = Layout::horizontal([Constraint::Percentage(80), Constraint::Percentage(20)])
-        .split(chunks[1]);
+    let middle =
+        Layout::horizontal([Constraint::Percentage(80), Constraint::Percentage(20)]).split(body[0]);
     render_topics(frame, middle[0], app);
     render_topic_info_pane(frame, middle[1], app);
-    render_activity_log(frame, chunks[2], app);
+    render_activity_log(frame, body[1], app);
 
     // Leader-key popup overlay (dashboard + shared commands).
     if let Some(ref leader) = app.leader {
@@ -1506,70 +1518,37 @@ pub(super) fn pane_border_style(focused: bool) -> Style {
     })
 }
 
-fn render_channels(frame: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .title(" Channels ")
-        .borders(Borders::ALL)
-        .border_style(pane_border_style(false));
-
+/// What the one-line status strip says, or `None` when there is nothing to
+/// report and the topics table may start at the top of the screen.
+///
+/// The reachability half of what the channels bar used to say, kept without the
+/// bar: an unreachable server and a not-yet-loaded poll are both reasons the
+/// table below is empty or stale, and neither shows up anywhere else here.
+fn status_line(app: &App) -> Option<Line<'static>> {
     if let Some(ref error) = app.error {
-        let text = Paragraph::new(Line::from(vec![
+        return Some(Line::from(vec![
             Span::styled("Not connected: ", Style::default().fg(Color::Red)),
-            Span::raw(error.as_str()),
-        ]))
-        .block(block);
-        frame.render_widget(text, area);
-        return;
+            Span::raw(error.clone()),
+        ]));
     }
+    if app.state.is_none() {
+        return Some(Line::from("Connecting..."));
+    }
+    None
+}
 
-    let state = match &app.state {
-        Some(s) => s,
-        None => {
-            let text = Paragraph::new("Connecting...").block(block);
-            frame.render_widget(text, area);
-            return;
-        }
-    };
-
-    let spans: Vec<Span> = state
-        .channels
-        .iter()
-        .enumerate()
-        .flat_map(|(i, ch)| {
-            let mut parts = vec![];
-            if i > 0 {
-                parts.push(Span::raw("  "));
-            }
-            let free = ch.max_concurrent.saturating_sub(ch.active_workers);
-            let dot_color = if free == 0 {
-                Color::Red
-            } else if free < ch.max_concurrent {
-                Color::Yellow
-            } else {
-                Color::Green
-            };
-            parts.push(Span::styled("●", Style::default().fg(dot_color)));
-            parts.push(Span::raw(format!(
-                " {} ({} {}/{})",
-                ch.name, ch.channel_type, free, ch.max_concurrent
-            )));
-            parts
-        })
-        .collect();
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let channels_para = Paragraph::new(Line::from(spans));
-    frame.render_widget(channels_para, inner);
+/// Draw the status strip: one line, no border, so it reads as a message rather
+/// than as another pane.
+fn render_status_line(frame: &mut Frame, area: Rect, line: Line<'static>) {
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 /// Draw the overview's topic table.
 ///
-/// The table carries no border and no title: the channels bar's box already
-/// closes the top edge, the info pane's left border is the divider on its
-/// right and the activity pane's top border the one below, so a frame of its
-/// own would only double them up.
+/// The table carries no border and no title: the info pane's left border is the
+/// divider on its right and the activity pane's top border the one below, so a
+/// frame of its own would only double them up. With the channels bar gone the
+/// table starts at the top of the screen instead of below a closed edge.
 fn render_topics(frame: &mut Frame, area: Rect, app: &mut App) {
     // Nothing loaded yet — the panes around it still draw.
     let Some(state) = &app.state else {
@@ -1577,8 +1556,8 @@ fn render_topics(frame: &mut Frame, area: Rect, app: &mut App) {
     };
 
     let header = Row::new(vec![
+        Cell::from("Agent"),
         Cell::from("Topic"),
-        Cell::from("Channel"),
         Cell::from("Pattern"),
         Cell::from("Status"),
         Cell::from("Context"),
@@ -1605,8 +1584,8 @@ fn render_topics(frame: &mut Frame, area: Rect, app: &mut App) {
             };
 
             Row::new(vec![
+                Cell::from(t.agent.clone().unwrap_or_else(|| "-".into())),
                 Cell::from(t.name.clone()),
-                Cell::from(t.channel.clone()),
                 Cell::from(t.pattern.clone().unwrap_or("-".into())),
                 Cell::from(Span::styled(format!("{}", t.status), status_style)),
                 Cell::from(tokens),
@@ -1615,9 +1594,12 @@ fn render_topics(frame: &mut Frame, area: Rect, app: &mut App) {
         })
         .collect();
 
+    // Agent and Topic share the space the Channel column gave up: names are
+    // what the table is read for, and the two are the same value for an
+    // agent-keyed topic. The rest keep their fixed widths.
     let widths = [
         Constraint::Min(20),
-        Constraint::Length(12),
+        Constraint::Length(16),
         Constraint::Length(12),
         Constraint::Length(12),
         Constraint::Length(12),
@@ -2177,6 +2159,7 @@ mod tests {
                     tasks: Default::default(),
                     name: (*n).to_string(),
                     channel: "chan".to_string(),
+                    agent: None,
                     pattern: None,
                     status: TopicStatus::Idle,
                     model: None,
@@ -2230,6 +2213,7 @@ mod tests {
                     tasks: Default::default(),
                     name: (*n).to_string(),
                     channel: "chan".to_string(),
+                    agent: None,
                     pattern: Some((*n).to_string()),
                     status: TopicStatus::Idle,
                     model: None,
@@ -2332,25 +2316,152 @@ mod tests {
             .expect("draw");
 
         let buffer = terminal.backend().buffer().clone();
+        let row = |y: u16| -> String {
+            (0..area.width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect()
+        };
+        // Where a string starts, as a column: a row is one symbol per column
+        // but `→` is three bytes in a single one, so a byte offset is not an
+        // x — the two rows would read two apart with the columns aligned.
+        let column_of = |s: &str, needle: &str| -> u16 {
+            let at = s
+                .find(needle)
+                .unwrap_or_else(|| panic!("{needle:?} is not in {s:?}"));
+            s[..at].chars().count() as u16
+        };
         // Borderless: the table starts at the area's own x=0, the header on
         // y=0 and the first data row on y=1 — the `→ ` gutter occupies the
-        // first two columns, so the names start at x=2.
+        // first two columns, then the Agent column, and only then the names.
+        // Read the name's column off the row instead of hardcoding it, so
+        // changing the columns does not silently move what this pins.
         assert_eq!(buffer[(0, 1)].symbol(), "→", "selected row needs the arrow");
-        assert_eq!(buffer[(2, 1)].symbol(), "a");
+        let first = row(1);
+        let name_x = column_of(&first, "alpha");
+        assert!(
+            name_x > 2,
+            "the name sits past the arrow gutter, at x={name_x}"
+        );
         assert_eq!(
-            buffer[(2, 1)].bg,
+            buffer[(name_x, 1)].bg,
             Color::Reset,
             "selection paints no background"
         );
-        assert!(buffer[(2, 1)].modifier.contains(Modifier::DIM));
-        // The unselected row keeps the gutter width and stays undimmed.
+        assert!(buffer[(name_x, 1)].modifier.contains(Modifier::DIM));
+        // The unselected row keeps the gutter width and stays undimmed, with
+        // its name in the very column the selected row's is in.
         assert_eq!(
             buffer[(0, 2)].symbol(),
             " ",
             "gutter stays blank off-cursor"
         );
-        assert_eq!(buffer[(2, 2)].symbol(), "b");
-        assert!(!buffer[(2, 2)].modifier.contains(Modifier::DIM));
+        let second = row(2);
+        assert_eq!(column_of(&second, "beta"), name_x);
+        assert!(!buffer[(name_x, 2)].modifier.contains(Modifier::DIM));
+    }
+
+    /// The table leads with the two identities a topic has — the agent and the
+    /// topic's own name — and the channel column is gone: every topic on the
+    /// hub's overview sits on one channel, so the column only repeated itself.
+    #[test]
+    fn topics_table_leads_with_agent_and_topic_and_drops_channel() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = make_test_app();
+        let mut overview = make_overview_with_topics(&["issue-42"]);
+        overview.topics[0].agent = Some("invoice".to_string());
+        overview.topics[0].pattern = Some("planner".to_string());
+        app.state = Some(overview);
+
+        let area = Rect::new(0, 0, 100, 4);
+        let backend = TestBackend::new(area.width, area.height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_topics(frame, area, &mut app))
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer().clone();
+        let row = |y: u16| -> String {
+            (0..area.width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect()
+        };
+        // Nothing is selected here, so ratatui reserves no `→ ` gutter at all
+        // and the header starts at x=0; the assertions trim rather than pin an
+        // offset, which a selection would shift.
+        let header = row(0);
+        assert!(header.trim_start().starts_with("Agent"), "got: {header:?}");
+        assert!(header.contains("Topic"), "got: {header:?}");
+        assert!(header.contains("Pattern"), "got: {header:?}");
+        assert!(!header.contains("Channel"), "got: {header:?}");
+
+        let first = row(1);
+        assert!(first.contains("invoice"), "got: {first:?}");
+        assert!(first.contains("issue-42"), "got: {first:?}");
+        assert!(first.contains("planner"), "got: {first:?}");
+    }
+
+    /// A topic whose agent could not be resolved shows a dash rather than an
+    /// empty cell, the same way a missing pattern does.
+    #[test]
+    fn topics_table_shows_a_dash_for_an_unknown_agent() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = make_test_app();
+        app.state = Some(make_overview_with_topics(&["alpha"]));
+
+        let area = Rect::new(0, 0, 60, 4);
+        let backend = TestBackend::new(area.width, area.height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_topics(frame, area, &mut app))
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer().clone();
+        // Sampled from x=0 and trimmed: with no selected row the gutter is not
+        // reserved at all, and with one it sits in front — the dash is the
+        // first thing in the row either way.
+        let first: String = (0..area.width)
+            .map(|x| buffer[(x, 1)].symbol().to_string())
+            .collect();
+        assert!(first.trim_start().starts_with('-'), "got: {first:?}");
+    }
+
+    /// With the channels bar gone, an overview that cannot reach its server is
+    /// the one line the screen may still spend on saying so — and only then: a
+    /// loaded overview starts the table at the very top.
+    #[test]
+    fn overview_says_it_is_unreachable_only_while_it_is() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let draw = |mut app: App| -> String {
+            let backend = TestBackend::new(40, 8);
+            let mut terminal = Terminal::new(backend).expect("terminal");
+            terminal
+                .draw(|frame| ui_normal_mode(frame, frame.area(), &mut app))
+                .expect("draw");
+            let buffer = terminal.backend().buffer().clone();
+            (0..40)
+                .map(|x| buffer[(x, 0)].symbol().to_string())
+                .collect()
+        };
+
+        let mut loading = make_test_app();
+        let top = draw(make_test_app());
+        assert!(top.starts_with("Connecting..."), "got: {top:?}");
+
+        // Loaded: no status line, so the table's own header is the top row.
+        loading.state = Some(make_overview_with_topics(&["alpha"]));
+        let top = draw(loading);
+        assert!(top.trim_start().starts_with("Agent"), "got: {top:?}");
+
+        let mut broken = make_test_app();
+        broken.error = Some("connection refused".to_string());
+        let top = draw(broken);
+        assert!(top.starts_with("Not connected:"), "got: {top:?}");
     }
 
     // --- refresh_chat_commands uses chat.topic, not table_state.selected() ---
@@ -2562,10 +2673,10 @@ mod tests {
         let buffer = terminal.backend().buffer().clone();
 
         // Info pane: 20% of the width, so its left border sits at 80% of
-        // the screen. Every row below the channels bar must carry the
-        // chat screen's vertical border there.
+        // the screen. With no channels bar above it, every row from the top
+        // must carry the chat screen's vertical border there.
         let info_x = width * 80 / 100;
-        let info_border: String = (3..12)
+        let info_border: String = (0..12)
             .map(|y| buffer[(info_x, y)].symbol().to_string())
             .collect();
         assert!(
@@ -2578,7 +2689,7 @@ mod tests {
         // pinned to the *bottom* of the column with its version line first,
         // so the whole column is sampled rather than one guessed row.
         let activity_top = height - height / 5 - 1;
-        let info_text: String = (3..activity_top)
+        let info_text: String = (0..activity_top)
             .flat_map(|y| (info_x + 1..width).map(move |x| (x, y)))
             .map(|(x, y)| buffer[(x, y)].symbol().to_string())
             .collect();

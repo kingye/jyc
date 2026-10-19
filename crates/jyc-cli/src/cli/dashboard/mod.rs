@@ -2605,8 +2605,11 @@ mod tests {
         );
 
         // The status sub-pane is the chat screen's own block (its version
-        // line), rendered inside the info column on both screens.
-        let info_text: String = (3..12)
+        // line), rendered inside the info column on both screens. It is
+        // pinned to the *bottom* of the column with its version line first,
+        // so the whole column is sampled rather than one guessed row.
+        let activity_top = height - height / 5 - 1;
+        let info_text: String = (3..activity_top)
             .flat_map(|y| (info_x + 1..width).map(move |x| (x, y)))
             .map(|(x, y)| buffer[(x, y)].symbol().to_string())
             .collect();
@@ -2618,7 +2621,6 @@ mod tests {
         // Activity pane: the top border closes off the bottom strip, and
         // it carries no title - the chat screen's look, which PR #669
         // restored for both screens.
-        let activity_top = height - height / 5 - 1;
         let activity_row: String = (0..width)
             .map(|x| buffer[(x, activity_top)].symbol().to_string())
             .collect();

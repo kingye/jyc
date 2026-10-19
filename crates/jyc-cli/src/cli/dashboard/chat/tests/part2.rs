@@ -200,6 +200,7 @@ fn focus_cycle_includes_explorer_only_when_visible() {
     app.chat.info_visible = false; // isolate explorer cycling
 
     // Hidden: ChatPane → MessageArea → ChatPane (no activity pane).
+    app.chat.focus = Focus::ChatPane;
     app.chat.toggle_focus();
     assert_eq!(app.chat.focus, Focus::MessageArea);
     app.chat.toggle_focus();
@@ -217,7 +218,7 @@ fn focus_cycle_includes_explorer_only_when_visible() {
 fn opening_explorer_moves_focus_into_it() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
-    assert_eq!(app.chat.focus, Focus::ChatPane);
+    app.chat.focus = Focus::ChatPane;
     app.chat.toggle_explorer();
     assert!(app.chat.explorer_visible);
     assert_eq!(app.chat.focus, Focus::ExplorerPane);

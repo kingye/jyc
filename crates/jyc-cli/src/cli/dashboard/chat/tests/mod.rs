@@ -214,7 +214,7 @@ fn tab_cycles_input_messages_activity_when_activity_visible() {
 
     // info pane is visible by default → full cycle:
     // Chat → MessageArea → InfoPane → ActivityPane → Chat.
-    assert_eq!(app.chat.focus, Focus::ChatPane);
+    app.chat.focus = Focus::ChatPane;
     app.chat.toggle_focus();
     assert_eq!(app.chat.focus, Focus::MessageArea);
     app.chat.toggle_focus();
@@ -233,6 +233,7 @@ fn tab_skips_hidden_activity_pane() {
 
     // MessageArea → InfoPane (visible by default) → Chat: the hidden
     // activity pane must be skipped.
+    app.chat.focus = Focus::ChatPane;
     app.chat.toggle_focus();
     assert_eq!(app.chat.focus, Focus::MessageArea);
     app.chat.toggle_focus();
@@ -272,7 +273,7 @@ fn tab_cycles_through_info_pane_when_visible() {
     app.chat.info_visible = true; // also the default; set explicitly for clarity
     // activity hidden, explorer hidden → cycle is Chat → MessageArea
     // → InfoPane → Chat (per the skip rules).
-    assert_eq!(app.chat.focus, Focus::ChatPane);
+    app.chat.focus = Focus::ChatPane;
     app.chat.toggle_focus();
     assert_eq!(app.chat.focus, Focus::MessageArea);
     app.chat.toggle_focus();
@@ -287,7 +288,7 @@ fn tab_skips_info_pane_when_hidden() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.info_visible = false;
-    assert_eq!(app.chat.focus, Focus::ChatPane);
+    app.chat.focus = Focus::ChatPane;
     app.chat.toggle_focus();
     assert_eq!(app.chat.focus, Focus::MessageArea);
     app.chat.toggle_focus();
@@ -609,6 +610,12 @@ fn chatting_app() -> App {
     let mut app = App::new(rx, None);
     app.chat.visible = true;
     app.chat.topic = Some("jyc".to_string());
+    // A fresh `App` starts on the overview screen, so its focus is the topics
+    // table — a chat screen is never drawn in that state (opening one moves the
+    // focus to the input). Keys that mean something only on the chat screen
+    // (the `/` popup, typing) are gated on the input having the focus, so put
+    // the app where the screen would before handing it keys.
+    app.chat.focus = Focus::ChatPane;
     app
 }
 

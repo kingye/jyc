@@ -1487,7 +1487,10 @@ fn ui_normal_mode(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let middle =
         Layout::horizontal([Constraint::Percentage(80), Constraint::Percentage(20)]).split(body[0]);
-    render_topics(frame, middle[0], app);
+    // One blank row above the table, the same top padding the info pane
+    // carries, so neither column's content hugs the screen top.
+    let topics = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(middle[0]);
+    render_topics(frame, topics[1], app);
     render_topic_info_pane(frame, middle[1], app);
     render_activity_log(frame, body[1], app);
 
@@ -1555,6 +1558,8 @@ fn render_topics(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     };
 
+    // `bottom_margin(1)` leaves one blank row under the header: the table
+    // renders it and `render_topics` then draws the rule into it below.
     let header = Row::new(vec![
         Cell::from("Agent"),
         Cell::from("Topic"),
@@ -1564,7 +1569,8 @@ fn render_topics(frame: &mut Frame, area: Rect, app: &mut App) {
         Cell::from("Last Active"),
     ])
     .style(Style::default().add_modifier(Modifier::BOLD))
-    .height(1);
+    .height(1)
+    .bottom_margin(1);
 
     let rows: Vec<Row> = state
         .topics
@@ -1612,6 +1618,21 @@ fn render_topics(frame: &mut Frame, area: Rect, app: &mut App) {
         .highlight_symbol("→ ");
 
     frame.render_stateful_widget(table, area, &mut app.table_state);
+
+    // Horizontal rule under the header, in the row `bottom_margin(1)` left
+    // blank. The header is pinned at the top of the table area and is one
+    // row tall, so the rule's row is always `area.y + 1`; the intersection
+    // drops it entirely when the area is too short to hold it.
+    let rule_area = Rect::new(area.x, area.y + 1, area.width, 1).intersection(area);
+    if !rule_area.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "─".repeat(rule_area.width as usize),
+                Style::default().fg(PANE_BORDER),
+            )),
+            rule_area,
+        );
+    }
 }
 
 fn ensure_overview_ws(app: &mut App, addr: &str, channel: &str, topic: &str) {
@@ -2331,33 +2352,33 @@ mod tests {
             s[..at].chars().count() as u16
         };
         // Borderless: the table starts at the area's own x=0, the header on
-        // y=0 and the first data row on y=1 — the `→ ` gutter occupies the
-        // first two columns, then the Agent column, and only then the names.
-        // Read the name's column off the row instead of hardcoding it, so
-        // changing the columns does not silently move what this pins.
-        assert_eq!(buffer[(0, 1)].symbol(), "→", "selected row needs the arrow");
-        let first = row(1);
+        // y=0, the rule on y=1 and the first data row on y=2 — the `→ ` gutter
+        // occupies the first two columns, then the Agent column, and only then
+        // the names. Read the name's column off the row instead of hardcoding
+        // it, so changing the columns does not silently move what this pins.
+        assert_eq!(buffer[(0, 2)].symbol(), "→", "selected row needs the arrow");
+        let first = row(2);
         let name_x = column_of(&first, "alpha");
         assert!(
             name_x > 2,
             "the name sits past the arrow gutter, at x={name_x}"
         );
         assert_eq!(
-            buffer[(name_x, 1)].bg,
+            buffer[(name_x, 2)].bg,
             Color::Reset,
             "selection paints no background"
         );
-        assert!(buffer[(name_x, 1)].modifier.contains(Modifier::DIM));
+        assert!(buffer[(name_x, 2)].modifier.contains(Modifier::DIM));
         // The unselected row keeps the gutter width and stays undimmed, with
         // its name in the very column the selected row's is in.
         assert_eq!(
-            buffer[(0, 2)].symbol(),
+            buffer[(0, 3)].symbol(),
             " ",
             "gutter stays blank off-cursor"
         );
-        let second = row(2);
+        let second = row(3);
         assert_eq!(column_of(&second, "beta"), name_x);
-        assert!(!buffer[(name_x, 2)].modifier.contains(Modifier::DIM));
+        assert!(!buffer[(name_x, 3)].modifier.contains(Modifier::DIM));
     }
 
     /// The table leads with the two identities a topic has — the agent and the
@@ -2396,7 +2417,16 @@ mod tests {
         assert!(header.contains("Pattern"), "got: {header:?}");
         assert!(!header.contains("Channel"), "got: {header:?}");
 
-        let first = row(1);
+        // The rule spans the whole table width on the row below the header,
+        // in the resting pane border colour rather than the header's bold.
+        let rule = row(1);
+        assert!(
+            rule.chars().all(|c| c == '─'),
+            "the header rule should run the table's full width, got: {rule:?}"
+        );
+        assert_eq!(buffer[(0, 1)].fg, PANE_BORDER, "got: {rule:?}");
+
+        let first = row(2);
         assert!(first.contains("invoice"), "got: {first:?}");
         assert!(first.contains("issue-42"), "got: {first:?}");
         assert!(first.contains("planner"), "got: {first:?}");
@@ -2422,45 +2452,52 @@ mod tests {
         let buffer = terminal.backend().buffer().clone();
         // Sampled from x=0 and trimmed: with no selected row the gutter is not
         // reserved at all, and with one it sits in front — the dash is the
-        // first thing in the row either way.
+        // first thing in the row either way. The first data row is y=2, below
+        // the header and its rule.
         let first: String = (0..area.width)
-            .map(|x| buffer[(x, 1)].symbol().to_string())
+            .map(|x| buffer[(x, 2)].symbol().to_string())
             .collect();
         assert!(first.trim_start().starts_with('-'), "got: {first:?}");
     }
 
     /// With the channels bar gone, an overview that cannot reach its server is
     /// the one line the screen may still spend on saying so — and only then: a
-    /// loaded overview starts the table at the very top.
+    /// loaded overview leaves the table's top row blank, the way the info pane
+    /// leaves its own.
     #[test]
     fn overview_says_it_is_unreachable_only_while_it_is() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
-        let draw = |mut app: App| -> String {
+        let draw = |mut app: App| -> (String, String) {
             let backend = TestBackend::new(40, 8);
             let mut terminal = Terminal::new(backend).expect("terminal");
             terminal
                 .draw(|frame| ui_normal_mode(frame, frame.area(), &mut app))
                 .expect("draw");
             let buffer = terminal.backend().buffer().clone();
-            (0..40)
-                .map(|x| buffer[(x, 0)].symbol().to_string())
-                .collect()
+            let row = |y: u16| -> String {
+                (0..40)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect()
+            };
+            (row(0), row(1))
         };
 
         let mut loading = make_test_app();
-        let top = draw(make_test_app());
+        let (top, _) = draw(make_test_app());
         assert!(top.starts_with("Connecting..."), "got: {top:?}");
 
-        // Loaded: no status line, so the table's own header is the top row.
+        // Loaded: no status line, so the table's own header takes the first
+        // row the column has, below the blank one.
         loading.state = Some(make_overview_with_topics(&["alpha"]));
-        let top = draw(loading);
-        assert!(top.trim_start().starts_with("Agent"), "got: {top:?}");
+        let (blank, header) = draw(loading);
+        assert!(blank.trim().is_empty(), "got: {blank:?}");
+        assert!(header.trim_start().starts_with("Agent"), "got: {header:?}");
 
         let mut broken = make_test_app();
         broken.error = Some("connection refused".to_string());
-        let top = draw(broken);
+        let (top, _) = draw(broken);
         assert!(top.starts_with("Not connected:"), "got: {top:?}");
     }
 

@@ -1,3 +1,9 @@
+## [Unreleased]
+
+### Changed
+
+- The dashboard overview's topic table no longer starts flush against the top of the screen: it gets the same blank row of top padding the topic info pane beside it carries, plus a full-width horizontal rule under its header in the resting pane border colour (`PANE_BORDER`), so both columns share one top edge and the header no longer runs straight into the rows. The table stays borderless and its `→ ` selection gutter is untouched — the rule is drawn into the blank row the header's `bottom_margin(1)` leaves, and is dropped entirely when the table area is too short to hold it (#956)
+
 ## [0.6.0] - 2026-10-19
 
 ### Added

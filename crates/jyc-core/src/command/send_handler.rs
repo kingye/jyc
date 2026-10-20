@@ -707,6 +707,43 @@ mod tests {
         .unwrap();
     }
 
+    /// A routed message is what makes a topic exist: give `tm` one.
+    async fn seed_topic(tm: &Arc<TopicManager>, channel: &str, topic: &str) {
+        tm.enqueue(
+            jyc_types::InboundMessage {
+                id: "seed".to_string(),
+                channel: channel.to_string(),
+                channel_uid: "seed".to_string(),
+                sender: "user".to_string(),
+                sender_address: "user@example.com".to_string(),
+                recipients: vec![],
+                topic: topic.to_string(),
+                content: jyc_types::MessageContent {
+                    text: Some("seed".to_string()),
+                    html: None,
+                    markdown: None,
+                },
+                timestamp: chrono::Utc::now(),
+                references: None,
+                reply_to_id: None,
+                external_id: None,
+                attachments: vec![],
+                metadata: HashMap::new(),
+                matched_pattern: None,
+            },
+            topic.to_string(),
+            PatternMatch {
+                pattern_name: "invoice".to_string(),
+                channel: channel.to_string(),
+                matches: HashMap::new(),
+            },
+            None,
+            false,
+            None,
+        )
+        .await;
+    }
+
     /// An agent's own topic is served by the agents channel, whether or not it
     /// has been active before.
     #[tokio::test]
@@ -757,6 +794,77 @@ mod tests {
         assert!(agents.serves_topic("probe-agent-same-name").await);
     }
 
+    /// An agent's own topic is named after the agent — but a topic by that
+    /// name may already be served by another channel, and then it is reached
+    /// through that topic, not through a second one of the same name.
+    #[tokio::test]
+    async fn a_same_name_topic_served_elsewhere_is_reached_through_it() {
+        let tmp = tempdir().unwrap();
+        let agents = make_tm(&tmp.path().join("agents-ws"), AGENTS_CHANNEL);
+        let other = make_tm(&tmp.path().join("mail-bot-ws"), "mail-bot");
+        let managers = TopicManagers::new();
+        managers.set(vec![agents.clone(), other.clone()]);
+        let _cleanup = RegisteredState("probe-own-named".to_string());
+
+        seed_topic(&other, "mail-bot", "probe-own-named").await;
+
+        let sent = send_to_topic(
+            &managers,
+            source(tmp.path()),
+            request("probe-own-named", Some("probe-own-named"), "hi"),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            sent.contains("topic 'probe-own-named' of channel 'mail-bot'"),
+            "{sent}"
+        );
+        assert!(other.serves_topic("probe-own-named").await);
+        assert!(
+            !agents.serves_topic("probe-own-named").await,
+            "the agents channel must not be handed a topic that belongs elsewhere"
+        );
+    }
+
+    /// The same name, idle since the last restart: its state records the
+    /// channel that routed to it, and that channel serves it.
+    #[tokio::test]
+    async fn sends_to_the_channel_a_same_name_topic_state_records() {
+        let tmp = tempdir().unwrap();
+        let agents = make_tm(&tmp.path().join("agents-ws"), AGENTS_CHANNEL);
+        let mail_bot = make_tm(&tmp.path().join("mail-bot-ws"), "mail-bot");
+        let managers = TopicManagers::new();
+        managers.set(vec![agents.clone(), mail_bot.clone()]);
+
+        let topic = "probe-recorded-own";
+        let state_dir = tmp.path().join("state").join(topic);
+        write_topic_meta(&state_dir, "mail-bot");
+        let _cleanup = register_state(topic, &state_dir);
+        assert!(
+            managers.serving(topic).await.is_none(),
+            "nothing is running this topic's queue"
+        );
+
+        let sent = send_to_topic(
+            &managers,
+            source(tmp.path()),
+            request(topic, Some(topic), "hi"),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            sent.contains("topic 'probe-recorded-own' of channel 'mail-bot'"),
+            "{sent}"
+        );
+        assert!(mail_bot.serves_topic(topic).await);
+        assert!(
+            !agents.serves_topic(topic).await,
+            "the agents channel must not be handed a topic that belongs elsewhere"
+        );
+    }
+
     /// A named topic goes to whichever manager already serves it — the agent
     /// argument does not name the channel.
     #[tokio::test]
@@ -769,40 +877,7 @@ mod tests {
         let _cleanup = RegisteredState("probe-served-topic".to_string());
 
         // A routed message is what makes a topic exist: give `other` one.
-        other
-            .enqueue(
-                jyc_types::InboundMessage {
-                    id: "seed".to_string(),
-                    channel: "mail-bot".to_string(),
-                    channel_uid: "seed".to_string(),
-                    sender: "user".to_string(),
-                    sender_address: "user@example.com".to_string(),
-                    recipients: vec![],
-                    topic: "probe-served-topic".to_string(),
-                    content: jyc_types::MessageContent {
-                        text: Some("seed".to_string()),
-                        html: None,
-                        markdown: None,
-                    },
-                    timestamp: chrono::Utc::now(),
-                    references: None,
-                    reply_to_id: None,
-                    external_id: None,
-                    attachments: vec![],
-                    metadata: HashMap::new(),
-                    matched_pattern: None,
-                },
-                "probe-served-topic".to_string(),
-                PatternMatch {
-                    pattern_name: "invoice".to_string(),
-                    channel: "mail-bot".to_string(),
-                    matches: HashMap::new(),
-                },
-                None,
-                false,
-                None,
-            )
-            .await;
+        seed_topic(&other, "mail-bot", "probe-served-topic").await;
         assert_eq!(
             managers
                 .serving("probe-served-topic")

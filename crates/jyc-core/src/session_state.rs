@@ -1,5 +1,5 @@
 use jyc_types::AppConfig;
-use jyc_types::channel::{ContextStrategyConfig, ResetCompressionConfig};
+use jyc_types::channel::ContextStrategyConfig;
 use jyc_types::state_dir::resolve_state_dir;
 use jyc_types::task::TaskList;
 use serde::Deserialize;
@@ -31,8 +31,8 @@ pub async fn remove_raw_context_files(state_dir: &Path) {
 /// Read input tokens from the agent session state file.
 /// Returns (current_tokens, max_tokens).
 pub async fn read_input_tokens(topic_name: &str, topic_path: &Path) -> (Option<u64>, Option<u64>) {
-    let (cur, max, _, _, _, _) = read_token_state(topic_name, topic_path).await;
-    (cur, max)
+    let state = read_token_state(topic_name, topic_path).await;
+    (state.context_input_tokens, state.context_window)
 }
 
 /// Read accumulated output tokens from the agent session state file.
@@ -40,8 +40,9 @@ pub async fn read_input_tokens(topic_name: &str, topic_path: &Path) -> (Option<u
 /// The session file already deserializes `total_output_tokens` — this just
 /// surfaces it. Output tokens accumulate across LLM calls in a round.
 pub async fn read_output_tokens(topic_name: &str, topic_path: &Path) -> Option<u64> {
-    let (_, _, out, _, _, _) = read_token_state(topic_name, topic_path).await;
-    out
+    read_token_state(topic_name, topic_path)
+        .await
+        .total_output_tokens
 }
 
 /// Read accumulated total input tokens from the agent session state file.
@@ -49,8 +50,9 @@ pub async fn read_output_tokens(topic_name: &str, topic_path: &Path) -> Option<u
 /// Distinct from `read_input_tokens` (which returns the current context
 /// size); this is the running sum across all LLM calls in the session.
 pub async fn read_total_input_tokens(topic_name: &str, topic_path: &Path) -> Option<u64> {
-    let (_, _, _, total, _, _) = read_token_state(topic_name, topic_path).await;
-    total
+    read_token_state(topic_name, topic_path)
+        .await
+        .total_input_tokens
 }
 
 /// Read accumulated prompt-cache-hit tokens from the agent session state
@@ -58,7 +60,9 @@ pub async fn read_total_input_tokens(topic_name: &str, topic_path: &Path) -> Opt
 /// accumulated value is zero. Mirrors `read_total_input_tokens`; zero
 /// covers both "no calls yet" and "provider didn't surface cache hits".
 pub async fn read_total_cache_hit_tokens(topic_name: &str, topic_path: &Path) -> Option<u64> {
-    let (_, _, _, _, cache_hit, _) = read_token_state(topic_name, topic_path).await;
+    let cache_hit = read_token_state(topic_name, topic_path)
+        .await
+        .total_cache_hit_tokens;
     cache_hit
 }
 
@@ -72,7 +76,9 @@ pub async fn read_total_cache_hit_tokens(topic_name: &str, topic_path: &Path) ->
 /// reads; for every other vendor this is always `None` unless the
 /// caller actively fills it.
 pub async fn read_total_cache_creation_tokens(topic_name: &str, topic_path: &Path) -> Option<u64> {
-    let (_, _, _, _, _, cache_creation) = read_token_state(topic_name, topic_path).await;
+    let cache_creation = read_token_state(topic_name, topic_path)
+        .await
+        .total_cache_creation_tokens;
     cache_creation
 }
 
@@ -155,51 +161,60 @@ pub async fn read_call_latency(topic_name: &str, topic_path: &Path) -> CallLaten
     }
 }
 
-/// Read all six token fields in a single file read.
-/// Returns (current_input_tokens, max_input_tokens, output_tokens,
-/// total_input_tokens, total_cache_hit_tokens,
-/// total_cache_creation_tokens). Any individual field is `None` when
-/// the file is missing, malformed, or the underlying value is zero
-/// (`total_cache_creation_tokens` is also `None` when the field is
-/// absent — sessions written before it existed deserialize as `None`).
+/// The token figures of one agent session, read from
+/// `.jyc/agent-session.json` in a single file read.
 ///
-/// Callers that need all six fields (e.g. `topic_manager::list_topics`)
+/// Every field is `None` when the file is missing, malformed, or the
+/// underlying value is zero — a session that never made an LLM call has no
+/// token figures at all.
+#[derive(Debug, Clone, Default)]
+pub struct TokenState {
+    /// The input the most recent LLM call was sent — the context it
+    /// carried.
+    pub context_input_tokens: Option<u64>,
+    /// The output tokens of that same call — the reply that gets appended
+    /// to the context. Together with `context_input_tokens` this is the
+    /// size of the context the next call will carry.
+    pub context_output_tokens: Option<u64>,
+    /// The model's context window — the whole budget the next call has to
+    /// fit into.
+    pub context_window: Option<u64>,
+    /// Accumulated output tokens across the session.
+    pub total_output_tokens: Option<u64>,
+    /// Accumulated input tokens across the session.
+    pub total_input_tokens: Option<u64>,
+    /// Accumulated prompt-cache-hit tokens across the session.
+    pub total_cache_hit_tokens: Option<u64>,
+    /// Accumulated prompt-cache-creation tokens across the session.
+    pub total_cache_creation_tokens: Option<u64>,
+}
+
+/// Read every token field of a session in a single file read.
+///
+/// Callers that need more than one field (e.g. `topic_manager::list_topics`)
 /// should use this rather than calling the single-purpose helpers above
 /// separately — saves one file open + JSON parse per call.
-pub async fn read_token_state(
-    topic_name: &str,
-    topic_path: &Path,
-) -> (
-    Option<u64>,
-    Option<u64>,
-    Option<u64>,
-    Option<u64>,
-    Option<u64>,
-    Option<u64>,
-) {
+pub async fn read_token_state(topic_name: &str, topic_path: &Path) -> TokenState {
     let agent_path = resolve_state_dir(topic_name, topic_path).join("agent-session.json");
     let Ok(content) = tokio::fs::read_to_string(&agent_path).await else {
-        return (None, None, None, None, None, None);
+        return TokenState::default();
     };
     let Ok(state) = serde_json::from_str::<AgentSessionState>(&content) else {
-        return (None, None, None, None, None, None);
+        return TokenState::default();
     };
-    let current = (state.context_input_tokens > 0).then_some(state.context_input_tokens);
-    let max = (state.max_input_tokens > 0).then_some(state.max_input_tokens);
-    let output = (state.total_output_tokens > 0).then_some(state.total_output_tokens);
-    let total_input = (state.total_input_tokens > 0).then_some(state.total_input_tokens);
-    let total_cache_hit =
-        (state.total_cache_hit_tokens > 0).then_some(state.total_cache_hit_tokens);
-    let total_cache_creation =
-        (state.total_cache_creation_tokens > 0).then_some(state.total_cache_creation_tokens);
-    (
-        current,
-        max,
-        output,
-        total_input,
-        total_cache_hit,
-        total_cache_creation,
-    )
+    TokenState {
+        context_input_tokens: (state.context_input_tokens > 0)
+            .then_some(state.context_input_tokens),
+        context_output_tokens: (state.context_output_tokens > 0)
+            .then_some(state.context_output_tokens),
+        context_window: (state.context_window > 0).then_some(state.context_window),
+        total_output_tokens: (state.total_output_tokens > 0).then_some(state.total_output_tokens),
+        total_input_tokens: (state.total_input_tokens > 0).then_some(state.total_input_tokens),
+        total_cache_hit_tokens: (state.total_cache_hit_tokens > 0)
+            .then_some(state.total_cache_hit_tokens),
+        total_cache_creation_tokens: (state.total_cache_creation_tokens > 0)
+            .then_some(state.total_cache_creation_tokens),
+    }
 }
 
 /// Agent session state format.
@@ -207,6 +222,10 @@ pub async fn read_token_state(
 struct AgentSessionState {
     #[serde(default)]
     context_input_tokens: u64,
+    #[serde(default)]
+    context_output_tokens: u64,
+    #[serde(default, alias = "max_input_tokens")]
+    context_window: u64,
     #[serde(default)]
     total_input_tokens: u64,
     #[serde(default)]
@@ -217,8 +236,6 @@ struct AgentSessionState {
     total_cache_creation_tokens: u64,
     #[serde(default)]
     total_reasoning_tokens: u64,
-    #[serde(default)]
-    max_input_tokens: u64,
     #[serde(default)]
     session_cost: f64,
     #[serde(default)]
@@ -459,44 +476,7 @@ pub async fn resolve_effective_mode(
         .and_then(|p| p.mode.clone())
 }
 
-/// Resolve the `ResetCompressionConfig` for a topic.
-///
-/// Priority: matched pattern > first pattern > global `[agent].reset_compression` > default.
-///
-/// Pass `matched_pattern = Some(name)` when the caller has access to the
-/// pattern that created the topic (e.g. `process()` with
-/// `message.matched_pattern`). Pass `None` when the caller doesn't (e.g.
-/// `/reset` command handler) — in that case the first pattern on the
-/// channel is used as the best available signal.
-pub fn resolve_reset_compression(
-    config: &AppConfig,
-    channel: &str,
-    matched_pattern: Option<&str>,
-) -> ResetCompressionConfig {
-    let channel_cfg = config.channels.get(channel);
-    let patterns = channel_cfg.and_then(|c| c.patterns.as_ref());
-
-    // 1. Matched pattern's reset_compression
-    let from_matched = matched_pattern
-        .and_then(|name| patterns.and_then(|p| p.iter().find(|p| p.name == name)))
-        .and_then(|p| p.reset_compression.clone());
-
-    // 2. First pattern (fallback when matched pattern is unknown)
-    let from_first = from_matched.or_else(|| {
-        patterns
-            .and_then(|p| p.first())
-            .and_then(|p| p.reset_compression.clone())
-    });
-
-    // 3. Global [agent].reset_compression
-    // 4. Default
-    from_first
-        .or_else(|| config.ai.reset_compression.clone())
-        .unwrap_or_default()
-}
-
-/// Resolve the `max_input_tokens` value the session should have for the
-/// currently active model on this topic.
+/// Resolve the context window of the model currently active on this topic.
 ///
 /// Returns `None` if no model can be resolved (no config, no providers, etc.).
 /// Callers should treat `None` as a no-op.
@@ -505,16 +485,18 @@ pub async fn resolve_active_context_window(
     topic_path: &Path,
     config: &AppConfig,
     channel: &str,
-    auto_reset_threshold: f64,
 ) -> Option<u64> {
     let model_override = resolve_effective_model(topic_name, topic_path, config, channel).await?;
-    let context_window = context_window_for_model(&model_override, config)?;
-    Some((context_window as f64 * auto_reset_threshold) as u64)
+    context_window_for_model(&model_override, config)
 }
 
-/// Idempotently write `max_input_tokens` to `.jyc/agent-session.json`.
+/// Idempotently write `context_window` to `.jyc/agent-session.json`.
 /// No-op if the value would not change (avoids disk churn).
-pub async fn write_max_input_tokens(topic_name: &str, topic_path: &Path, new_max: u64) {
+///
+/// The legacy `max_input_tokens` key is dropped in the same write: it held
+/// the auto-reset cap and is an alias of `context_window` on the read side,
+/// so leaving both in the file would make it fail to deserialize.
+pub async fn write_context_window(topic_name: &str, topic_path: &Path, new_window: u64) {
     let session_path = resolve_state_dir(topic_name, topic_path).join("agent-session.json");
     let content = tokio::fs::read_to_string(&session_path)
         .await
@@ -522,13 +504,14 @@ pub async fn write_max_input_tokens(topic_name: &str, topic_path: &Path, new_max
     let mut state: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(&content).unwrap_or_default();
     let current = state
-        .get("max_input_tokens")
+        .get("context_window")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    if current == new_max {
+    if current == new_window {
         return;
     }
-    state.insert("max_input_tokens".to_string(), serde_json::json!(new_max));
+    state.remove("max_input_tokens");
+    state.insert("context_window".to_string(), serde_json::json!(new_window));
     if let Some(parent) = session_path.parent() {
         tokio::fs::create_dir_all(parent).await.ok();
     }
@@ -947,29 +930,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_token_state_all_six_fields() {
+    async fn read_token_state_reads_every_field() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "read_token_state_all_six_fields";
+        let topic = "read_token_state_reads_every_field";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let state_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&state_dir).await.unwrap();
         tokio::fs::write(
             state_dir.join("agent-session.json"),
-            r#"{"context_input_tokens":1500,"total_output_tokens":400,"total_input_tokens":9000,"total_cache_hit_tokens":3500,"max_input_tokens":10000}"#,
+            r#"{"context_input_tokens":1500,"context_output_tokens":250,"total_output_tokens":400,"total_input_tokens":9000,"total_cache_hit_tokens":3500,"context_window":10000}"#,
         )
         .await
         .unwrap();
-        assert_eq!(
-            read_token_state(topic, tmp.path()).await,
-            (
-                Some(1500),
-                Some(10000),
-                Some(400),
-                Some(9000),
-                Some(3500),
-                None
-            )
-        );
+        let state = read_token_state(topic, tmp.path()).await;
+        assert_eq!(state.context_input_tokens, Some(1500));
+        assert_eq!(state.context_output_tokens, Some(250));
+        assert_eq!(state.context_window, Some(10000));
+        assert_eq!(state.total_output_tokens, Some(400));
+        assert_eq!(state.total_input_tokens, Some(9000));
+        assert_eq!(state.total_cache_hit_tokens, Some(3500));
+        assert_eq!(state.total_cache_creation_tokens, None);
     }
 
     #[tokio::test]
@@ -988,10 +968,16 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(
-            read_token_state(topic, tmp.path()).await,
-            (Some(1500), Some(10000), Some(400), None, None, None)
-        );
+        let state = read_token_state(topic, tmp.path()).await;
+        assert_eq!(state.context_input_tokens, Some(1500));
+        // The old file has no per-call output tokens.
+        assert_eq!(state.context_output_tokens, None);
+        // `max_input_tokens` is the old name of `context_window` — read
+        // through the alias.
+        assert_eq!(state.context_window, Some(10000));
+        assert_eq!(state.total_output_tokens, Some(400));
+        assert_eq!(state.total_input_tokens, None);
+        assert_eq!(state.total_cache_hit_tokens, None);
     }
 
     #[tokio::test]
@@ -999,10 +985,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "read_token_state_no_file";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        assert_eq!(
-            read_token_state(topic, tmp.path()).await,
-            (None, None, None, None, None, None)
-        );
+        let state = read_token_state(topic, tmp.path()).await;
+        assert_eq!(state.context_input_tokens, None);
+        assert_eq!(state.context_output_tokens, None);
+        assert_eq!(state.context_window, None);
+        assert_eq!(state.total_output_tokens, None);
+        assert_eq!(state.total_input_tokens, None);
+        assert_eq!(state.total_cache_hit_tokens, None);
+        assert_eq!(state.total_cache_creation_tokens, None);
     }
 
     #[tokio::test]
@@ -1418,138 +1408,51 @@ model = "provider/first-pattern"
         );
     }
 
-    // ── resolve_reset_compression ─────────────────────────────────────
-
-    use jyc_types::channel::{CompressionMode, ResetCompressionConfig};
-
-    fn config_with_patterns(
-        patterns: Vec<(&str, Option<ResetCompressionConfig>)>,
-        global: Option<ResetCompressionConfig>,
-    ) -> AppConfig {
-        // Build a minimal TOML string. Mode values are the serde rename
-        // values: "none" | "heuristic" | "llm". keep_pairs is required
-        // when mode is set.
-        let mut toml = String::from(
-            r#"
-[general]
-[channels.c]
-type = "email"
-[channels.c.inbound]
-host = "h"
-port = 993
-username = "u"
-password = "p"
-[channels.c.outbound]
-host = "h"
-port = 465
-username = "u"
-password = "p"
-[agent]
-enabled = true
-mode = "agent"
-auto_reset_threshold = 0.95
-"#,
-        );
-        for (name, rc) in &patterns {
-            toml.push_str(&format!("\n[[channels.c.patterns]]\nname = \"{name}\"\n"));
-            if let Some(c) = rc {
-                let mode = match c.mode {
-                    CompressionMode::None => "none",
-                    CompressionMode::Heuristic => "heuristic",
-                    CompressionMode::Llm => "llm",
-                };
-                toml.push_str(&format!(
-                    "reset_compression = {{ mode = \"{mode}\", keep_pairs = {} }}\n",
-                    c.keep_pairs
-                ));
-            }
-        }
-        if let Some(g) = &global {
-            let mode = match g.mode {
-                CompressionMode::None => "none",
-                CompressionMode::Heuristic => "heuristic",
-                CompressionMode::Llm => "llm",
-            };
-            toml.push_str(&format!(
-                "reset_compression = {{ mode = \"{mode}\", keep_pairs = {} }}\n",
-                g.keep_pairs
-            ));
-        }
-        jyc_types::load_config_from_str(&toml).expect("config should parse")
-    }
-
-    #[test]
-    fn resolve_reset_compression_uses_matched_pattern() {
-        let none_cfg = ResetCompressionConfig {
-            mode: CompressionMode::None,
-            keep_pairs: 3,
-        };
-        let llm_cfg = ResetCompressionConfig {
-            mode: CompressionMode::Llm,
-            keep_pairs: 5,
-        };
-        let app = config_with_patterns(
-            vec![("a", Some(none_cfg)), ("b", Some(llm_cfg.clone()))],
-            None,
-        );
-        let resolved = resolve_reset_compression(&app, "c", Some("b"));
-        assert_eq!(resolved.mode, CompressionMode::Llm);
-        assert_eq!(resolved.keep_pairs, 5);
-    }
-
-    #[test]
-    fn resolve_reset_compression_falls_back_to_first_pattern() {
-        let none_cfg = ResetCompressionConfig {
-            mode: CompressionMode::None,
-            keep_pairs: 3,
-        };
-        let app = config_with_patterns(vec![("a", Some(none_cfg))], None);
-        let resolved = resolve_reset_compression(&app, "c", None);
-        assert_eq!(resolved.mode, CompressionMode::None);
-    }
-
-    #[test]
-    fn resolve_reset_compression_falls_back_to_global() {
-        let app = config_with_patterns(
-            vec![],
-            Some(ResetCompressionConfig {
-                mode: CompressionMode::Llm,
-                keep_pairs: 7,
-            }),
-        );
-        let resolved = resolve_reset_compression(&app, "c", Some("a"));
-        assert_eq!(resolved.mode, CompressionMode::Llm);
-        assert_eq!(resolved.keep_pairs, 7);
-    }
-
-    #[test]
-    fn resolve_reset_compression_falls_back_to_default() {
-        let app = config_with_patterns(vec![], None);
-        let resolved = resolve_reset_compression(&app, "c", Some("a"));
-        // Default is Heuristic per #[derive(Default)] on CompressionMode
-        assert_eq!(resolved.mode, CompressionMode::Heuristic);
-        assert_eq!(resolved.keep_pairs, 3);
-    }
-
-    // ── write_max_input_tokens ────────────────────────────────────────
+    // ── write_context_window ───────────────────────────────────────────
 
     #[tokio::test]
-    async fn write_max_input_tokens_creates_file_when_missing() {
+    async fn write_context_window_creates_file_when_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "resolve_reset_compression_uses_matched_pattern";
+        let topic = "write_context_window_creates_file_when_missing";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        write_max_input_tokens(topic, tmp.path(), 12345).await;
+        write_context_window(topic, tmp.path(), 12345).await;
         let content = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
             .unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(state["max_input_tokens"], 12345);
+        assert_eq!(state["context_window"], 12345);
     }
 
     #[tokio::test]
-    async fn write_max_input_tokens_updates_existing() {
+    async fn write_context_window_updates_existing() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "write_max_input_tokens_updates_existing";
+        let topic = "write_context_window_updates_existing";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(
+            state_dir.join("agent-session.json"),
+            r#"{"context_input_tokens":5000,"context_window":100000}"#,
+        )
+        .await
+        .unwrap();
+        write_context_window(topic, tmp.path(), 250000).await;
+        let content = tokio::fs::read_to_string(state_dir.join("agent-session.json"))
+            .await
+            .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(state["context_window"], 250000);
+        // Other fields preserved
+        assert_eq!(state["context_input_tokens"], 5000);
+    }
+
+    /// The legacy `max_input_tokens` key is an alias of `context_window` on
+    /// the read side — a file carrying both would fail to deserialize, so
+    /// the write drops it.
+    #[tokio::test]
+    async fn write_context_window_drops_the_legacy_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "write_context_window_drops_the_legacy_key";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let state_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&state_dir).await.unwrap();
@@ -1559,22 +1462,24 @@ auto_reset_threshold = 0.95
         )
         .await
         .unwrap();
-        write_max_input_tokens(topic, tmp.path(), 250000).await;
+        write_context_window(topic, tmp.path(), 250_000).await;
         let content = tokio::fs::read_to_string(state_dir.join("agent-session.json"))
             .await
             .unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(state["max_input_tokens"], 250000);
-        // Other fields preserved
-        assert_eq!(state["context_input_tokens"], 5000);
+        assert_eq!(state["context_window"], 250_000);
+        assert!(state.get("max_input_tokens").is_none());
+        // The file still deserializes into the session state.
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["context_input_tokens"], 5000);
     }
 
     #[tokio::test]
-    async fn write_max_input_tokens_is_idempotent() {
+    async fn write_context_window_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "write_max_input_tokens_is_idempotent";
+        let topic = "write_context_window_is_idempotent";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        write_max_input_tokens(topic, tmp.path(), 12345).await;
+        write_context_window(topic, tmp.path(), 12345).await;
         let first_mtime = tokio::fs::metadata(tmp.path().join(".jyc/agent-session.json"))
             .await
             .unwrap()
@@ -1582,7 +1487,7 @@ auto_reset_threshold = 0.95
             .unwrap();
         // Sleep a beat so mtime would change if we rewrote
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        write_max_input_tokens(topic, tmp.path(), 12345).await;
+        write_context_window(topic, tmp.path(), 12345).await;
         let second_mtime = tokio::fs::metadata(tmp.path().join(".jyc/agent-session.json"))
             .await
             .unwrap()

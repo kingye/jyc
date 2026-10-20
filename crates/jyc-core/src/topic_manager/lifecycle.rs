@@ -512,37 +512,26 @@ impl TopicManager {
         Ok(true)
     }
 
-    /// Reset the session for a topic with configurable compression.
+    /// Reset the session for a topic.
     ///
     /// Delegates to the agent service's `reset_session` method.
-    pub async fn reset_session(
-        &self,
-        topic_name: &str,
-        config: &jyc_types::channel::ResetCompressionConfig,
-    ) -> Result<()> {
+    pub async fn reset_session(&self, topic_name: &str) -> Result<()> {
         let topic_path = self
             .topic_path(topic_name)
             .await
             .unwrap_or_else(|| self.storage.workspace().join(topic_name));
-        self.agent
-            .reset_session(&topic_path, topic_name, config)
-            .await?;
+        self.agent.reset_session(&topic_path, topic_name).await?;
 
         // Publish SessionStatus event for dashboard visibility
         if self.enable_events {
             let event_bus = self.get_or_create_event_bus(topic_name).await;
             if let Some(bus) = event_bus {
-                let mode_str = match config.mode {
-                    jyc_types::channel::CompressionMode::None => "none",
-                    jyc_types::channel::CompressionMode::Heuristic => "heuristic",
-                    jyc_types::channel::CompressionMode::Llm => "llm",
-                };
                 let _ = bus
                     .publish(crate::topic_event::TopicEvent::SessionStatus {
                         topic_name: topic_name.to_string(),
                         status_type: "session_reset".to_string(),
                         attempt: None,
-                        message: Some(format!("mode={mode_str}")),
+                        message: Some("session cleared".to_string()),
                         timestamp: chrono::Utc::now(),
                     })
                     .await;

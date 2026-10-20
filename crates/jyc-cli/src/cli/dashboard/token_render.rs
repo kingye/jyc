@@ -14,23 +14,31 @@ use jyc_types::{TopicInfo, format_amount};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
-/// Compute the input-token percentage for a topic. Returns `None` when
-/// either bound is missing or `max` is zero. The figure itself comes from
-/// the shared helper, so `/info` prints the same percentage.
-pub(super) fn input_token_pct(t: &TopicInfo) -> Option<u32> {
-    jyc_types::input_token_pct(t.context_input_tokens, t.max_tokens)
+/// Compute the context-window percentage for a topic: the last LLM call's
+/// input plus its output, against the model's context window. Returns
+/// `None` when the input tokens or the window are missing, or the window is
+/// zero. The figure itself comes from the shared helper, so `/info` prints
+/// the same percentage.
+pub(super) fn context_pct(t: &TopicInfo) -> Option<u32> {
+    jyc_types::context_token_pct(
+        t.context_input_tokens,
+        t.context_output_tokens,
+        t.max_tokens,
+    )
 }
 
-/// Append the "Tokens: X / Y (Z%)" row to `spans`. Pushes nothing when
-/// `context_input_tokens` or `max_tokens` is missing.
+/// Append the "Tokens: X / Y (Z%)" row to `spans` — the context size
+/// (the last call's input plus its output) against the context window.
+/// Pushes nothing when `context_input_tokens` or `max_tokens` is missing.
 pub(super) fn push_tokens_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     if let (Some(cur), Some(max)) = (t.context_input_tokens, t.max_tokens) {
-        let pct = input_token_pct(t).unwrap_or(0);
+        let used = jyc_types::context_tokens(Some(cur), t.context_output_tokens).unwrap_or(cur);
+        let pct = context_pct(t).unwrap_or(0);
         spans.push(Span::styled(
             "Tokens: ",
             Style::default().add_modifier(Modifier::BOLD),
         ));
-        spans.push(Span::raw(format!("{cur} / {max} ({pct}%)")));
+        spans.push(Span::raw(format!("{used} / {max} ({pct}%)")));
     }
 }
 
@@ -194,6 +202,28 @@ mod tests {
         cache_hit: Option<u64>,
         cache_creation: Option<u64>,
     ) -> TopicInfo {
+        info_with_context_output(
+            input,
+            None,
+            max,
+            output,
+            total_input,
+            cache_hit,
+            cache_creation,
+        )
+    }
+
+    /// The same, with the last call's own output tokens — the reply that
+    /// is appended to the context.
+    fn info_with_context_output(
+        input: Option<u64>,
+        context_output: Option<u64>,
+        max: Option<u64>,
+        output: Option<u64>,
+        total_input: Option<u64>,
+        cache_hit: Option<u64>,
+        cache_creation: Option<u64>,
+    ) -> TopicInfo {
         TopicInfo {
             name: "t".into(),
             channel: "c".into(),
@@ -202,6 +232,7 @@ mod tests {
             model: None,
             mode: None,
             context_input_tokens: input,
+            context_output_tokens: context_output,
             max_tokens: max,
             output_tokens: output,
             total_input_tokens: total_input,
@@ -228,21 +259,30 @@ mod tests {
     }
 
     #[test]
-    fn input_token_pct_basic() {
+    fn context_pct_basic() {
         let t = info_with(Some(5000), Some(10000), None, None, None, None);
-        assert_eq!(input_token_pct(&t), Some(50));
+        assert_eq!(context_pct(&t), Some(50));
+    }
+
+    /// The context size counts the last call's output too: the reply is
+    /// part of the context the next call carries.
+    #[test]
+    fn context_pct_counts_the_last_call_output() {
+        let t =
+            info_with_context_output(Some(5000), Some(1000), Some(10000), None, None, None, None);
+        assert_eq!(context_pct(&t), Some(60));
     }
 
     #[test]
-    fn input_token_pct_zero_max_returns_none() {
+    fn context_pct_zero_max_returns_none() {
         let t = info_with(Some(100), Some(0), None, None, None, None);
-        assert_eq!(input_token_pct(&t), None);
+        assert_eq!(context_pct(&t), None);
     }
 
     #[test]
-    fn input_token_pct_missing_input_returns_none() {
+    fn context_pct_missing_input_returns_none() {
         let t = info_with(None, Some(10000), None, None, None, None);
-        assert_eq!(input_token_pct(&t), None);
+        assert_eq!(context_pct(&t), None);
     }
 
     #[test]

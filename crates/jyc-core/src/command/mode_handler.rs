@@ -27,7 +27,7 @@ pub async fn set_mode(context: &CommandContext, mode: &str) -> Result<()> {
     // reflects the active model's window immediately (and the pre-loop
     // pre-check has the right threshold to compare against on the
     // next turn).
-    refresh_max_input_tokens(context).await;
+    refresh_context_window(context).await;
 
     // Mode is passed per-prompt (PromptRequest.agent), not per-session.
     // Session is preserved — AI keeps conversation memory.
@@ -68,20 +68,19 @@ impl CommandHandler for BuildCommandHandler {
     }
 }
 
-/// Resolve the active model's `max_input_tokens` and write it to
+/// Resolve the active model's context window and write it to
 /// `agent-session.json`. Best-effort: silently no-ops if resolution fails
-/// (the post-loop `update_tokens` will set it on the next turn).
-async fn refresh_max_input_tokens(context: &CommandContext) {
-    let new_max = session_state::resolve_active_context_window(
+/// (the agent loop writes it on the next turn).
+async fn refresh_context_window(context: &CommandContext) {
+    let new_window = session_state::resolve_active_context_window(
         &context.topic_name,
         &context.topic_path,
         &context.config,
         &context.channel,
-        context.config.ai.auto_reset_threshold,
     )
     .await;
-    if let Some(new_max) = new_max {
-        session_state::write_max_input_tokens(&context.topic_name, &context.topic_path, new_max)
+    if let Some(new_window) = new_window {
+        session_state::write_context_window(&context.topic_name, &context.topic_path, new_window)
             .await;
     }
 }
@@ -214,7 +213,6 @@ enabled = true
 mode = "agent"
 plan_model = "p/plan-1m"
 build_model = "p/build-256k"
-auto_reset_threshold = 0.95
 
 [agent.providers.p]
 type = "openai-compatible"
@@ -282,7 +280,6 @@ enabled = true
 mode = "agent"
 plan_model = "p/plan-1m"
 build_model = "p/build-256k"
-auto_reset_threshold = 0.95
 
 [agent.providers.p]
 type = "openai-compatible"

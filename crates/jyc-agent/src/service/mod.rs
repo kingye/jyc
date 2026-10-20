@@ -320,13 +320,6 @@ impl AgentService for JycAgentService {
             }
         });
 
-        // Resolve auto_reset_threshold: pattern-level > config-level > default 0.95
-        let pattern_threshold = message
-            .matched_pattern
-            .as_deref()
-            .and_then(|name| self.patterns.iter().find(|p| p.name == name))
-            .and_then(|p| p.auto_reset_threshold);
-        let auto_reset_threshold = pattern_threshold.unwrap_or(agent_cfg.auto_reset_threshold);
         let small_provider: Option<Box<dyn provider::Provider>> =
             small_model_resolved.and_then(|m| {
                 match provider::create_provider(&m, &agent_cfg.providers) {
@@ -478,23 +471,6 @@ impl AgentService for JycAgentService {
         // model/small_model), so the global config is the right source.
         let pricing = jyc_types::pricing::lookup_pricing(&self.config.load(), model_str);
         let billing_mode = jyc_types::pricing::lookup_billing_mode(&self.config.load(), model_str);
-        // Same rates, in the shape the reset path needs so context-compression
-        // calls land in the ledger too.
-        let billing_ctx = pricing.as_ref().map(|p| session::BillingContext {
-            pricing: p.clone(),
-            billing: billing_mode,
-            billing_dir: jyc_core::billing_log_store::BillingLogStore::billing_dir(),
-            model_label: model_str.to_string(),
-        });
-
-        // Resolve reset_compression using the matched pattern. This is the
-        // single source of truth shared by manual `/reset`, this pre-loop
-        // pre-check, and the post-loop auto-reset in `update_tokens`.
-        let compression_config = jyc_core::session_state::resolve_reset_compression(
-            &self.config.load(),
-            &self.channel_name,
-            message.matched_pattern.as_deref(),
-        );
 
         // Resolve the context management strategy. Runtime override
         // (`.jyc/context-strategy.json` written by `/context`) wins over
@@ -512,36 +488,13 @@ impl AgentService for JycAgentService {
                     )
                 });
 
-        // Pre-loop pre-check: if the active model has a smaller context
-        // window than the loaded session, reset the session BEFORE the
-        // agent loop. Without this, the first LLM call rejects the
-        // oversized context and the post-loop auto-reset never fires.
-        // Uses the same `reset_compression` config as manual `/reset`.
-        if let Some(cw) = context_window {
-            let new_max = (cw as f64 * auto_reset_threshold) as u64;
-            session::maybe_reset_for_new_context(
-                topic_name,
-                topic_path,
-                new_max,
-                &compression_config,
-                Some(provider.as_ref()),
-                billing_ctx.as_ref(),
-            )
-            .await;
-        }
-
         // Ensure the session file exists BEFORE loading context and running
-        // the agent loop. Placed after the pre-loop pre-check because that
-        // pre-check may have deleted the file via `reset_session`, and
-        // `load_context` below returns empty when the session file is
-        // missing — which would silently discard the compacted context the
-        // pre-check just wrote. Without this, the dashboard and outbound
-        // probes also see `(None, None, None)` for the window between "user
-        // sends message" and "first LLM response arrives + persist_tokens
-        // writes". The helper is a no-op when the file already exists, so
-        // existing token data is preserved.
-        session::ensure_session_file(topic_name, topic_path, context_window, auto_reset_threshold)
-            .await;
+        // the agent loop. Without this, the dashboard and outbound probes
+        // see no token data for the window between "user sends message" and
+        // "first LLM response arrives + persist_tokens writes". The helper
+        // is a no-op when the file already exists, so existing token data is
+        // preserved.
+        session::ensure_session_file(topic_name, topic_path, context_window).await;
 
         // Start this turn's latency window: the dashboard's "latest turn"
         // figure must describe this turn, not the previous one. Placed
@@ -549,12 +502,7 @@ impl AgentService for JycAgentService {
         // rebuilt by the pre-check) is already settled.
         session::begin_turn_latency(topic_name, topic_path).await;
 
-        // Load session and prior raw context AFTER the pre-loop pre-check
-        // above: if the pre-check just reset the session (e.g. the active
-        // model switched to a smaller context window), this must read the
-        // freshly compacted agent-context.jsonl — not the stale pre-reset
-        // contents, which would be sent verbatim on the first LLM call and
-        // immediately re-inflate the wire context.
+        // Load session and prior raw context.
         let (prior_history, prior_raw_context) =
             session::load_context(topic_name, topic_path).await;
 
@@ -595,7 +543,6 @@ impl AgentService for JycAgentService {
             current_channel: Some(self.channel_name.clone()),
             outbounds,
             context_window,
-            auto_reset_threshold,
             thinking_enabled: read_thinking_enabled(topic_name, topic_path),
             pricing,
             billing_mode,
@@ -626,29 +573,23 @@ impl AgentService for JycAgentService {
         )
         .await;
 
-        // 9. Update session token tracking
-        // Provider used for the between-message context-reset summary (when
-        // input_tokens crosses the 95 % auto-reset threshold). Same fallback
-        // rule as the cycle-boundary summary: small_model if configured,
-        // else the main model.
-        let summary_provider: &dyn provider::Provider = small_provider
-            .as_deref()
-            .map(|p| p as &dyn provider::Provider)
-            .unwrap_or(provider.as_ref());
-        session::update_tokens(
+        // 9. Update session token tracking. The loop already persisted
+        // these figures after every LLM call; this is the round's final
+        // write, with no cost or duration to add (both were banked per
+        // call).
+        session::persist_tokens(
             topic_name,
             topic_path,
             result.input_tokens,
+            result.context_output_tokens,
             result.total_input_tokens,
             result.output_tokens,
             result.total_cache_hit_tokens,
             result.total_cache_creation_tokens,
             result.total_reasoning_tokens,
             context_window,
-            summary_provider,
-            auto_reset_threshold,
-            &compression_config,
-            billing_ctx.as_ref(),
+            0.0,
+            0,
         )
         .await;
 
@@ -675,75 +616,10 @@ impl AgentService for JycAgentService {
         }
     }
 
-    async fn reset_session(
-        &self,
-        topic_path: &Path,
-        topic_name: &str,
-        config: &jyc_types::channel::ResetCompressionConfig,
-    ) -> Result<()> {
-        // Read the live agent config so reload of small_model / providers
-        // takes effect without a server restart.
-        let mut agent_cfg = self.agent_config();
-        // Same `{channel}`/`{topic}` expansion as process() — otherwise a
-        // templated `prompt_cache_key` would reach the provider literally.
-        provider::expand_params_placeholders(
-            &mut agent_cfg.providers,
-            &self.channel_name,
-            topic_name,
-        );
-        // Use the agent config's small_model as the compression provider if
-        // available. `small_model` may be a reference to an `[ai]` value, so it
-        // is resolved first — this site calls the provider factory directly and
-        // would otherwise hand the literal `${ai.models.<name>}` over as a model.
-        let small_model = agent_cfg
-            .small_model
-            .as_deref()
-            .and_then(|m| match jyc_types::resolve_model_reference(m, &agent_cfg) {
-                Ok(m) => Some(m),
-                Err(err) => {
-                    tracing::warn!(
-                        error = %err,
-                        small_model = m,
-                        "small_model is a reference that cannot be resolved; compressing without a dedicated model"
-                    );
-                    None
-                }
-            });
-        let provider: Option<Box<dyn provider::Provider>> =
-            small_model.and_then(|m| provider::create_provider(&m, &agent_cfg.providers).ok());
-
-        // Resolve compression config: pattern (not available here) -> agent config
-        let resolved_config = config.clone();
-
-        // Bill the compression call against the topic's effective model so
-        // a manual `/reset` still lands in the ledger. Resolved from the
-        // configured model since no per-message override is in scope here.
-        let billing_ctx = agent_cfg.model.as_deref().and_then(|m| {
-            jyc_types::pricing::lookup_pricing(&self.config.load(), m).map(|p| {
-                session::BillingContext {
-                    pricing: p,
-                    billing: jyc_types::pricing::lookup_billing_mode(&self.config.load(), m),
-                    billing_dir: jyc_core::billing_log_store::BillingLogStore::billing_dir(),
-                    model_label: m.to_string(),
-                }
-            })
-        });
-
-        session::reset_session(
-            topic_name,
-            topic_path,
-            &resolved_config,
-            provider.as_deref().map(|p| p as &dyn provider::Provider),
-            billing_ctx.as_ref(),
-        )
-        .await;
+    async fn reset_session(&self, topic_path: &Path, topic_name: &str) -> Result<()> {
+        session::reset_session(topic_name, topic_path).await;
 
         // Publish SessionStatus event for dashboard visibility
-        let mode_str = match config.mode {
-            jyc_types::channel::CompressionMode::None => "none",
-            jyc_types::channel::CompressionMode::Heuristic => "heuristic",
-            jyc_types::channel::CompressionMode::Llm => "llm",
-        };
         let event_bus = self.get_event_bus(topic_name).await;
         if let Some(bus) = event_bus {
             let _ = bus
@@ -751,7 +627,7 @@ impl AgentService for JycAgentService {
                     topic_name: topic_name.to_string(),
                     status_type: "session_reset".to_string(),
                     attempt: None,
-                    message: Some(format!("mode={mode_str}")),
+                    message: Some("session cleared".to_string()),
                     timestamp: chrono::Utc::now(),
                 })
                 .await;

@@ -813,6 +813,10 @@ mode = "static"
 
     /// `[agents.<name>]` table parses; behavior fields mirror the legacy
     /// pattern surface (minus `rules`).
+    ///
+    /// The deprecated `reset_compression` / `auto_reset_threshold` keys are
+    /// still accepted — the auto-reset mechanism is gone, but an old config
+    /// carrying them must keep loading.
     #[test]
     fn test_load_agents_table_parses() {
         let toml = r#"
@@ -856,6 +860,7 @@ mode = "agent"
             atts.allowed_extensions,
             vec![".pdf".to_string(), ".md".to_string()]
         );
+        // Parsed but ignored — the auto-reset mechanism was removed.
         let rc = agent.reset_compression.as_ref().expect("reset_compression");
         assert!(matches!(rc.mode, crate::channel::CompressionMode::Llm));
         assert_eq!(rc.keep_pairs, 3);

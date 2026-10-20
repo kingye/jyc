@@ -84,13 +84,7 @@ pub trait AgentService: Send + Sync {
         Vec::new()
     }
 
-    /// Reset session for a topic with configurable compression.
-    ///
-    /// Default: delete session and context files (no compression).
-    async fn reset_session(
-        &self,
-        topic_path: &Path,
-        topic_name: &str,
-        config: &jyc_types::channel::ResetCompressionConfig,
-    ) -> Result<()>;
+    /// Reset the session for a topic: delete the session and context
+    /// files. The next turn starts from an empty context.
+    async fn reset_session(&self, topic_path: &Path, topic_name: &str) -> Result<()>;
 }

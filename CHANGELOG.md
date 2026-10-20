@@ -4,6 +4,10 @@
 
 - The dashboard overview's topic table no longer starts flush against the top of the screen: it gets the same blank row of top padding the topic info pane beside it carries, plus a full-width horizontal rule under its header in the resting pane border colour (`PANE_BORDER`), so both columns share one top edge and the header no longer runs straight into the rows. The table stays borderless and its `→ ` selection gutter is untouched — the rule is drawn into the blank row the header's `bottom_margin(1)` leaves, and is dropped entirely when the table area is too short to hold it (#956)
 
+### Fixed
+
+- `jyc_send_to_topic` no longer refuses a `topic` that names the agent it is addressed to: an agent's own topic is named after the agent, so `agent="c21-sfm-reuse-lib"` with `topic="c21-sfm-reuse-lib"` names the default topic, not a named one — the two spellings now mean the same thing, and the message lands on the agent's own topic, created on demand exactly like the `topic`-less form. The refusal stays for a *named* topic — one whose name differs from the agent's — when nobody owns it, since re-creating it under the same name elsewhere would collide with state dirs keyed by topic name process-wide. The tool's `topic` parameter now says which name counts as the agent's own, and the confirmation names the destination the way the `topic`-less form does (#957)
+
 ## [0.6.0] - 2026-10-19
 
 ### Added

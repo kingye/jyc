@@ -221,16 +221,18 @@ pub async fn send_to_topic(
     // Name what actually happened. Without `topic`, the name was matched
     // against topic names first, so it landed on the agent's own topic only
     // when it resolved to the agents channel; name the channel otherwise,
-    // rather than claiming an ownership the code never checked.
-    let sent_to = if let Some(topic) = req.topic {
-        format!("topic '{topic}'")
-    } else if target_tm.channel_name() == AGENTS_CHANNEL {
-        format!("agent '{}' (its own topic)", req.agent)
-    } else {
-        format!(
+    // rather than claiming an ownership the code never checked. A `topic`
+    // equal to the agent names that agent's own topic, so it follows the
+    // same branch as the `topic`-less form.
+    let sent_to = match req.topic {
+        Some(topic) if topic != req.agent => format!("topic '{topic}'"),
+        _ if target_tm.channel_name() == AGENTS_CHANNEL => {
+            format!("agent '{}' (its own topic)", req.agent)
+        }
+        _ => format!(
             "topic '{topic_name}' of channel '{}'",
             target_tm.channel_name()
-        )
+        ),
     };
     let attachment_info = if validated_attachments.is_empty() {
         String::new()
@@ -263,6 +265,11 @@ pub async fn send_to_topic(
 ///    agents, while a *named* topic is refused — re-creating it under the same
 ///    name elsewhere would collide, since state dirs are keyed by topic name
 ///    process-wide.
+///
+/// A `topic` equal to the `agent` names that agent's own topic: an agent's
+/// own topic is named after it (`AGENTS_CHANNEL`), so `agent` and `topic`
+/// carrying the same name is the default topic, not a named one — it is
+/// created on demand like the `topic`-less form, and lands in the same place.
 async fn resolve(
     managers: &TopicManagers,
     agent: &str,
@@ -277,7 +284,11 @@ async fn resolve(
             anyhow!("Topic '{topic_name}' belongs to channel '{channel}', which is not running")
         });
     }
-    if topic.is_some() {
+    // A `topic` equal to the `agent` names the agent's own topic, which is
+    // created on demand — same as leaving `topic` out. Any other name is a
+    // named topic, and a named topic nobody owns is refused rather than
+    // re-created under a name that would collide process-wide.
+    if topic.is_some_and(|name| name != agent) {
         bail!(
             "No channel owns topic '{topic_name}': no topic by that name is running or registered \
              in a state dir, or the directory it names is gone. A topic is created by the channel \
@@ -717,6 +728,35 @@ mod tests {
         assert!(agents.serves_topic("probe-agent-default").await);
     }
 
+    /// An agent's own topic is named after the agent, so a `topic` equal to
+    /// the `agent` names that same default topic — created on demand, just
+    /// like the `topic`-less form.
+    #[tokio::test]
+    async fn sends_to_the_agents_channel_when_the_topic_names_the_agent() {
+        let tmp = tempdir().unwrap();
+        let managers = TopicManagers::new();
+        managers.set(vec![make_tm(tmp.path(), AGENTS_CHANNEL)]);
+
+        let sent = send_to_topic(
+            &managers,
+            source(tmp.path()),
+            request(
+                "probe-agent-same-name",
+                Some("probe-agent-same-name"),
+                "hello",
+            ),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            sent.contains("agent 'probe-agent-same-name' (its own topic)"),
+            "{sent}"
+        );
+        let agents = managers.by_channel(AGENTS_CHANNEL).unwrap();
+        assert!(agents.serves_topic("probe-agent-same-name").await);
+    }
+
     /// A named topic goes to whichever manager already serves it — the agent
     /// argument does not name the channel.
     #[tokio::test]
@@ -789,7 +829,9 @@ mod tests {
     }
 
     /// A name no topic anywhere owns, and a named topic at that: refused rather
-    /// than re-created under a name that would collide process-wide.
+    /// than re-created under a name that would collide process-wide. A `topic`
+    /// equal to the `agent` is not a named topic — that is the agent's own
+    /// topic, created on demand.
     #[tokio::test]
     async fn refuses_a_named_topic_nobody_owns() {
         let tmp = tempdir().unwrap();

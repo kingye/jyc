@@ -5,6 +5,10 @@
 //! agent in a Feishu topic can generate a PDF and send it to the
 //! `invoice_processing` topic of the invoice agent.
 //!
+//! An agent's own topic is named after the agent, so `topic` carrying the
+//! agent's own name addresses that same default topic — the two spellings
+//! mean one thing.
+//!
 //! `/send` parses its arguments into the same request and calls the same
 //! `send_handler::send_to_topic` — one implementation, two triggers, as
 //! `/spawn` and `jyc_spawn_subagent`.
@@ -38,11 +42,11 @@ impl Tool for SendToThreadTool {
             "properties": {
                 "agent": {
                     "type": "string",
-                    "description": "The agent to reach, e.g. \"invoice\". Matched against topic names first: a name an existing topic holds goes there; a name no topic owns becomes that agent's own topic."
+                    "description": "The agent to reach, e.g. \"invoice\". Matched against topic names first; a name no topic owns becomes that agent's own topic."
                 },
                 "topic": {
                     "type": "string",
-                    "description": "One of that agent's topics, when it has more than one; a topic name is unique process-wide."
+                    "description": "One of that agent's topics, when it has more than one; a topic name is unique process-wide. An agent's own topic is named after the agent, so the same name here addresses that default topic."
                 },
                 "message": {
                     "type": "string",
@@ -59,7 +63,7 @@ impl Tool for SendToThreadTool {
                 },
                 "require_reply": {
                     "type": "boolean",
-                    "description": "Ask the target agent to send its results back to this topic; it then uses jyc_send_to_topic to do so. Default false."
+                    "description": "Ask the target agent to send its results back to this topic; it then uses jyc_send_to_topic. Default false."
                 }
             },
             "required": ["agent", "message"]

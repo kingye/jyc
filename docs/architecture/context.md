@@ -11,15 +11,15 @@ Three core principles govern the whole system:
 1. **The raw context is the source of truth.**
    `.jyc/agent-context.jsonl` (append-only journal, one message per line; the legacy `.json` array migrates once on load) stores the full conversation (including tool
    calls and results) exactly as recorded. Strategies never reshape this
-   file — only a session reset (manual `/reset`, auto-reset, or the
-   mid-loop safety net) compacts it, using the same turn-pairing logic
-   described below.
+   file — only a session reset (manual `/reset`) clears it.
 2. **Only the wire payload is shaped.** Every LLM request passes through
    `build_send_context()` (`crates/jyc-agent/src/agent_loop/context.rs`),
    which decides what slice of the raw context to send and in what form.
-3. **Token budgets are enforced in layers.** Beyond the configured
-   strategy, independent token monitors compress or reset the session
-   before the provider can reject an oversized request (API 400).
+3. **The strategy keeps the request inside the window.** The sliding
+   window is the mechanism that bounds what is sent; there is no
+   separate token monitor that compresses or resets the session
+   underneath it (those layers were removed — the window never let the
+   context grow past the model's limit in the first place).
 4. **The system prompt is unchanged by runtime churn; volatile state
    rides the turn.** Every LLM call re-sends the whole prefix, and
    providers that cache by prefix only reuse what did not change, so the
@@ -161,9 +161,8 @@ The pairing unit is the **turn**, not the single message:
 #### History notes
 
 History notes are the **storage** representation of a turn's tool calls
-(used by heuristic session compaction and mid-loop compression, written to
-the stored context). The sliding-window **wire payload no longer emits
-them** — the most recent `note_window` turns are sent verbatim with their
+(written to the stored context). The sliding-window **wire payload no
+longer emits them** — the most recent `note_window` turns are sent verbatim with their
 structured tool calls, and older turns compact to text-only; round-tripped
 notes are filtered out before sending.
 
@@ -220,8 +219,7 @@ window compact to text-only. Boundary cases (matching
   ① shrinks to 0. **There is no clamp** — `compact_keep =
   window.saturating_sub(verbatim_pairs)` only prevents the compact
   region from going negative, never the verbatim region from growing.
-  To bound the prior to `window` either set `M ≤ window`, or pair the
-  strategy with `auto_reset_threshold` / mid-loop compression.
+  To bound the prior to `window`, set `M ≤ window`.
 - **`0 < M`, prior < `M`** — `recent = pairs_in_prior`; the entire
   prior becomes verbatim (`compact_prior` is empty because
   `verbatim_start_index` returns 0) and ① is empty regardless of
@@ -236,10 +234,10 @@ their process as content instead, leaking thinking into replies.)
 
 Trade-off: an older compacted turn loses tool-error visibility — the model
 may re-run a command that failed there; `context_browse` remains the
-fallback for recovering the original calls. Heuristic session compaction
-and mid-loop compression still write history notes to the stored context —
-`note_window` only shapes the sliding-window wire payload, and
-round-tripped notes are filtered out before the payload is sent.
+fallback for recovering the original calls. History notes stay in the
+stored context — `note_window` only shapes the sliding-window wire
+payload, and round-tripped notes are filtered out before the payload is
+sent.
 
 #### Anthropic compatibility defenses
 
@@ -320,43 +318,16 @@ needs earlier turns of the current conversation.
 
 ## Token safety nets
 
-Independent of the configured strategy, three layers enforce the token
-budget (threshold: `context_window × auto_reset_threshold`, default 95%
-of the detected model context limit):
+The sliding window is the safety net: it shapes every request so the
+context the model sees stays inside the model's context window. There is
+no second layer underneath it — no mid-loop compaction, no auto-reset, no
+reset-compression mode. A session reset (`/reset`) clears the context
+outright; it does not summarize or compact it.
 
-```mermaid
-flowchart TD
-    LLM["LLM response received<br/>(input_tokens from SSE step-finish)"]
-    Q{"input_tokens ≥<br/>context_window × auto_reset_threshold ?"}
-    subgraph Mid["Mid-loop compression — agent_loop/mod.rs"]
-        MID["Shrinks raw_context + history IN MEMORY<br/>to last 3 turns (keep_pairs=3, hard-coded)<br/>Persists at loop end → agent-context.jsonl<br/>(tail-append; full rewrite after compaction)<br/>Publishes 'session_reset' status event"]
-    end
-    subgraph Pre["Between messages / at loop end — service/mod.rs"]
-        PRE["Pre-loop pre-check:<br/>if model context window shrank below<br/>loaded session, reset BEFORE first LLM call"]
-        POST["Post-loop auto-reset:<br/>when budget exceeded, reset using<br/>reset_compression config"]
-    end
-    subgraph Rec["Provider rejects anyway — agent-server path"]
-        REC["ContextOverflow recovery:<br/>SSE session.error → log,<br/>create fresh session, retry once"]
-    end
-    LLM --> Q
-    Q -->|"yes"| Mid
-    Mid --> Pre
-    Pre --> Rec
-    Q -->|"no"| NORMAL["normal loop continues"]
-    style Mid fill:#fce4ec,stroke:#c2185b
-    style Pre fill:#fff3e0,stroke:#e65100
-    style Rec fill:#f3e5f5,stroke:#6a1b9a
-```
-
-Session resets apply the configured `reset_compression` mode:
-
-| Mode | Behavior |
-|------|----------|
-| `heuristic` (default) | Keep the last `keep_pairs` (default 3) user/assistant turns — same pairing logic as the sliding window |
-| `llm` | A separate LLM call summarizes the conversation |
-| `none` | Delete all context |
-
-Manual `/reset` uses the same `reset_compression` config as auto-reset.
+The context-window figures the dashboard and `/info` show come from the
+same place: the most recent LLM call's `usage.input_tokens` plus that
+call's `usage.output_tokens` — the size of the context the *next* call
+will carry — against the model's context window.
 
 ## Configuration
 
@@ -364,9 +335,6 @@ Manual `/reset` uses the same `reset_compression` config as auto-reset.
 # Global default for all channels/topics
 [ai]
 context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048 }
-max_input_tokens = 122880        # optional; default = 95% of detected model context
-auto_reset_threshold = 0.95      # fraction of context window that triggers reset
-reset_compression = { mode = "heuristic", keep_pairs = 3 }
 
 # Per-pattern override (takes priority over [ai])
 [channels.jyc_repo.patterns."**"]
@@ -469,8 +437,7 @@ is a no-op even when set.
 fine; ten 100 KB results from one bash test suite are the actual
 problem. Capping per-result gives both levers — keep individual
 results readable while bounding the total. A global token budget on
-the wire payload is a separate concern (`max_input_tokens` +
-auto-reset).
+the wire payload is a separate concern (`max_history_tokens`).
 
 ## `max_history_tokens` — bounding regions ① + ② by weight
 

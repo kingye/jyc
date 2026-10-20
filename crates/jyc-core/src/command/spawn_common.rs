@@ -26,7 +26,7 @@ use crate::topic_manager::TopicManager;
 /// - `agent-session.json` — the token/cost meter. The usage it counts was
 ///   billed to the parent, and a child must not inherit a bill it did not run
 ///   up (`record_token_usage` adds to whatever is on disk). Leaving it out
-///   starts the child un-metered; the first response re-seeds `max_input_tokens`.
+///   starts the child un-metered; the first response re-seeds `context_window`.
 /// - `activity.jsonl`, `wire-payload.jsonl` — per-topic logs.
 /// - `topic-name`, `topic-path`, `topic-meta.json`, `thread-meta.json` — topic
 ///   identity and channel routing. `set_topic_path` writes the first two for

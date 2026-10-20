@@ -8,8 +8,8 @@ use crate::session_state;
 /// Switch the topic to `mode` (`"plan"` or `"build"`).
 ///
 /// Plan mode writes `.jyc/mode-override`; build mode removes it (build is the
-/// default). Also refreshes `max_input_tokens` so the dashboard and the
-/// pre-loop context check see the new model's window immediately.
+/// default). Also refreshes `context_window` so the dashboard sees the new
+/// model's window immediately.
 ///
 /// Shared by `/plan`, `/build`, and user-defined commands that declare a mode.
 pub async fn set_mode(context: &CommandContext, mode: &str) -> Result<()> {
@@ -23,11 +23,9 @@ pub async fn set_mode(context: &CommandContext, mode: &str) -> Result<()> {
         tokio::fs::remove_file(&override_path).await?;
     }
 
-    // Update `max_input_tokens` in agent-session.json so the dashboard
-    // reflects the active model's window immediately (and the pre-loop
-    // pre-check has the right threshold to compare against on the
-    // next turn).
-    refresh_max_input_tokens(context).await;
+    // Update `context_window` in agent-session.json so the dashboard
+    // reflects the active model's window immediately.
+    refresh_context_window(context).await;
 
     // Mode is passed per-prompt (PromptRequest.agent), not per-session.
     // Session is preserved — AI keeps conversation memory.
@@ -68,20 +66,19 @@ impl CommandHandler for BuildCommandHandler {
     }
 }
 
-/// Resolve the active model's `max_input_tokens` and write it to
+/// Resolve the active model's context window and write it to
 /// `agent-session.json`. Best-effort: silently no-ops if resolution fails
-/// (the post-loop `update_tokens` will set it on the next turn).
-async fn refresh_max_input_tokens(context: &CommandContext) {
-    let new_max = session_state::resolve_active_context_window(
+/// (the agent loop writes it on the next turn).
+async fn refresh_context_window(context: &CommandContext) {
+    let new_window = session_state::resolve_active_context_window(
         &context.topic_name,
         &context.topic_path,
         &context.config,
         &context.channel,
-        context.config.ai.auto_reset_threshold,
     )
     .await;
-    if let Some(new_max) = new_max {
-        session_state::write_max_input_tokens(&context.topic_name, &context.topic_path, new_max)
+    if let Some(new_window) = new_window {
+        session_state::write_context_window(&context.topic_name, &context.topic_path, new_window)
             .await;
     }
 }
@@ -187,9 +184,9 @@ mode = "agent"
     }
 
     #[tokio::test]
-    async fn test_plan_writes_max_input_tokens() {
+    async fn test_plan_writes_context_window() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_plan_writes_max_input_tokens";
+        let topic = "test_plan_writes_context_window";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let mut ctx = test_context(topic, tmp.path());
         // Add a plan_model with a known context_window
@@ -214,7 +211,6 @@ enabled = true
 mode = "agent"
 plan_model = "p/plan-1m"
 build_model = "p/build-256k"
-auto_reset_threshold = 0.95
 
 [agent.providers.p]
 type = "openai-compatible"
@@ -233,18 +229,21 @@ context_window = 256000
         let handler = PlanCommandHandler;
         handler.execute(ctx).await.unwrap();
 
-        // max_input_tokens in agent-session.json should reflect plan-1m (95% of 1M = 950k)
+        // `context_window` in agent-session.json reflects the plan model's
+        // full window (1M) — the auto-reset cap is gone, so there is no
+        // 0.95 factor any more.
         let content = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
             .unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(state["max_input_tokens"], 950000);
+        assert_eq!(state["context_window"], 1000000);
+        assert!(state.get("max_input_tokens").is_none());
     }
 
     #[tokio::test]
-    async fn test_build_writes_max_input_tokens() {
+    async fn test_build_writes_context_window() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_build_writes_max_input_tokens";
+        let topic = "test_build_writes_context_window";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let state_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&state_dir).await.unwrap();
@@ -282,7 +281,6 @@ enabled = true
 mode = "agent"
 plan_model = "p/plan-1m"
 build_model = "p/build-256k"
-auto_reset_threshold = 0.95
 
 [agent.providers.p]
 type = "openai-compatible"
@@ -303,11 +301,14 @@ context_window = 256000
 
         // mode-override removed
         assert!(!state_dir.join("mode-override").exists());
-        // max_input_tokens now reflects build-256k (95% of 256k = 243200)
+        // `context_window` now reflects build-256k's full window (256k);
+        // the legacy `max_input_tokens` key written by the plan mode is
+        // dropped in the same write.
         let content = tokio::fs::read_to_string(state_dir.join("agent-session.json"))
             .await
             .unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(state["max_input_tokens"], 243200);
+        assert_eq!(state["context_window"], 256000);
+        assert!(state.get("max_input_tokens").is_none());
     }
 }

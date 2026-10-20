@@ -72,8 +72,12 @@ fn format_topic_info(t: &TopicInfo) -> String {
     }
     lines.push(format!("Status: {}", t.status));
     if let (Some(cur), Some(max)) = (t.context_input_tokens, t.max_tokens) {
-        let pct = jyc_types::input_token_pct(Some(cur), Some(max)).unwrap_or(0);
-        lines.push(format!("Tokens: {cur} / {max} ({pct}%)"));
+        // The context size: the last call's input plus its output, against
+        // the model's context window.
+        let used = jyc_types::context_tokens(Some(cur), t.context_output_tokens).unwrap_or(cur);
+        let pct = jyc_types::context_token_pct(Some(cur), t.context_output_tokens, Some(max))
+            .unwrap_or(0);
+        lines.push(format!("Tokens: {used} / {max} ({pct}%)"));
     }
     if let Some(output) = t.output_tokens {
         lines.push(format!("Output: {output}"));
@@ -180,6 +184,7 @@ mod tests {
             model: Some("kimi/k3-256k".into()),
             mode: Some("plan".into()),
             context_input_tokens: Some(105_432),
+            context_output_tokens: Some(2_048),
             max_tokens: Some(256_000),
             output_tokens: Some(12_345),
             total_input_tokens: Some(1_234_567),
@@ -236,7 +241,7 @@ Model: kimi/k3-256k
 Mode: plan
 Branch: fix/issue-42-timeout
 Status: Idle
-Tokens: 105432 / 256000 (41%)
+Tokens: 107480 / 256000 (41%)
 Output: 12345
 Total input: 1234567
 Cache hits: 987654

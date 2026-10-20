@@ -171,7 +171,8 @@ curl -H 'Authorization: Bearer <token>' http://127.0.0.1:9876/api/state
 The topic *list*: `topics` is `Vec<TopicSummary>`, which carries what the
 overview table reads and nothing else — the topic's identity (`name`,
 `channel`, `agent`, `pattern`), its `status`, its context usage
-(`context_input_tokens`, `max_tokens`), `last_active_at`, its `parent` and
+(`context_input_tokens`, `context_output_tokens`, `max_tokens`),
+`last_active_at`, its `parent` and
 the `commands` available in it. Every other figure (model, mode, tokens,
 cost, latency, tasks, branch, changed files) is the topic's *detail* and
 lives on §2.4.11 only.
@@ -685,6 +686,7 @@ topic rather than measure it, and both carry the same value for each.
 | `pattern`                    | string?               | ✓               | ✓                  |
 | `status`                     | `TopicStatus`        | ✓               | ✓                  |
 | `context_input_tokens`       | u64?                  | ✓               | ✓                  |
+| `context_output_tokens`      | u64?                  | ✓               | ✓                  |
 | `max_tokens`                 | u64?                  | ✓               | ✓                  |
 | `last_active_at`             | string? (RFC 3339)    | ✓               | ✓                  |
 | `topic_path`                | `PathBuf?`            | ✓               | ✓                  |

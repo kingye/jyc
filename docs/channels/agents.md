@@ -45,8 +45,6 @@ disabled_tools = []
 live_injection = true
 inject_inbound_images = false
 mode = "build"
-reset_compression = { mode = "llm", keep_pairs = 3 }
-auto_reset_threshold = 0.95
 role = "Developer"
 attachments = { enabled = true, allowed_extensions = [".pdf", ".md"] }
 ```
@@ -67,8 +65,8 @@ attachments = { enabled = true, allowed_extensions = [".pdf", ".md"] }
 | `mode` | Initial mode for topics: `"plan"` or `"build"` |
 | `mcps` | MCP servers (overrides global `[[mcps]]` for topics of this agent) |
 | `disabled_tools` / `disabled_builtin_tools` / `disabled_mcps` | Tool/MCP gating |
-| `reset_compression` | Session-reset compression (`{ mode, keep_pairs }`) |
-| `auto_reset_threshold` | Auto-reset threshold as fraction of context window |
+| `reset_compression` | **Deprecated — ignored.** The auto-reset mechanism was removed |
+| `auto_reset_threshold` | **Deprecated — ignored.** The auto-reset mechanism was removed |
 | `attachments` | Inbound attachment config (allowed extensions, max size, etc.) |
 
 ### Prerequisites

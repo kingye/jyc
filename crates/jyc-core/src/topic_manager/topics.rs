@@ -24,19 +24,23 @@ pub struct TopicDisplayState {
     pub mode: Option<String>,
     /// Effective model after the full override chain.
     pub model: Option<String>,
-    /// Current context input tokens from the session state file.
+    /// The input the most recent LLM call was sent, from the session
+    /// state file.
     pub input_tokens: Option<u64>,
+    /// The output tokens of that same call — the reply appended to the
+    /// context.
+    pub output_tokens: Option<u64>,
     /// Context window size.
     pub max_tokens: Option<u64>,
 }
 
 impl TopicDisplayState {
-    /// Input-token percentage of the context window. `None` when either
-    /// bound is missing or `max_tokens` is zero — the same helper the
-    /// dashboard and `/info` use, so the progress cards cannot report a
-    /// different figure than the topic's own figures.
+    /// Context size as a percentage of the context window. `None` when
+    /// the input tokens or the window are missing, or the window is zero —
+    /// the same helper the dashboard and `/info` use, so the progress cards
+    /// cannot report a different figure than the topic's own figures.
     pub fn context_pct(&self) -> Option<u32> {
-        jyc_types::input_token_pct(self.input_tokens, self.max_tokens)
+        jyc_types::context_token_pct(self.input_tokens, self.output_tokens, self.max_tokens)
     }
 }
 
@@ -143,22 +147,14 @@ impl TopicManager {
     /// reads only — no workspace scan, no git calls.
     ///
     /// Returns `(pattern, token_state, mode, model)` where `token_state`
-    /// is the raw tuple from `read_token_state()`.
-    #[allow(clippy::type_complexity)]
+    /// is the struct from `read_token_state()`.
     async fn resolve_display_state(
         &self,
         topic_name: &str,
         topic_path: &Path,
     ) -> (
         Option<String>,
-        (
-            Option<u64>,
-            Option<u64>,
-            Option<u64>,
-            Option<u64>,
-            Option<u64>,
-            Option<u64>,
-        ),
+        crate::session_state::TokenState,
         Option<String>,
         Option<String>,
     ) {
@@ -212,12 +208,12 @@ impl TopicManager {
         };
         let (_pattern, token_state, mode, model) =
             self.resolve_display_state(topic_name, &topic_path).await;
-        let (input_tokens, max_tokens, ..) = token_state;
         TopicDisplayState {
             mode,
             model,
-            input_tokens,
-            max_tokens,
+            input_tokens: token_state.context_input_tokens,
+            output_tokens: token_state.context_output_tokens,
+            max_tokens: token_state.context_window,
         }
     }
 
@@ -652,14 +648,13 @@ impl TopicManager {
             // drift apart.
             let (pattern, token_state, mode, model) =
                 self.resolve_display_state(&name, &topic_path).await;
-            let (
-                input_tokens,
-                max_tokens,
-                output_tokens,
-                total_input_tokens,
-                total_cache_hit_tokens,
-                total_cache_creation_tokens,
-            ) = token_state;
+            let input_tokens = token_state.context_input_tokens;
+            let context_output_tokens = token_state.context_output_tokens;
+            let max_tokens = token_state.context_window;
+            let output_tokens = token_state.total_output_tokens;
+            let total_input_tokens = token_state.total_input_tokens;
+            let total_cache_hit_tokens = token_state.total_cache_hit_tokens;
+            let total_cache_creation_tokens = token_state.total_cache_creation_tokens;
 
             // Read skills from .jyc/skills.json
             let skills = read_skills(&name, &topic_path).await;
@@ -756,6 +751,7 @@ impl TopicManager {
                 model,
                 mode,
                 context_input_tokens: input_tokens,
+                context_output_tokens,
                 max_tokens,
                 output_tokens,
                 total_input_tokens,

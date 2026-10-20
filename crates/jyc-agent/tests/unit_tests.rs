@@ -202,65 +202,6 @@ mod parse_openai_chunk {
 
 mod session {
     use jyc_agent::session;
-    use jyc_types::channel::ResetCompressionConfig;
-
-    /// Minimal stub provider that panics if any LLM method is invoked.
-    /// Used by `update_tokens` tests where the auto-reset threshold is NOT
-    /// crossed, so the provider's LLM is never actually called.
-    struct StubProvider;
-
-    #[async_trait::async_trait]
-    impl jyc_agent::provider::Provider for StubProvider {
-        fn name(&self) -> &str {
-            "stub"
-        }
-        fn model(&self) -> &str {
-            "stub"
-        }
-
-        async fn complete(
-            &self,
-            _messages: &[jyc_agent::types::Message],
-            _tools: &[jyc_agent::types::ToolDefinition],
-            _system: &str,
-        ) -> anyhow::Result<jyc_agent::provider::EventStream> {
-            panic!("stub provider should not be invoked in these tests")
-        }
-
-        fn format_user_message(
-            &self,
-            _blocks: &[jyc_agent::types::ContentBlock],
-        ) -> serde_json::Value {
-            panic!("stub")
-        }
-
-        fn format_tool_result(
-            &self,
-            _id: &str,
-            _content: &str,
-            _is_error: bool,
-        ) -> serde_json::Value {
-            panic!("stub")
-        }
-
-        fn build_raw_assistant_message(
-            &self,
-            _text: &str,
-            _reasoning: &str,
-            _tool_calls: &[(String, String, String)],
-        ) -> serde_json::Value {
-            panic!("stub")
-        }
-
-        async fn complete_raw(
-            &self,
-            _raw_messages: &[serde_json::Value],
-            _tools: &[jyc_agent::types::ToolDefinition],
-            _system: &str,
-        ) -> anyhow::Result<jyc_agent::provider::EventStream> {
-            panic!("stub provider should not be invoked in these tests")
-        }
-    }
 
     #[tokio::test]
     async fn load_context_returns_empty_when_no_session_file() {
@@ -555,27 +496,26 @@ mod session {
     }
 
     #[tokio::test]
-    async fn update_tokens_creates_session_file() {
+    async fn persist_tokens_creates_session_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "update_tokens_creates_session_file";
+        let topic = "persist_tokens_creates_session_file";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let state_dir = tmp.path().join(".jyc");
 
         assert!(!state_dir.join("agent-session.json").exists());
-        session::update_tokens(
+        session::persist_tokens(
             topic,
             tmp.path(),
             1000,
+            250,
             1000,
             200,
             0,
             0,
             0,
             Some(100000),
-            &StubProvider,
-            0.95,
-            &ResetCompressionConfig::default(),
-            None,
+            0.0,
+            0,
         )
         .await;
         assert!(state_dir.join("agent-session.json").exists());
@@ -586,57 +526,58 @@ mod session {
             .unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(state["context_input_tokens"], 1000);
+        // The last call's own output — the reply appended to the context.
+        assert_eq!(state["context_output_tokens"], 250);
         assert_eq!(state["total_input_tokens"], 1000);
         assert_eq!(state["total_output_tokens"], 200);
         assert_eq!(state["total_cache_hit_tokens"], 0);
-        assert_eq!(state["max_input_tokens"], 95000); // 95% of 100000
+        // The raw context window — not a fraction of it.
+        assert_eq!(state["context_window"], 100000);
     }
 
     /// `context_input_tokens` and `total_input_tokens` are stored as passed
     /// in (= latest call's value, since each call already includes full
     /// context). `total_output_tokens` is also stored as passed in (= the
     /// running total accumulated by the caller). No += accumulation
-    /// happens inside `update_tokens` itself.
+    /// happens inside `persist_tokens` itself.
     #[tokio::test]
-    async fn update_tokens_stores_latest_not_accumulated() {
+    async fn persist_tokens_stores_latest_not_accumulated() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "update_tokens_stores_latest_not_accumulated";
+        let topic = "persist_tokens_stores_latest_not_accumulated";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
 
         // First call
-        session::update_tokens(
+        session::persist_tokens(
             topic,
             tmp.path(),
             1000,
+            100,
             1000,
             100,
             0,
             0,
             0,
             Some(100000),
-            &StubProvider,
-            0.95,
-            &ResetCompressionConfig::default(),
-            None,
+            0.0,
+            0,
         )
         .await;
         // Second call — caller has accumulated locally. For output, the
         // running total after call 2 is 100 + 150 = 250, which is what
         // gets passed in (not just the per-call delta of 150).
-        session::update_tokens(
+        session::persist_tokens(
             topic,
             tmp.path(),
             2000,
+            150,
             2000,
             250,
             0,
             0,
             0,
             Some(100000),
-            &StubProvider,
-            0.95,
-            &ResetCompressionConfig::default(),
-            None,
+            0.0,
+            0,
         )
         .await;
 
@@ -645,6 +586,7 @@ mod session {
             .unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(state["context_input_tokens"], 2000); // Latest, not 3000
+        assert_eq!(state["context_output_tokens"], 150); // The last call's own
         assert_eq!(state["total_input_tokens"], 2000); // Latest, not 3000
         assert_eq!(state["total_output_tokens"], 250); // Caller's running sum
     }
@@ -665,259 +607,21 @@ mod session {
             .await
             .unwrap();
 
-        use jyc_types::channel::{CompressionMode, ResetCompressionConfig};
-        let config = ResetCompressionConfig {
-            mode: CompressionMode::Heuristic,
-            keep_pairs: 3,
-        };
-        session::reset_session(topic, tmp.path(), &config, None, None).await;
+        session::reset_session(topic, tmp.path()).await;
 
         assert!(!state_dir.join("agent-session.json").exists());
-        // Context should be summarized (empty in this case = deleted)
+        // The context is cleared, not summarized.
         assert!(!state_dir.join("agent-context.json").exists());
         assert!(!state_dir.join("agent-context.jsonl").exists());
     }
 
-    /// `update_tokens` post-loop auto-reset now honors `reset_compression.mode = None`.
-    /// Previously it inlined an LLM call; now it goes through `reset_session`.
+    /// `persist_tokens` writes the session file and nothing else: the
+    /// on-disk `agent-context.json` is the raw context and only a reset
+    /// (or the loop's own save) touches it.
     #[tokio::test]
-    async fn update_tokens_auto_reset_with_none_mode_deletes_files() {
+    async fn persist_tokens_leaves_the_context_alone() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "update_tokens_auto_reset_with_none_mode_deletes_files";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let state_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&state_dir).await.unwrap();
-
-        // Session with tokens already over the (small) max — will trigger
-        // auto-reset on the very next update_tokens call.
-        tokio::fs::write(
-            state_dir.join("agent-session.json"),
-            r#"{"created_at":"2026-01-01","context_input_tokens":5000,"total_output_tokens":100,"max_input_tokens":1000}"#,
-        )
-        .await
-        .unwrap();
-        tokio::fs::write(state_dir.join("agent-context.json"), "[]")
-            .await
-            .unwrap();
-
-        let config = ResetCompressionConfig {
-            mode: jyc_types::channel::CompressionMode::None,
-            keep_pairs: 3,
-        };
-        session::update_tokens(
-            topic,
-            tmp.path(),
-            6000, // still over 1000 → auto-reset fires
-            6000,
-            50,
-            0,
-            0,
-            0,
-            Some(1000),
-            &StubProvider,
-            0.95,
-            &config,
-            None,
-        )
-        .await;
-
-        // With mode=None, the session file is deleted by reset_session
-        // then recreated by update_tokens with zeroed counters. The
-        // `output_tokens` from THIS call is also discarded because the
-        // reset path explicitly zeros all counters before save.
-        let content = tokio::fs::read_to_string(state_dir.join("agent-session.json"))
-            .await
-            .unwrap();
-        let state: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(state["context_input_tokens"], 0);
-        assert_eq!(state["total_input_tokens"], 0);
-        assert_eq!(state["total_output_tokens"], 0);
-        assert_eq!(state["total_cache_hit_tokens"], 0);
-        assert_eq!(state["max_input_tokens"], 950); // 0.95 * 1000 from the call's context_window
-    }
-
-    /// Pre-check compaction: when the loaded session's tokens exceed the new
-    /// (smaller) context window, the session is reset using the configured
-    /// compression strategy before the agent loop runs.
-    #[tokio::test]
-    async fn maybe_reset_for_new_context_resets_when_oversized() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "maybe_reset_for_new_context_resets_when_oversized";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let state_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&state_dir).await.unwrap();
-
-        // Loaded session: 600k tokens, max_input_tokens irrelevant here
-        tokio::fs::write(
-            state_dir.join("agent-session.json"),
-            r#"{"created_at":"2026-01-01","context_input_tokens":600000,"total_output_tokens":0,"max_input_tokens":950000}"#,
-        )
-        .await
-        .unwrap();
-        // Some context to compact
-        tokio::fs::write(state_dir.join("agent-context.json"), "[]")
-            .await
-            .unwrap();
-
-        let config = ResetCompressionConfig {
-            mode: jyc_types::channel::CompressionMode::None,
-            keep_pairs: 3,
-        };
-        let reset = session::maybe_reset_for_new_context(
-            topic,
-            tmp.path(),
-            250_000, // new max for build model (256k * ~0.95 ≈ 243k; 250k close enough)
-            &config,
-            None,
-            None,
-        )
-        .await;
-        assert!(reset, "should have triggered reset");
-
-        // With mode=None the session file is deleted, then re-created by
-        // the next call to update_tokens. Here we just assert that the
-        // reset_session path ran (context deleted, session gone or reset).
-        // The exact on-disk state depends on whether anyone re-saves the
-        // session; reset_session itself deletes it.
-        assert!(!state_dir.join("agent-context.json").exists());
-        assert!(!state_dir.join("agent-context.jsonl").exists());
-    }
-
-    /// Pre-check is a no-op when the loaded session fits the new window.
-    #[tokio::test]
-    async fn maybe_reset_for_new_context_is_noop_when_under_threshold() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "maybe_reset_for_new_context_is_noop_when_under_threshold";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let state_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&state_dir).await.unwrap();
-
-        tokio::fs::write(
-            state_dir.join("agent-session.json"),
-            r#"{"created_at":"2026-01-01","context_input_tokens":100000,"total_output_tokens":0,"max_input_tokens":950000}"#,
-        )
-        .await
-        .unwrap();
-        tokio::fs::write(state_dir.join("agent-context.json"), "[]")
-            .await
-            .unwrap();
-
-        let config = ResetCompressionConfig::default();
-        let reset =
-            session::maybe_reset_for_new_context(topic, tmp.path(), 250_000, &config, None, None)
-                .await;
-        assert!(!reset, "should not have triggered reset");
-
-        // Both files unchanged
-        let session = tokio::fs::read_to_string(state_dir.join("agent-session.json"))
-            .await
-            .unwrap();
-        let context = tokio::fs::read_to_string(state_dir.join("agent-context.json"))
-            .await
-            .unwrap();
-        assert!(session.contains("\"context_input_tokens\":100000"));
-        assert_eq!(context, "[]");
-    }
-
-    /// Pre-check is a no-op when `new_max_input_tokens == 0` (caller didn't
-    /// pass a context_window — fall back to the post-loop auto-reset).
-    #[tokio::test]
-    async fn maybe_reset_for_new_context_zero_max_is_noop() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "maybe_reset_for_new_context_zero_max_is_noop";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let state_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&state_dir).await.unwrap();
-
-        tokio::fs::write(
-            state_dir.join("agent-session.json"),
-            r#"{"created_at":"2026-01-01","context_input_tokens":999999,"total_output_tokens":0,"max_input_tokens":0}"#,
-        )
-        .await
-        .unwrap();
-
-        let reset = session::maybe_reset_for_new_context(
-            topic,
-            tmp.path(),
-            0,
-            &ResetCompressionConfig::default(),
-            None,
-            None,
-        )
-        .await;
-        assert!(!reset);
-        assert!(state_dir.join("agent-session.json").exists());
-    }
-
-    /// Ordering regression (service/mod.rs message flow): after the pre-loop
-    /// pre-check resets the session (model switched to a smaller window),
-    /// `ensure_session_file` + `load_context` must return the compacted
-    /// context — not empty, and not the stale pre-reset messages.
-    /// `reset_session` deletes the session file and `load_context` returns
-    /// empty without it, so the ensure call must come between the two.
-    #[tokio::test]
-    async fn pre_check_ensure_then_load_returns_compacted_context() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "pre_check_ensure_then_load_returns_compacted_context";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let state_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&state_dir).await.unwrap();
-
-        // Oversized session carried over from a previous larger-window model.
-        tokio::fs::write(
-            state_dir.join("agent-session.json"),
-            r#"{"created_at":"2026-01-01","context_input_tokens":600000,"total_output_tokens":0,"max_input_tokens":950000}"#,
-        )
-        .await
-        .unwrap();
-        // Prior context: several user/assistant pairs plus tool noise that
-        // heuristic compaction must drop.
-        let big_context = serde_json::json!([
-            {"role":"user","content":"first question"},
-            {"role":"assistant","content":"first answer"},
-            {"role":"user","content":"second question"},
-            {"role":"assistant","content":"second answer","reasoning_content":"noise"},
-            {"role":"tool","content":"tool output that must be dropped"},
-            {"role":"user","content":"third question"},
-            {"role":"assistant","content":"third answer"}
-        ]);
-        tokio::fs::write(
-            state_dir.join("agent-context.json"),
-            serde_json::to_string(&big_context).unwrap(),
-        )
-        .await
-        .unwrap();
-
-        let config = ResetCompressionConfig {
-            mode: jyc_types::channel::CompressionMode::Heuristic,
-            keep_pairs: 1,
-        };
-
-        // The exact sequence service/mod.rs runs per message.
-        let reset =
-            session::maybe_reset_for_new_context(topic, tmp.path(), 250_000, &config, None, None)
-                .await;
-        assert!(reset, "pre-check should have triggered reset");
-        session::ensure_session_file(topic, tmp.path(), Some(256_000), 0.95).await;
-        let (_history, raw) = session::load_context(topic, tmp.path()).await;
-
-        // Heuristic keep_pairs=1 → only the last user+assistant pair survives.
-        let texts: Vec<&str> = raw
-            .iter()
-            .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
-            .collect();
-        assert_eq!(texts, ["third question", "third answer"]);
-    }
-
-    /// `persist_tokens` must write the latest input/output counts but NEVER
-    /// trigger `reset_session`, even when input crosses the auto-reset
-    /// threshold. Mid-loop the in-memory `raw_context` is the source of
-    /// truth; the on-disk `agent-context.json` must be left alone until the
-    /// post-loop `update_tokens` runs.
-    #[tokio::test]
-    async fn persist_tokens_does_not_trigger_reset() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "persist_tokens_does_not_trigger_reset";
+        let topic = "persist_tokens_leaves_the_context_alone";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let state_dir = tmp.path().join(".jyc");
 
@@ -928,18 +632,18 @@ mod session {
             .await
             .unwrap();
 
-        // Call persist_tokens with input well above the 95% threshold.
+        // Call persist_tokens with a large input.
         session::persist_tokens(
             topic,
             tmp.path(),
             100_000,
+            0,
             100_000,
             200,
             0,
             0,
             0,
             Some(10_000),
-            0.95,
             0.0,
             0,
         )
@@ -958,7 +662,7 @@ mod session {
         let state: serde_json::Value = serde_json::from_str(&session).unwrap();
         assert_eq!(state["context_input_tokens"], 100_000);
         assert_eq!(state["total_output_tokens"], 200);
-        assert_eq!(state["max_input_tokens"], 9500);
+        assert_eq!(state["context_window"], 10_000);
     }
 
     /// Output tokens accumulate upstream in the agent_loop accumulator,
@@ -975,51 +679,9 @@ mod session {
         // Simulate three LLM calls with per-call output 100, 150, 80.
         // agent_loop accumulates locally: 100, 250, 330. Each running
         // total is passed into persist_tokens.
-        session::persist_tokens(
-            topic,
-            tmp.path(),
-            1000,
-            1000,
-            100,
-            0,
-            0,
-            0,
-            None,
-            0.95,
-            0.0,
-            0,
-        )
-        .await;
-        session::persist_tokens(
-            topic,
-            tmp.path(),
-            1500,
-            1500,
-            250,
-            0,
-            0,
-            0,
-            None,
-            0.95,
-            0.0,
-            0,
-        )
-        .await;
-        session::persist_tokens(
-            topic,
-            tmp.path(),
-            2000,
-            2000,
-            330,
-            0,
-            0,
-            0,
-            None,
-            0.95,
-            0.0,
-            0,
-        )
-        .await;
+        session::persist_tokens(topic, tmp.path(), 1000, 0, 1000, 100, 0, 0, 0, None, 0.0, 0).await;
+        session::persist_tokens(topic, tmp.path(), 1500, 0, 1500, 250, 0, 0, 0, None, 0.0, 0).await;
+        session::persist_tokens(topic, tmp.path(), 2000, 0, 2000, 330, 0, 0, 0, None, 0.0, 0).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -1045,51 +707,9 @@ mod session {
         // 1000, 2000, 3000 — agent_loop sums them to running totals of
         // 1000, 3000, 6000 and passes each running total to persist_tokens.
         // The on-disk value reflects the latest passed-in sum (= 6000).
-        session::persist_tokens(
-            topic,
-            tmp.path(),
-            1000,
-            1000,
-            0,
-            0,
-            0,
-            0,
-            None,
-            0.95,
-            0.0,
-            0,
-        )
-        .await;
-        session::persist_tokens(
-            topic,
-            tmp.path(),
-            2000,
-            3000,
-            0,
-            0,
-            0,
-            0,
-            None,
-            0.95,
-            0.0,
-            0,
-        )
-        .await;
-        session::persist_tokens(
-            topic,
-            tmp.path(),
-            3000,
-            6000,
-            0,
-            0,
-            0,
-            0,
-            None,
-            0.95,
-            0.0,
-            0,
-        )
-        .await;
+        session::persist_tokens(topic, tmp.path(), 1000, 0, 1000, 0, 0, 0, 0, None, 0.0, 0).await;
+        session::persist_tokens(topic, tmp.path(), 2000, 0, 3000, 0, 0, 0, 0, None, 0.0, 0).await;
+        session::persist_tokens(topic, tmp.path(), 3000, 0, 6000, 0, 0, 0, 0, None, 0.0, 0).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -1112,38 +732,11 @@ mod session {
 
         // Two measured calls of 800ms and 1200ms ...
         for ms in [800u64, 1200u64] {
-            session::persist_tokens(
-                topic,
-                tmp.path(),
-                1000,
-                1000,
-                0,
-                0,
-                0,
-                0,
-                None,
-                0.95,
-                0.0,
-                ms,
-            )
-            .await;
+            session::persist_tokens(topic, tmp.path(), 1000, 0, 1000, 0, 0, 0, 0, None, 0.0, ms)
+                .await;
         }
         // ... then the post-loop write, which times nothing.
-        session::persist_tokens(
-            topic,
-            tmp.path(),
-            1000,
-            1000,
-            0,
-            0,
-            0,
-            0,
-            None,
-            0.95,
-            0.0,
-            0,
-        )
-        .await;
+        session::persist_tokens(topic, tmp.path(), 1000, 0, 1000, 0, 0, 0, 0, None, 0.0, 0).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -1184,10 +777,7 @@ mod session {
 
         // Two calls in this turn: 600ms and 400ms.
         for ms in [600u64, 400u64] {
-            jyc_agent::session::persist_tokens(
-                topic, path, 100, 100, 0, 0, 0, 0, None, 0.95, 0.0, ms,
-            )
-            .await;
+            session::persist_tokens(topic, path, 100, 0, 100, 0, 0, 0, 0, None, 0.0, ms).await;
         }
         let latency = jyc_core::session_state::read_call_latency(topic, path).await;
         assert_eq!(latency.turn, Some((500, 2)));
@@ -1200,10 +790,10 @@ mod session {
         assert_eq!(latency.session, Some((500, 2)));
     }
 
-    /// The latency counters are session-scoped: the auto-reset write —
-    /// which runs after `reset_session` deleted the file — must leave them
-    /// at zero with the token counters rather than resurrect a pair from a
-    /// session the user has forgotten.
+    /// The latency counters are session-scoped: the write that follows a
+    /// `reset_session` — which deleted the file — must leave them at zero
+    /// with the token counters rather than resurrect a pair from a session
+    /// the user has forgotten.
     #[tokio::test]
     async fn call_latency_zeroes_with_session_reset() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1212,10 +802,7 @@ mod session {
         let path = tmp.path();
 
         // One measured call, so there is a pair to lose.
-        jyc_agent::session::persist_tokens(
-            topic, path, 800, 800, 40, 0, 0, 0, None, 0.95, 0.0, 700,
-        )
-        .await;
+        session::persist_tokens(topic, path, 800, 0, 800, 40, 0, 0, 0, None, 0.0, 700).await;
         assert_eq!(
             jyc_core::session_state::read_call_latency(topic, path)
                 .await
@@ -1223,25 +810,12 @@ mod session {
             Some((700, 1))
         );
 
-        // Reset: the file goes, and the auto-reset path rebuilds it.
+        // Reset: the file goes, and the next write rebuilds it.
         tokio::fs::remove_file(path.join(".jyc/agent-session.json"))
             .await
             .unwrap();
-        jyc_agent::session::persist_tokens(
-            topic,
-            path,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            Some(200_000),
-            0.95,
-            0.0,
-            0,
-        )
-        .await;
+        jyc_agent::session::persist_tokens(topic, path, 0, 0, 0, 0, 0, 0, 0, Some(200_000), 0.0, 0)
+            .await;
 
         assert_eq!(
             jyc_core::session_state::read_call_latency(topic, path).await,
@@ -1277,15 +851,15 @@ mod session {
                 topic,
                 tmp.path(),
                 context_input_tokens,
+                0,
                 total_input_tokens,
                 total_output_tokens,
-                0, // no cache hits exercised in this loop-pattern test
-                0, // no cache writes exercised in this loop-pattern test
+                0,
+                0,
                 0,
                 None,
-                0.95,
-                0.0, // cost not exercised here — see session_cost tests
-                0,   // no LLM call timed in this loop-pattern test
+                0.0,
+                0,
             )
             .await;
         }
@@ -1316,13 +890,13 @@ mod session {
             topic,
             tmp.path(),
             1000,
+            0,
             1000,
             100,
             0,
             0,
             0,
             None,
-            0.95,
             0.25,
             0,
         )
@@ -1331,13 +905,13 @@ mod session {
             topic,
             tmp.path(),
             1500,
+            0,
             2500,
             200,
             0,
             0,
             0,
             None,
-            0.95,
             0.10,
             0,
         )
@@ -1346,13 +920,13 @@ mod session {
             topic,
             tmp.path(),
             2000,
+            0,
             4500,
             300,
             0,
             0,
             0,
             None,
-            0.95,
             0.05,
             0,
         )
@@ -1380,32 +954,18 @@ mod session {
             topic,
             tmp.path(),
             1000,
+            0,
             1000,
             100,
             0,
             0,
             0,
             None,
-            0.95,
             0.75,
             0,
         )
         .await;
-        session::persist_tokens(
-            topic,
-            tmp.path(),
-            1500,
-            2500,
-            200,
-            0,
-            0,
-            0,
-            None,
-            0.95,
-            0.0,
-            0,
-        )
-        .await;
+        session::persist_tokens(topic, tmp.path(), 1500, 0, 2500, 200, 0, 0, 0, None, 0.0, 0).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -1436,21 +996,7 @@ mod session {
         .unwrap();
 
         // Adding cost to a legacy file starts from 0.0.
-        session::persist_tokens(
-            topic,
-            tmp.path(),
-            600,
-            1100,
-            90,
-            0,
-            0,
-            0,
-            None,
-            0.95,
-            0.30,
-            0,
-        )
-        .await;
+        session::persist_tokens(topic, tmp.path(), 600, 0, 1100, 90, 0, 0, 0, None, 0.30, 0).await;
 
         let session = tokio::fs::read_to_string(jyc.join("agent-session.json"))
             .await
@@ -1464,8 +1010,8 @@ mod session {
     }
 
     /// `ensure_session_file` must create `agent-session.json` for a brand-new
-    /// topic that has none, with `max_input_tokens = context_window *
-    /// auto_reset_threshold`, zeroed counters, and a populated `created_at`.
+    /// topic that has none, with the context window, zeroed counters, and a
+    /// populated `created_at`.
     #[tokio::test]
     async fn ensure_session_file_creates_file_when_missing() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1475,18 +1021,18 @@ mod session {
 
         assert!(!session_path.exists());
 
-        session::ensure_session_file(topic, tmp.path(), Some(100_000), 0.95).await;
+        session::ensure_session_file(topic, tmp.path(), Some(100_000)).await;
 
         assert!(session_path.exists());
 
         let content = tokio::fs::read_to_string(&session_path).await.unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
-        // Zeroed counters so the dashboard shows "0 / 95000 (0%)" instead
+        // Zeroed counters so the dashboard shows "0 / 100000 (0%)" instead
         // of (None, None, None).
         assert_eq!(state["context_input_tokens"], 0);
         assert_eq!(state["total_output_tokens"], 0);
-        // max_input_tokens = 100000 * 0.95 = 95000
-        assert_eq!(state["max_input_tokens"], 95_000);
+        // The raw context window.
+        assert_eq!(state["context_window"], 100_000);
         // created_at must be populated so the dashboard can show session age.
         assert!(
             state["created_at"].as_str().is_some_and(|s| !s.is_empty()),
@@ -1496,7 +1042,7 @@ mod session {
 
     /// `ensure_session_file` must NOT touch an existing session file — its
     /// only job is to create the file when missing. Existing token counts,
-    /// `max_input_tokens`, and `created_at` must be preserved verbatim.
+    /// `context_window`, and `created_at` must be preserved verbatim.
     #[tokio::test]
     async fn ensure_session_file_skips_when_file_exists() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1505,21 +1051,21 @@ mod session {
         let state_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&state_dir).await.unwrap();
 
-        let original = r#"{"created_at":"2026-01-01T00:00:00Z","context_input_tokens":42000,"total_output_tokens":7000,"max_input_tokens":123000}"#;
+        let original = r#"{"created_at":"2026-01-01T00:00:00Z","context_input_tokens":42000,"total_output_tokens":7000,"context_window":123000}"#;
         let session_path = state_dir.join("agent-session.json");
         tokio::fs::write(&session_path, original).await.unwrap();
 
-        // Even with a different context_window / threshold, the file must
-        // remain untouched.
-        session::ensure_session_file(topic, tmp.path(), Some(999_999), 0.5).await;
+        // Even with a different context_window, the file must remain
+        // untouched.
+        session::ensure_session_file(topic, tmp.path(), Some(999_999)).await;
 
         let after = tokio::fs::read_to_string(&session_path).await.unwrap();
         assert_eq!(after, original);
     }
 
     /// When `context_window` is `None`, `ensure_session_file` still creates
-    /// the file but leaves `max_input_tokens` at 0 (the post-loop
-    /// `update_tokens` will fill it in on the next turn).
+    /// the file but leaves `context_window` at 0 (the agent loop fills it in
+    /// on the next turn).
     #[tokio::test]
     async fn ensure_session_file_creates_with_no_context_window() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1529,7 +1075,7 @@ mod session {
 
         assert!(!session_path.exists());
 
-        session::ensure_session_file(topic, tmp.path(), None, 0.95).await;
+        session::ensure_session_file(topic, tmp.path(), None).await;
 
         assert!(session_path.exists());
 
@@ -1537,7 +1083,7 @@ mod session {
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(state["context_input_tokens"], 0);
         assert_eq!(state["total_output_tokens"], 0);
-        assert_eq!(state["max_input_tokens"], 0);
+        assert_eq!(state["context_window"], 0);
     }
 }
 
@@ -2080,8 +1626,6 @@ mod skills {
                 attachments: None,
                 providers: std::collections::HashMap::new(),
                 vision: None,
-                reset_compression: None,
-                auto_reset_threshold: 0.95,
                 context_strategy: None,
             },
             inspect: None,
@@ -2392,13 +1936,13 @@ mod billing_integration {
             topic,
             topic_path,
             input,
+            0,
             input,
             output,
             cache_hit,
             0,
             0,
             Some(200_000),
-            0.95,
             cost,
             0,
         )
@@ -2461,26 +2005,13 @@ mod billing_integration {
         let first = bank_one_call(topic, path, 5000, 400, 1000).await;
 
         // Reset semantics, matching `reset_session`: the session file is
-        // deleted, then rebuilt with zeroed counters by the auto-reset
-        // path's follow-up `persist_tokens(.., 0.0)` call.
+        // deleted, then rebuilt with zeroed counters by the next
+        // `persist_tokens(.., 0.0)` call.
         tokio::fs::remove_file(path.join(".jyc/agent-session.json"))
             .await
             .unwrap();
-        jyc_agent::session::persist_tokens(
-            topic,
-            path,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            Some(200_000),
-            0.95,
-            0.0,
-            0,
-        )
-        .await;
+        jyc_agent::session::persist_tokens(topic, path, 0, 0, 0, 0, 0, 0, 0, Some(200_000), 0.0, 0)
+            .await;
 
         let after: serde_json::Value = serde_json::from_str(
             &tokio::fs::read_to_string(path.join(".jyc/agent-session.json"))
@@ -2662,7 +2193,8 @@ mod billing_integration {
 
     /// `add_session_cost` must not disturb the token counters -- summary
     /// tokens are real spend but are NOT part of the main loop's context
-    /// accounting, and folding them in would corrupt the auto-reset math.
+    /// accounting, and folding them in would inflate the context usage
+    /// shown to the user.
     #[tokio::test]
     async fn add_session_cost_leaves_token_counters_untouched() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2692,7 +2224,7 @@ mod billing_integration {
             "total_input_tokens",
             "total_output_tokens",
             "total_cache_hit_tokens",
-            "max_input_tokens",
+            "context_window",
         ] {
             assert_eq!(before[field], after[field], "{field} must not change");
         }

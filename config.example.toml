@@ -112,14 +112,12 @@ pipe = { agent = "jin" }
 # tool to load them on demand.
 # inject_inbound_images = true
 
-# Per-pattern session reset compression: overrides [ai].reset_compression.
-# mode: "llm" | "heuristic" | "none" (default: "llm")
-# keep_pairs: heuristic mode pairs to retain (default: 3)
+# `reset_compression` and `auto_reset_threshold` are deprecated and ignored:
+# the auto-reset mechanism was removed — the sliding-window context
+# strategy keeps the context inside the model's window, so there is
+# nothing to reset for. The keys are still accepted so configs written
+# before the removal keep loading.
 # reset_compression = { mode = "llm", keep_pairs = 3 }
-
-# Per-pattern auto-reset threshold (0.0~1.0): overrides [ai].auto_reset_threshold.
-# When context_input_tokens >= context_window * threshold, auto-reset triggers.
-# Default: 0.95
 # auto_reset_threshold = 0.9
 
 # Per-pattern context management strategy. Controls how prior conversation
@@ -548,8 +546,7 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # # params = { prompt_cache_key = "jyc-{channel}-{topic}", prompt_cache_options = { mode = "implicit", ttl = "30m" } }
 # #
 # Two figures are tracked per topic:
-#   - session: resets when the agent session resets (context auto-reset,
-#     /reset, or a model switch to a smaller context window)
+#   - session: resets when the agent session is reset (`/reset`)
 #   - today:   durable UTC-day total, appended per call to
 #     <topic>/.jyc/bill-YYYY-MM-DD.jsonl and never reset or truncated
 
@@ -570,19 +567,16 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # # Optional: custom prompt sent to the vision model alongside each image
 # # prompt = "请仔细识别并提取图片中的所有文字内容"
 
-# --- Session Reset Compression ---
+# --- Session reset ---
 #
-# Compression behavior when `/reset` or auto-reset triggers.
-# Per-pattern `reset_compression` takes priority over [ai].reset_compression.
+# `/reset` clears the agent session: the context and the session file go
+# away, the chat history stays. There is no compression mode any more —
+# the sliding-window context strategy keeps the context inside the
+# model's window, so there is nothing to summarize before starting over.
 #
-# mode: "llm" | "heuristic" | "none" (default: "llm")
-#   - "llm": use the small_model to generate an LLM summary of the conversation
-#   - "heuristic": keep the last N user+assistant text pairs (no LLM call)
-#   - "none": delete all context on reset (no summary)
-# keep_pairs: number of user+assistant pairs to retain in heuristic mode (default: 3)
-# auto_reset_threshold: fraction of context window (0.0~1.0, default: 0.95)
-#   When context_input_tokens >= context_window * auto_reset_threshold, auto-reset triggers.
-#   Per-pattern `auto_reset_threshold` takes priority.
+# `reset_compression` and `auto_reset_threshold` are deprecated and ignored
+# (they configure the removed auto-reset mechanism). The keys are still
+# accepted so configs written before the removal keep loading.
 # reset_compression = { mode = "llm", keep_pairs = 3 }
 # auto_reset_threshold = 0.95
 
@@ -1306,8 +1300,6 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # live_injection = true
 # inject_inbound_images = false
 # mode = "build"
-# reset_compression = { mode = "llm", keep_pairs = 3 }
-# auto_reset_threshold = 0.95
 # note_window: in sliding_window mode, only the most recent M windowed
 # turns carry tool-call history notes; older turns are text-only.
 # Default: 5. 0 = no notes at all.

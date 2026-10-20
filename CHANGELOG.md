@@ -2,7 +2,7 @@
 
 ### Added
 
-- The topic info pane draws its two percentage rows as bars: the context share and the cache hit rate now lead with a bar — `─` for the filled part (bold yellow), `·` for the rest (dim gray) — so each share reads at a glance and the two can be compared against each other: `Tokens: ─────── 45231 / 120000 (38%)`, `Cache hit rate: ─────── 88%`. The bar is as wide as the pane allows (up to twenty cells) and the wrapping never cuts it in half: a narrow column gets a shorter bar and the figures wrap below it. A share that rounds to nothing still shows one filled cell, so a small percentage does not read as an empty bar.
+- The topic info pane draws its two percentage rows as bars: the context share and the cache hit rate now lead with a bar — `─` for the filled part (bold yellow), `·` for the rest (dim gray) — so each share reads at a glance and the two can be compared against each other: `Tokens: ────── 45231 / 120000 (38%)`, `Cache hit rate: ────── 88%`. The bar is as wide as the pane allows (up to twenty cells) and the wrapping never cuts it in half: a narrow column gets a shorter bar and the figures wrap below it. A share that rounds to nothing still shows one filled cell, so a small percentage does not read as an empty bar.
 
 ### Removed
 

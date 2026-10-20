@@ -376,12 +376,14 @@ mod tests {
     /// bar, a narrow one a shorter bar, and a very narrow one none.
     #[test]
     fn bar_width_follows_the_pane() {
-        // The longest label plus the space before the figures.
+        // The longest label ("Cache hit rate: ", 16 cells) plus the space
+        // before the figures that follow the bar.
         assert_eq!(bar_width(39), MAX_BAR_WIDTH);
-        assert_eq!(bar_width(36), MAX_BAR_WIDTH);
-        assert_eq!(bar_width(35), MAX_BAR_WIDTH - 1);
-        assert_eq!(bar_width(23), 7);
+        assert_eq!(bar_width(37), MAX_BAR_WIDTH);
+        assert_eq!(bar_width(36), MAX_BAR_WIDTH - 1);
+        assert_eq!(bar_width(23), 6);
         // Too narrow for a bar at all.
+        assert_eq!(bar_width(17), 0);
         assert_eq!(bar_width(16), 0);
         assert_eq!(bar_width(0), 0);
     }

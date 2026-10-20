@@ -2926,14 +2926,14 @@ fn info_pane_bar_fits_a_narrow_pane() {
     }
 
     // 30 columns wide: the pane's inner width is 29, the longest label
-    // takes 16 of them, so the bar is 13 cells and the figures wrap below.
+    // takes 17 of them, so the bar is 12 cells and the figures wrap below.
     let pane = info_pane_text(&mut app, 30, 30);
     assert!(
-        pane.contains(&format!("Tokens: {}", info_pane_bar(6, 13))),
+        pane.contains(&format!("Tokens: {}", info_pane_bar(6, 12))),
         "the bar must stay whole in a narrow pane:\n{pane}"
     );
     assert!(
-        pane.contains(&format!("Cache hit rate: {}", info_pane_bar(11, 13))),
+        pane.contains(&format!("Cache hit rate: {}", info_pane_bar(11, 12))),
         "the bar must stay whole in a narrow pane:\n{pane}"
     );
 }

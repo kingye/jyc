@@ -3156,21 +3156,23 @@ Not connected: connection refused
 
   Agent     Topic       Pattern    Status     Context    Last Active  
 ──────────────────────────────────────────────────────────────────────
-→ jyc       jyc         pipe       idle       0/120K     2m ago       │ Topic:          issue-42                    
-  invoice   invoice     feishu     processing 45K/120K   now          │ Channel:        emf                         
-                                                                      │ Pattern:        planner                     
-                                                                      │ Model:          claude-opus-4-8             
-                                                                      │ Mode:           build                       
-                                                                      │ Branch:         feat/issue-42               
-                                                                      │ Tokens:         ──···· 45231 / 120000 (38%) 
-                                                                      │ Total input:    90311                       
-                                                                      │ Cache hits:     80120                       
-                                                                      │ Cache hit rate: ──────· 88%                 
-                                                                      │ Files (2):                                  
-                                                                      │   crates/…/mod.rs                           
-                                                                      │ ─────────────────────────────────────────── 
-                                                                      │ JYC AI v0.6.0                               
-                                                                      │ 2 active / 4 thread                         
+→ jyc       jyc         pipe       idle       0/120K     2m ago       │ Topic:          issue-42             
+  invoice   invoice     feishu     processing 45K/120K   now          │ Channel:        emf                  
+                                                                      │ Pattern:        planner              
+                                                                      │ Model:          claude-opus-4-8      
+                                                                      │ Mode:           build                
+                                                                      │ Branch:         feat/issue-42        
+                                                                      │ Tokens:         ────────············ 
+                                                                      │                 45231 / 120000 (38%) 
+                                                                      │ Total input:    90311                
+                                                                      │ Cache hits:     80120                
+                                                                      │ Cache hit rate: ──────────────────·· 
+                                                                      │                 88%                  
+                                                                      │ Files (2):                           
+                                                                      │   crates/…/mod.rs                    
+                                                                      │ ──────────────────────────────────── 
+                                                                      │ JYC AI v0.6.0                        
+                                                                      │ 2 active / 4 thread                  
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 2m  reply sent · emf
 2m  err  ·  emf  ·  unhandled
@@ -3192,44 +3194,46 @@ Not connected: connection refused
   gray top edge, carrying `JYC AI v<version>` plus the server stats in gray. A
   transient message replaces that block with one yellow line for a few seconds.
   Every label of the pane is padded to one width — sixteen cells, the
-  length of the longest label — so every value starts in the same column
-  and the pane reads as one table rather than a ragged list. The two
-  percentage rows draw their share as a bar in front of the numbers —
-  `─` for the filled part (bold yellow), `·` for the rest (dim gray):
-  `Tokens:         ──···· 45231 / 120000 (38%)` and
-  `Cache hit rate: ──────· 88%`; the bars start in that column too, so
-  the shares can be compared by eye. The bar is as wide as the column
-  allows — up to twenty cells — and the wrapping never cuts it in half: a
-  narrow column gets a shorter bar and the figures wrap below it. The
-  fill rounds to the nearest cell, so a bar of five cells is within ten
-  points of the share; below five cells the rounding error grows past
-  that and the bar would misreport the share, so a column that narrow
-  gets the figures alone — only a column of fewer than five cells gets
-  there, since the table layout always leaves the bar the label's room.
-  The percentage is printed either way, so the
-  bar is a glance aid and never the only source. The sketch above draws
-  the right column wider than the layout's 20% share — wide enough for
-  the table layout — so its bar is longer than a terminal that narrow
-  would give. The second row used to
-  read "Cache util"; cache util and cache hit rate are the same number.
-  The pane lays its rows out one way, decided by its inner width: while
-  the column can hold the label column and a value column (34 cells or
-  more), every row keeps its label and its value on one line — the table
-  layout; a narrower column stacks them instead, the label on a row of
-  its own and the value flush left under it, so a narrow column cuts no
-  value short. The bar follows the layout: in the table layout it shares
-  its row with the label, in the stacked one it has the row to itself
-  and can use the column's full width — so a bar appears wherever the
-  column can carry an honest one, not only in a wide terminal. The pane's
-  other sections — the task list, the changed files — are not
-  `label: value` rows and keep their own shape.
-  A value too long for its column wraps *inside* it: the lines that
-  continue it are indented to the column, so the column keeps the values
-  it holds instead of dropping them back to the column's edge. The table
-  layout needs a column of 34 cells, and the column is 20% of the
-  terminal, so it is a terminal of roughly 175 columns that gets the
-  table; a narrower terminal gets the stacked layout, where every value
-  starts in the column's first cell.
+  length of the longest label — so, in the table layout, every value starts
+  in the same column and the pane reads as one table rather than a ragged
+  list. The two percentage rows draw their share as a bar in front of the
+  numbers — `─` for the filled part (bold yellow), `·` for the rest (dim
+  gray): the bar shares the label's row and the figures follow on the next
+  one, indented to the same column —
+  `Tokens:         ────────············` with `45231 / 120000 (38%)` under
+  it, and `Cache hit rate: ──────────────────··` with `88%` under it; the
+  bars start in that column too, so the shares can be compared by eye. The
+  bar is as wide as the column allows — up to twenty cells — and the
+  wrapping never cuts it in half: a narrow column gets a shorter bar and
+  the figures wrap below it. The fill rounds to the nearest cell, so a bar
+  of five cells is within ten points of the share; below five cells the
+  rounding error grows past that and the bar would misreport the share, so
+  a column that narrow gets the figures alone — only a column of fewer
+  than five cells gets there, since the table layout always leaves the
+  bar the label's room. The percentage is printed either way, so the bar is
+  a glance aid and never the only source. The sketch above draws the right
+  column wider than the layout's 20% share — thirty-seven cells, enough for
+  the table layout and for the widest bar — so its bars are longer than a
+  terminal that narrow would give. The second row used to read "Cache
+  util"; cache util and cache hit rate are the same number. The pane lays
+  its rows out one way, decided by its inner width: while the column can
+  hold the label column and a value column (34 cells or more), every row
+  keeps its label and its value on one line — the table layout; a narrower
+  column stacks them instead, the label on a row of its own and the value
+  flush left under it, so a narrow column cuts no value short — each field
+  then takes two rows, so a narrow column shows fewer fields at once. The
+  bar follows the layout: in the table layout it shares its row with the
+  label, in the stacked one it has the row to itself and can use the
+  column's full width — so a bar appears wherever the column can carry an
+  honest one, not only in a wide terminal. The pane's other sections — the
+  task list, the changed files — are not `label: value` rows and keep their
+  own shape. A value too long for its column wraps *inside* it: the lines
+  that continue it are indented to the column, so the column keeps the
+  values it holds instead of dropping them back to the column's edge. The
+  table layout needs a column of 34 cells, and the column is 20% of the
+  terminal, so it is a terminal of roughly 175 columns that gets the table;
+  a narrower terminal gets the stacked layout, where every value starts in
+  the column's first cell.
 - **Activity pane** (bottom 20%) — top border only, because the other edges are
   the screen edge or sit against the pane above. Internal entries and thinking
   heartbeats are filtered out: they are dozens of identical markers that would

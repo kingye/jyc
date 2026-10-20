@@ -1679,6 +1679,12 @@ enum InfoRow<'a> {
 /// In the stacked layout the label takes a row of its own and the value
 /// follows flush left on the next one — a pane too narrow for a value
 /// column would otherwise cut every value short.
+///
+/// The table layout assumes an inner width of at least the label's width:
+/// the value column is what is left of the pane's width, and a pane
+/// narrower than its label has no value column to lay the values out in.
+/// The pane picks that layout only when the column can hold a label and a
+/// value (see [`PaneLayout`]), so every call satisfies it.
 fn layout_info_rows(rows: Vec<InfoRow>, layout: PaneLayout, inner_width: u16) -> Vec<Line> {
     use unicode_width::UnicodeWidthStr;
 

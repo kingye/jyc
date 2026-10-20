@@ -24,6 +24,8 @@
 
 ### Fixed
 
+- A topic whose turn recovered from a failed tool no longer stays in `Error`: the runtime's live status counts a tool failure only when the model did not recover from it. The agent loop keeps the tools whose last call failed and reports them once, at the end of the turn — a tool the model retried successfully leaves no mark, so a turn that stumbled (a wrong argument, a path that was not there) and carried on ends as the turn it was; a failure that stands still leaves the topic in error, and the next turn starts clean as before (#962)
+
 - The topic list no longer dies on a topic whose state dir is not registered: the scan that lists the topics pruned its pinned paths through `resolve_state_dir`, which panics when a topic has no registration — a lost adoption stays unregistered on purpose, so one such entry took the whole list, and with it the overview endpoint, down. The prune asks the registry instead: a topic without a registration is kept in the map but left out of the names (its state cannot be read, so it is not a topic the list can report) instead of taking the list with it (#958)
 
 - `/info` no longer reports every topic as `Idle`: the status comes from the runtime's live status — written as turns start and end, and the one source every reader shares — so a topic that is working says `Processing` and a topic whose turn failed says `Error`. The dashboard's overview used to compute its own status from the event stream while `/info` read a hardcoded `Idle`, which is why the two surfaces disagreed; the live status is now the only place a status is decided, and the overview, the info pane, `/info` and the progress frame all report it (#958)

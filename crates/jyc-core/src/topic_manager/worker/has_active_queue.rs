@@ -1750,7 +1750,8 @@ async fn topic_snapshots_report_the_live_status() {
     tm.set_topic_processing("live-status-topic");
     assert_eq!(status(&tm).await, jyc_types::TopicStatus::Processing);
 
-    // A failed tool latches the error, and the next turn clears it.
+    // A tool error the model did not recover from latches the error, and the
+    // next turn clears it.
     tm.set_topic_turn_ended("live-status-topic", true);
     tm.set_topic_tool_error("live-status-topic");
     assert_eq!(status(&tm).await, jyc_types::TopicStatus::Error);

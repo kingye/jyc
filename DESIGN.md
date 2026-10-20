@@ -3151,6 +3151,12 @@ start and end — the agent loop when it publishes `ProcessingStarted` /
 that value. No consumer computes a status of its own, so "the topic is
 working" cannot be true in one view and false in another.
 
+A tool that fails mid-turn counts only when the model does not recover from
+it. The agent loop keeps the tools whose last call failed
+(`jyc_agent::agent_loop::tool_failures`) and reports them to the manager
+once, at the end of the turn: a tool the model retried successfully leaves
+no mark, so a turn that stumbled and carried on ends as a turn that worked.
+
 `last_active_at` is the other field both carry, and they carry the same one:
 the event stream's stamp for the topic. The state dir's mtime is only the
 fallback, for a topic the tracker has not seen yet.

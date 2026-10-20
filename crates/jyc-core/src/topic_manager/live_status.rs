@@ -6,8 +6,8 @@
 //! writer, one reader — no consumer computes a status of its own.
 //!
 //! The values mirror what the topic's events say: a turn in flight is
-//! `Processing`, a turn that failed — or a tool that failed during it — is
-//! `Error`, anything else is `Idle`.
+//! `Processing`, a turn that failed — or a tool that failed during it and
+//! was never retried successfully — is `Error`, anything else is `Idle`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -21,7 +21,8 @@ use super::TopicManager;
 pub struct LiveStatus {
     /// A turn is in flight.
     pub is_processing: bool,
-    /// The last turn failed, or a tool failed during it.
+    /// The last turn failed, or a tool failed during it and the model did
+    /// not recover from it.
     ///
     /// Cleared when the next turn starts — a topic that failed once and
     /// then took a new message is working again, not still broken.
@@ -69,8 +70,8 @@ impl LiveStatusStore {
     }
 
     /// The turn ended. A turn that did not succeed leaves the topic in
-    /// error; one that did keeps the error a failed tool left behind, so
-    /// the topic still reports what went wrong.
+    /// error; one that did keeps the error an unrecovered tool failure left
+    /// behind, so the topic still reports what went wrong.
     pub fn set_turn_ended(&self, topic: &str, success: bool) {
         let mut statuses = self.statuses();
         let entry = statuses.entry(topic.to_string()).or_default();
@@ -97,7 +98,10 @@ impl LiveStatusStore {
         }
     }
 
-    /// A tool failed during the turn.
+    /// A tool failed during the turn and the model did not recover from it.
+    ///
+    /// The agent loop reports the failures that stand — a tool the model
+    /// retried successfully leaves no mark.
     pub fn set_tool_error(&self, topic: &str) {
         let mut statuses = self.statuses();
         statuses.entry(topic.to_string()).or_default().has_error = true;

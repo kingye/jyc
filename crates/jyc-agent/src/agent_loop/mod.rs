@@ -272,6 +272,12 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     const MAX_EMPTY_TOOL_CALL_ITERATIONS: u32 = 3;
     let mut consecutive_empty_tool_iterations: u32 = 0;
 
+    // The tool calls of this turn that failed and were not retried
+    // successfully. They decide the turn's outcome: a failure the model
+    // recovered from leaves the topic as it was, a failure that stands
+    // leaves it in error.
+    let mut tool_failures = ToolFailures::default();
+
     // Publish ProcessingStarted
     // The topic's live status follows the events this loop publishes (see
     // `jyc_core::topic_manager::live_status`): write it first, so every
@@ -575,6 +581,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                         ToolOutput::error(format!("Tool error: {e}"))
                     }
                 };
+                // The embedded ask_user is a tool call like any other: it
+                // stands in error until the model asks again and it works.
+                tool_failures.record("ask_user", output.is_error);
                 history.push(Message::tool_result(
                     "embedded-ask-user",
                     &output.content,
@@ -628,6 +637,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             }
 
             let duration = start_time.elapsed();
+            tool_failures.report(topic_name, status_topic.as_deref());
             if let Some(tm) = status_topic.as_ref() {
                 tm.set_topic_turn_ended(topic_name, true);
             }
@@ -788,14 +798,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             let tool_duration = tool_start.elapsed();
 
             // Publish ToolCompleted
-            // A failed tool leaves the topic in error: the turn may still
-            // succeed, but the topic reports what went wrong until the next
-            // turn starts.
-            if output.is_error
-                && let Some(tm) = status_topic.as_ref()
-            {
-                tm.set_topic_tool_error(topic_name);
-            }
+            // A failed tool leaves the turn in doubt until the model retries
+            // it: the failure counts only when the tool never works again.
+            tool_failures.record(&tool_call.name, output.is_error);
             publish_event(
                 event_bus,
                 TopicEvent::ToolCompleted {
@@ -957,6 +962,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     // it managed to deliver first, including a question that ended the turn.
     let duration = start_time.elapsed();
     let turn_succeeded = handed_over && !cancel.is_cancelled();
+    tool_failures.report(topic_name, status_topic.as_deref());
     if let Some(tm) = status_topic.as_ref() {
         tm.set_topic_turn_ended(topic_name, turn_succeeded);
     }
@@ -1271,9 +1277,19 @@ mod embedded_ask_tests;
 #[cfg(test)]
 mod ticker_tests;
 
+/// The tool failures of a turn, and the ones the model recovered from.
+mod tool_failures;
+
+/// Regression tests for the tool-failure bookkeeping: a failure the model
+/// recovers from must not leave the turn's status in error.
+#[cfg(test)]
+mod tool_failures_tests;
+
 mod context;
 mod embedded_ask;
 mod response;
 mod retry;
+
+use tool_failures::ToolFailures;
 
 use retry::{SSE_RETRY_BACKOFF_MS, complete_with_retry};

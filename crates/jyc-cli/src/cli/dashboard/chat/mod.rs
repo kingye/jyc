@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::token_render::{
-    input_token_pct, push_cache_creation_span, push_cache_hit_span, push_cache_utilization_span,
+    context_pct, push_cache_creation_span, push_cache_hit_span, push_cache_utilization_span,
     push_cost_span, push_latency_span, push_output_span, push_reasoning_span, push_tokens_span,
     push_total_input_span,
 };
@@ -2308,7 +2308,7 @@ fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
         // pane renders.
         branch: t.and_then(|t| t.branch.as_deref()),
         model: t.and_then(|t| t.model.as_deref()),
-        pct: t.and_then(input_token_pct),
+        pct: t.and_then(context_pct),
     }
 }
 

@@ -2160,9 +2160,7 @@ JYC uses the following subset of the agent service API:
 │     → writes agent config with model, MCP config, permissions
 │     → staleness check: skip write if unchanged
 │  3. Get or create session (.jyc/agent-session.json)
-│     - Check token limit: if context_input_tokens > max_input_tokens → new session
-│     - Update max_input_tokens: detect model context or use configured value
-│     - Record if session reset due to token limit for prompt notification
+│     - Record the model's context window (the budget the next call fits into)
 │  4. Clean up stale signal file
 │  5. Build system prompt (config + directory boundaries + system.md)
 │     BUILD MODE prompt categorizes incoming messages:
@@ -2219,8 +2217,7 @@ JYC uses the following subset of the agent service API:
 
 - Sessions are created on first use per topic and persisted in `.jyc/agent-session.json`
 - Sessions are reused across messages, model switches, mode switches, and container restarts
-- Sessions track input tokens (`context_input_tokens`) and maximum threshold (`max_input_tokens`)
-- Sessions are automatically reset when token limit is exceeded
+- Sessions track the context size (`context_input_tokens` + `context_output_tokens`) and the model's context window (`context_window`)
 - Sessions are deleted for error recovery (ContextOverflow, stale session detection)
 - On session reset: AI prompt includes notification and reference to chat history
 
@@ -2232,22 +2229,18 @@ JYC uses the following subset of the agent service API:
    - Session is deleted when token limit is exceeded or on ContextOverflow
    - New session created on server restart
 
-2. **Token-based Session Management** — Automatic session reset based on input tokens
-   - **Token-based reset**:
-     - Session stores current context size (`context_input_tokens`), which equals the input tokens reported by the most recent LLM call (since each call sends the full conversation context)
-     - When context size exceeds `max_input_tokens` threshold, session is automatically reset
-     - Old session is deleted and a new session is created
+2. **Context-window accounting** — How full the model's context window is
+   - **The figure**:
+     - The context size is the most recent LLM call's `usage.input_tokens` plus that call's `usage.output_tokens` — the size of the context the *next* call will carry
+     - The budget is the model's own context window (`context_window`), detected from the model config
+     - The share is `(input + output) / context_window`, shown as a percentage
    - **Token tracking**:
      - Real-time token counting from SSE `step-finish` events
      - Immediate persistence to `agent-session.json` after each step
-     - Token usage displayed in reply footer (e.g., `Tokens: 20.7K/122K`)
-   - **Intelligent threshold detection**:
-     - Automatically detects model context limit (e.g., 128K, 200K, 1M tokens)
-     - Uses 95% of model context as default threshold for safety margin
-     - Configurable via `max_input_tokens` setting in `config.toml`
+     - Token usage displayed in the reply footer and the info pane (e.g., `Tokens: 20.7K/122K`)
+   - **No auto-reset**: the sliding-window context strategy shapes every request so the context stays inside the window; the session is never reset automatically
    - **Standardized units**:
      - Uses 1024 as K unit basis (1K = 1024 tokens)
-     - Default threshold: 122,880 tokens (120K \* 1024)
      - Display format: `{current}K/{max}K` with 0.1K precision
    - **Context preservation**:
      - Chat history is preserved in `chat_history_YYYY-MM-DD.jsonl` files
@@ -2257,24 +2250,20 @@ JYC uses the following subset of the agent service API:
 3. **Session State Data Structure** (`src/services/agent/session.rs`)
 
    ```rust
-   /// Default maximum input tokens per session before resetting
-   pub const DEFAULT_MAX_INPUT_TOKENS: u64 = 120 * 1024; // 122,880 tokens (120K)
-
    /// Per-topic session state, persisted in `.jyc/agent-session.json`.
    #[derive(Debug, Clone, Serialize, Deserialize)]
    pub struct SessionState {
-       #[serde(rename = "sessionId")]
-       pub session_id: String,
-       #[serde(rename = "createdAt")]
        pub created_at: String,
-       #[serde(rename = "lastUsedAt")]
-       pub last_used_at: String,
-       /// Current input tokens (from latest step-finish SSE event)
-       #[serde(rename = "totalInputTokens", default)]
+       /// The input the most recent LLM call was sent (latest step-finish SSE event)
+       #[serde(default)]
        pub context_input_tokens: u64,
-       /// Resolved max input tokens for this session
-       #[serde(rename = "maxInputTokens", default)]
-       pub max_input_tokens: u64,
+       /// The output tokens of that same call — the reply appended to the context
+       #[serde(default)]
+       pub context_output_tokens: u64,
+       /// The model's context window — the whole budget the next call fits into
+       #[serde(default, alias = "max_input_tokens")]
+       pub context_window: u64,
+       // ... the accumulating counters (totals, cache hits, cost, latency)
    }
    ```
 
@@ -2282,17 +2271,16 @@ JYC uses the following subset of the agent service API:
 
    ```toml
    [agent]
-   # Optional: Maximum input tokens per session before resetting
-   # Default: 120*1024 = 122,880 tokens (95% of typical 128K model context)
-   # When not set, automatically detects model context limit and uses 95%
-   max_input_tokens = 122880
+   # The context window is detected from the model config
+   # (`[agent.providers.<p>.models.<m>] context_window`); no session
+   # threshold is configured any more.
    ```
 
 5. **User Interface Enhancements**:
-   - **Reply footer display**: Shows current token usage and threshold
+   - **Reply footer display**: Shows the context size and the context window
      - Format: `Model: ark/deepseek-v3.2 | Mode: build | Tokens: 20.7K/122K`
-     - Current tokens: Formatted in K units (1024 basis) with 0.1 precision
-     - Max tokens: Shows actual reset threshold (model context 95% or configured value)
+     - Context size: the last call's input + output, in K units (1024 basis) with 0.1 precision
+     - Window: the model's own context window
    - **Session reset notification**: When token limit is exceeded:
      - AI prompt includes notification about session reset
      - References `chat_history_<date>.jsonl` for previous conversation context

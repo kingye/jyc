@@ -95,13 +95,10 @@ pub struct AgentLoopConfig<'a> {
     /// Passed through to `ToolContext` so the `jyc_send_message` tool can
     /// send proactive messages through any channel's outbound adapter.
     pub outbounds: Option<OutboundsMap>,
-    /// Context window size in tokens for mid-loop token check.
-    /// When the total input tokens exceed `context_window * auto_reset_threshold`,
-    /// the raw context is compressed in-memory before the next LLM call.
+    /// Context window size in tokens — the model's whole budget. Recorded
+    /// with the token counts so the dashboard can show how full the window
+    /// is.
     pub context_window: Option<u64>,
-    /// Auto-reset threshold as a fraction of context window (0.0~1.0).
-    /// Default: 0.95.
-    pub auto_reset_threshold: f64,
     /// Whether to publish `TopicEvent::Thinking` events for dashboard display.
     /// Controlled by the `/thinking show/hide` command. Default: `true`.
     pub thinking_enabled: bool,
@@ -160,7 +157,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         current_channel,
         outbounds,
         context_window,
-        auto_reset_threshold,
         thinking_enabled,
         pricing,
         billing_mode,
@@ -202,6 +198,10 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     raw_context.push(provider.format_user_message(&user_blocks));
 
     let mut context_input_tokens: u64 = 0;
+    // Output tokens of the most recent LLM call — the reply that gets
+    // appended to the context. Paired with `context_input_tokens` so the
+    // two always describe the same call.
+    let mut context_output_tokens: u64 = 0;
     let mut total_input_tokens: u64 = 0;
     let mut total_output_tokens: u64 = 0;
     // Sum of every LLM call's prompt-cache-hit tokens in this round.
@@ -436,6 +436,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         //   lifetime tokens billed as input by the API for this round.
         if response.input_tokens > 0 {
             context_input_tokens = response.input_tokens;
+            context_output_tokens = response.output_tokens;
         }
         total_input_tokens += response.input_tokens;
         total_output_tokens += response.output_tokens;
@@ -461,72 +462,19 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             response.cache_creation_tokens,
         );
 
-        // Mid-loop token check: if the current context size (last call's
-        // input_tokens) exceeds the threshold, compress raw_context
-        // in-memory to prevent API 400 on the next call.
-        if let Some(cw) = context_window
-            && context_input_tokens >= (cw as f64 * auto_reset_threshold) as u64
-        {
-            let before_count = raw_context.len();
-            let before_tokens = context_input_tokens;
-
-            // Apply heuristic compaction: keep last 3 user+assistant pairs.
-            // Uses a fixed keep_pairs=3 because mid-loop compression is a
-            // safety mechanism to prevent API 400 on the next LLM call — it is
-            // NOT equivalent to the user-configured compression strategy
-            // (ResetCompressionConfig.keep_pairs), which is used on explicit
-            // session resets (/reset, dashboard, between-message auto-reset).
-            raw_context = compact_raw_context_heuristic(&raw_context, 3);
-            // The compacted context no longer extends the persisted on-disk
-            // prefix — force a full journal rewrite at save time.
-            prior_len = 0;
-            // Also compact internal history to match raw_context
-            history = compact_history_heuristic(&history, 3);
-
-            // Reset token counter after compression
-            context_input_tokens = 0;
-
-            tracing::info!(
-                before_messages = before_count,
-                after_messages = raw_context.len(),
-                before_tokens,
-                context_window = cw,
-                threshold = auto_reset_threshold,
-                "Mid-loop context compressed to prevent token overflow"
-            );
-
-            publish_event(
-                event_bus,
-                TopicEvent::SessionStatus {
-                    topic_name: topic_name.to_string(),
-                    status_type: "session_reset".to_string(),
-                    attempt: None,
-                    message: Some(format!(
-                        "mid-loop compression: {before_count}→{} msgs, {before_tokens}→0 tokens",
-                        raw_context.len()
-                    )),
-                    timestamp: Utc::now(),
-                },
-            )
-            .await;
-        }
-
         // Persist latest token counts to disk so dashboard polls see fresh
-        // data mid-round. Called AFTER the mid-loop compression block so
-        // the on-disk value reflects the post-compression state. Does not
-        // trigger auto-reset — that decision belongs to the post-loop
-        // `update_tokens` call in `service.rs`.
+        // data mid-round.
         crate::session::persist_tokens(
             topic_name,
             topic_path,
             context_input_tokens,
+            context_output_tokens,
             total_input_tokens,
             total_output_tokens,
             total_cache_hit_tokens,
             total_cache_creation_tokens,
             total_reasoning_tokens,
             context_window,
-            auto_reset_threshold,
             call_cost,
             call_ms,
         )
@@ -700,6 +648,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 text: final_text,
                 reply_delivered,
                 input_tokens: context_input_tokens,
+                context_output_tokens,
                 total_input_tokens,
                 output_tokens: total_output_tokens,
                 total_cache_hit_tokens,
@@ -1028,6 +977,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         text: turn_text,
         reply_delivered,
         input_tokens: context_input_tokens,
+        context_output_tokens,
         total_input_tokens,
         output_tokens: total_output_tokens,
         total_cache_hit_tokens,
@@ -1327,5 +1277,4 @@ mod embedded_ask;
 mod response;
 mod retry;
 
-use context::{compact_history_heuristic, compact_raw_context_heuristic};
 use retry::{SSE_RETRY_BACKOFF_MS, complete_with_retry};

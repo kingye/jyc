@@ -163,20 +163,19 @@ impl CommandHandler for ModelCommandHandler {
                     let override_path = state_dir.join(filename);
                     tokio::fs::write(&override_path, &model_id).await?;
 
-                    // Update `max_input_tokens` for the newly-active model.
-                    if let Some(new_max) = session_state::resolve_active_context_window(
+                    // Update `context_window` for the newly-active model.
+                    if let Some(new_window) = session_state::resolve_active_context_window(
                         &context.topic_name,
                         &context.topic_path,
                         &context.config,
                         &context.channel,
-                        context.config.ai.auto_reset_threshold,
                     )
                     .await
                     {
-                        session_state::write_max_input_tokens(
+                        session_state::write_context_window(
                             &context.topic_name,
                             &context.topic_path,
-                            new_max,
+                            new_window,
                         )
                         .await;
                     }
@@ -574,16 +573,16 @@ context_window = 64000
     }
 
     #[tokio::test]
-    async fn test_model_writes_max_input_tokens() {
+    async fn test_model_writes_context_window() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_model_writes_max_input_tokens";
+        let topic = "test_model_writes_context_window";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let state_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&state_dir).await.unwrap();
-        // Pre-existing session with a different max_input_tokens
+        // Pre-existing session with a different context window
         tokio::fs::write(
             state_dir.join("agent-session.json"),
-            r#"{"max_input_tokens":100}"#,
+            r#"{"context_window":100}"#,
         )
         .await
         .unwrap();
@@ -608,7 +607,6 @@ password = "p"
 [agent]
 enabled = true
 mode = "agent"
-auto_reset_threshold = 0.95
 
 [agent.providers.deepseek]
 type = "openai-compatible"
@@ -628,11 +626,11 @@ context_window = 64000
 
         // build-model-override was written
         assert!(state_dir.join("build-model-override").exists());
-        // and max_input_tokens in agent-session.json reflects the new model
+        // and the context window in agent-session.json reflects the new model
         let content = tokio::fs::read_to_string(state_dir.join("agent-session.json"))
             .await
             .unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(state["max_input_tokens"], 60800); // 95% of 64000
+        assert_eq!(state["context_window"], 64000);
     }
 }

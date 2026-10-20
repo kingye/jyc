@@ -780,6 +780,7 @@ mod tests {
             mode: Some("plan".to_string()),
             model: Some("kimi/k3-256k".to_string()),
             input_tokens: Some(108_134),
+            output_tokens: None,
             max_tokens: Some(262_144),
         };
         assert_eq!(
@@ -807,6 +808,20 @@ mod tests {
         assert_eq!(
             progress_card("⏳ 处理中", 3, 0, None, &no_tokens),
             "⏳ 处理中 · 3s · 工具 0 · build · kimi/k3-256k"
+        );
+
+        // The context % counts the last call's output too: the reply is
+        // part of the context the next call carries. 131072 + 65536 out of
+        // a 262144 window is exactly 75%.
+        let with_output = TopicDisplayState {
+            input_tokens: Some(131_072),
+            output_tokens: Some(65_536),
+            max_tokens: Some(262_144),
+            ..TopicDisplayState::default()
+        };
+        assert_eq!(
+            progress_card("⏳ 处理中", 3, 0, None, &with_output),
+            "⏳ 处理中 · 3s · 工具 0 · 75%"
         );
 
         // Zero max_tokens → pct hidden (division guard).

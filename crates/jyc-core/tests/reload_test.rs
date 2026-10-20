@@ -30,12 +30,7 @@ impl jyc_core::agent::AgentService for MockAgent {
         })
     }
 
-    async fn reset_session(
-        &self,
-        _topic_path: &Path,
-        _topic_name: &str,
-        _config: &jyc_types::channel::ResetCompressionConfig,
-    ) -> anyhow::Result<()> {
+    async fn reset_session(&self, _topic_path: &Path, _topic_name: &str) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -142,8 +137,6 @@ fn create_test_config(pattern_names: Vec<&str>) -> jyc_types::AppConfig {
             attachments: None,
             providers: HashMap::new(),
             vision: None,
-            reset_compression: None,
-            auto_reset_threshold: 0.95,
             context_strategy: None,
         },
         inspect: None,

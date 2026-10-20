@@ -118,11 +118,17 @@ pub struct AgentConfig {
     pub disabled_skills: Option<Vec<String>>,
 
     /// Per-agent compression configuration for session reset.
+    ///
+    /// **Deprecated — ignored.** The auto-reset mechanism was removed: the
+    /// sliding-window context strategy keeps the context inside the window,
+    /// so there is nothing left to reset for. The key is still accepted so
+    /// configs written before the removal keep loading.
     #[serde(default)]
     pub reset_compression: Option<ResetCompressionConfig>,
 
     /// Auto-reset threshold as a fraction of context window (0.0~1.0).
-    /// Falls back to `[ai].auto_reset_threshold` (default 0.95) when unset.
+    ///
+    /// **Deprecated — ignored**, for the same reason as `reset_compression`.
     #[serde(default)]
     pub auto_reset_threshold: Option<f64>,
 
@@ -200,8 +206,6 @@ impl AgentConfig {
         pattern.disabled_mcps = self.disabled_mcps.clone();
         pattern.skills = self.skills.clone();
         pattern.disabled_skills = self.disabled_skills.clone();
-        pattern.reset_compression = self.reset_compression.clone();
-        pattern.auto_reset_threshold = self.auto_reset_threshold;
         pattern.access = self.access.clone();
         pattern.context_strategy = self.context_strategy.clone();
     }

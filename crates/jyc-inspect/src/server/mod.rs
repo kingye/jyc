@@ -316,6 +316,7 @@ impl InspectServer {
                     pattern: t.pattern.clone(),
                     status: t.status,
                     context_input_tokens: t.context_input_tokens,
+                    context_output_tokens: t.context_output_tokens,
                     max_tokens: t.max_tokens,
                     last_active_at: t.last_active_at,
                     topic_path: t.topic_path,

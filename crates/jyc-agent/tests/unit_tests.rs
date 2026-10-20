@@ -790,10 +790,10 @@ mod session {
         assert_eq!(latency.session, Some((500, 2)));
     }
 
-    /// The latency counters are session-scoped: the auto-reset write —
-    /// which runs after `reset_session` deleted the file — must leave them
-    /// at zero with the token counters rather than resurrect a pair from a
-    /// session the user has forgotten.
+    /// The latency counters are session-scoped: the write that follows a
+    /// `reset_session` — which deleted the file — must leave them at zero
+    /// with the token counters rather than resurrect a pair from a session
+    /// the user has forgotten.
     #[tokio::test]
     async fn call_latency_zeroes_with_session_reset() {
         let tmp = tempfile::tempdir().unwrap();
@@ -810,7 +810,7 @@ mod session {
             Some((700, 1))
         );
 
-        // Reset: the file goes, and the auto-reset path rebuilds it.
+        // Reset: the file goes, and the next write rebuilds it.
         tokio::fs::remove_file(path.join(".jyc/agent-session.json"))
             .await
             .unwrap();
@@ -2193,7 +2193,8 @@ mod billing_integration {
 
     /// `add_session_cost` must not disturb the token counters -- summary
     /// tokens are real spend but are NOT part of the main loop's context
-    /// accounting, and folding them in would corrupt the auto-reset math.
+    /// accounting, and folding them in would inflate the context usage
+    /// shown to the user.
     #[tokio::test]
     async fn add_session_cost_leaves_token_counters_untouched() {
         let tmp = tempfile::tempdir().unwrap();

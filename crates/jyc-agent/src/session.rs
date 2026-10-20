@@ -3,9 +3,10 @@
 //! Manages:
 //! - Full conversation log (`.jyc/agent-conversation.json`) — complete LLM history
 //!   including tool calls and results for multi-turn context
-//! - Session state (`.jyc/agent-session.json`) — token tracking, auto-reset
+//! - Session state (`.jyc/agent-session.json`) — token and cost tracking
 //!
-//! On reset: session state is cleared, conversation is summarized (last few turns kept).
+//! On reset: session state and the raw context are cleared — the next turn
+//! starts from an empty context.
 
 use jyc_core::session_state::{AGENT_CONTEXT_FILE, AGENT_CONTEXT_LEGACY_FILE};
 use jyc_types::state_dir::resolve_state_dir;
@@ -791,11 +792,10 @@ pub async fn persist_tokens(
 /// Add to `session_cost` without touching the token counters.
 ///
 /// Used for ancillary LLM calls (cycle-boundary progress summaries) whose
-/// tokens are real spend but are not
-/// part of the main loop's context accounting -- folding them into
-/// `total_input_tokens` would corrupt the context-window math that drives
-/// auto-reset. The cost is still recorded so the displayed total is
-/// truthful.
+/// tokens are real spend but are not part of the main loop's context
+/// accounting — folding them into `total_input_tokens` would inflate the
+/// context usage shown to the user. The cost is still recorded so the
+/// displayed total is truthful.
 ///
 /// No-op when `cost` is zero (no pricing configured, or the call failed).
 pub async fn add_session_cost(topic_name: &str, topic_path: &Path, cost: f64) {
@@ -833,9 +833,9 @@ pub async fn reset_session(topic_name: &str, topic_path: &Path) {
     tracing::info!("Agent session reset");
 }
 
-/// Render `raw_context` as a single plain-text transcript suitable for
-/// one-shot summarization. Lossy by design — used only by the summary call,
-/// never replayed to the main loop.
+/// Render `raw_context` as a single plain-text transcript.
+/// Lossy by design — a test-only view of the raw context, never replayed to
+/// the main loop.
 ///
 /// Built on [`extract_pairs`] so this view and the sliding-window view
 /// share ONE parsing/annotation implementation (previously two copies

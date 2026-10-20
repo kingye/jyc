@@ -49,8 +49,7 @@ pub struct AgentLoopConfig<'a> {
     pub user_blocks: Vec<ContentBlock>,
     pub working_dir: &'a Path,
     /// Topic directory on disk. Used to persist token counts after every
-    /// LLM call via `session::persist_tokens`. The post-loop
-    /// `update_tokens` is still the owner of the auto-reset.
+    /// LLM call via `session::persist_tokens`.
     pub topic_path: &'a Path,
     pub cancel: CancellationToken,
     /// Topic name (for event publishing).

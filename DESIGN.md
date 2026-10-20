@@ -2218,15 +2218,15 @@ JYC uses the following subset of the agent service API:
 - Sessions are created on first use per topic and persisted in `.jyc/agent-session.json`
 - Sessions are reused across messages, model switches, mode switches, and container restarts
 - Sessions track the context size (`context_input_tokens` + `context_output_tokens`) and the model's context window (`context_window`)
-- Sessions are deleted for error recovery (ContextOverflow, stale session detection)
-- On session reset: AI prompt includes notification and reference to chat history
+- Sessions are never deleted automatically — the sliding-window context strategy keeps the context inside the window
+- On session reset: the session state and the raw context are cleared — the next turn starts from an empty context
 
 
 
 1. **in-process agent Session (Primary)** — Conversation memory maintained by in-process agent
    - Session is reused across messages in the same topic (`agent-session.json`)
    - AI remembers previous messages and replies within the session
-   - Session is deleted when token limit is exceeded or on ContextOverflow
+   - Session is deleted only on an explicit reset (`/reset`, dashboard) — never automatically
    - New session created on server restart
 
 2. **Context-window accounting** — How full the model's context window is
@@ -2245,7 +2245,6 @@ JYC uses the following subset of the agent service API:
    - **Context preservation**:
      - Chat history is preserved in `chat_history_YYYY-MM-DD.jsonl` files
      - AI can read chat history for context continuity after session reset
-     - Session reset notification injected into AI prompt to reference chat history
 
 3. **Session State Data Structure** (`src/services/agent/session.rs`)
 
@@ -2281,10 +2280,6 @@ JYC uses the following subset of the agent service API:
      - Format: `Model: ark/deepseek-v3.2 | Mode: build | Tokens: 20.7K/122K`
      - Context size: the last call's input + output, in K units (1024 basis) with 0.1 precision
      - Window: the model's own context window
-   - **Session reset notification**: When token limit is exceeded:
-     - AI prompt includes notification about session reset
-     - References `chat_history_<date>.jsonl` for previous conversation context
-     - Clear indication that this is a new session with fresh token counter
 
 6. **Incoming Message (Current)** — Latest message being processed
    - Body stripped of quoted reply history (`strip_quoted_history()`)

@@ -204,7 +204,7 @@ pub struct AgentLoopResult {
     /// Each call's `input_tokens` (= full context size) is summed via
     /// `+=`. Pairs with `context_input_tokens` in `SessionState` for
     /// per-round accumulation that survives across multiple rounds
-    /// through `update_tokens` / `persist_tokens`.
+    /// through `persist_tokens`.
     pub total_input_tokens: u64,
     /// Accumulated prompt-cache-hit tokens across all LLM calls in
     /// this round. Each call's `cache_hit_tokens` is summed via `+=`.

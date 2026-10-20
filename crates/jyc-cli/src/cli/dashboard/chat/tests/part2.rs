@@ -2820,6 +2820,19 @@ fn info_pane_renders_subagents_as_a_tree() {
         topics: vec![explorer_topic("jyc"), child, grandchild, sibling],
         ..Default::default()
     });
+    // The pane renders the topic's own detail — the same source `/info` reads.
+    // The tree itself is a view of the topic *list* (the overview poll), so it
+    // comes from `app.state`, not from the detail.
+    let mut detail = topic_detail_for("jyc", "test");
+    // A cost row and a resolved file list, so the tree has the two sections
+    // it is placed between.
+    detail.cost = Some(jyc_types::TopicCost {
+        session: 0.42,
+        today: 1.23,
+        currency: "USD".to_string(),
+    });
+    detail.changed_files = Some(vec![]);
+    app.topic_detail = Some(detail);
     app.table_state.select(Some(0));
 
     // Tall enough that the section is not scrolled out of the pane.
@@ -2834,4 +2847,13 @@ fn info_pane_renders_subagents_as_a_tree() {
         "grandchild not nested:\n{pane}"
     );
     assert!(pane.contains("└─ ● jyc-3"), "last child wrong:\n{pane}");
+
+    // The tree sits between the cost row and the files section.
+    let cost = pane.find("Cost:").expect("the cost row");
+    let tree = pane.find("Subagents (3):").expect("the subagent section");
+    let files = pane.find("Files:").expect("the files section");
+    assert!(
+        cost < tree && tree < files,
+        "the tree is out of place:\n{pane}"
+    );
 }

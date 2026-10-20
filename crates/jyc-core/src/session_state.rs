@@ -29,7 +29,7 @@ pub async fn remove_raw_context_files(state_dir: &Path) {
 }
 
 /// Read input tokens from the agent session state file.
-/// Returns (current_tokens, max_tokens).
+/// Returns (current context size, context window).
 pub async fn read_input_tokens(topic_name: &str, topic_path: &Path) -> (Option<u64>, Option<u64>) {
     let state = read_token_state(topic_name, topic_path).await;
     (state.context_input_tokens, state.context_window)
@@ -493,7 +493,9 @@ pub async fn resolve_active_context_window(
 ///
 /// The legacy `max_input_tokens` key is dropped in the same write: it held
 /// the auto-reset cap and is an alias of `context_window` on the read side,
-/// so leaving both in the file would make it fail to deserialize.
+/// so leaving both in the file would make it fail to deserialize. The key
+/// goes even when the window itself does not change — otherwise a file
+/// carrying both keys would keep failing to deserialize forever.
 pub async fn write_context_window(topic_name: &str, topic_path: &Path, new_window: u64) {
     let session_path = resolve_state_dir(topic_name, topic_path).join("agent-session.json");
     let content = tokio::fs::read_to_string(&session_path)
@@ -505,10 +507,10 @@ pub async fn write_context_window(topic_name: &str, topic_path: &Path, new_windo
         .get("context_window")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    if current == new_window {
+    let legacy_present = state.remove("max_input_tokens").is_some();
+    if current == new_window && !legacy_present {
         return;
     }
-    state.remove("max_input_tokens");
     state.insert("context_window".to_string(), serde_json::json!(new_window));
     if let Some(parent) = session_path.parent() {
         tokio::fs::create_dir_all(parent).await.ok();
@@ -1470,6 +1472,47 @@ model = "provider/first-pattern"
         // The file still deserializes into the session state.
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed["context_input_tokens"], 5000);
+    }
+
+    /// A file carrying BOTH `context_window` and its legacy alias
+    /// `max_input_tokens` fails to deserialize (serde sees the alias twice),
+    /// so every reader silently falls back to the default state. The
+    /// idempotent path must drop the legacy key too — otherwise the file
+    /// stays broken forever.
+    #[tokio::test]
+    async fn write_context_window_drops_the_legacy_key_even_when_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "write_context_window_drops_the_legacy_key_even_when_unchanged";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(
+            state_dir.join("agent-session.json"),
+            r#"{"context_input_tokens":5000,"context_window":100000,"max_input_tokens":100000}"#,
+        )
+        .await
+        .unwrap();
+
+        // Before the write the file does not deserialize at all.
+        assert_eq!(
+            read_token_state(topic, tmp.path()).await.context_window,
+            None
+        );
+
+        // Same window as the file already carries — the window itself does
+        // not change, but the legacy key still has to go.
+        write_context_window(topic, tmp.path(), 100_000).await;
+
+        let content = tokio::fs::read_to_string(state_dir.join("agent-session.json"))
+            .await
+            .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(state["context_window"], 100_000);
+        assert!(state.get("max_input_tokens").is_none());
+        // The file deserializes again.
+        let parsed = read_token_state(topic, tmp.path()).await;
+        assert_eq!(parsed.context_window, Some(100_000));
+        assert_eq!(parsed.context_input_tokens, Some(5000));
     }
 
     #[tokio::test]

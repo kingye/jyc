@@ -3191,22 +3191,34 @@ Not connected: connection refused
   changed files) scrolls; the status sub-pane is pinned to the bottom behind a
   gray top edge, carrying `JYC AI v<version>` plus the server stats in gray. A
   transient message replaces that block with one yellow line for a few seconds.
-  The two percentage rows draw their share as a bar in front of the numbers —
+  Every label of the pane is padded to one width — sixteen cells, the
+  length of the longest label — so every value starts in the same column
+  and the pane reads as one table rather than a ragged list. The two
+  percentage rows draw their share as a bar in front of the numbers —
   `─` for the filled part (bold yellow), `·` for the rest (dim gray):
   `Tokens:         ──···· 45231 / 120000 (38%)` and
-  `Cache hit rate: ──────· 88%`. Both labels are padded to one width, so
-  the two bars start in the same column and the shares can be compared by
-  eye. The bar is as wide as the column allows — up to twenty cells — and
-  the wrapping never cuts it in half: a narrow column gets a shorter bar
-  and the figures wrap below it. The fill rounds to the nearest cell, so a
-  bar of five cells is within ten points of the share; below five cells the
-  rounding error grows past that and the bar would misreport the share, so a
-  column that narrow gets the figures alone; the percentage is printed
-  either way, so the bar is a glance aid and never the only source. The
-  sketch above draws the right column wider than the layout's 20% share, so
-  its bar is longer than a terminal that narrow would give. The second row
-  used to read "Cache util"; cache util and cache hit rate are the same
-  number.
+  `Cache hit rate: ──────· 88%`; the bars start in that column too, so
+  the shares can be compared by eye. The bar is as wide as the column
+  allows — up to twenty cells — and the wrapping never cuts it in half: a
+  narrow column gets a shorter bar and the figures wrap below it. The
+  fill rounds to the nearest cell, so a bar of five cells is within ten
+  points of the share; below five cells the rounding error grows past
+  that and the bar would misreport the share, so a column that narrow
+  gets the figures alone; the percentage is printed either way, so the
+  bar is a glance aid and never the only source. The sketch above draws
+  the right column wider than the layout's 20% share, so its bar is
+  longer than a terminal that narrow would give. The second row used to
+  read "Cache util"; cache util and cache hit rate are the same number.
+  The pane lays its rows out one way, decided by its inner width: while
+  the column can hold the label column and a value column (34 cells or
+  more), every row keeps its label and its value on one line — the table
+  layout; a narrower column stacks them instead, the label on a row of
+  its own and the value flush left under it, so a narrow column cuts no
+  value short. The bar follows the layout: in the table layout it shares
+  its row with the label, in the stacked one it has the row to itself
+  and can use the column's full width. The pane's other sections — the
+  task list, the changed files — are not `label: value` rows and keep
+  their own shape.
 - **Activity pane** (bottom 20%) — top border only, because the other edges are
   the screen edge or sit against the pane above. Internal entries and thinking
   heartbeats are filtered out: they are dozens of identical markers that would

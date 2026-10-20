@@ -3023,8 +3023,10 @@ fn info_pane_draws_no_bar_in_a_too_narrow_pane() {
     app.chat.status_visible = false;
 
     // 5 columns wide: the pane's inner width is four, too narrow for an
-    // honest bar, so there is none.
-    let pane = info_pane_text(&mut app, 5, 40);
+    // honest bar, so there is none. The pane is tall enough to hold the
+    // whole column: at this width every label wraps over several rows,
+    // so the cache hit rate's figure would be cut off by a short one.
+    let pane = info_pane_text(&mut app, 5, 80);
     assert!(
         !pane.contains('─'),
         "a pane too narrow for an honest bar must draw none:\n{pane}"
@@ -3032,7 +3034,7 @@ fn info_pane_draws_no_bar_in_a_too_narrow_pane() {
     // The figures are still there — wrapped across the rows of a pane
     // this narrow.
     assert!(
-        pane.contains("47") && pane.contains("88"),
+        pane.contains("47%") && pane.contains("88%"),
         "the figures must still be there:\n{pane}"
     );
 }

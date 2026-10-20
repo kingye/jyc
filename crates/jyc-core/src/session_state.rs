@@ -29,7 +29,7 @@ pub async fn remove_raw_context_files(state_dir: &Path) {
 }
 
 /// Read input tokens from the agent session state file.
-/// Returns (current context size, context window).
+/// Returns (current input tokens, context window).
 pub async fn read_input_tokens(topic_name: &str, topic_path: &Path) -> (Option<u64>, Option<u64>) {
     let state = read_token_state(topic_name, topic_path).await;
     (state.context_input_tokens, state.context_window)

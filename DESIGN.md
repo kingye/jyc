@@ -2227,7 +2227,7 @@ JYC uses the following subset of the agent service API:
    - Session is reused across messages in the same topic (`agent-session.json`)
    - AI remembers previous messages and replies within the session
    - Session is deleted only on an explicit reset (`/reset`, dashboard) — never automatically
-   - New session created on server restart
+   - Session state and raw context are loaded from disk on server restart
 
 2. **Context-window accounting** — How full the model's context window is
    - **The figure**:

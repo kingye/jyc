@@ -20,6 +20,7 @@ mod live_status;
 mod managers;
 mod queue;
 mod template;
+pub mod topic_tree;
 mod topics;
 mod worker;
 

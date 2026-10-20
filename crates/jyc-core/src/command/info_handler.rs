@@ -122,6 +122,17 @@ fn format_topic_info(t: &TopicInfo) -> String {
     if !t.tasks.is_empty() {
         lines.extend(t.tasks.render_lines());
     }
+    // The subagents this topic spawned, as a tree — the same tree the info
+    // pane draws, out of the same detail, printed as text.
+    if let Some(subagents) = t.subagents.as_deref()
+        && !subagents.is_empty()
+    {
+        lines.push(format!(
+            "Subagents ({}):",
+            crate::topic_manager::topic_tree::node_count(subagents)
+        ));
+        lines.extend(subagent_lines(subagents, 1));
+    }
     if let Some(files) = t.changed_files.as_deref() {
         if files.is_empty() {
             lines.push("Files: (none)".to_string());
@@ -146,6 +157,21 @@ fn format_topic_info(t: &TopicInfo) -> String {
         }
     }
     lines.join("\n")
+}
+
+/// The subagent tree as text: one line per topic, indented by its depth.
+fn subagent_lines(nodes: &[jyc_types::TopicNode], depth: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for node in nodes {
+        lines.push(format!(
+            "{}{} ({})",
+            "  ".repeat(depth),
+            node.name,
+            node.status
+        ));
+        lines.extend(subagent_lines(&node.children, depth + 1));
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -227,6 +253,7 @@ mod tests {
             avg_turn_call_ms: Some(1100),
             turn_call_count: Some(3),
             commands: vec![],
+            subagents: None,
         }
     }
 
@@ -326,5 +353,47 @@ Files (2):
         let mut t = full_info();
         t.changed_files = Some(vec![]);
         assert!(format_topic_info(&t).contains("Files: (none)"));
+    }
+
+    /// The subagent tree the detail carries is printed as text — the same
+    /// tree the info pane draws, out of the same detail.
+    #[test]
+    fn prints_the_subagent_tree() {
+        let mut t = full_info();
+        t.subagents = Some(vec![
+            jyc_types::TopicNode {
+                name: "ci-watch".to_string(),
+                channel: "feishu".to_string(),
+                status: TopicStatus::Idle,
+                children: vec![jyc_types::TopicNode {
+                    name: "review".to_string(),
+                    channel: "feishu".to_string(),
+                    status: TopicStatus::Processing,
+                    children: vec![],
+                }],
+            },
+            jyc_types::TopicNode {
+                name: "ci-watch-2".to_string(),
+                channel: "feishu".to_string(),
+                status: TopicStatus::Idle,
+                children: vec![],
+            },
+        ]);
+
+        let text = format_topic_info(&t);
+        assert!(text.contains("Subagents (3):"), "{text}");
+        assert!(text.contains("  ci-watch (Idle)"), "{text}");
+        assert!(text.contains("    review (Processing)"), "{text}");
+        assert!(text.contains("  ci-watch-2 (Idle)"), "{text}");
+    }
+
+    /// A topic without subagents leaves no section behind: the neighbours
+    /// still render, so the omission is local.
+    #[test]
+    fn no_subagents_omits_the_section() {
+        let t = full_info();
+        let text = format_topic_info(&t);
+        assert!(!text.contains("Subagents"), "{text}");
+        assert!(text.contains("Files (2):"), "{text}");
     }
 }

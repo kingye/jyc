@@ -1,8 +1,6 @@
 //! Chat pane: state, key handling, and rendering for the dashboard's
 //! WebSocket topic chat (all channel types via `/ws/<channel>/<topic>`).
 
-use std::collections::{HashMap, HashSet};
-
 use super::token_render::{
     PaneLayout, bar_width, context_pct, label_span, layout_for, push_cache_creation_span,
     push_cache_hit_span, push_cache_utilization_span, push_cost_span, push_latency_span,
@@ -10,6 +8,7 @@ use super::token_render::{
 };
 use super::*;
 use jyc_core::duration::{DurationStyle, format_duration_ms, format_duration_secs};
+use jyc_core::topic_manager::topic_tree::{node_count, topic_forest};
 
 pub(super) mod clipboard;
 mod render;
@@ -762,7 +761,7 @@ fn explorer_move(app: &mut App, delta: i64) {
     let len = app
         .state
         .as_ref()
-        .map(|s| explorer_rows(s).len())
+        .map(|s| node_count(&topic_forest(&s.topics)))
         .unwrap_or(0);
     if len == 0 {
         app.chat.explorer_selected = 0;
@@ -776,9 +775,10 @@ fn explorer_move(app: &mut App, delta: i64) {
 /// types use the unified `/ws/<channel>/<topic>` endpoint.
 fn explorer_open_selected(app: &mut App) {
     let info = app.state.as_ref().and_then(|s| {
-        let rows = explorer_rows(s);
-        let t = &s.topics[rows.get(app.chat.explorer_selected)?.topic];
-        Some((t.name.clone(), t.channel.clone()))
+        let forest = topic_forest(&s.topics);
+        let rows = explorer_rows(&forest);
+        let node = rows.get(app.chat.explorer_selected)?.node;
+        Some((node.name.clone(), node.channel.clone()))
     });
     let Some((name, channel)) = info else {
         return;
@@ -883,7 +883,8 @@ fn toggle_explorer_snapped(app: &mut App) {
     let idx = app.state.as_ref().and_then(|s| {
         let topic = app.chat.topic.as_deref()?;
         let channel = app.chat.channel.as_deref()?;
-        row_of(&explorer_rows(s), s, topic, channel)
+        let forest = topic_forest(&s.topics);
+        row_of(&explorer_rows(&forest), topic, channel)
     });
     if let Some(idx) = idx {
         app.chat.explorer_selected = idx;
@@ -1390,7 +1391,8 @@ fn sync_explorer_selection(app: &mut App) {
         app.chat.explorer_selected = 0;
         return;
     };
-    let rows = explorer_rows(s);
+    let forest = topic_forest(&s.topics);
+    let rows = explorer_rows(&forest);
     let len = rows.len();
     if len == 0 {
         app.chat.explorer_selected = 0;
@@ -1401,7 +1403,7 @@ fn sync_explorer_selection(app: &mut App) {
     }
     if app.chat.focus != Focus::ExplorerPane
         && let (Some(topic), Some(channel)) = (&app.chat.topic, &app.chat.channel)
-        && let Some(idx) = row_of(&rows, s, topic, channel)
+        && let Some(idx) = row_of(&rows, topic, channel)
     {
         app.chat.explorer_selected = idx;
     }
@@ -1418,31 +1420,11 @@ fn status_dot_style(status: &TopicStatus) -> Style {
     }
 }
 
-/// A row of a tree view: an index into `InspectOverview::topics` plus the
-/// box-drawing prefix that puts it at its depth (`""` for a root).
-struct TreeRow {
-    topic: usize,
+/// A row of a tree view: the node it shows plus the box-drawing prefix
+/// that puts it at its depth (`""` for a root).
+struct TreeRow<'a> {
+    node: &'a jyc_types::TopicNode,
     prefix: String,
-}
-
-/// Map from `(parent name, channel)` to the topics naming it as their
-/// `parent`, in name order. The channel is part of the key because a spawn
-/// creates its child in the parent's own channel, so a name alone would
-/// confuse two same-named parents on different channels.
-fn children_index(s: &InspectOverview) -> HashMap<(&str, &str), Vec<usize>> {
-    let mut index: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
-    for (i, t) in s.topics.iter().enumerate() {
-        if let Some(parent) = t.parent.as_deref() {
-            index
-                .entry((parent, t.channel.as_str()))
-                .or_default()
-                .push(i);
-        }
-    }
-    for kids in index.values_mut() {
-        kids.sort_by(|a, b| s.topics[*a].name.cmp(&s.topics[*b].name));
-    }
-    index
 }
 
 /// The most columns of indent a level hands down to the next. A row is drawn
@@ -1453,35 +1435,24 @@ fn children_index(s: &InspectOverview) -> HashMap<(&str, &str), Vec<usize>> {
 /// child never starts further left than its parent.
 const MAX_PREFIX_COLS: usize = 3;
 
-/// Append `topic`'s descendants to `rows`, depth-first, each indented under
-/// its parent — up to [`MAX_PREFIX_COLS`] columns handed down, past which the
-/// indent freezes so the names stay readable. `seen` stops a breadcrumb cycle —
-/// only hand-edited state can produce one — from recursing forever.
-fn push_subtree(
-    rows: &mut Vec<TreeRow>,
-    s: &InspectOverview,
-    index: &HashMap<(&str, &str), Vec<usize>>,
-    topic: &jyc_types::TopicSummary,
+/// Append `nodes`' rows to `rows`, depth-first, each indented under its
+/// parent — up to [`MAX_PREFIX_COLS`] columns handed down, past which the
+/// indent freezes so the names stay readable.
+///
+/// The nesting is the core's: these rows draw a tree the lineage rules
+/// already built, so the explorer's tree, the info pane's tree and a topic's
+/// own `subagents` are the same shape.
+fn push_tree_rows<'a>(
+    rows: &mut Vec<TreeRow<'a>>,
+    nodes: &'a [jyc_types::TopicNode],
     child_prefix: &str,
-    seen: &mut HashSet<usize>,
 ) {
-    // Drop the kids a cycle already showed *before* picking the last one: a
-    // back-edge in the middle of a list would otherwise leave the sibling
-    // before it drawn as a non-last child with nothing under it.
-    let kids: Vec<usize> = index
-        .get(&(topic.name.as_str(), topic.channel.as_str()))
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-        .iter()
-        .copied()
-        .filter(|&kid| seen.insert(kid))
-        .collect();
-    for (n, &kid) in kids.iter().enumerate() {
-        let last = n + 1 == kids.len();
+    for (n, node) in nodes.iter().enumerate() {
+        let last = n + 1 == nodes.len();
         let mut prefix = String::with_capacity(child_prefix.len() + 3);
         prefix.push_str(child_prefix);
         prefix.push_str(if last { "└─ " } else { "├─ " });
-        rows.push(TreeRow { topic: kid, prefix });
+        rows.push(TreeRow { node, prefix });
         let mut next = String::with_capacity(child_prefix.len() + 3);
         next.push_str(child_prefix);
         next.push_str(if last { "   " } else { "│  " });
@@ -1490,84 +1461,27 @@ fn push_subtree(
         } else {
             next.as_str()
         };
-        push_subtree(rows, s, index, &s.topics[kid], next, seen);
+        push_tree_rows(rows, &node.children, next);
     }
 }
 
-/// The explorer's rows: every root in the overview's own (name, channel)
-/// order, each followed by its subtree. A topic whose parent is not in the
-/// list — the parent was closed while the child lived on — is a root too, so
-/// no topic disappears from the pane.
-fn explorer_rows(s: &InspectOverview) -> Vec<TreeRow> {
-    let index = children_index(s);
-    let listed: HashSet<(&str, &str)> = s
-        .topics
-        .iter()
-        .map(|t| (t.name.as_str(), t.channel.as_str()))
-        .collect();
-    let mut rows = Vec::with_capacity(s.topics.len());
-    let mut seen = HashSet::new();
-    for (i, t) in s.topics.iter().enumerate() {
-        // Nesting turns on the parent being *listed* — never on the index key,
-        // which holds a topic the moment it names a parent, so asking about it
-        // would read as "has a parent" and hide every orphan instead of
-        // promoting it to a root.
-        if t.parent
-            .as_deref()
-            .is_some_and(|p| listed.contains(&(p, t.channel.as_str())))
-        {
-            continue;
-        }
-        push_root(&mut rows, s, &index, i, &mut seen);
+/// The explorer's rows: every root, each followed by its subtree.
+fn explorer_rows(forest: &[jyc_types::TopicNode]) -> Vec<TreeRow<'_>> {
+    let mut rows = Vec::with_capacity(forest.len());
+    for node in forest {
+        rows.push(TreeRow {
+            node,
+            prefix: String::new(),
+        });
+        push_tree_rows(&mut rows, &node.children, "");
     }
-    // A breadcrumb cycle (hand-edited state only) has no root to start from,
-    // so the walk above leaves its members unreached — and that is the only
-    // case `seen` could not have caught by itself. Anything still unvisited
-    // belongs in the pane too rather than blanking it.
-    for i in 0..s.topics.len() {
-        push_root(&mut rows, s, &index, i, &mut seen);
-    }
-    rows
-}
-
-/// Push `i` as a root row, then its subtree. A topic the walk has already
-/// reached is left alone, so a second call is a no-op.
-fn push_root(
-    rows: &mut Vec<TreeRow>,
-    s: &InspectOverview,
-    index: &HashMap<(&str, &str), Vec<usize>>,
-    i: usize,
-    seen: &mut HashSet<usize>,
-) {
-    if !seen.insert(i) {
-        return;
-    }
-    rows.push(TreeRow {
-        topic: i,
-        prefix: String::new(),
-    });
-    push_subtree(rows, s, index, &s.topics[i], "", seen);
-}
-
-/// The info pane's rows for the topic `root`: its descendants as a tree, the
-/// root itself excluded. Empty when the topic has no subagents.
-fn subagent_tree(s: &InspectOverview, root: &jyc_types::TopicSummary) -> Vec<TreeRow> {
-    let index = children_index(s);
-    let mut rows = Vec::new();
-    let mut seen = HashSet::new();
-    // The root draws no row of its own, but a breadcrumb cycle leading back to
-    // it must stop here rather than list it as its own descendant.
-    if let Some(i) = jyc_types::topic_index(&s.topics, &root.name, Some(&root.channel)) {
-        seen.insert(i);
-    }
-    push_subtree(&mut rows, s, &index, root, "", &mut seen);
     rows
 }
 
 /// The row showing `(name, channel)`, if the tree holds it.
-fn row_of(rows: &[TreeRow], s: &InspectOverview, name: &str, channel: &str) -> Option<usize> {
+fn row_of(rows: &[TreeRow], name: &str, channel: &str) -> Option<usize> {
     rows.iter()
-        .position(|r| s.topics[r.topic].name == name && s.topics[r.topic].channel == channel)
+        .position(|r| r.node.name == name && r.node.channel == channel)
 }
 
 /// Render the left-side topic explorer pane (20% wide when shown).
@@ -1601,7 +1515,8 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
 
     // Tree rows: a subagent sits under the topic that spawned it.
     // Scroll window: keep the selected row visible.
-    let rows = explorer_rows(s);
+    let forest = topic_forest(&s.topics);
+    let rows = explorer_rows(&forest);
     let height = inner.height as usize;
     let offset = window_offset(rows.len(), selected, height);
 
@@ -1611,7 +1526,7 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
         .skip(offset)
         .take(height)
         .map(|(i, row)| {
-            let t = &s.topics[row.topic];
+            let t = row.node;
             let is_current = current == Some((&t.name, &t.channel));
             let is_selected = i == selected;
             let name_style = if is_current {
@@ -1967,27 +1882,25 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         // Separated section: the subagents this topic spawned, as a tree —
         // their own subagents nest beneath them. Same status dot and colours
         // as the explorer, so a topic reads the same in both panes. Omitted
-        // entirely when there are none. The tree is a view of the topic
-        // *list*, so it comes from the overview poll, not from this topic's
-        // detail.
-        if let Some(s) = app.state.as_ref()
-            && let Some(root) = jyc_types::find_topic(&s.topics, &t.name, Some(&t.channel))
+        // entirely when there are none. The tree comes from the topic's own
+        // detail — the same shape `/info` reads — so the pane and the
+        // command cannot drift apart.
+        if let Some(subagents) = t.subagents.as_deref()
+            && !subagents.is_empty()
         {
-            let tree = subagent_tree(s, root);
-            if !tree.is_empty() {
-                rows.push(InfoRow::Raw(Line::default()));
-                rows.push(InfoRow::Raw(Line::from(Span::styled(
-                    format!("Subagents ({}):", tree.len()),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ))));
-                for row in &tree {
-                    let kid = &s.topics[row.topic];
-                    rows.push(InfoRow::Raw(Line::from(vec![
-                        Span::raw(format!(" {}", row.prefix)),
-                        Span::styled("● ", status_dot_style(&kid.status)),
-                        Span::raw(kid.name.as_str()),
-                    ])));
-                }
+            rows.push(InfoRow::Raw(Line::default()));
+            rows.push(InfoRow::Raw(Line::from(Span::styled(
+                format!("Subagents ({}):", node_count(subagents)),
+                Style::default().add_modifier(Modifier::BOLD),
+            ))));
+            let mut tree = Vec::new();
+            push_tree_rows(&mut tree, subagents, "");
+            for row in &tree {
+                rows.push(InfoRow::Raw(Line::from(vec![
+                    Span::raw(format!(" {}", row.prefix)),
+                    Span::styled("● ", status_dot_style(&row.node.status)),
+                    Span::raw(row.node.name.as_str()),
+                ])));
             }
         }
         if t.status == TopicStatus::Processing {

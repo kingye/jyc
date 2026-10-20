@@ -592,6 +592,7 @@ fn topic_detail_for(name: &str, channel: &str) -> jyc_types::TopicInfo {
         tasks: Default::default(),
         cost: None,
         commands: vec![],
+        subagents: None,
     }
 }
 
@@ -610,6 +611,16 @@ fn explorer_topic(name: &str) -> jyc_types::TopicSummary {
         topic_path: None,
         parent: None,
         commands: vec![],
+    }
+}
+
+/// A node of a lineage tree, as a topic's detail carries it.
+fn subagent_node(name: &str, children: Vec<jyc_types::TopicNode>) -> jyc_types::TopicNode {
+    jyc_types::TopicNode {
+        name: name.to_string(),
+        channel: "test".to_string(),
+        status: jyc_types::TopicStatus::Idle,
+        children,
     }
 }
 
@@ -726,6 +737,7 @@ fn files_section_colors_uncommitted_paths_yellow() {
         tasks: Default::default(),
         cost: None,
         commands: vec![],
+        subagents: None,
     });
     app.table_state.select(Some(0));
 
@@ -955,6 +967,7 @@ fn info_scroll_is_clamped_after_render() {
         tasks: Default::default(),
         cost: None,
         commands: vec![],
+        subagents: None,
     });
     app.table_state.select(Some(0));
     // Pretend we previously scrolled way past the end.
@@ -1823,6 +1836,7 @@ fn info_pane_app(tasks: jyc_types::task::TaskList) -> App {
             currency: "USD".to_string(),
         }),
         commands: vec![],
+        subagents: None,
         tasks,
     });
     app.table_state.select(Some(0));
@@ -2309,6 +2323,7 @@ fn info_pane_end_reaches_the_last_wrapped_row() {
         tasks: Default::default(),
         cost: None,
         commands: vec![],
+        subagents: None,
     });
 
     let mut terminal =
@@ -2595,11 +2610,9 @@ fn explorer_rows_nest_subagents_under_their_parent() {
         ..Default::default()
     };
 
-    let rows = explorer_rows(&s);
-    let names: Vec<&str> = rows
-        .iter()
-        .map(|r| s.topics[r.topic].name.as_str())
-        .collect();
+    let forest = topic_forest(&s.topics);
+    let rows = explorer_rows(&forest);
+    let names: Vec<&str> = rows.iter().map(|r| r.node.name.as_str()).collect();
     assert_eq!(names, ["a", "b", "c", "d"], "tree order");
     assert_eq!(rows[0].prefix, "", "a root is not indented");
     assert_eq!(rows[1].prefix, "└─ ");
@@ -2611,9 +2624,9 @@ fn explorer_rows_nest_subagents_under_their_parent() {
 
     // Selection follows the tree rows, not the overview's flat list: the
     // explorer's row index is what `explorer_selected` holds.
-    assert_eq!(row_of(&rows, &s, "c", "test"), Some(2));
-    assert_eq!(row_of(&rows, &s, "d", "test"), Some(3));
-    assert_eq!(row_of(&rows, &s, "nope", "test"), None);
+    assert_eq!(row_of(&rows, "c", "test"), Some(2));
+    assert_eq!(row_of(&rows, "d", "test"), Some(3));
+    assert_eq!(row_of(&rows, "nope", "test"), None);
 }
 
 // A breadcrumb cycle — hand-edited state only — has no root for the walk to
@@ -2631,11 +2644,9 @@ fn explorer_rows_keep_a_breadcrumb_cycle_visible() {
         ..Default::default()
     };
 
-    let rows = explorer_rows(&s);
-    let names: Vec<&str> = rows
-        .iter()
-        .map(|r| s.topics[r.topic].name.as_str())
-        .collect();
+    let forest = topic_forest(&s.topics);
+    let rows = explorer_rows(&forest);
+    let names: Vec<&str> = rows.iter().map(|r| r.node.name.as_str()).collect();
     assert_eq!(names, ["a", "b"], "both members stay listed, once each");
 }
 
@@ -2657,13 +2668,11 @@ async fn explorer_selection_follows_the_tree_row_not_the_flat_index() {
         ..Default::default()
     };
 
-    let rows = explorer_rows(&s);
-    let names: Vec<&str> = rows
-        .iter()
-        .map(|r| s.topics[r.topic].name.as_str())
-        .collect();
+    let forest = topic_forest(&s.topics);
+    let rows = explorer_rows(&forest);
+    let names: Vec<&str> = rows.iter().map(|r| r.node.name.as_str()).collect();
     assert_eq!(names, ["z", "b"], "the parent comes first in the tree");
-    assert_eq!(row_of(&rows, &s, "b", "test"), Some(1));
+    assert_eq!(row_of(&rows, "b", "test"), Some(1));
 
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
@@ -2749,7 +2758,8 @@ fn deep_nesting_freezes_the_indent() {
         ..Default::default()
     };
 
-    let rows = explorer_rows(&s);
+    let forest = topic_forest(&s.topics);
+    let rows = explorer_rows(&forest);
     let prefixes: Vec<&str> = rows.iter().map(|r| r.prefix.as_str()).collect();
     assert_eq!(
         prefixes,
@@ -2776,10 +2786,11 @@ fn a_cycle_back_edge_leaves_no_dangling_branch_mark() {
         ..Default::default()
     };
 
-    let rows = explorer_rows(&s);
+    let forest = topic_forest(&s.topics);
+    let rows = explorer_rows(&forest);
     let drawn: Vec<(&str, &str)> = rows
         .iter()
-        .map(|r| (s.topics[r.topic].name.as_str(), r.prefix.as_str()))
+        .map(|r| (r.node.name.as_str(), r.prefix.as_str()))
         .collect();
     assert_eq!(
         drawn,
@@ -2790,36 +2801,23 @@ fn a_cycle_back_edge_leaves_no_dangling_branch_mark() {
 
 // The info pane's tree holds a topic's descendants only (the pane already
 // names the topic itself) and closes the last branch of each level with `└─ `,
-// so the sibling after a nested child lines up under its parent.
+// so the sibling after a nested child lines up under its parent. The tree
+// itself is the one the topic's own detail carries — the core's lineage
+// rules built it — and this pins the drawing of it.
 #[test]
-fn subagent_tree_lists_descendants_with_branch_prefixes() {
-    let mut child = explorer_topic("b");
-    child.parent = Some("a".to_string());
-    let mut grandchild = explorer_topic("c");
-    grandchild.parent = Some("b".to_string());
-    let mut sibling = explorer_topic("e");
-    sibling.parent = Some("a".to_string());
-    let s = jyc_types::InspectOverview {
-        topics: vec![explorer_topic("a"), child, grandchild, sibling],
-        ..Default::default()
-    };
+fn the_pane_draws_the_subagent_tree_with_branch_prefixes() {
+    let subagents = vec![
+        subagent_node("b", vec![subagent_node("c", vec![])]),
+        subagent_node("e", vec![]),
+    ];
 
-    let rows = subagent_tree(&s, &s.topics[0]);
-    let names: Vec<&str> = rows
-        .iter()
-        .map(|r| s.topics[r.topic].name.as_str())
-        .collect();
-    assert_eq!(
-        names,
-        ["b", "c", "e"],
-        "depth-first, name order, root excluded"
-    );
+    let mut rows = Vec::new();
+    push_tree_rows(&mut rows, &subagents, "");
+    let names: Vec<&str> = rows.iter().map(|r| r.node.name.as_str()).collect();
+    assert_eq!(names, ["b", "c", "e"], "depth-first");
     assert_eq!(rows[0].prefix, "├─ ");
     assert_eq!(rows[1].prefix, "│  └─ ");
     assert_eq!(rows[2].prefix, "└─ ");
-
-    // A leaf gets no rows, so its pane omits the section entirely.
-    assert!(subagent_tree(&s, &s.topics[2]).is_empty());
 }
 
 // The rendered pane: the subagent tree sits between the cost row and the files
@@ -2843,10 +2841,13 @@ fn info_pane_renders_subagents_as_a_tree() {
         topics: vec![explorer_topic("jyc"), child, grandchild, sibling],
         ..Default::default()
     });
-    // The pane renders the topic's own detail — the same source `/info` reads.
-    // The tree itself is a view of the topic *list* (the overview poll), so it
-    // comes from `app.state`, not from the detail.
+    // The pane renders the topic's own detail — the same source `/info` reads
+    // — and the subagent tree is part of that detail.
     let mut detail = topic_detail_for("jyc", "test");
+    detail.subagents = Some(vec![
+        subagent_node("jyc-1", vec![subagent_node("jyc-2", vec![])]),
+        subagent_node("jyc-3", vec![]),
+    ]);
     // A cost row and a resolved file list, so the tree has the two sections
     // it is placed between.
     detail.cost = Some(jyc_types::TopicCost {

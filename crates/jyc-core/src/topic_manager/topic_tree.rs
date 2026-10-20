@@ -281,16 +281,21 @@ mod tests {
     }
 
     // A breadcrumb cycle — hand-edited state only — has no root for the walk
-    // to start from, so its members are emitted as the leftovers of that
-    // walk. They must not blank the pane, and `seen` is what stops the
-    // recursion from running forever.
+    // to start from, so the leftover walk starts it: the first member becomes
+    // the root and the next hangs under it (its recorded parent is the one
+    // above), the back-edge that would close the cycle is cut. Both members
+    // stay listed, once each, and `seen` is what stops the recursion from
+    // running forever.
     #[test]
     fn topic_forest_keeps_a_breadcrumb_cycle_visible() {
         let topics = vec![topic("a", Some("b")), topic("b", Some("a"))];
 
         let forest = topic_forest(&topics);
-        let names: Vec<&str> = forest.iter().map(|n| n.name.as_str()).collect();
-        assert_eq!(names, ["a", "b"], "both members stay listed, once each");
+        assert_eq!(
+            shape(&forest, 0),
+            [(0, "a".to_string()), (1, "b".to_string())],
+            "both members stay listed, once each"
+        );
     }
 
     // The tree of one topic holds its descendants only (the pane already

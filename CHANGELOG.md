@@ -1,10 +1,16 @@
 ## [Unreleased]
 
+### Added
+
+- The topic info pane draws its two percentage rows as bars: the context share and the cache hit rate now lead with a ten-cell bar — `─` for the filled part (bold yellow), `·` for the rest (dim gray) — so each share reads at a glance and the two can be compared against each other: `Tokens: ────────── 45231 / 120000 (38%)`, `Cache hit rate: ────────── 88%`. A share that rounds to nothing still shows one filled cell, so a small percentage does not read as an empty bar.
+
 ### Removed
 
 - The auto-reset machinery is gone: the post-loop auto-reset (the session was reset once the context crossed `context_window × auto_reset_threshold`), the pre-loop pre-check (the session was reset when the active model had a smaller window than the loaded one), the mid-loop safety net (the in-memory context was shrunk to the last 3 turns before the next call) and the reset-compression modes (`heuristic` / `llm` / `none` — a reset now simply clears the context, with no summary and no compaction call). The sliding-window context strategy is what keeps a request inside the model's window, so the layers underneath it had nothing left to do; they never fired in practice anyway. `auto_reset_threshold` and `reset_compression` are no longer read — the per-pattern and per-agent keys are still accepted (ignored) so configs written before the removal keep loading, and the `[ai]`-level keys are gone
 
 ### Changed
+
+- The metric the topic info pane and `/info` call "Cache util" is labelled **cache hit rate** everywhere it reaches the user: the info pane's row, `/info`'s output and `/bill`'s table header. The number is unchanged — cache-hit tokens ÷ total input tokens — only the name is; the code keeps the older `cache_util_pct` name, and DESIGN.md's terminology table now records the two as the same figure.
 
 - The context-window figures now count the whole context and measure it against the whole window: the numerator is the most recent LLM call's `input_tokens` plus that call's `output_tokens` — the size of the context the *next* call will carry — and the denominator is the model's own context window, not a fraction of it. Before, the denominator was the auto-reset cap (the window scaled by the 0.95 threshold) and the numerator the input alone, so `28K/996K` really meant 2.8 % of a 1 Mi-token window. The dashboard's overview column, the topic info pane, `/info`, the chat status line and the Feishu progress card all read the same two fields through one shared helper (`jyc_types::context_token_pct`), and the session file keeps the per-call output tokens next to the per-call input tokens so the pair always describes one call
 

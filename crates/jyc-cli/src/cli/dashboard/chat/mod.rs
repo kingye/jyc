@@ -1805,7 +1805,7 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         if !cache_hit_spans.is_empty() {
             out.push(Line::from(cache_hit_spans));
         }
-        // Cache util row — cache hits as a share of total input.
+        // Cache hit rate row — cache hits as a share of total input.
         // Omitted when the provider reports no cache data.
         let mut cache_util_spans = Vec::with_capacity(2);
         push_cache_utilization_span(&mut cache_util_spans, t);

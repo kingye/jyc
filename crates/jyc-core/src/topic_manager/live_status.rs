@@ -100,11 +100,15 @@ impl LiveStatusStore {
 
     /// A tool failed during the turn and the model did not recover from it.
     ///
-    /// The agent loop reports the failures that stand — a tool the model
-    /// retried successfully leaves no mark.
-    pub fn set_tool_error(&self, topic: &str) {
+    /// The write follows the "if known" rule: a topic that was closed
+    /// mid-turn has no entry any more — the close clears it — and
+    /// re-creating it here would report a closed topic as failed, and a
+    /// name reused later would inherit that failure.
+    pub fn set_tool_error_if_known(&self, topic: &str) {
         let mut statuses = self.statuses();
-        statuses.entry(topic.to_string()).or_default().has_error = true;
+        if let Some(entry) = statuses.get_mut(topic) {
+            entry.has_error = true;
+        }
     }
 
     /// Forget the topic's status — it is gone, or its turn ended without
@@ -142,9 +146,13 @@ impl TopicManager {
         self.live_status.set_turn_ended(topic_name, success);
     }
 
-    /// A tool failed during the topic's turn.
-    pub fn set_topic_tool_error(&self, topic_name: &str) {
-        self.live_status.set_tool_error(topic_name);
+    /// A tool failed during the topic's turn and the model did not recover
+    /// from it.
+    ///
+    /// A topic the store does not know — one that was closed mid-turn — is
+    /// left alone: the report says nothing about a topic that is gone.
+    pub fn set_topic_tool_error_if_known(&self, topic_name: &str) {
+        self.live_status.set_tool_error_if_known(topic_name);
     }
 }
 

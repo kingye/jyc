@@ -428,7 +428,13 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 tracing::info!(total_iterations, error = %e, "Agent loop cancelled during LLM call");
                 break;
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                // The turn dies here, so the failures that stand are
+                // reported now — the turn's end is this path's to write.
+                let status = status_topic.as_deref().map(ManagerStatus);
+                report_standing_failures(status.as_ref(), topic_name, &tool_failures);
+                return Err(e);
+            }
         };
         let call_ms = call_started.elapsed().as_millis() as u64;
 
@@ -583,7 +589,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 };
                 // The embedded ask_user is a tool call like any other: it
                 // stands in error until the model asks again and it works.
-                tool_failures.record("ask_user", output.is_error);
+                tool_failures.record("ask_user", &output);
                 history.push(Message::tool_result(
                     "embedded-ask-user",
                     &output.content,
@@ -637,10 +643,10 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             }
 
             let duration = start_time.elapsed();
-            tool_failures.report(topic_name, status_topic.as_deref());
-            if let Some(tm) = status_topic.as_ref() {
-                tm.set_topic_turn_ended(topic_name, true);
-            }
+            // The turn's outcome: the tool failures that stand put the topic
+            // in error, the ones the model recovered from say nothing.
+            let status = status_topic.as_deref().map(ManagerStatus);
+            settle_turn(status.as_ref(), topic_name, &tool_failures, true);
             publish_event(
                 event_bus,
                 TopicEvent::ProcessingCompleted {
@@ -681,6 +687,10 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                     consecutive = consecutive_empty_tool_iterations,
                     "Model repeatedly generated tool calls with empty arguments, aborting loop"
                 );
+                // The turn is over: report the failures that stand before
+                // it ends, so the topic's status says what happened.
+                let status = status_topic.as_deref().map(ManagerStatus);
+                report_standing_failures(status.as_ref(), topic_name, &tool_failures);
                 anyhow::bail!(
                     "model generated tool calls with empty arguments for {} consecutive \
                      iterations — this usually indicates the provider does not support \
@@ -800,7 +810,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             // Publish ToolCompleted
             // A failed tool leaves the turn in doubt until the model retries
             // it: the failure counts only when the tool never works again.
-            tool_failures.record(&tool_call.name, output.is_error);
+            tool_failures.record(&tool_call.name, &output);
             publish_event(
                 event_bus,
                 TopicEvent::ToolCompleted {
@@ -962,10 +972,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     // it managed to deliver first, including a question that ended the turn.
     let duration = start_time.elapsed();
     let turn_succeeded = handed_over && !cancel.is_cancelled();
-    tool_failures.report(topic_name, status_topic.as_deref());
-    if let Some(tm) = status_topic.as_ref() {
-        tm.set_topic_turn_ended(topic_name, turn_succeeded);
-    }
+    let status = status_topic.as_deref().map(ManagerStatus);
+    settle_turn(status.as_ref(), topic_name, &tool_failures, turn_succeeded);
     publish_event(
         event_bus,
         TopicEvent::ProcessingCompleted {
@@ -1290,6 +1298,6 @@ mod embedded_ask;
 mod response;
 mod retry;
 
-use tool_failures::ToolFailures;
+use tool_failures::{ManagerStatus, ToolFailures, report_standing_failures, settle_turn};
 
 use retry::{SSE_RETRY_BACKOFF_MS, complete_with_retry};

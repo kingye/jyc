@@ -3154,8 +3154,12 @@ working" cannot be true in one view and false in another.
 A tool that fails mid-turn counts only when the model does not recover from
 it. The agent loop keeps the tools whose last call failed
 (`jyc_agent::agent_loop::tool_failures`) and reports them to the manager
-once, at the end of the turn: a tool the model retried successfully leaves
-no mark, so a turn that stumbled and carried on ends as a turn that worked.
+once, at the end of the turn: a tool that works again leaves no mark, so a
+turn that stumbled and carried on ends as a turn that worked. The recovery
+is counted per tool, not per call — another call of the same tool that
+works counts too, because the model may have given up on the call that
+failed — and a failure that stands still leaves the topic in error until
+the next turn starts.
 
 `last_active_at` is the other field both carry, and they carry the same one:
 the event stream's stamp for the topic. The state dir's mtime is only the

@@ -134,7 +134,7 @@ impl TopicManager {
     /// The topic's turn ended — `success` says whether it went through.
     ///
     /// A topic the store does not know — one that was closed mid-turn — is
-    /// left alone: the report says nothing about a topic that is gone.
+    /// left alone: the turn's end says nothing about a topic that is gone.
     pub fn end_topic_turn_if_known(&self, topic_name: &str, success: bool) {
         self.live_status.end_turn_if_known(topic_name, success);
     }
@@ -153,7 +153,7 @@ impl TopicManager {
 ///
 /// A turn that ends normally closes itself — the agent loop publishes the
 /// event the status mirrors, and the status follows it. A turn that is cut
-/// short (the worker panics, the topic is closed mid-turn) publishes
+/// short — the worker panics, the turn dies without saying so — publishes
 /// nothing, and the topic would keep reporting "Processing" forever. This
 /// guard drops on every path out of the turn and closes the flag on the
 /// ones the turn did not close itself.

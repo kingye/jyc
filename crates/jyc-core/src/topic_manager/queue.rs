@@ -386,8 +386,10 @@ impl TopicManager {
                 let processing_started = std::time::Instant::now();
                 // The turn closes its own live status (the agent loop
                 // publishes the events the status mirrors); this guard
-                // covers the paths where it does not — a panic, a cancel —
-                // so "Processing" cannot outlive the turn.
+                // covers the paths where it does not — a panic, a turn that
+                // died without saying so — so "Processing" cannot outlive
+                // the turn.
+                // The guard lives until the end of this block.
                 let _status_guard =
                     TurnStatusGuard::new(tm.live_status.clone(), topic_name.clone());
                 let processed = process_message(

@@ -2975,16 +2975,21 @@ fn info_pane_draws_no_bar_in_a_too_narrow_pane() {
     // 22 columns wide: the pane's inner width is 21, which leaves four
     // cells for the bar — too coarse to be honest, so there is no bar.
     let pane = info_pane_text(&mut app, 22, 40);
-    let tokens_row = pane
-        .lines()
-        .find(|line| line.contains("Tokens:"))
-        .expect("the pane must show the tokens row");
+    for line in pane.lines() {
+        for label in ["Tokens:", "Cache hit rate:"] {
+            let Some(pos) = line.find(label) else {
+                continue;
+            };
+            let after = line[pos + label.len()..].trim_start();
+            assert!(
+                !after.starts_with('─'),
+                "a pane too narrow for an honest bar must draw none:\n{pane}"
+            );
+        }
+    }
+    // The figures are still there — on the same row, or wrapped below it.
     assert!(
-        !tokens_row.contains('─'),
-        "a pane too narrow for an honest bar must draw none:\n{pane}"
-    );
-    assert!(
-        tokens_row.contains("47500"),
+        pane.contains("47500") && pane.contains("(47%)"),
         "the figures must still be there:\n{pane}"
     );
 }

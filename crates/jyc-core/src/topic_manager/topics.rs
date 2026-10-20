@@ -523,7 +523,18 @@ impl TopicManager {
         {
             let mut paths = self.topic_paths.lock().await;
             paths.retain(|name, path| {
-                let exists = resolve_state_dir(name.as_str(), path.as_path()).is_dir();
+                // A topic with no registered state dir has no state to read —
+                // a lost adoption stays unregistered on purpose (see
+                // `activate_workspace_state`), and `resolve_state_dir` would
+                // panic on it. Keep the entry (the registration may still be
+                // on its way) and leave the topic out of the names below: a
+                // topic whose state cannot be read is not one this list can
+                // report, and one such entry must not take the whole list
+                // down.
+                let Some(state) = jyc_types::state_dir::registered_state(name) else {
+                    return true;
+                };
+                let exists = state.is_dir();
                 if !exists {
                     tracing::info!(
                         topic = %name,
@@ -534,6 +545,9 @@ impl TopicManager {
                 exists
             });
             for name in paths.keys() {
+                if jyc_types::state_dir::registered_state(name).is_none() {
+                    continue;
+                }
                 if !topic_names.contains(name) {
                     topic_names.push(name.clone());
                 }

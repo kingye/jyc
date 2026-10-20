@@ -1687,6 +1687,13 @@ async fn topic_info_picks_the_topic_by_name_when_paths_are_shared() {
     let workspace = tmp.path().join("workspace");
     let shared = workspace.join("shared");
     std::fs::create_dir_all(state_dir("shared-owner", &shared)).unwrap();
+    // The child works in the same directory but keeps its own state: a shared
+    // path is not a shared state dir. Its state lives outside the workspace —
+    // a dir with a `.jyc` inside the workspace would be scanned as a topic of
+    // its own.
+    let child_state = tmp.path().join("shared-child-state");
+    std::fs::create_dir_all(&child_state).unwrap();
+    jyc_types::state_dir::register("shared-child", &child_state);
 
     let tm = make_test_tm(&workspace);
     {

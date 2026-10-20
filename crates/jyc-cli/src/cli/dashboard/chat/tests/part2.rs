@@ -3065,6 +3065,34 @@ fn info_pane_indents_a_continued_value_to_its_column() {
     );
 }
 
+/// The figures of a bar row stay in the pane's value column: the row that
+/// continues the `Tokens:` row — the figures that did not fit beside the
+/// bar — starts in the same column every other value starts in.
+#[test]
+fn info_pane_indents_the_bar_rows_figures_to_the_value_column() {
+    let mut app = info_pane_app(Default::default());
+    {
+        let detail = app.topic_detail.as_mut().expect("the topic's detail");
+        detail.context_input_tokens = Some(47_500);
+        detail.max_tokens = Some(100_000);
+    }
+
+    // 46 columns wide: the pane's inner width is 45, wide enough for the
+    // table layout and too narrow for the bar and the figures to share one
+    // row.
+    let pane = info_pane_text(&mut app, 46, 40);
+    let rows = info_pane_rows(&pane);
+    let row = rows
+        .iter()
+        .find(|r| r.contains("100000 (47%)"))
+        .unwrap_or_else(|| panic!("no row carries the tokens figures:\n{pane}"));
+    assert_eq!(
+        row.find("100000 (47%)"),
+        Some(INFO_PANE_LABEL_WIDTH),
+        "the figures that continue the bar row must stay in the value's column:\n{pane}"
+    );
+}
+
 /// The text of a laid-out line: its spans' contents in order.
 fn info_pane_line_text(line: &Line) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()

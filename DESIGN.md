@@ -3156,22 +3156,22 @@ Not connected: connection refused
 
   Agent     Topic       Pattern    Status     Context    Last Active  
 ──────────────────────────────────────────────────────────────────────
-→ jyc       jyc         pipe       idle       0/120K     2m ago       │ Topic: issue-42       
-  invoice   invoice     feishu     processing 45K/120K   now          │ Channel: emf          
-                                                                      │ Pattern: planner      
-                                                                      │ Model: claude-opus-4-8
-                                                                      │ Mode: build           
-                                                                      │ Branch: feat/issue-42 
-                                                                      │ Tokens:         ──···· 45231 / 120000 (38%)
-                                                                      │ Total input: 90311    
-                                                                      │ Cache hits: 80120     
-                                                                      │ Cache hit rate: ──────· 88%
-                                                                      │ Changed files (2):    
-                                                                      │   crates/…/mod.rs     
-                                                                      │ ───────────────────── 
-                                                                      │ JYC AI v0.6.0         
-                                                                      │ 2 active / 4 thread   
-──────────────────────────────────────────────────────────────────────────────────────────────
+→ jyc       jyc         pipe       idle       0/120K     2m ago       │ Topic:          issue-42                    
+  invoice   invoice     feishu     processing 45K/120K   now          │ Channel:        emf                         
+                                                                      │ Pattern:        planner                     
+                                                                      │ Model:          claude-opus-4-8             
+                                                                      │ Mode:           build                       
+                                                                      │ Branch:         feat/issue-42               
+                                                                      │ Tokens:         ──···· 45231 / 120000 (38%) 
+                                                                      │ Total input:    90311                       
+                                                                      │ Cache hits:     80120                       
+                                                                      │ Cache hit rate: ──────· 88%                 
+                                                                      │ Files (2):                                  
+                                                                      │   crates/…/mod.rs                           
+                                                                      │ ─────────────────────────────────────────── 
+                                                                      │ JYC AI v0.6.0                               
+                                                                      │ 2 active / 4 thread                         
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 2m  reply sent · emf
 2m  err  ·  emf  ·  unhandled
 ```
@@ -3204,10 +3204,13 @@ Not connected: connection refused
   fill rounds to the nearest cell, so a bar of five cells is within ten
   points of the share; below five cells the rounding error grows past
   that and the bar would misreport the share, so a column that narrow
-  gets the figures alone; the percentage is printed either way, so the
+  gets the figures alone — only a column of fewer than five cells gets
+  there, since the table layout always leaves the bar the label's room.
+  The percentage is printed either way, so the
   bar is a glance aid and never the only source. The sketch above draws
-  the right column wider than the layout's 20% share, so its bar is
-  longer than a terminal that narrow would give. The second row used to
+  the right column wider than the layout's 20% share — wide enough for
+  the table layout — so its bar is longer than a terminal that narrow
+  would give. The second row used to
   read "Cache util"; cache util and cache hit rate are the same number.
   The pane lays its rows out one way, decided by its inner width: while
   the column can hold the label column and a value column (34 cells or
@@ -3216,9 +3219,17 @@ Not connected: connection refused
   its own and the value flush left under it, so a narrow column cuts no
   value short. The bar follows the layout: in the table layout it shares
   its row with the label, in the stacked one it has the row to itself
-  and can use the column's full width. The pane's other sections — the
-  task list, the changed files — are not `label: value` rows and keep
-  their own shape.
+  and can use the column's full width — so a bar appears wherever the
+  column can carry an honest one, not only in a wide terminal. The pane's
+  other sections — the task list, the changed files — are not
+  `label: value` rows and keep their own shape.
+  A value too long for its column wraps *inside* it: the lines that
+  continue it are indented to the column, so the column keeps the values
+  it holds instead of dropping them back to the column's edge. The table
+  layout needs a column of 34 cells, and the column is 20% of the
+  terminal, so it is a terminal of roughly 175 columns that gets the
+  table; a narrower terminal gets the stacked layout, where every value
+  starts in the column's first cell.
 - **Activity pane** (bottom 20%) — top border only, because the other edges are
   the screen edge or sit against the pane above. Internal entries and thinking
   heartbeats are filtered out: they are dozens of identical markers that would

@@ -10,7 +10,7 @@
 
 ### Changed
 
-- The metric the topic info pane and `/info` call "Cache util" is labelled **cache hit rate** everywhere it reaches the user: the info pane's row, `/info`'s output and `/bill`'s table header. The number is unchanged — cache-hit tokens ÷ total input tokens — only the name is; the code keeps the older `cache_util_pct` name, and DESIGN.md's terminology table now records the two as the same figure.
+- The metric the topic info pane and `/info` call "Cache util" is labelled **cache hit rate** everywhere it reaches the user: the info pane's row, `/info`'s output and `/bill`'s table header. The number is unchanged — cache-hit tokens ÷ total input tokens — only the name is; the code keeps the older `cache_util_pct` name, and DESIGN.md's terminology table now records the two as the same figure (#960).
 
 - The context-window figures now count the whole context and measure it against the whole window: the numerator is the most recent LLM call's `input_tokens` plus that call's `output_tokens` — the size of the context the *next* call will carry — and the denominator is the model's own context window, not a fraction of it. Before, the denominator was the auto-reset cap (the window scaled by the 0.95 threshold) and the numerator the input alone, so `28K/996K` really meant 2.8 % of a 1 Mi-token window. The dashboard's overview column, the topic info pane, `/info`, the chat status line and the Feishu progress card all read the same two fields through one shared helper (`jyc_types::context_token_pct`), and the session file keeps the per-call output tokens next to the per-call input tokens so the pair always describes one call
 

@@ -17,22 +17,27 @@ use ratatui::text::Span;
 /// The label of the token-usage row.
 const TOKENS_LABEL: &str = "Tokens: ";
 
-/// The label of the cache-hit-rate row — the longer of the two, so it sets
-/// the column the bars start in.
+/// The label of the cache-hit-rate row — the longest label of the pane,
+/// so it sets the width every other label is padded to.
 const CACHE_HIT_RATE_LABEL: &str = "Cache hit rate: ";
 
-/// The width a percentage row's label is padded to, so that every bar
-/// starts in the same column and the two shares can be compared by eye
-/// rather than by counting cells. The longest percentage-row label sets
-/// it: a longer one would leave less room for the bar than
-/// [`BAR_LABEL_ROOM`] allows, and the wrapping would cut the bar.
-const BAR_LABEL_WIDTH: usize = CACHE_HIT_RATE_LABEL.len();
+/// The width every label of the info pane is padded to, so that every
+/// value in the pane starts in the same column and the pane reads as one
+/// table instead of a ragged list. The longest label sets it: a longer
+/// one would leave less room for the values than [`BAR_LABEL_ROOM`]
+/// allows, and the wrapping would cut them.
+///
+/// A label longer than this pushes its own value out of the column —
+/// raise it when a longer label arrives.
+const LABEL_WIDTH: usize = CACHE_HIT_RATE_LABEL.len();
 
 /// The room a bar leaves for its row: the padded label, plus one cell so
 /// the bar never touches the pane's edge. The space between the bar and
 /// the figures needs no room here — it sits after the bar, and the figures
-/// wrap onto the next line when they do not fit.
-const BAR_LABEL_ROOM: usize = BAR_LABEL_WIDTH + 1;
+/// wrap onto the next line when they do not fit. Only the table layout
+/// has to leave this room: in the stacked one the bar has the row to
+/// itself.
+const BAR_LABEL_ROOM: usize = LABEL_WIDTH + 1;
 
 /// The widest bar the info pane draws, in cells.
 const MAX_BAR_WIDTH: usize = 20;
@@ -42,31 +47,76 @@ const MAX_BAR_WIDTH: usize = 20;
 /// rounding error grows past it and the bar misreports the figure it stands
 /// for — the percentage printed beside it says everything anyway, so a
 /// narrow pane gets its figures alone.
+///
+/// Only a column of fewer than five cells can reach it: the table layout
+/// leaves the label's room (at least seventeen cells) to the bar, and the
+/// stacked one gives the bar the whole column.
 const MIN_BAR_WIDTH: usize = 5;
 
-/// The bar width for a pane of the given inner width: as wide as the pane
-/// allows, up to [`MAX_BAR_WIDTH`]. A bar wider than the room its label
-/// leaves would be cut in half by the paragraph's wrapping — half a bar
-/// reads worse than a short one — and a bar narrower than
-/// [`MIN_BAR_WIDTH`] would misreport the share, so both ends are refused.
-/// Zero means the row carries its figures alone.
-pub(super) fn bar_width(inner_width: u16) -> usize {
-    let room = (inner_width as usize).saturating_sub(BAR_LABEL_ROOM);
+/// How the info pane lays its rows out. Decided by the pane's inner
+/// width alone (see [`layout_for`]), so the whole pane reads one way —
+/// a row that switches layout on its own would break the alignment the
+/// layout exists for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PaneLayout {
+    /// Label and value share one row: the label is padded to
+    /// [`LABEL_WIDTH`] and every value starts in the column after it, so
+    /// the pane reads as one table.
+    Table,
+    /// Label and value split over two rows: the label takes a row of its
+    /// own and the value follows flush left on the next one. A pane too
+    /// narrow for a value column would otherwise cut every value short.
+    Stacked,
+}
+
+/// The inner width a pane needs before its label and its value can share
+/// one row: the label column ([`LABEL_WIDTH`]) plus a value column wide
+/// enough for a model name ("minimax/Minimax-M3", 18 cells). A narrower
+/// pane stacks the value under its label instead of cutting it.
+const TABLE_MIN_INNER_WIDTH: u16 = LABEL_WIDTH as u16 + 18;
+
+/// The layout the info pane of the given inner width uses: the table
+/// layout while the pane can hold a label column and a value column, the
+/// stacked one below that.
+pub(super) fn layout_for(inner_width: u16) -> PaneLayout {
+    if inner_width >= TABLE_MIN_INNER_WIDTH {
+        PaneLayout::Table
+    } else {
+        PaneLayout::Stacked
+    }
+}
+
+/// The bar width for a pane of the given inner width, laid out as
+/// `layout` says: as wide as the pane allows, up to [`MAX_BAR_WIDTH`]. A
+/// bar wider than the room its row leaves would be cut in half by the
+/// paragraph's wrapping — half a bar reads worse than a short one — and a
+/// bar narrower than [`MIN_BAR_WIDTH`] would misreport the share, so both
+/// ends are refused. Zero means the row carries its figures alone.
+///
+/// In the table layout the bar shares its row with the padded label, so
+/// the room is what the label leaves; in the stacked layout the bar has
+/// the row to itself and can use the pane's full width.
+pub(super) fn bar_width(inner_width: u16, layout: PaneLayout) -> usize {
+    let width = inner_width as usize;
+    let room = match layout {
+        PaneLayout::Table => width.saturating_sub(BAR_LABEL_ROOM),
+        PaneLayout::Stacked => width,
+    };
     if room < MIN_BAR_WIDTH {
         return 0;
     }
     room.min(MAX_BAR_WIDTH)
 }
 
-/// The label of a percentage row, padded so that every bar starts in the
-/// same column. Without a bar there is nothing to align, so the label is
-/// left as it is.
-fn bar_label(label: &str, bar_cells: usize) -> String {
-    if bar_cells == 0 {
-        label.to_string()
-    } else {
-        format!("{label:<width$}", width = BAR_LABEL_WIDTH)
-    }
+/// A pane label: bold, and padded on the right to [`LABEL_WIDTH`] so that
+/// every value of the pane starts in the same column. The pane's rows
+/// that are not `label: value` (the files list, the task list) keep
+/// their own shape and are not padded.
+pub(super) fn label_span(label: &str) -> Span<'static> {
+    Span::styled(
+        format!("{label:<width$}", width = LABEL_WIDTH),
+        Style::default().add_modifier(Modifier::BOLD),
+    )
 }
 
 /// Append a `width`-cell bar for `pct` (0..=100): `─` for the filled
@@ -110,17 +160,14 @@ pub(super) fn context_pct(t: &TopicInfo) -> Option<u32> {
 /// Append the "Tokens: <bar> X / Y (Z%)" row to `spans` — the context
 /// size (the last call's input plus its output) against the context
 /// window, with the same share drawn as a bar of `bar_cells` cells. The
-/// label is padded to the width the other percentage rows use, so the two
-/// bars start in the same column. Pushes nothing when `context_input_tokens`
-/// or `max_tokens` is missing.
+/// label is padded to the pane's label width, so the bar starts in the
+/// column every other value starts in. Pushes nothing when
+/// `context_input_tokens` or `max_tokens` is missing.
 pub(super) fn push_tokens_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_cells: usize) {
     if let (Some(cur), Some(max)) = (t.context_input_tokens, t.max_tokens) {
         let used = jyc_types::context_tokens(Some(cur), t.context_output_tokens).unwrap_or(cur);
         let pct = context_pct(t).unwrap_or(0);
-        spans.push(Span::styled(
-            bar_label(TOKENS_LABEL, bar_cells),
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
+        spans.push(label_span(TOKENS_LABEL));
         push_bar_spans(spans, pct, bar_cells);
         let figures = format!("{used} / {max} ({pct}%)");
         spans.push(Span::raw(if bar_cells > 0 {
@@ -135,10 +182,7 @@ pub(super) fn push_tokens_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_cells: 
 /// `output_tokens` is missing.
 pub(super) fn push_output_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     if let Some(out) = t.output_tokens {
-        spans.push(Span::styled(
-            "Output: ",
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
+        spans.push(label_span("Output: "));
         spans.push(Span::raw(format!("{out}")));
     }
 }
@@ -149,10 +193,7 @@ pub(super) fn push_output_span(spans: &mut Vec<Span>, t: &TopicInfo) {
 /// across all LLM calls in the session.
 pub(super) fn push_total_input_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     if let Some(total) = t.total_input_tokens {
-        spans.push(Span::styled(
-            "Total input: ",
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
+        spans.push(label_span("Total input: "));
         spans.push(Span::raw(format!("{total}")));
     }
 }
@@ -166,10 +207,7 @@ pub(super) fn push_total_input_span(spans: &mut Vec<Span>, t: &TopicInfo) {
 /// area call this.
 pub(super) fn push_cache_hit_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     if let Some(cache_hit) = t.total_cache_hit_tokens {
-        spans.push(Span::styled(
-            "Cache hits: ",
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
+        spans.push(label_span("Cache hits: "));
         spans.push(Span::raw(format!("{cache_hit}")));
     }
 }
@@ -183,10 +221,7 @@ pub(super) fn push_cache_hit_span(spans: &mut Vec<Span>, t: &TopicInfo) {
 /// the write volume that the cache-creation premium rate applies to.
 pub(super) fn push_cache_creation_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     if let Some(cache_creation) = t.total_cache_creation_tokens {
-        spans.push(Span::styled(
-            "Cache create: ",
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
+        spans.push(label_span("Cache create: "));
         spans.push(Span::raw(format!("{cache_creation}")));
     }
 }
@@ -204,11 +239,11 @@ pub(super) fn cache_util_pct(t: &TopicInfo) -> Option<u32> {
 }
 
 /// Append the "Cache hit rate: <bar> Z%" row to `spans`, the bar being
-/// `bar_cells` cells wide. The label is padded to the width the other
-/// percentage rows use, so the two bars start in the same column. Pushes
-/// nothing when cache-hit or total-input data is missing (e.g. providers
-/// without prompt caching), so such topics show no row rather than a
-/// misleading 0%. Sits next to [`push_cache_hit_span`] /
+/// `bar_cells` cells wide. The label is padded to the pane's label
+/// width, so the bar starts in the column every other value starts in.
+/// Pushes nothing when cache-hit or total-input data is missing (e.g.
+/// providers without prompt caching), so such topics show no row rather
+/// than a misleading 0%. Sits next to [`push_cache_hit_span`] /
 /// [`push_cache_creation_span`] in the chat info pane and dashboard topic
 /// info area.
 ///
@@ -217,10 +252,7 @@ pub(super) fn cache_util_pct(t: &TopicInfo) -> Option<u32> {
 /// `jyc_types::cache_util_pct`.
 pub(super) fn push_cache_utilization_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_cells: usize) {
     if let Some(pct) = cache_util_pct(t) {
-        spans.push(Span::styled(
-            bar_label(CACHE_HIT_RATE_LABEL, bar_cells),
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
+        spans.push(label_span(CACHE_HIT_RATE_LABEL));
         push_bar_spans(spans, pct, bar_cells);
         let figures = format!("{pct}%");
         spans.push(Span::raw(if bar_cells > 0 {
@@ -238,10 +270,7 @@ pub(super) fn push_reasoning_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     if let Some(reasoning) = t.total_reasoning_tokens
         && reasoning > 0
     {
-        spans.push(Span::styled(
-            "Reasoning: ",
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
+        spans.push(label_span("Reasoning: "));
         spans.push(Span::raw(format!("{reasoning}")));
     }
 }
@@ -256,10 +285,7 @@ pub(super) fn push_reasoning_span(spans: &mut Vec<Span>, t: &TopicInfo) {
 /// design.
 pub(super) fn push_cost_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     if let Some(ref c) = t.cost {
-        spans.push(Span::styled(
-            "Cost: ",
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
+        spans.push(label_span("Cost: "));
         spans.push(Span::raw(format!(
             "{} session · {} today",
             format_amount(c.session, &c.currency),
@@ -284,10 +310,7 @@ pub(super) fn push_latency_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     let turn = t.avg_turn_call_ms.zip(t.turn_call_count);
     let session = t.avg_call_ms.zip(t.call_count);
     if let Some(latency) = format_latency(turn, session) {
-        spans.push(Span::styled(
-            "Latency: ",
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
+        spans.push(label_span("Latency: "));
         spans.push(Span::raw(latency));
     }
 }
@@ -295,6 +318,12 @@ pub(super) fn push_latency_span(spans: &mut Vec<Span>, t: &TopicInfo) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pane label as the pane draws it: padded to the label width, so
+    /// that every value of the pane starts in the same column.
+    fn padded(label: &str) -> String {
+        format!("{label:<width$}", width = LABEL_WIDTH)
+    }
 
     /// A topic's detail, with the token figures the helpers render.
     fn info_with(
@@ -402,30 +431,25 @@ mod tests {
         let mut spans = Vec::new();
         push_tokens_span(&mut spans, &t, MAX_BAR_WIDTH);
         assert_eq!(spans.len(), 4);
-        // The label is padded to the width the cache row's label takes, so
-        // that the two bars start in the same column.
-        assert_eq!(
-            spans[0].content,
-            format!(
-                "{:<width$}",
-                TOKENS_LABEL,
-                width = CACHE_HIT_RATE_LABEL.len()
-            )
-        );
+        // The label is padded to the pane's label width, so the bar
+        // starts in the column every other value starts in.
+        assert_eq!(spans[0].content, padded(TOKENS_LABEL));
         assert_eq!(spans[1].content, "─".repeat(9));
         assert_eq!(spans[2].content, "·".repeat(11));
         assert_eq!(spans[3].content, " 4750 / 10000 (47%)");
     }
 
-    /// A pane too narrow for an honest bar gets the figures alone — no bar,
-    /// an unpadded label, and none of the spans a bar would have added.
+    /// A pane too narrow for an honest bar gets the figures alone — no
+    /// bar, and none of the spans a bar would have added. The label is
+    /// still padded: the pane's values share a column whether or not a
+    /// bar stands in front of them.
     #[test]
     fn push_tokens_span_without_a_bar() {
         let t = info_with(Some(4750), Some(10000), None, None, None, None);
         let mut spans = Vec::new();
         push_tokens_span(&mut spans, &t, 0);
         assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].content, TOKENS_LABEL);
+        assert_eq!(spans[0].content, padded(TOKENS_LABEL));
         assert_eq!(spans[1].content, "4750 / 10000 (47%)");
     }
 
@@ -445,24 +469,91 @@ mod tests {
         assert_eq!(cache[0].content, CACHE_HIT_RATE_LABEL);
     }
 
+    /// Every label of the pane is padded to the same width, so every
+    /// value starts in the same column — the pane reads as one table
+    /// rather than a ragged list.
+    #[test]
+    fn every_label_is_padded_to_the_same_width() {
+        for label in [
+            "Topic: ",
+            "Channel: ",
+            "Pattern: ",
+            "Model: ",
+            "Mode: ",
+            "Branch: ",
+            "Status: ",
+            TOKENS_LABEL,
+            "Output: ",
+            "Total input: ",
+            "Cache hits: ",
+            CACHE_HIT_RATE_LABEL,
+            "Cache create: ",
+            "Reasoning: ",
+            "Cost: ",
+            "Latency: ",
+        ] {
+            let span = label_span(label);
+            assert_eq!(span.content, padded(label), "label {label:?}");
+            assert_eq!(span.content.len(), LABEL_WIDTH, "label {label:?}");
+            assert!(
+                span.style.add_modifier.contains(Modifier::BOLD),
+                "the label {label:?} must be bold"
+            );
+        }
+    }
+
     /// The bar is as wide as the pane allows: a wide pane gets the full
     /// bar, a narrow one a shorter bar, and a pane too narrow for an
     /// honest bar gets none.
     #[test]
     fn bar_width_follows_the_pane() {
-        // The longest label ("Cache hit rate: ", 16 cells) plus the one cell
-        // the bar keeps to itself at the pane's edge.
-        assert_eq!(bar_width(39), MAX_BAR_WIDTH);
-        assert_eq!(bar_width(37), MAX_BAR_WIDTH);
-        assert_eq!(bar_width(36), MAX_BAR_WIDTH - 1);
-        assert_eq!(bar_width(23), 6);
+        // The table layout: the longest label ("Cache hit rate: ", 16
+        // cells) plus the one cell the bar keeps to itself at the pane's
+        // edge.
+        assert_eq!(bar_width(39, PaneLayout::Table), MAX_BAR_WIDTH);
+        assert_eq!(bar_width(37, PaneLayout::Table), MAX_BAR_WIDTH);
+        assert_eq!(bar_width(36, PaneLayout::Table), MAX_BAR_WIDTH - 1);
+        assert_eq!(bar_width(23, PaneLayout::Table), 6);
         // The narrowest bar still worth drawing.
-        assert_eq!(bar_width(22), MIN_BAR_WIDTH);
+        assert_eq!(bar_width(22, PaneLayout::Table), MIN_BAR_WIDTH);
         // Below that a cell would carry too much of the share to be honest.
-        assert_eq!(bar_width(21), 0);
-        assert_eq!(bar_width(17), 0);
-        assert_eq!(bar_width(16), 0);
-        assert_eq!(bar_width(0), 0);
+        assert_eq!(bar_width(21, PaneLayout::Table), 0);
+        assert_eq!(bar_width(17, PaneLayout::Table), 0);
+        assert_eq!(bar_width(16, PaneLayout::Table), 0);
+        assert_eq!(bar_width(0, PaneLayout::Table), 0);
+    }
+
+    /// The stacked layout gives the bar a row of its own, so it is never
+    /// shortened by a label beside it: it can use the pane's whole width,
+    /// up to the widest bar the pane draws.
+    #[test]
+    fn bar_width_in_the_stacked_layout_uses_the_whole_row() {
+        assert_eq!(bar_width(39, PaneLayout::Stacked), MAX_BAR_WIDTH);
+        assert_eq!(bar_width(23, PaneLayout::Stacked), MAX_BAR_WIDTH);
+        // The pane's whole width, up to the widest bar: the label takes
+        // no cell of it, where the table layout's bar gets six cells at
+        // the same width.
+        assert_eq!(bar_width(21, PaneLayout::Stacked), MAX_BAR_WIDTH);
+        assert_eq!(bar_width(20, PaneLayout::Stacked), MAX_BAR_WIDTH);
+        assert_eq!(bar_width(23, PaneLayout::Table), 6);
+        // The narrowest bar still worth drawing.
+        assert_eq!(bar_width(5, PaneLayout::Stacked), MIN_BAR_WIDTH);
+        // Below that a cell would carry too much of the share to be honest.
+        assert_eq!(bar_width(4, PaneLayout::Stacked), 0);
+        assert_eq!(bar_width(0, PaneLayout::Stacked), 0);
+    }
+
+    /// The layout switches at one width, and the whole pane switches with
+    /// it: a pane that can hold a label column and a value column lays
+    /// its rows out as a table, a narrower one stacks them.
+    #[test]
+    fn the_layout_switches_at_the_table_threshold() {
+        assert_eq!(layout_for(TABLE_MIN_INNER_WIDTH), PaneLayout::Table);
+        assert_eq!(layout_for(TABLE_MIN_INNER_WIDTH - 1), PaneLayout::Stacked);
+        assert_eq!(layout_for(34), PaneLayout::Table);
+        assert_eq!(layout_for(33), PaneLayout::Stacked);
+        // A pane of any width at all still gets a layout.
+        assert_eq!(layout_for(0), PaneLayout::Stacked);
     }
 
     /// The bar rounds to the nearest cell and the filled part is the bold
@@ -527,7 +618,7 @@ mod tests {
         let mut spans = Vec::new();
         push_output_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].content, "Output: ");
+        assert_eq!(spans[0].content, padded("Output: "));
         assert_eq!(spans[1].content, "420");
     }
 
@@ -545,7 +636,7 @@ mod tests {
         let mut spans = Vec::new();
         push_total_input_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].content, "Total input: ");
+        assert_eq!(spans[0].content, padded("Total input: "));
         assert_eq!(spans[1].content, "720");
     }
 
@@ -563,7 +654,7 @@ mod tests {
         let mut spans = Vec::new();
         push_cache_hit_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].content, "Cache hits: ");
+        assert_eq!(spans[0].content, padded("Cache hits: "));
         assert_eq!(spans[1].content, "640");
     }
 
@@ -588,7 +679,7 @@ mod tests {
         let mut spans = Vec::new();
         push_cost_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].content, "Cost: ");
+        assert_eq!(spans[0].content, padded("Cost: "));
         assert_eq!(spans[1].content, "$0.0521 session · $1.3057 today");
     }
 
@@ -667,7 +758,7 @@ mod tests {
         let mut spans = Vec::new();
         push_cache_creation_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].content, "Cache create: ");
+        assert_eq!(spans[0].content, padded("Cache create: "));
         assert_eq!(spans[1].content, "1280");
     }
 
@@ -703,7 +794,7 @@ mod tests {
         let mut spans = Vec::new();
         push_cache_utilization_span(&mut spans, &t, MAX_BAR_WIDTH);
         assert_eq!(spans.len(), 4);
-        assert_eq!(spans[0].content, "Cache hit rate: ");
+        assert_eq!(spans[0].content, padded(CACHE_HIT_RATE_LABEL));
         assert_eq!(spans[1].content, "─".repeat(18));
         assert_eq!(spans[2].content, "·".repeat(2));
         assert_eq!(spans[3].content, " 88%");
@@ -729,7 +820,7 @@ mod tests {
         let mut spans = Vec::new();
         push_latency_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].content, "Latency: ");
+        assert_eq!(spans[0].content, padded("Latency: "));
         assert_eq!(spans[1].content, "820ms/call (37)");
     }
 

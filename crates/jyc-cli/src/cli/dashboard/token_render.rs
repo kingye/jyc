@@ -26,8 +26,10 @@ const CACHE_HIT_RATE_LABEL: &str = "Cache hit rate: ";
 /// rather than by counting cells.
 const BAR_LABEL_WIDTH: usize = CACHE_HIT_RATE_LABEL.len();
 
-/// The room a bar leaves for its row: the padded label plus the space
-/// between the bar and the figures that follow it.
+/// The room a bar leaves for its row: the padded label, plus one cell so
+/// the bar never touches the pane's edge. The space between the bar and
+/// the figures needs no room here — it sits after the bar, and the figures
+/// wrap onto the next line when they do not fit.
 const BAR_LABEL_ROOM: usize = BAR_LABEL_WIDTH + 1;
 
 /// The widest bar the info pane draws, in cells.
@@ -445,8 +447,8 @@ mod tests {
     /// honest bar gets none.
     #[test]
     fn bar_width_follows_the_pane() {
-        // The longest label ("Cache hit rate: ", 16 cells) plus the space
-        // before the figures that follow the bar.
+        // The longest label ("Cache hit rate: ", 16 cells) plus the one cell
+        // the bar keeps to itself at the pane's edge.
         assert_eq!(bar_width(39), MAX_BAR_WIDTH);
         assert_eq!(bar_width(37), MAX_BAR_WIDTH);
         assert_eq!(bar_width(36), MAX_BAR_WIDTH - 1);

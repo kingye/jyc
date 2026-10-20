@@ -1898,7 +1898,7 @@ fn info_pane_status_block_sits_below_topic_info() {
     let pane = info_pane_text(&mut app, 60, 24);
     // The block gets its own sub-pane pinned to the bottom of the info
     // column, below the topic info, separated by a gray top border.
-    let topic = pane.find("Topic: jyc").expect("topic line");
+    let topic = pane.find(&info_pane_topic_row()).expect("topic line");
     let version = pane.find("JYC AI v9.9.9-test").expect("version line");
     assert!(
         topic < version,
@@ -1987,7 +1987,7 @@ fn info_pane_hides_status_block_when_status_toggled() {
     let pane = info_pane_text(&mut app, 60, 24);
     assert!(!pane.contains("JYC AI v"), "{pane}");
     assert!(
-        pane.contains("Topic: jyc"),
+        pane.contains(&info_pane_topic_row()),
         "only the status block is hidden, topic info still renders:\n{pane}"
     );
 }
@@ -2031,8 +2031,16 @@ fn status_block_hides_rather_than_clipping_its_own_rows() {
         !pane.contains("JYC AI") && !pane.contains("2 active"),
         "a column too short for the whole block must show none of it:\n{pane}"
     );
-    assert!(
-        pane.contains("Topic: jyc"),
+    // A column this narrow stacks the pane's rows: the label takes a row
+    // of its own and the value follows under it.
+    let rows = info_pane_rows(&pane);
+    let topic = rows
+        .iter()
+        .position(|r| r == "Topic:")
+        .expect("the topic's label row");
+    assert_eq!(
+        rows[topic + 1],
+        "jyc",
         "the topic info keeps the column:\n{pane}"
     );
 }
@@ -2880,13 +2888,53 @@ fn info_pane_bar(filled: usize, width: usize) -> String {
     "─".repeat(filled) + &"·".repeat(width - filled)
 }
 
-/// The label of a percentage row, padded to the width the pane's rows
-/// share (the length of the longer label, "Cache hit rate: ") so that the
-/// two bars start in the same column. Pinned on purpose: a change to that
-/// width breaks this test loudly, so the sketches and the docs are
-/// updated with it.
+/// The width every label of the info pane is padded to — the length of
+/// the longest one, "Cache hit rate: ".
+const INFO_PANE_LABEL_WIDTH: usize = 16;
+
+/// The label of a pane row, padded to the width every label of the pane
+/// shares so that every value starts in the same column. Pinned on
+/// purpose: a change to that width breaks this test loudly, so the
+/// sketches and the docs are updated with it.
 fn info_pane_label(label: &str) -> String {
-    format!("{label:<16}")
+    format!("{label:<width$}", width = INFO_PANE_LABEL_WIDTH)
+}
+
+/// The pane's topic row, as the table layout draws it: the padded label
+/// and the topic's name beside it.
+fn info_pane_topic_row() -> String {
+    format!("{}jyc", info_pane_label("Topic: "))
+}
+
+/// The pane's rows, with the border column dropped: what the pane says,
+/// one row per line. Each row is trimmed at the end, so a row's own
+/// padding does not show.
+///
+/// The border is dropped by *character*, not by byte: the pane's border
+/// is `│`, three bytes wide, so a byte offset of one is not a character
+/// boundary and would drop the whole row.
+fn info_pane_rows(pane: &str) -> Vec<String> {
+    pane.lines()
+        .map(|row| {
+            row.chars()
+                .skip(1)
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect()
+}
+
+/// The row of the pane that holds the given label's value — the row
+/// below the label's own row in the stacked layout.
+fn info_pane_value_row<'a>(rows: &'a [String], label: &str) -> &'a str {
+    let at = rows
+        .iter()
+        .position(|r| r == label)
+        .unwrap_or_else(|| panic!("no row for the label {label:?}: {rows:?}"));
+    rows.get(at + 1)
+        .map(String::as_str)
+        .unwrap_or_else(|| panic!("no value row under the label {label:?}: {rows:?}"))
 }
 
 /// The pane's two percentage rows lead with a bar: the context share and
@@ -2925,8 +2973,9 @@ fn info_pane_draws_the_percentage_bars() {
     );
 }
 
-/// The bar is as wide as the pane allows, and it stays whole: in a narrow
-/// column it is shorter, and the wrapping moves the figures below it
+/// The bar is as wide as the pane allows, and it stays whole: in the
+/// stacked layout the bar has a row of its own, so it can use the
+/// pane's full width, and the wrapping moves the figures below it
 /// rather than cutting the bar in half.
 #[test]
 fn info_pane_bar_fits_a_narrow_pane() {
@@ -2939,30 +2988,26 @@ fn info_pane_bar_fits_a_narrow_pane() {
         detail.total_cache_hit_tokens = Some(80_120);
     }
 
-    // 30 columns wide: the pane's inner width is 29, the longest label
-    // takes 17 of them, so the bar is 12 cells and the figures wrap below.
+    // 30 columns wide: the pane's inner width is 29, too narrow for the
+    // table layout, so the bar gets a row of its own — twenty cells, the
+    // most a bar may be.
     let pane = info_pane_text(&mut app, 30, 30);
+    let rows = info_pane_rows(&pane);
     assert!(
-        pane.contains(&format!(
-            "{}{}",
-            info_pane_label("Tokens: "),
-            info_pane_bar(6, 12)
-        )),
+        info_pane_value_row(&rows, "Tokens:").starts_with(&info_pane_bar(9, 20)),
         "the bar must stay whole in a narrow pane:\n{pane}"
     );
     assert!(
-        pane.contains(&format!(
-            "{}{}",
-            info_pane_label("Cache hit rate: "),
-            info_pane_bar(11, 12)
-        )),
+        info_pane_value_row(&rows, "Cache hit rate:").starts_with(&info_pane_bar(18, 20)),
         "the bar must stay whole in a narrow pane:\n{pane}"
     );
 }
 
-/// A pane too narrow for an honest bar — one where a single cell would
-/// carry a fifth of the share or more — draws the figures alone rather
-/// than a bar that misreports them.
+/// A bar needs five cells to carry a share honestly: below that a single
+/// cell would stand for a fifth of the share or more, so the row shows
+/// its figures alone rather than a bar that misreports them. The stacked
+/// layout gives the bar a row of its own, so only a pane of four cells
+/// misses one.
 #[test]
 fn info_pane_draws_no_bar_in_a_too_narrow_pane() {
     let mut app = info_pane_app(Default::default());
@@ -2973,25 +3018,219 @@ fn info_pane_draws_no_bar_in_a_too_narrow_pane() {
         detail.total_input_tokens = Some(90_311);
         detail.total_cache_hit_tokens = Some(80_120);
     }
+    // The status block is hidden: its own separator is a row of `─`, and
+    // this test looks for the absence of a bar.
+    app.chat.status_visible = false;
 
-    // 22 columns wide: the pane's inner width is 21, which leaves four
-    // cells for the bar — too coarse to be honest, so there is no bar.
-    let pane = info_pane_text(&mut app, 22, 40);
-    for line in pane.lines() {
-        for label in ["Tokens:", "Cache hit rate:"] {
-            let Some(pos) = line.find(label) else {
-                continue;
-            };
-            let after = line[pos + label.len()..].trim_start();
-            assert!(
-                !after.starts_with('─'),
-                "a pane too narrow for an honest bar must draw none:\n{pane}"
-            );
-        }
-    }
-    // The figures are still there — on the same row, or wrapped below it.
+    // 5 columns wide: the pane's inner width is four, too narrow for an
+    // honest bar, so there is none. The pane is tall enough to hold the
+    // whole column: at this width every label wraps over several rows,
+    // so the cache hit rate's figure would be cut off by a short one.
+    let pane = info_pane_text(&mut app, 5, 80);
     assert!(
-        pane.contains("47500") && pane.contains("(47%)"),
+        !pane.contains('─'),
+        "a pane too narrow for an honest bar must draw none:\n{pane}"
+    );
+    // The figures are still there — wrapped across the rows of a pane
+    // this narrow.
+    assert!(
+        pane.contains("47%") && pane.contains("88%"),
         "the figures must still be there:\n{pane}"
+    );
+}
+
+/// A value too long for the pane's value column wraps inside it, and the
+/// line that continues it is indented to that column — so the column keeps
+/// its values instead of dropping them back to the pane's edge.
+#[test]
+fn info_pane_indents_a_continued_value_to_its_column() {
+    let mut app = info_pane_app(Default::default());
+    {
+        let detail = app.topic_detail.as_mut().expect("the topic's detail");
+        detail.branch = Some("feat/issue-42 add a very long branch name".to_string());
+    }
+
+    // 46 columns wide: the pane's inner width is 45, wide enough for the
+    // table layout.
+    let pane = info_pane_text(&mut app, 46, 40);
+    let rows = info_pane_rows(&pane);
+    let row = rows
+        .iter()
+        .find(|r| r.contains("long branch name"))
+        .unwrap_or_else(|| panic!("no row continues the branch name:\n{pane}"));
+    assert_eq!(
+        row.find("long branch name"),
+        Some(INFO_PANE_LABEL_WIDTH),
+        "the rest of a value must stay in the value's column:\n{pane}"
+    );
+}
+
+/// The figures of a bar row stay in the pane's value column: the row that
+/// continues the `Tokens:` row — the figures that did not fit beside the
+/// bar — starts in the same column every other value starts in.
+#[test]
+fn info_pane_indents_the_bar_rows_figures_to_the_value_column() {
+    let mut app = info_pane_app(Default::default());
+    {
+        let detail = app.topic_detail.as_mut().expect("the topic's detail");
+        detail.context_input_tokens = Some(47_500);
+        detail.max_tokens = Some(100_000);
+    }
+
+    // 46 columns wide: the pane's inner width is 45, wide enough for the
+    // table layout and too narrow for the bar and the figures to share one
+    // row.
+    let pane = info_pane_text(&mut app, 46, 40);
+    let rows = info_pane_rows(&pane);
+    let row = rows
+        .iter()
+        .find(|r| r.contains("100000 (47%)"))
+        .unwrap_or_else(|| panic!("no row carries the tokens figures:\n{pane}"));
+    assert_eq!(
+        row.find("100000 (47%)"),
+        Some(INFO_PANE_LABEL_WIDTH),
+        "the figures that continue the bar row must stay in the value's column:\n{pane}"
+    );
+}
+
+/// The text of a laid-out line: its spans' contents in order.
+fn info_pane_line_text(line: &Line) -> String {
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
+/// The table layout, one row at a time: the value starts in the label's
+/// column, and a value too long for the column continues in it — the lines
+/// that carry the rest of it are indented to the same column.
+#[test]
+fn info_pane_table_layout_keeps_a_long_value_in_its_column() {
+    let rows = vec![InfoRow::Field(vec![
+        label_span("Cost: "),
+        Span::raw("467.8899 session - 84.3464 today"),
+    ])];
+    // 39 cells wide: the label column takes sixteen, the value column the
+    // rest.
+    let lines = layout_info_rows(rows, PaneLayout::Table, 39);
+    assert_eq!(lines.len(), 2, "the value must wrap inside the column");
+    assert_eq!(
+        info_pane_line_text(&lines[0]).find("467.8899"),
+        Some(INFO_PANE_LABEL_WIDTH),
+        "the value must start in the label's column"
+    );
+    assert_eq!(
+        info_pane_line_text(&lines[1]).find("84.3464"),
+        Some(INFO_PANE_LABEL_WIDTH),
+        "the rest of the value must stay in the label's column"
+    );
+}
+
+/// The stacked layout, one row at a time: the label takes a row of its
+/// own, without the padding it carries in the table layout, and the value
+/// follows flush left under it.
+#[test]
+fn info_pane_stacked_layout_drops_the_labels_padding() {
+    let rows = vec![InfoRow::Field(vec![
+        label_span("Topic: "),
+        Span::raw("jyc"),
+    ])];
+    let lines = layout_info_rows(rows, PaneLayout::Stacked, 29);
+    assert_eq!(info_pane_line_text(&lines[0]), "Topic:");
+    assert_eq!(info_pane_line_text(&lines[1]), "jyc");
+}
+
+/// The table layout: every label is padded to the same width, so every
+/// value of the pane starts in the same column and the pane reads as one
+/// table rather than a ragged list.
+#[test]
+fn info_pane_aligns_every_value_in_one_column() {
+    let mut app = info_pane_app(Default::default());
+    {
+        let detail = app.topic_detail.as_mut().expect("the topic's detail");
+        detail.model = Some("minimax/Minimax-M3".to_string());
+        detail.output_tokens = Some(1_234);
+    }
+
+    // 46 columns wide: the pane's inner width is 45, wide enough for the
+    // table layout.
+    let pane = info_pane_text(&mut app, 46, 40);
+    let rows = info_pane_rows(&pane);
+    for (label, value) in [
+        ("Topic: ", "jyc"),
+        ("Channel: ", "local_dev"),
+        ("Pattern: ", "jyc"),
+        ("Model: ", "minimax/Minimax-M3"),
+        ("Mode: ", "build"),
+        ("Status: ", "Idle"),
+        ("Output: ", "1234"),
+    ] {
+        let row = rows
+            .iter()
+            .find(|r| r.starts_with(label))
+            .unwrap_or_else(|| panic!("no row for the label {label:?}:\n{pane}"));
+        assert_eq!(
+            row.find(value),
+            Some(INFO_PANE_LABEL_WIDTH),
+            "the value of {label:?} must start in the label's column:\n{pane}"
+        );
+    }
+}
+
+/// The stacked layout: a pane too narrow for a value column gives every
+/// row a label row of its own, and the value follows flush left under
+/// it — both rows start at the pane's first column.
+#[test]
+fn info_pane_stacks_the_value_under_its_label() {
+    let mut app = info_pane_app(Default::default());
+
+    // 30 columns wide: the pane's inner width is 29, too narrow for the
+    // table layout.
+    let pane = info_pane_text(&mut app, 30, 40);
+    let rows = info_pane_rows(&pane);
+    for (label, value) in [
+        ("Topic:", "jyc"),
+        ("Channel:", "local_dev"),
+        ("Status:", "Idle"),
+    ] {
+        assert!(
+            rows.iter().any(|r| r == label),
+            "the label {label:?} must take a row of its own:\n{pane}"
+        );
+        assert_eq!(
+            info_pane_value_row(&rows, label),
+            value,
+            "the value must sit flush left under its label:\n{pane}"
+        );
+    }
+}
+
+/// The layout switches at one width, and the whole pane switches with
+/// it: 33 inner cells still stack, 34 fit the table.
+#[test]
+fn info_pane_switches_layout_at_the_threshold() {
+    let mut app = info_pane_app(Default::default());
+
+    // 34 columns wide: the pane's inner width is 33 — too narrow for the
+    // table layout, so the label takes a row of its own.
+    let pane = info_pane_text(&mut app, 34, 40);
+    let rows = info_pane_rows(&pane);
+    assert!(
+        rows.iter().any(|r| r == "Topic:"),
+        "a narrow pane stacks its rows:\n{pane}"
+    );
+    assert!(
+        !rows.iter().any(|r| r == &info_pane_topic_row()),
+        "a narrow pane must not lay its rows out as a table:\n{pane}"
+    );
+
+    // 35 columns wide: the inner width is 34 — the table layout, label
+    // and value on one row.
+    let pane = info_pane_text(&mut app, 35, 40);
+    let rows = info_pane_rows(&pane);
+    assert!(
+        rows.iter().any(|r| r == &info_pane_topic_row()),
+        "a wide pane lays its rows out as a table:\n{pane}"
+    );
+    assert!(
+        !rows.iter().any(|r| r == "Topic:"),
+        "a wide pane must not stack its rows:\n{pane}"
     );
 }

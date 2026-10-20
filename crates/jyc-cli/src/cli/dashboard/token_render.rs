@@ -37,10 +37,11 @@ const BAR_LABEL_ROOM: usize = BAR_LABEL_WIDTH + 1;
 /// The widest bar the info pane draws, in cells.
 const MAX_BAR_WIDTH: usize = 20;
 
-/// The narrowest bar worth drawing. Below this a single cell would carry a
-/// fifth of the share or more, and a bar that coarse misreports the figure
-/// it stands for — the percentage printed beside it says everything anyway,
-/// so a narrow pane gets its figures alone.
+/// The narrowest bar worth drawing. The fill rounds to the nearest cell, so
+/// a bar of five cells is within ten points of the share; below that the
+/// rounding error grows past it and the bar misreports the figure it stands
+/// for — the percentage printed beside it says everything anyway, so a
+/// narrow pane gets its figures alone.
 const MIN_BAR_WIDTH: usize = 5;
 
 /// The bar width for a pane of the given inner width: as wide as the pane

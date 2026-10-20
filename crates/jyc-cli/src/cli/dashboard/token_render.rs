@@ -10,27 +10,20 @@
 //! of the dashboard's public surface.
 
 use jyc_core::duration::format_latency;
-use jyc_types::{TopicSummary, format_amount};
+use jyc_types::{TopicInfo, format_amount};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
 /// Compute the input-token percentage for a topic. Returns `None` when
-/// either bound is missing or `max` is zero. Uses checked arithmetic to
-/// avoid wrapping when `cur` is very large.
-pub(super) fn input_token_pct(t: &TopicSummary) -> Option<u32> {
-    match (t.context_input_tokens, t.max_tokens) {
-        (Some(cur), Some(max)) if max > 0 => Some(
-            cur.checked_mul(100)
-                .and_then(|v| v.checked_div(max))
-                .unwrap_or(0) as u32,
-        ),
-        _ => None,
-    }
+/// either bound is missing or `max` is zero. The figure itself comes from
+/// the shared helper, so `/info` prints the same percentage.
+pub(super) fn input_token_pct(t: &TopicInfo) -> Option<u32> {
+    jyc_types::input_token_pct(t.context_input_tokens, t.max_tokens)
 }
 
 /// Append the "Tokens: X / Y (Z%)" row to `spans`. Pushes nothing when
 /// `context_input_tokens` or `max_tokens` is missing.
-pub(super) fn push_tokens_span(spans: &mut Vec<Span>, t: &TopicSummary) {
+pub(super) fn push_tokens_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     if let (Some(cur), Some(max)) = (t.context_input_tokens, t.max_tokens) {
         let pct = input_token_pct(t).unwrap_or(0);
         spans.push(Span::styled(
@@ -43,7 +36,7 @@ pub(super) fn push_tokens_span(spans: &mut Vec<Span>, t: &TopicSummary) {
 
 /// Append the "Output: N" row to `spans`. Pushes nothing when
 /// `output_tokens` is missing.
-pub(super) fn push_output_span(spans: &mut Vec<Span>, t: &TopicSummary) {
+pub(super) fn push_output_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     if let Some(out) = t.output_tokens {
         spans.push(Span::styled(
             "Output: ",
@@ -57,7 +50,7 @@ pub(super) fn push_output_span(spans: &mut Vec<Span>, t: &TopicSummary) {
 /// `total_input_tokens` is missing. Distinct from `push_tokens_span`
 /// (which shows the current context size); this shows the lifetime sum
 /// across all LLM calls in the session.
-pub(super) fn push_total_input_span(spans: &mut Vec<Span>, t: &TopicSummary) {
+pub(super) fn push_total_input_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     if let Some(total) = t.total_input_tokens {
         spans.push(Span::styled(
             "Total input: ",
@@ -74,7 +67,7 @@ pub(super) fn push_total_input_span(spans: &mut Vec<Span>, t: &TopicSummary) {
 /// rather than re-billed as fresh input). Not shown in the dashboard
 /// overview list — only the chat info pane and dashboard topic info
 /// area call this.
-pub(super) fn push_cache_hit_span(spans: &mut Vec<Span>, t: &TopicSummary) {
+pub(super) fn push_cache_hit_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     if let Some(cache_hit) = t.total_cache_hit_tokens {
         spans.push(Span::styled(
             "Cache hits: ",
@@ -91,7 +84,7 @@ pub(super) fn push_cache_hit_span(spans: &mut Vec<Span>, t: &TopicSummary) {
 /// [`push_cache_hit_span`] in the chat info pane and dashboard topic
 /// info area so users with cache-heavy Anthropic workflows can see
 /// the write volume that the cache-creation premium rate applies to.
-pub(super) fn push_cache_creation_span(spans: &mut Vec<Span>, t: &TopicSummary) {
+pub(super) fn push_cache_creation_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     if let Some(cache_creation) = t.total_cache_creation_tokens {
         spans.push(Span::styled(
             "Cache create: ",
@@ -105,17 +98,10 @@ pub(super) fn push_cache_creation_span(spans: &mut Vec<Span>, t: &TopicSummary) 
 /// tokens as a share of total input tokens (`total_input_tokens`
 /// already includes the cache-hit portion, so it is the correct
 /// denominator). Returns `None` when either bound is missing or `total`
-/// is zero. Uses checked arithmetic to avoid wrapping when `hit` is
-/// very large.
-pub(super) fn cache_util_pct(t: &TopicSummary) -> Option<u32> {
-    match (t.total_cache_hit_tokens, t.total_input_tokens) {
-        (Some(hit), Some(total)) if total > 0 => Some(
-            hit.checked_mul(100)
-                .and_then(|v| v.checked_div(total))
-                .unwrap_or(0) as u32,
-        ),
-        _ => None,
-    }
+/// is zero. The figure itself comes from the shared helper, so `/info`
+/// prints the same percentage.
+pub(super) fn cache_util_pct(t: &TopicInfo) -> Option<u32> {
+    jyc_types::cache_util_pct(t.total_cache_hit_tokens, t.total_input_tokens)
 }
 
 /// Append the "Cache util: Z%" row to `spans`. Pushes nothing when
@@ -124,13 +110,28 @@ pub(super) fn cache_util_pct(t: &TopicSummary) -> Option<u32> {
 /// misleading 0%. Sits next to [`push_cache_hit_span`] /
 /// [`push_cache_creation_span`] in the chat info pane and dashboard
 /// topic info area.
-pub(super) fn push_cache_utilization_span(spans: &mut Vec<Span>, t: &TopicSummary) {
+pub(super) fn push_cache_utilization_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     if let Some(pct) = cache_util_pct(t) {
         spans.push(Span::styled(
             "Cache util: ",
             Style::default().add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::raw(format!("{pct}%")));
+    }
+}
+
+/// Append the "Reasoning: N" row to `spans`. Pushes nothing when the
+/// provider reports no reasoning tokens — the hidden chain-of-thought
+/// share of the output, already counted in the output tokens.
+pub(super) fn push_reasoning_span(spans: &mut Vec<Span>, t: &TopicInfo) {
+    if let Some(reasoning) = t.total_reasoning_tokens
+        && reasoning > 0
+    {
+        spans.push(Span::styled(
+            "Reasoning: ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(format!("{reasoning}")));
     }
 }
 
@@ -142,7 +143,7 @@ pub(super) fn push_cache_utilization_span(spans: &mut Vec<Span>, t: &TopicSummar
 /// `session` resets with the agent session; `today` is the durable
 /// per-day total from the billing ledger — they differ after a reset by
 /// design.
-pub(super) fn push_cost_span(spans: &mut Vec<Span>, t: &TopicSummary) {
+pub(super) fn push_cost_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     if let Some(ref c) = t.cost {
         spans.push(Span::styled(
             "Cost: ",
@@ -168,7 +169,7 @@ pub(super) fn push_cost_span(spans: &mut Vec<Span>, t: &TopicSummary) {
 /// call takes", not how many tokens per second it produces. The `/info`
 /// command renders the same words from the same four fields, both through
 /// [`format_latency`].
-pub(super) fn push_latency_span(spans: &mut Vec<Span>, t: &TopicSummary) {
+pub(super) fn push_latency_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     let turn = t.avg_turn_call_ms.zip(t.turn_call_count);
     let session = t.avg_call_ms.zip(t.call_count);
     if let Some(latency) = format_latency(turn, session) {
@@ -184,39 +185,43 @@ pub(super) fn push_latency_span(spans: &mut Vec<Span>, t: &TopicSummary) {
 mod tests {
     use super::*;
 
-    fn summary_with(
+    /// A topic's detail, with the token figures the helpers render.
+    fn info_with(
         input: Option<u64>,
         max: Option<u64>,
         output: Option<u64>,
         total_input: Option<u64>,
         cache_hit: Option<u64>,
         cache_creation: Option<u64>,
-    ) -> TopicSummary {
-        TopicSummary {
-            tasks: Default::default(),
+    ) -> TopicInfo {
+        TopicInfo {
             name: "t".into(),
             channel: "c".into(),
-            agent: None,
             pattern: None,
             status: jyc_types::TopicStatus::Idle,
             model: None,
             mode: None,
-            branch: None,
-            changed_files: None,
             context_input_tokens: input,
             max_tokens: max,
             output_tokens: output,
             total_input_tokens: total_input,
             total_cache_hit_tokens: cache_hit,
             total_cache_creation_tokens: cache_creation,
+            total_reasoning_tokens: None,
             avg_call_ms: None,
             call_count: None,
             avg_turn_call_ms: None,
             turn_call_count: None,
+            activity: vec![],
             last_active_at: None,
             skills: vec![],
+            available_skills: vec![],
+            recent_messages: vec![],
+            thinking_text: None,
             topic_path: None,
-            parent: None,
+            branch: None,
+            changed_files: None,
+            tasks: Default::default(),
             cost: None,
             commands: vec![],
         }
@@ -224,25 +229,25 @@ mod tests {
 
     #[test]
     fn input_token_pct_basic() {
-        let t = summary_with(Some(5000), Some(10000), None, None, None, None);
+        let t = info_with(Some(5000), Some(10000), None, None, None, None);
         assert_eq!(input_token_pct(&t), Some(50));
     }
 
     #[test]
     fn input_token_pct_zero_max_returns_none() {
-        let t = summary_with(Some(100), Some(0), None, None, None, None);
+        let t = info_with(Some(100), Some(0), None, None, None, None);
         assert_eq!(input_token_pct(&t), None);
     }
 
     #[test]
     fn input_token_pct_missing_input_returns_none() {
-        let t = summary_with(None, Some(10000), None, None, None, None);
+        let t = info_with(None, Some(10000), None, None, None, None);
         assert_eq!(input_token_pct(&t), None);
     }
 
     #[test]
     fn push_tokens_span_omits_when_max_missing() {
-        let t = summary_with(Some(100), None, None, None, None, None);
+        let t = info_with(Some(100), None, None, None, None, None);
         let mut spans = Vec::new();
         push_tokens_span(&mut spans, &t);
         assert!(spans.is_empty());
@@ -250,7 +255,7 @@ mod tests {
 
     #[test]
     fn push_tokens_span_writes_label_and_value() {
-        let t = summary_with(Some(4750), Some(10000), None, None, None, None);
+        let t = info_with(Some(4750), Some(10000), None, None, None, None);
         let mut spans = Vec::new();
         push_tokens_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
@@ -260,7 +265,7 @@ mod tests {
 
     #[test]
     fn push_output_span_omits_when_missing() {
-        let t = summary_with(Some(100), Some(10000), None, None, None, None);
+        let t = info_with(Some(100), Some(10000), None, None, None, None);
         let mut spans = Vec::new();
         push_output_span(&mut spans, &t);
         assert!(spans.is_empty());
@@ -268,7 +273,7 @@ mod tests {
 
     #[test]
     fn push_output_span_writes_label_and_value() {
-        let t = summary_with(Some(100), Some(10000), Some(420), None, None, None);
+        let t = info_with(Some(100), Some(10000), Some(420), None, None, None);
         let mut spans = Vec::new();
         push_output_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
@@ -278,7 +283,7 @@ mod tests {
 
     #[test]
     fn push_total_input_span_omits_when_missing() {
-        let t = summary_with(Some(100), Some(10000), Some(50), None, None, None);
+        let t = info_with(Some(100), Some(10000), Some(50), None, None, None);
         let mut spans = Vec::new();
         push_total_input_span(&mut spans, &t);
         assert!(spans.is_empty());
@@ -286,7 +291,7 @@ mod tests {
 
     #[test]
     fn push_total_input_span_writes_label_and_value() {
-        let t = summary_with(Some(100), Some(10000), Some(50), Some(720), None, None);
+        let t = info_with(Some(100), Some(10000), Some(50), Some(720), None, None);
         let mut spans = Vec::new();
         push_total_input_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
@@ -296,7 +301,7 @@ mod tests {
 
     #[test]
     fn push_cache_hit_span_omits_when_missing() {
-        let t = summary_with(Some(100), Some(10000), Some(50), Some(720), None, None);
+        let t = info_with(Some(100), Some(10000), Some(50), Some(720), None, None);
         let mut spans = Vec::new();
         push_cache_hit_span(&mut spans, &t);
         assert!(spans.is_empty());
@@ -304,7 +309,7 @@ mod tests {
 
     #[test]
     fn push_cache_hit_span_writes_label_and_value() {
-        let t = summary_with(Some(100), Some(10000), Some(50), Some(720), Some(640), None);
+        let t = info_with(Some(100), Some(10000), Some(50), Some(720), Some(640), None);
         let mut spans = Vec::new();
         push_cache_hit_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
@@ -315,7 +320,7 @@ mod tests {
     /// No cost data (unpriced model) → no row, rather than `$0.0000`.
     #[test]
     fn push_cost_span_omits_when_no_cost() {
-        let t = summary_with(Some(100), Some(10000), Some(50), Some(720), Some(640), None);
+        let t = info_with(Some(100), Some(10000), Some(50), Some(720), Some(640), None);
         let mut spans = Vec::new();
         push_cost_span(&mut spans, &t);
         assert!(spans.is_empty());
@@ -324,7 +329,7 @@ mod tests {
     /// Both figures render, and USD uses the `$` symbol.
     #[test]
     fn push_cost_span_writes_session_and_today() {
-        let mut t = summary_with(Some(100), Some(10000), Some(50), Some(720), Some(640), None);
+        let mut t = info_with(Some(100), Some(10000), Some(50), Some(720), Some(640), None);
         t.cost = Some(jyc_types::TopicCost {
             session: 0.0521,
             today: 1.3057,
@@ -340,7 +345,7 @@ mod tests {
     /// CNY renders with `¥`, not a dollar sign.
     #[test]
     fn push_cost_span_uses_cny_symbol() {
-        let mut t = summary_with(None, None, None, None, None, None);
+        let mut t = info_with(None, None, None, None, None, None);
         t.cost = Some(jyc_types::TopicCost {
             session: 2.5,
             today: 10.0,
@@ -355,7 +360,7 @@ mod tests {
     /// symbol — including the "mixed" marker for multi-currency days.
     #[test]
     fn push_cost_span_suffixes_unknown_currency() {
-        let mut t = summary_with(None, None, None, None, None, None);
+        let mut t = info_with(None, None, None, None, None, None);
         t.cost = Some(jyc_types::TopicCost {
             session: 1.0,
             today: 2.0,
@@ -373,7 +378,7 @@ mod tests {
     /// decimal places.
     #[test]
     fn push_cost_span_keeps_sub_cent_precision() {
-        let mut t = summary_with(None, None, None, None, None, None);
+        let mut t = info_with(None, None, None, None, None, None);
         t.cost = Some(jyc_types::TopicCost {
             session: 0.0003,
             today: 0.0007,
@@ -389,7 +394,7 @@ mod tests {
     /// is always `None`) see no row, so the dashboard stays clean.
     #[test]
     fn push_cache_creation_span_omits_when_missing() {
-        let t = summary_with(Some(100), Some(10000), Some(50), Some(720), Some(640), None);
+        let t = info_with(Some(100), Some(10000), Some(50), Some(720), Some(640), None);
         let mut spans = Vec::new();
         push_cache_creation_span(&mut spans, &t);
         assert!(spans.is_empty());
@@ -401,7 +406,7 @@ mod tests {
     /// they see back to the API.
     #[test]
     fn push_cache_creation_span_writes_label_and_value() {
-        let t = summary_with(
+        let t = info_with(
             Some(100),
             Some(10000),
             Some(50),
@@ -418,25 +423,25 @@ mod tests {
 
     #[test]
     fn cache_util_pct_basic() {
-        let t = summary_with(None, None, None, Some(720), Some(640), None);
+        let t = info_with(None, None, None, Some(720), Some(640), None);
         assert_eq!(cache_util_pct(&t), Some(88));
     }
 
     #[test]
     fn cache_util_pct_zero_total_returns_none() {
-        let t = summary_with(None, None, None, Some(0), Some(0), None);
+        let t = info_with(None, None, None, Some(0), Some(0), None);
         assert_eq!(cache_util_pct(&t), None);
     }
 
     #[test]
     fn cache_util_pct_missing_hit_returns_none() {
-        let t = summary_with(None, None, None, Some(720), None, None);
+        let t = info_with(None, None, None, Some(720), None, None);
         assert_eq!(cache_util_pct(&t), None);
     }
 
     #[test]
     fn push_cache_utilization_span_omits_when_missing() {
-        let t = summary_with(None, None, None, None, None, None);
+        let t = info_with(None, None, None, None, None, None);
         let mut spans = Vec::new();
         push_cache_utilization_span(&mut spans, &t);
         assert!(spans.is_empty());
@@ -444,7 +449,7 @@ mod tests {
 
     #[test]
     fn push_cache_utilization_span_writes_label_and_value() {
-        let t = summary_with(None, None, None, Some(720), Some(640), None);
+        let t = info_with(None, None, None, Some(720), Some(640), None);
         let mut spans = Vec::new();
         push_cache_utilization_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
@@ -455,7 +460,7 @@ mod tests {
     /// No measured call → no row at all, rather than a misleading `0ms`.
     #[test]
     fn push_latency_span_omits_when_missing() {
-        let t = summary_with(None, None, None, None, None, None);
+        let t = info_with(None, None, None, None, None, None);
         let mut spans = Vec::new();
         push_latency_span(&mut spans, &t);
         assert!(spans.is_empty());
@@ -466,7 +471,7 @@ mod tests {
     /// read as a settled figure.
     #[test]
     fn push_latency_span_writes_millis_and_call_count() {
-        let mut t = summary_with(None, None, None, None, None, None);
+        let mut t = info_with(None, None, None, None, None, None);
         t.avg_call_ms = Some(820);
         t.call_count = Some(37);
         let mut spans = Vec::new();
@@ -479,7 +484,7 @@ mod tests {
     /// Both scopes present: the latest turn leads, the session follows.
     #[test]
     fn push_latency_span_puts_latest_turn_first() {
-        let mut t = summary_with(None, None, None, None, None, None);
+        let mut t = info_with(None, None, None, None, None, None);
         t.avg_call_ms = Some(820);
         t.call_count = Some(37);
         t.avg_turn_call_ms = Some(1100);
@@ -493,7 +498,7 @@ mod tests {
     /// A turn with no measured call yet leaves the session figure alone.
     #[test]
     fn push_latency_span_falls_back_to_session_only() {
-        let mut t = summary_with(None, None, None, None, None, None);
+        let mut t = info_with(None, None, None, None, None, None);
         t.avg_call_ms = Some(820);
         t.call_count = Some(37);
         t.avg_turn_call_ms = Some(1100);
@@ -507,14 +512,14 @@ mod tests {
     /// dropped rather than rendered as "avg of 0".
     #[test]
     fn push_latency_span_writes_seconds_and_needs_the_count() {
-        let mut t = summary_with(None, None, None, None, None, None);
+        let mut t = info_with(None, None, None, None, None, None);
         t.avg_call_ms = Some(4230);
         t.call_count = Some(2);
         let mut spans = Vec::new();
         push_latency_span(&mut spans, &t);
         assert_eq!(spans[1].content, "4.23s/call (2)");
 
-        let mut half = summary_with(None, None, None, None, None, None);
+        let mut half = info_with(None, None, None, None, None, None);
         half.avg_call_ms = Some(4230);
         let mut spans = Vec::new();
         push_latency_span(&mut spans, &half);

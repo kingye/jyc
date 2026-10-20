@@ -10,14 +10,15 @@ use crate::topic_manager::TopicManager;
 
 /// /info command — show this topic's info, mirroring the dashboard chat
 /// screen's Topic Info pane (name, channel, pattern, model, mode, branch,
-/// token usage, call latency, cost, changed files).
+/// status, token usage, call latency, cost, changed files).
 ///
-/// Data comes from `TopicManager::list_topics` — the same snapshot the
-/// dashboard renders — so channel users see exactly what the TUI shows, and
-/// the topic is picked by name, narrowed by the channel it arrived on, through
-/// the shared `jyc_types::find_topic`: several topics can share one
-/// `topic_path`. Works on every channel: the result is delivered as a normal
-/// command reply.
+/// Data comes from `TopicManager::topic_info` — the same call the
+/// dashboard's per-topic endpoint serves
+/// (`GET /api/topics/{channel}/{topic}/info`) — so the two surfaces read
+/// one source and cannot drift apart. The manager is the channel's own, so
+/// the topic is picked by name within that channel; several topics can
+/// share one `topic_path` (children that share their parent's directory),
+/// and the name is what tells them apart.
 pub struct InfoCommandHandler {
     topic_manager: Arc<TopicManager>,
 }
@@ -31,11 +32,14 @@ impl InfoCommandHandler {
 #[async_trait]
 impl CommandHandler for InfoCommandHandler {
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let topics = self.topic_manager.list_topics().await;
-        match topic_for(&topics, &context) {
+        match self
+            .topic_manager
+            .topic_info(&context.topic_name, true)
+            .await
+        {
             Some(t) => Ok(CommandResult {
                 success: true,
-                message: format_topic_info(t),
+                message: format_topic_info(&t),
                 ..Default::default()
             }),
             None => Ok(CommandResult {
@@ -49,16 +53,6 @@ impl CommandHandler for InfoCommandHandler {
             }),
         }
     }
-}
-
-/// The topic this command is about: `context.topic_name` through the shared
-/// lookup, narrowed by the channel this command arrived on.
-///
-/// Never by `topic_path`: children that share their parent's directory
-/// (`share_topic_path`, e.g. `ci-watch-*`) carry the same path as the parent,
-/// and selecting by path reported whichever of them came first in the list.
-fn topic_for<'a>(topics: &'a [TopicInfo], context: &CommandContext) -> Option<&'a TopicInfo> {
-    jyc_types::find_topic(topics, &context.topic_name, Some(&context.channel))
 }
 
 /// Render the pane's rows as plain text, one per line, with the same
@@ -78,10 +72,7 @@ fn format_topic_info(t: &TopicInfo) -> String {
     }
     lines.push(format!("Status: {}", t.status));
     if let (Some(cur), Some(max)) = (t.context_input_tokens, t.max_tokens) {
-        let pct = cur
-            .checked_mul(100)
-            .and_then(|v| v.checked_div(max))
-            .unwrap_or(0);
+        let pct = jyc_types::input_token_pct(Some(cur), Some(max)).unwrap_or(0);
         lines.push(format!("Tokens: {cur} / {max} ({pct}%)"));
     }
     if let Some(output) = t.output_tokens {
@@ -92,6 +83,9 @@ fn format_topic_info(t: &TopicInfo) -> String {
     }
     if let Some(hits) = t.total_cache_hit_tokens {
         lines.push(format!("Cache hits: {hits}"));
+    }
+    if let Some(pct) = jyc_types::cache_util_pct(t.total_cache_hit_tokens, t.total_input_tokens) {
+        lines.push(format!("Cache util: {pct}%"));
     }
     if let Some(creation) = t.total_cache_creation_tokens
         && creation > 0
@@ -231,43 +225,6 @@ mod tests {
         }
     }
 
-    /// The reported bug: a parent and two children that shared its directory
-    /// (`share_topic_path`) all carried `/home/jiny/projects/jyc`, and `/info`
-    /// asked in `jyc` answered with `ci-watch-925` — the first topic whose
-    /// path matched, in list order.
-    #[test]
-    fn selects_by_name_when_topics_share_a_path() {
-        let shared = PathBuf::from("/home/jiny/projects/jyc");
-        let agent_topic = |name: &str| {
-            let mut t = full_info();
-            t.name = name.to_string();
-            t.channel = "agents".to_string();
-            t.topic_path = Some(shared.clone());
-            t
-        };
-        let topics = vec![
-            agent_topic("ci-watch-925"),
-            agent_topic("jyc"),
-            agent_topic("review-prompt-names"),
-        ];
-        let context = |name: &str| CommandContext {
-            channel: "agents".to_string(),
-            topic_name: name.to_string(),
-            topic_path: shared.clone(),
-            ..Default::default()
-        };
-
-        assert_eq!(
-            topic_for(&topics, &context("jyc")).map(|t| t.name.as_str()),
-            Some("jyc")
-        );
-        assert_eq!(
-            topic_for(&topics, &context("ci-watch-925")).map(|t| t.name.as_str()),
-            Some("ci-watch-925")
-        );
-        assert!(topic_for(&topics, &context("nobody")).is_none());
-    }
-
     #[test]
     fn formats_all_rows_when_data_present() {
         let text = format_topic_info(&full_info());
@@ -283,6 +240,7 @@ Tokens: 105432 / 256000 (41%)
 Output: 12345
 Total input: 1234567
 Cache hits: 987654
+Cache util: 80%
 Cache create: 111
 Reasoning: 4096
 Cost: $0.4200 session · $1.2300 today

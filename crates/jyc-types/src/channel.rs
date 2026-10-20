@@ -668,15 +668,16 @@ pub struct ChannelPattern {
 
     /// Per-pattern compression configuration for session reset.
     ///
-    /// Controls how context is compressed when `/reset` or auto-reset triggers.
-    /// Falls back to `[agent].reset_compression` when unset.
+    /// **Deprecated — ignored.** The auto-reset mechanism was removed: the
+    /// sliding-window context strategy keeps the context inside the window,
+    /// so there is nothing left to reset for. The key is still accepted so
+    /// configs written before the removal keep loading.
     #[serde(default)]
     pub reset_compression: Option<ResetCompressionConfig>,
 
     /// Auto-reset threshold as a fraction of context window (0.0~1.0).
-    /// When `context_input_tokens >= context_window * auto_reset_threshold`,
-    /// auto-reset is triggered.
-    /// Falls back to `[agent].auto_reset_threshold` (default 0.95) when unset.
+    ///
+    /// **Deprecated — ignored**, for the same reason as `reset_compression`.
     #[serde(default)]
     pub auto_reset_threshold: Option<f64>,
 
@@ -709,8 +710,8 @@ pub struct ChannelPattern {
 
 /// Compression strategy for session reset.
 ///
-/// Controls how the context is compressed when a session reset is triggered
-/// (either manually via `/reset` or automatically when tokens exceed the threshold).
+/// **Deprecated — ignored.** A reset no longer compresses the context: it
+/// clears it.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CompressionMode {
@@ -726,8 +727,9 @@ pub enum CompressionMode {
 
 /// Configuration for compression behavior on session reset.
 ///
-/// Can be set per-pattern (`ChannelPattern.reset_compression`) or globally
-/// (`AiConfig.reset_compression`). Pattern-level config takes priority.
+/// **Deprecated — ignored.** The auto-reset mechanism was removed; the
+/// per-pattern `reset_compression` key is still accepted so configs written
+/// before the removal keep loading, but nothing reads it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResetCompressionConfig {
     /// Compression mode: "llm" | "heuristic" | "none". Default: "heuristic".

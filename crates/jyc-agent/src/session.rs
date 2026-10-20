@@ -3,19 +3,19 @@
 //! Manages:
 //! - Full conversation log (`.jyc/agent-conversation.json`) — complete LLM history
 //!   including tool calls and results for multi-turn context
-//! - Session state (`.jyc/agent-session.json`) — token tracking, auto-reset
+//! - Session state (`.jyc/agent-session.json`) — token and cost tracking
 //!
-//! On reset: session state is cleared, conversation is summarized (last few turns kept).
+//! On reset: session state and the raw context are cleared — the next turn
+//! starts from an empty context.
 
 use jyc_core::session_state::{AGENT_CONTEXT_FILE, AGENT_CONTEXT_LEGACY_FILE};
-use jyc_types::channel::{CompressionMode, ResetCompressionConfig};
 use jyc_types::state_dir::resolve_state_dir;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use tracing;
 
-use crate::types::{ContentBlock, Message, Role};
+use crate::types::{Message, Role};
 
 const SESSION_FILE: &str = "agent-session.json";
 
@@ -285,12 +285,20 @@ async fn replace_raw_context(
 pub struct SessionState {
     /// When this session was created (ISO 8601).
     pub created_at: String,
-    /// Current context size in tokens. Equal to the input tokens reported by
-    /// the most recent LLM call, since each call sends the full conversation
-    /// context. NOT a sum across calls — for accumulated input tokens see
-    /// `total_input_tokens`, for accumulated output tokens see
+    /// The input the most recent LLM call was sent, in tokens. Since each
+    /// call sends the full conversation context, this is the context size
+    /// as the model saw it. NOT a sum across calls — for accumulated input
+    /// tokens see `total_input_tokens`, for accumulated output tokens see
     /// `total_output_tokens`.
     pub context_input_tokens: u64,
+    /// The output tokens of the most recent LLM call — the reply that gets
+    /// appended to the context. Together with `context_input_tokens` this
+    /// is the size of the context the *next* call will carry, which is
+    /// what the context-window figures are computed from.
+    /// `serde(default)` so session files written before the field existed
+    /// deserialize as `0`.
+    #[serde(default)]
+    pub context_output_tokens: u64,
     /// Accumulated input tokens across all LLM calls in this session.
     /// Each call's `input_tokens` (= full context size) is added via `+=`
     /// from the agent loop, so this represents the cumulative tokens sent
@@ -353,9 +361,15 @@ pub struct SessionState {
     /// `0` while the current turn has not completed a measured call yet.
     #[serde(default)]
     pub turn_call_count: u64,
-    /// Max tokens (context window) for the model.
-    #[serde(default)]
-    pub max_input_tokens: u64,
+    /// The model's context window, in tokens — the whole budget the next
+    /// call has to fit into.
+    ///
+    /// Renamed from `max_input_tokens`, which held the *auto-reset cap*
+    /// (the window scaled by a threshold). The alias keeps session files
+    /// written before the auto-reset removal readable; the next LLM call
+    /// rewrites the field with the raw window.
+    #[serde(default, alias = "max_input_tokens")]
+    pub context_window: u64,
     /// Accumulated cost of this session, in the currency configured for
     /// the model(s) used. **One of this struct's three accumulating
     /// fields** — with `total_call_duration_ms` and `call_count`, which a
@@ -652,21 +666,13 @@ fn extract_text_content(content: &serde_json::Value) -> Option<String> {
 /// deleted by `/reset` or `/new` — has no `agent-session.json` on disk
 /// until the first mid-loop `persist_tokens` call after the first LLM
 /// response. During that window, the dashboard and outbound-channel
-/// probes (`read_token_state` / `read_input_tokens`) all see `(None,
-/// None, None)`. Pre-creating the file here makes the topic visible
-/// immediately with the correct `max_input_tokens` and zeroed counters.
+/// probes (`read_token_state` / `read_input_tokens`) all see nothing.
+/// Pre-creating the file here makes the topic visible immediately with the
+/// right `context_window` and zeroed counters.
 ///
-/// `context_window` is used to seed `max_input_tokens = context_window *
-/// auto_reset_threshold` (matching the convention used by
-/// `persist_tokens_returning_state`). When `context_window` is `None`,
-/// `max_input_tokens` is left at 0 (the post-loop `update_tokens` will
-/// fill it in on the next turn).
-pub async fn ensure_session_file(
-    topic_name: &str,
-    topic_path: &Path,
-    context_window: Option<u64>,
-    auto_reset_threshold: f64,
-) {
+/// When `context_window` is `None`, the field is left at 0 (the agent
+/// loop fills it in on the next turn).
+pub async fn ensure_session_file(topic_name: &str, topic_path: &Path, context_window: Option<u64>) {
     let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
     if session_path.exists() {
         // Already there — never overwrite existing token data.
@@ -675,14 +681,14 @@ pub async fn ensure_session_file(
 
     let mut state = SessionState::default();
     if let Some(cw) = context_window {
-        state.max_input_tokens = (cw as f64 * auto_reset_threshold) as u64;
+        state.context_window = cw;
     }
     state.created_at = chrono::Utc::now().to_rfc3339();
 
     save_session_state(&session_path, &state).await;
     tracing::info!(
         file = %session_path.display(),
-        max_input_tokens = state.max_input_tokens,
+        context_window = state.context_window,
         "ensure_session_file: created session file at start of agent processing"
     );
 }
@@ -711,17 +717,16 @@ pub async fn begin_turn_latency(topic_name: &str, topic_path: &Path) {
     save_session_state(&session_path, &state).await;
 }
 
-/// Persist the latest input/output token counts to disk without triggering
-/// auto-reset. Called from the agent loop after every LLM response so the
-/// dashboard polls see fresh data mid-round. The post-loop `update_tokens`
-/// still owns the actual reset decision.
+/// Persist the latest input/output token counts to disk. Called from the
+/// agent loop after every LLM response so the dashboard polls see fresh data
+/// mid-round.
 ///
-/// `input_tokens` is the tokens reported by the last API call — stored
-/// directly (not accumulated) since each call already includes the full
-/// context. `total_input_tokens`, `output_tokens`,
-/// `total_cache_hit_tokens`, and `total_cache_creation_tokens` are
-/// running totals accumulated by the caller (`agent_loop`), passed in
-/// as the current sum.
+/// `context_input_tokens` and `context_output_tokens` are the last API
+/// call's own figures — stored directly (not accumulated) since each call
+/// already includes the full context. `total_input_tokens`,
+/// `total_output_tokens`, `total_cache_hit_tokens`, and
+/// `total_cache_creation_tokens` are running totals accumulated by the
+/// caller (`agent_loop`), passed in as the current sum.
 ///
 /// `call_cost` is the cost of the single call that just completed and is
 /// **added** to `session_cost` (unlike every other field, which is
@@ -736,58 +741,24 @@ pub async fn begin_turn_latency(topic_name: &str, topic_path: &Path) {
 pub async fn persist_tokens(
     topic_name: &str,
     topic_path: &Path,
-    input_tokens: u64,
+    context_input_tokens: u64,
+    context_output_tokens: u64,
     total_input_tokens: u64,
-    output_tokens: u64,
+    total_output_tokens: u64,
     total_cache_hit_tokens: u64,
     total_cache_creation_tokens: u64,
     total_reasoning_tokens: u64,
     context_window: Option<u64>,
-    auto_reset_threshold: f64,
     call_cost: f64,
     call_ms: u64,
 ) {
-    let _ = persist_tokens_returning_state(
-        topic_name,
-        topic_path,
-        input_tokens,
-        total_input_tokens,
-        output_tokens,
-        total_cache_hit_tokens,
-        total_cache_creation_tokens,
-        total_reasoning_tokens,
-        context_window,
-        auto_reset_threshold,
-        call_cost,
-        call_ms,
-    )
-    .await;
-}
-
-/// Like `persist_tokens` but returns the final state and path so callers
-/// (currently only `update_tokens` for the post-loop auto-reset decision)
-/// can inspect threshold-crossing without a second disk read.
-#[allow(clippy::too_many_arguments)]
-async fn persist_tokens_returning_state(
-    topic_name: &str,
-    topic_path: &Path,
-    input_tokens: u64,
-    total_input_tokens: u64,
-    output_tokens: u64,
-    total_cache_hit_tokens: u64,
-    total_cache_creation_tokens: u64,
-    total_reasoning_tokens: u64,
-    context_window: Option<u64>,
-    auto_reset_threshold: f64,
-    call_cost: f64,
-    call_ms: u64,
-) -> (std::path::PathBuf, SessionState) {
     let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
 
-    state.context_input_tokens = input_tokens;
+    state.context_input_tokens = context_input_tokens;
+    state.context_output_tokens = context_output_tokens;
     state.total_input_tokens = total_input_tokens;
-    state.total_output_tokens = output_tokens;
+    state.total_output_tokens = total_output_tokens;
     state.total_cache_hit_tokens = total_cache_hit_tokens;
     state.total_cache_creation_tokens = total_cache_creation_tokens;
     state.total_reasoning_tokens = total_reasoning_tokens;
@@ -796,8 +767,8 @@ async fn persist_tokens_returning_state(
     state.session_cost += call_cost;
     // Accumulated the same way, and for the same reason: the caller passes
     // one call's duration and the file keeps the running sum, so the
-    // mid-loop persist and the post-loop `update_tokens` (which passes 0)
-    // both leave the average intact. The turn-scoped pair (reset by
+    // mid-loop persist and the post-loop write (which passes 0) both leave
+    // the average intact. The turn-scoped pair (reset by
     // `begin_turn_latency` at each turn start) accumulates in lockstep, so
     // "latest turn" always covers exactly this turn's measured calls.
     if call_ms > 0 {
@@ -808,7 +779,7 @@ async fn persist_tokens_returning_state(
     }
 
     if let Some(cw) = context_window {
-        state.max_input_tokens = (cw as f64 * auto_reset_threshold) as u64;
+        state.context_window = cw;
     }
 
     if state.created_at.is_empty() {
@@ -816,17 +787,15 @@ async fn persist_tokens_returning_state(
     }
 
     save_session_state(&session_path, &state).await;
-    (session_path, state)
 }
 
 /// Add to `session_cost` without touching the token counters.
 ///
-/// Used for ancillary LLM calls (cycle-boundary progress summaries,
-/// context compression on reset) whose tokens are real spend but are not
-/// part of the main loop's context accounting -- folding them into
-/// `total_input_tokens` would corrupt the context-window math that drives
-/// auto-reset. The cost is still recorded so the displayed total is
-/// truthful.
+/// Used for ancillary LLM calls (cycle-boundary progress summaries) whose
+/// tokens are real spend but are not part of the main loop's context
+/// accounting — folding them into `total_input_tokens` would inflate the
+/// context usage shown to the user. The cost is still recorded so the
+/// displayed total is truthful.
 ///
 /// No-op when `cost` is zero (no pricing configured, or the call failed).
 pub async fn add_session_cost(topic_name: &str, topic_path: &Path, cost: f64) {
@@ -842,449 +811,39 @@ pub async fn add_session_cost(topic_name: &str, topic_path: &Path, cost: f64) {
     save_session_state(&session_path, &state).await;
 }
 
-/// Update token tracking in the session state.
-/// Creates the session file if it doesn't exist.
-/// Auto-resets when `context_input_tokens` crosses `max_input_tokens`, using
-/// the configured `reset_compression` strategy (same as manual `/reset`).
-///
-/// `input_tokens` is the tokens reported by the last API call — this already
-/// includes all prior context, so we store it directly (not accumulated).
-///
-/// `summary_provider` is the provider used to generate the LLM summary when
-/// the auto-reset threshold is crossed AND `compression_config.mode` is `Llm`.
-/// Callers should pass the small model's provider when configured
-/// (`[agent].small_model`), otherwise the main provider — falling back is
-/// the caller's responsibility.
-///
-/// `auto_reset_threshold` is the fraction of context window at which to trigger
-/// auto-reset (0.0~1.0, default 0.95).
-///
-/// `compression_config` controls how the session is compacted on auto-reset.
-/// All three paths — manual `/reset`, pre-loop pre-check, and this post-loop
-/// auto-reset — go through `reset_session()` with this config so user
-/// preferences (`mode`, `keep_pairs`) are honored consistently.
-///
-/// Does **not** add to `session_cost`: cost is banked per-call inside the
-/// agent loop via `persist_tokens`, so adding here would double-count the
-/// round. The call-latency counters are left alone for the same reason.
-#[allow(clippy::too_many_arguments)]
-pub async fn update_tokens(
-    topic_name: &str,
-    topic_path: &Path,
-    input_tokens: u64,
-    total_input_tokens: u64,
-    output_tokens: u64,
-    total_cache_hit_tokens: u64,
-    total_cache_creation_tokens: u64,
-    total_reasoning_tokens: u64,
-    context_window: Option<u64>,
-    summary_provider: &dyn crate::provider::Provider,
-    auto_reset_threshold: f64,
-    compression_config: &ResetCompressionConfig,
-    billing: Option<&BillingContext>,
-) {
-    // Persist the latest token counts. The returned state carries the
-    // post-mutation values so the auto-reset check below doesn't need a
-    // second disk read.
-    let (_, state) = persist_tokens_returning_state(
-        topic_name,
-        topic_path,
-        input_tokens,
-        total_input_tokens,
-        output_tokens,
-        total_cache_hit_tokens,
-        total_cache_creation_tokens,
-        total_reasoning_tokens,
-        context_window,
-        auto_reset_threshold,
-        // Cost already banked per-call by the agent loop.
-        0.0,
-        // Call duration too — this call runs after the loop, so it must
-        // not count as an LLM call of its own.
-        0,
-    )
-    .await;
-
-    // Auto-reset if tokens exceed max context window. Delegates to
-    // `reset_session` so the user's `reset_compression` config is honored
-    // (previously this inlined `summarize_context` which always used LLM,
-    // ignoring the configured mode).
-    if state.max_input_tokens > 0 && state.context_input_tokens >= state.max_input_tokens {
-        tracing::info!(
-            context_input_tokens = state.context_input_tokens,
-            max_input_tokens = state.max_input_tokens,
-            mode = ?compression_config.mode,
-            "Session exceeded max input tokens, auto-resetting with configured compression",
-        );
-
-        reset_session(
-            topic_name,
-            topic_path,
-            compression_config,
-            Some(summary_provider),
-            billing,
-        )
-        .await;
-
-        // reset_session deletes the session file; rebuild it with the
-        // current max_input_tokens and zero counters so the next turn
-        // starts clean. session_cost zeroes with them — it is scoped to
-        // the session, and the durable ledger is bill-YYYY-MM-DD.jsonl.
-        persist_tokens(
-            topic_name,
-            topic_path,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            context_window,
-            auto_reset_threshold,
-            0.0,
-            // Nothing to time, and nothing to keep: `reset_session` just
-            // deleted the file, so the counters start from zero with the
-            // tokens (they are session-scoped, like `session_cost`).
-            0,
-        )
-        .await;
-    }
-}
-
-/// If the loaded session's tokens exceed the new context window, reset the
-/// session using the configured compression strategy. Must be called BEFORE
-/// the agent loop when the active model changes to a smaller window —
-/// otherwise the first LLM call rejects the oversized context and the
-/// post-loop auto-reset never fires.
-///
-/// Returns `true` if the session was reset.
-pub async fn maybe_reset_for_new_context(
-    topic_name: &str,
-    topic_path: &Path,
-    new_max_input_tokens: u64,
-    compression_config: &ResetCompressionConfig,
-    provider: Option<&dyn crate::provider::Provider>,
-    billing: Option<&BillingContext>,
-) -> bool {
-    if new_max_input_tokens == 0 {
-        return false;
-    }
-    let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
-    let state = load_session_state(&session_path).await;
-    if state.context_input_tokens < new_max_input_tokens {
-        return false;
-    }
-    tracing::info!(
-        old_tokens = state.context_input_tokens,
-        new_max = new_max_input_tokens,
-        mode = ?compression_config.mode,
-        "Loaded session exceeds new context window; resetting before agent loop",
-    );
-    reset_session(
-        topic_name,
-        topic_path,
-        compression_config,
-        provider,
-        billing,
-    )
-    .await;
-    true
-}
-
-/// What the ledger needs in order to bill an ancillary LLM call.
-///
-/// Passed as `Option` through the reset path because most callers (e.g.
-/// the `/reset` command) have no pricing in scope; `None` simply means
-/// the call is not billed, matching the unpriced-model behaviour.
-#[derive(Debug, Clone)]
-pub struct BillingContext {
-    /// Rates for the active model.
-    pub pricing: jyc_types::ModelPricing,
-    /// How the provider is paid for (metered/subscription). Provider-level:
-    /// a subscription plan covers every model under the provider.
-    pub billing: jyc_types::config::BillingMode,
-    /// `"provider/model"` label recorded on the ledger entry.
-    pub model_label: String,
-    /// Central billing ledger directory (`<data dir>/billing`).
-    /// `None` drops billing writes with a warning.
-    pub billing_dir: Option<std::path::PathBuf>,
-}
-
 // ─── Reset ───────────────────────────────────────────────────────────
 
-/// Reset the session with configurable compression.
+/// Clear the session: drop the session file and the raw context.
 ///
-/// Called when user triggers a session reset (e.g., from dashboard or /reset command).
+/// Called when the user triggers a session reset (`/reset`, dashboard).
 ///
-/// Compression behavior depends on `config.mode`:
-/// - `None` → delete `agent-session.json` and the raw context store
-///   (journal + legacy)
-/// - `Heuristic` → `summarize_context_heuristic()` then delete `agent-session.json`
-/// - `Llm` → if `provider` is available, `summarize_context()` (LLM) then delete
-///   `agent-session.json`; fallback to heuristic if no provider
-///
-/// `config.keep_pairs` controls how many user+assistant pairs to retain in heuristic mode.
-pub async fn reset_session(
-    topic_name: &str,
-    topic_path: &Path,
-    config: &ResetCompressionConfig,
-    provider: Option<&dyn crate::provider::Provider>,
-    billing: Option<&BillingContext>,
-) {
+/// A reset is a clean slate — the next turn starts from an empty context.
+/// There is no compression any more: the sliding-window context strategy
+/// keeps the context inside the window, so there is nothing to summarize
+/// before starting over.
+pub async fn reset_session(topic_name: &str, topic_path: &Path) {
     let state_dir = resolve_state_dir(topic_name, topic_path);
 
-    match config.mode {
-        CompressionMode::None => {
-            // Delete everything — no summary
-            jyc_core::session_state::remove_raw_context_files(&state_dir).await;
-            cache_drop(topic_name);
-            let session_path = state_dir.join(SESSION_FILE);
-            tokio::fs::remove_file(&session_path).await.ok();
-            tracing::info!("Agent session reset (no compression)");
-        }
-        CompressionMode::Heuristic => {
-            // Heuristic compaction: keep last N pairs, then delete session
-            summarize_context_heuristic(topic_name, topic_path, config.keep_pairs).await;
-            let session_path = state_dir.join(SESSION_FILE);
-            tokio::fs::remove_file(&session_path).await.ok();
-            tracing::info!("Agent session reset (heuristic compression)");
-        }
-        CompressionMode::Llm => {
-            if let Some(p) = provider {
-                // LLM summary, then delete session
-                summarize_context(topic_name, topic_path, p, billing).await;
-            } else {
-                // No provider available — fallback to heuristic
-                tracing::warn!(
-                    "LLM compression mode selected but no provider available, \
-                     falling back to heuristic"
-                );
-                summarize_context_heuristic(topic_name, topic_path, config.keep_pairs).await;
-            }
-            let session_path = state_dir.join(SESSION_FILE);
-            tokio::fs::remove_file(&session_path).await.ok();
-            tracing::info!("Agent session reset (LLM compression)");
-        }
-    }
+    // Delete everything — session file and raw context store (journal +
+    // legacy).
+    jyc_core::session_state::remove_raw_context_files(&state_dir).await;
+    cache_drop(topic_name);
+    let session_path = state_dir.join(SESSION_FILE);
+    tokio::fs::remove_file(&session_path).await.ok();
+    tracing::info!("Agent session reset");
 }
 
-/// Summarize the raw context using an LLM call, then replace
-/// `agent-context.jsonl` with a compact `[task_anchor, summary_user_message]`
-/// pair so the next message starts from a small, valid context.
-///
-/// On any failure (no context file, JSON parse error, LLM call error, empty
-/// reply) this falls back to `summarize_context_heuristic` which keeps the
-/// last few user+assistant text pairs without touching the LLM.
-///
-/// `provider` should be the small/fast model when configured
-/// (`[agent].small_model`); the caller is responsible for passing the right
-/// provider.
-async fn summarize_context(
-    topic_name: &str,
-    topic_path: &Path,
-    provider: &dyn crate::provider::Provider,
-    billing: Option<&BillingContext>,
-) {
-    let state_dir = resolve_state_dir(topic_name, topic_path);
-
-    let Some(raw_context) = read_context_values(&state_dir).await else {
-        return;
-    };
-
-    if raw_context.is_empty() {
-        return;
-    }
-
-    // Find the original task anchor — the first user message — so we can
-    // preserve it in the compacted output. Without it the model would lose
-    // the task description on the next message.
-    let first_user = raw_context
-        .iter()
-        .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
-        .cloned();
-
-    // Render the entire context to plain text and ask the LLM to summarize.
-    // Mirrors the cycle-boundary helper in `agent_loop`.
-    let joined = render_raw_context_as_text(&raw_context);
-    let (summary_text, usage) = match generate_context_summary(provider, &joined).await {
-        Ok(pair) => pair,
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "LLM context summary failed, falling back to heuristic compaction"
-            );
-            summarize_context_heuristic(topic_name, topic_path, 3).await;
-            return;
-        }
-    };
-
-    // Build the compacted context: [task_anchor, synthetic_assistant_with_summary].
-    // The synthetic assistant message uses a tagged delimiter so the model can
-    // recognize it as machine-generated context. Using "assistant" role is
-    // critical: `load_context` rejects context files with no assistant messages
-    // (treating them as corrupted and deleting them).
-    let summary_assistant = serde_json::json!({
-        "role": "assistant",
-        "content": format!(
-            "<jyc-context-summary>\nPrior conversation summary (auto-generated when token budget was exceeded):\n\n{}\n</jyc-context-summary>",
-            summary_text
-        ),
-    });
-
-    // Bill the compression call. `session_cost` is deliberately NOT updated:
-    // `reset_session` deletes the session file immediately after this returns,
-    // so the session total resets to zero by design. The ledger entry is what
-    // must survive -- this was real spend, and the durable per-day total has
-    // to include it.
-    if let Some(b) = billing {
-        let (input_tokens, output_tokens, cache_hit_tokens, cache_creation_tokens) = usage;
-        if input_tokens > 0
-            || output_tokens > 0
-            || cache_hit_tokens > 0
-            || cache_creation_tokens > 0
-        {
-            let (cost, rates) = jyc_types::pricing::compute_cost_split_with_rates(
-                &b.pricing,
-                input_tokens,
-                output_tokens,
-                cache_hit_tokens,
-                cache_creation_tokens,
-            );
-            let (time_window, utc_offset) = rates.source.billing_fields();
-            let entry = jyc_core::billing_log_store::BillingEntry {
-                ts: chrono::Utc::now().to_rfc3339(),
-                topic: jyc_core::billing_log_store::BillingLogStore::label_for(
-                    topic_name, topic_path,
-                ),
-                model: b.model_label.clone(),
-                input_tokens,
-                output_tokens,
-                cache_hit_tokens,
-                cache_creation_tokens,
-                cost,
-                currency: b.pricing.currency_label().to_string(),
-                kind: jyc_core::billing_log_store::KIND_SUMMARY.to_string(),
-                billing: b.billing.as_str().to_string(),
-                input_rate_per_million: rates.input_per_million,
-                output_rate_per_million: rates.output_per_million,
-                cache_hit_rate_per_million: rates.cache_hit_per_million,
-                cache_creation_rate_per_million: rates
-                    .cache_creation_per_million
-                    .unwrap_or(rates.cache_hit_per_million),
-                time_window,
-                utc_offset,
-            };
-            match &b.billing_dir {
-                Some(dir) => {
-                    if let Err(e) =
-                        jyc_core::billing_log_store::BillingLogStore::append(dir, &entry)
-                    {
-                        tracing::warn!(error = %e, "Failed to append context-compression billing entry");
-                    }
-                }
-                None => {
-                    tracing::warn!(
-                        "No data home resolvable; dropping context-compression billing entry"
-                    )
-                }
-            }
-        }
-    }
-
-    let mut compacted: Vec<serde_json::Value> = Vec::with_capacity(2);
-    if let Some(fu) = first_user {
-        compacted.push(fu);
-    }
-    compacted.push(summary_assistant);
-
-    tracing::info!(
-        original_messages = raw_context.len(),
-        summary_messages = compacted.len(),
-        provider = %provider.name(),
-        model = %provider.model(),
-        "Context summarized via LLM"
-    );
-
-    // Compacted context never extends the on-disk prefix — always a full
-    // rewrite (persisted_len = 0).
-    replace_raw_context(&state_dir, topic_name, Arc::new(compacted), 0).await;
-}
-
-/// Issue an isolated LLM call to produce a context summary.
-///
-/// The conversation transcript is sent as a single user message — no tools,
-/// no prior assistant turns, no `reasoning_content` round-trip. This decouples
-/// the summary call from the main conversation's contract (e.g., DeepSeek's
-/// thinking mode requirements).
-async fn generate_context_summary(
-    provider: &dyn crate::provider::Provider,
-    joined_history: &str,
-) -> anyhow::Result<(String, (u64, u64, u64, u64))> {
-    let system_prompt = "You are summarizing a conversation between a user and an AI agent. \
-        Based on the transcript below, produce a faithful, concise summary in the language used \
-        in the transcript. Cover:\n\
-        - The original task / user goal\n\
-        - Key decisions made and why\n\
-        - What was implemented (files changed, commands run, tools used)\n\
-        - Outstanding work and next steps\n\n\
-        Reply with ONLY the summary text. No preamble, no markdown headers, no tool calls.";
-
-    let user_msg = provider.format_user_message(&[ContentBlock::Text {
-        text: joined_history.to_string(),
-    }]);
-    let stream = provider
-        .complete_raw(&[user_msg], &[], system_prompt)
-        .await?;
-
-    let mut text = String::new();
-    // Capture usage so the caller can bill this call. Summarizing the whole
-    // transcript is expensive, and dropping the `Usage` event here is what
-    // previously made compression spend invisible in the ledger.
-    let mut usage = (0u64, 0u64, 0u64, 0u64);
-    use futures::StreamExt;
-    let mut stream = std::pin::pin!(stream);
-    while let Some(event) = stream.next().await {
-        match event {
-            Ok(crate::types::StreamEvent::TextDelta(t)) => text.push_str(&t),
-            Ok(crate::types::StreamEvent::Usage {
-                input_tokens,
-                output_tokens,
-                cache_hit_tokens,
-                cache_creation_tokens,
-                ..
-            }) => {
-                usage = (
-                    input_tokens,
-                    output_tokens,
-                    cache_hit_tokens,
-                    cache_creation_tokens,
-                )
-            }
-            Ok(crate::types::StreamEvent::Done) => break,
-            Ok(crate::types::StreamEvent::Error(msg)) => {
-                anyhow::bail!("LLM error during summary: {msg}");
-            }
-            Ok(_) => {}
-            Err(e) => return Err(e),
-        }
-    }
-
-    if text.is_empty() {
-        anyhow::bail!("LLM returned empty context summary");
-    }
-    Ok((text, usage))
-}
-
-/// Render `raw_context` as a single plain-text transcript suitable for
-/// one-shot summarization. Lossy by design — used only by the summary call,
-/// never replayed to the main loop.
+/// Render `raw_context` as a single plain-text transcript.
+/// Lossy by design — a test-only view of the raw context, never replayed to
+/// the main loop.
 ///
 /// Built on [`extract_pairs`] so this view and the sliding-window view
 /// share ONE parsing/annotation implementation (previously two copies
 /// parsed the OpenAI/Anthropic wire formats independently and had already
-/// drifted apart). Each pair renders as `USER: …` / `ASSISTANT: …`; the
+/// drifted apart). Each pair renders as `USER: ...` / `ASSISTANT: ...`; the
 /// pair's tool-call history note (with truncated results) is appended on
 /// its own line.
+#[cfg(test)]
 pub(crate) fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
     let mut out = String::with_capacity(raw_context.len() * 256);
     out.push_str("=== Conversation transcript ===\n\n");
@@ -1921,43 +1480,6 @@ pub(crate) fn verbatim_start_index(raw_context: &[serde_json::Value], note_windo
 pub(crate) fn is_history_note(msg: &serde_json::Value) -> bool {
     msg.get("role").and_then(|r| r.as_str()) == Some("user")
         && extract_message_text(msg).starts_with(HISTORY_NOTE_PREFIX)
-}
-
-/// Heuristic context compaction: keep only the last N user+assistant text
-/// pairs.
-///
-/// Removes tool calls, tool results, and reasoning_content. Used as a
-/// fallback when the LLM-based summarizer is unavailable or fails, and as
-/// the primary path for user-triggered `reset_session` (which has no
-/// provider context).
-///
-/// `keep_pairs` controls how many user+assistant pairs to retain.
-async fn summarize_context_heuristic(topic_name: &str, topic_path: &Path, keep_pairs: usize) {
-    let state_dir = resolve_state_dir(topic_name, topic_path);
-
-    let Some(raw_context) = read_context_values(&state_dir).await else {
-        return;
-    };
-
-    // Extract user+assistant text pairs using shared logic
-    // Heuristic compaction keeps notes on every pair (`None`);
-    // `note_window` only shapes the sliding-window wire payload.
-    let summary = extract_user_assistant_pairs(&raw_context, keep_pairs, None);
-
-    tracing::debug!(
-        original_messages = raw_context.len(),
-        summary_messages = summary.len(),
-        "Context summarized (heuristic)"
-    );
-
-    // Write summary back — the compacted pairs never extend the on-disk
-    // prefix, so this is always a full rewrite (persisted_len = 0).
-    if summary.is_empty() {
-        jyc_core::session_state::remove_raw_context_files(&state_dir).await;
-        cache_drop(topic_name);
-    } else {
-        replace_raw_context(&state_dir, topic_name, Arc::new(summary), 0).await;
-    }
 }
 
 // ─── Internal helpers ────────────────────────────────────────────────

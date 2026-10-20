@@ -1560,8 +1560,14 @@ fn render_topics(frame: &mut Frame, area: Rect, app: &mut App) {
                 TopicStatus::Error => Style::default().fg(Color::Red),
             };
 
+            // The context size: the last call's input plus its output,
+            // against the context window.
             let tokens = match (t.context_input_tokens, t.max_tokens) {
-                (Some(cur), Some(max)) => format!("{}K/{}K", cur / 1000, max / 1000),
+                (Some(cur), Some(max)) => {
+                    let used = jyc_types::context_tokens(Some(cur), t.context_output_tokens)
+                        .unwrap_or(cur);
+                    format!("{}K/{}K", used / 1000, max / 1000)
+                }
                 (Some(cur), None) => format!("{}K", cur / 1000),
                 _ => "-".to_string(),
             };
@@ -2097,6 +2103,7 @@ mod tests {
                     pattern: None,
                     status: TopicStatus::Idle,
                     context_input_tokens: None,
+                    context_output_tokens: None,
                     max_tokens: None,
                     last_active_at: None,
                     topic_path: None,
@@ -2136,6 +2143,7 @@ mod tests {
                     pattern: Some((*n).to_string()),
                     status: TopicStatus::Idle,
                     context_input_tokens: None,
+                    context_output_tokens: None,
                     max_tokens: None,
                     last_active_at: None,
                     topic_path: None,

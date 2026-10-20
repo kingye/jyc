@@ -9,7 +9,7 @@ use super::spec::{self, ArgError, Parsed};
 /// /reset command — reset agent session for this topic.
 ///
 /// Usage:
-///   /reset --force    Reset agent session with configurable compression
+///   /reset --force    Clear the agent session (chat history is kept)
 ///
 /// Without `--force` the command only warns, so the session cannot be
 /// reset by an accidental send (mirrors `/close`).
@@ -64,26 +64,11 @@ impl CommandHandler for ResetCommandHandler {
         // kept, the agent's plan for the current piece of work is not.
         crate::session_state::clear_tasks_at(&state_dir).await;
 
-        // Resolve ResetCompressionConfig. Best signal we have at command time:
-        // read the matched pattern from disk (written by the message router
-        // when the topic was created). Falls back to first pattern if the
-        // pattern file is missing, then to global [agent].reset_compression,
-        // then to the default (Heuristic).
-        let matched_pattern =
-            crate::session_state::read_pattern(&context.topic_name, &context.topic_path).await;
-        let reset_config = crate::session_state::resolve_reset_compression(
-            &context.config,
-            &context.channel,
-            matched_pattern.as_deref(),
-        );
-
         if let Some(ref agent) = context.agent {
             // Identity is the topic name, not the workspace dir — a shared child
             // works in its parent's dir, so the path would name the parent.
             let topic_name = context.topic_name.as_str();
-            agent
-                .reset_session(&context.topic_path, topic_name, &reset_config)
-                .await?;
+            agent.reset_session(&context.topic_path, topic_name).await?;
             context.session_start_hook("reset").await;
             Ok(CommandResult {
                 success: true,
@@ -165,12 +150,7 @@ mod tests {
                 reply_text: None,
             })
         }
-        async fn reset_session(
-            &self,
-            _topic_path: &Path,
-            topic_name: &str,
-            _config: &jyc_types::channel::ResetCompressionConfig,
-        ) -> Result<()> {
+        async fn reset_session(&self, _topic_path: &Path, topic_name: &str) -> Result<()> {
             self.reset_names
                 .lock()
                 .unwrap()

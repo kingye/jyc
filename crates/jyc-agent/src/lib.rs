@@ -128,7 +128,6 @@ mod integration_tests {
             current_channel: None,
             outbounds: None,
             context_window: None,
-            auto_reset_threshold: 0.95,
             thinking_enabled: true,
             pricing: None,
             billing_mode: Default::default(),

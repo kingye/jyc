@@ -137,12 +137,7 @@ impl AgentService for RelayWritingAgent {
             reply_text: Some("ok".to_string()),
         })
     }
-    async fn reset_session(
-        &self,
-        _topic_path: &Path,
-        _topic_name: &str,
-        _config: &jyc_types::channel::ResetCompressionConfig,
-    ) -> Result<()> {
+    async fn reset_session(&self, _topic_path: &Path, _topic_name: &str) -> Result<()> {
         Ok(())
     }
 }
@@ -166,12 +161,7 @@ impl AgentService for FailingAgent {
     ) -> Result<AgentResult> {
         Err(anyhow::anyhow!("simulated agent failure"))
     }
-    async fn reset_session(
-        &self,
-        _topic_path: &Path,
-        _topic_name: &str,
-        _config: &jyc_types::channel::ResetCompressionConfig,
-    ) -> Result<()> {
+    async fn reset_session(&self, _topic_path: &Path, _topic_name: &str) -> Result<()> {
         Ok(())
     }
 }

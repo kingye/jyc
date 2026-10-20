@@ -7,58 +7,7 @@ use std::borrow::Cow;
 use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
 
 use crate::provider::Provider;
-use crate::types::{ContentBlock, Message, Role};
-
-pub(crate) fn compact_raw_context_heuristic(
-    raw_context: &[serde_json::Value],
-    keep_pairs: usize,
-) -> Vec<serde_json::Value> {
-    // Compaction keeps notes on every pair (`None`); `note_window` only
-    // shapes the sliding-window wire payload.
-    crate::session::extract_user_assistant_pairs(raw_context, keep_pairs, None)
-}
-
-/// Heuristic compaction of internal history: keep only the last N user+assistant
-/// text pairs. Synced with `compact_raw_context_heuristic`.
-///
-/// INTENTIONALLY divergent from the raw-context path: this view keeps plain
-/// text only (no folded tool-call annotations) and drops tool-call-only
-/// turns entirely, because internal history is used for reply detection and
-/// text extraction — not for model grounding. Do not "fix" the difference
-/// by porting annotations here; the raw path (`extract_pairs`) owns the
-/// rich view.
-pub(crate) fn compact_history_heuristic(history: &[Message], keep_pairs: usize) -> Vec<Message> {
-    let mut pairs: Vec<(Message, Message)> = Vec::new();
-    let mut last_user: Option<Message> = None;
-
-    for msg in history {
-        match msg.role {
-            Role::User => {
-                last_user = Some(msg.clone());
-            }
-            Role::Assistant => {
-                let text = msg.text();
-                if !text.is_empty()
-                    && let Some(user_msg) = last_user.take()
-                {
-                    pairs.push((user_msg, Message::assistant(text)));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // Keep only the last N pairs
-    pairs
-        .into_iter()
-        .rev()
-        .take(keep_pairs)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .flat_map(|(user, assistant)| vec![user, assistant])
-        .collect()
-}
+use crate::types::ContentBlock;
 
 /// Reformat a cleaned message (string content from `extract_user_assistant_pairs`)
 /// into the active provider's wire format via the Provider trait. This is
@@ -550,6 +499,7 @@ fn msg_one_line(msg: &serde_json::Value) -> String {
 #[cfg(test)]
 mod render_raw_context_tests {
     use super::*;
+    use crate::types::Message;
     use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
     use serde_json::json;
 

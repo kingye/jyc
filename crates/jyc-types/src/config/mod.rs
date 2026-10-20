@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use crate::WecomGlobalConfig;
 
 use crate::channel::ChannelPattern;
-use crate::channel::{ContextStrategyConfig, ResetCompressionConfig};
+use crate::channel::ContextStrategyConfig;
 use crate::feishu_config::FeishuConfig;
 use crate::gitee_config::GiteeConfig;
 use crate::github_config::GithubConfig;
@@ -789,17 +789,6 @@ pub struct AiConfig {
     /// vision model (e.g., DeepSeek-OCR) for image analysis via `read_image`.
     pub vision: Option<VisionConfig>,
 
-    /// Compression configuration for session reset (global fallback).
-    /// Per-pattern `reset_compression` takes priority when set.
-    #[serde(default)]
-    pub reset_compression: Option<ResetCompressionConfig>,
-
-    /// Auto-reset threshold as a fraction of context window (0.0~1.0).
-    /// Per-pattern `auto_reset_threshold` takes priority when set.
-    /// Default: 0.95.
-    #[serde(default = "default_auto_reset_threshold")]
-    pub auto_reset_threshold: f64,
-
     /// Default context management strategy. Per-pattern `context_strategy`
     /// takes priority when set.
     #[serde(default)]
@@ -823,8 +812,6 @@ impl Default for AiConfig {
             attachments: None,
             providers: std::collections::HashMap::new(),
             vision: None,
-            reset_compression: None,
-            auto_reset_threshold: default_auto_reset_threshold(),
             context_strategy: None,
         }
     }
@@ -1282,10 +1269,6 @@ fn default_max_iterations() -> usize {
 
 fn default_sse_read_timeout() -> u64 {
     120
-}
-
-fn default_auto_reset_threshold() -> f64 {
-    0.95
 }
 
 /// Unified attachment configuration with inbound and outbound sections.

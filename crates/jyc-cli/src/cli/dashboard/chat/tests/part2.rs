@@ -3039,6 +3039,76 @@ fn info_pane_draws_no_bar_in_a_too_narrow_pane() {
     );
 }
 
+/// A value too long for the pane's value column wraps inside it, and the
+/// line that continues it is indented to that column — so the column keeps
+/// its values instead of dropping them back to the pane's edge.
+#[test]
+fn info_pane_indents_a_continued_value_to_its_column() {
+    let mut app = info_pane_app(Default::default());
+    {
+        let detail = app.topic_detail.as_mut().expect("the topic's detail");
+        detail.branch = Some("feat/issue-42 add a very long branch name".to_string());
+    }
+
+    // 46 columns wide: the pane's inner width is 45, wide enough for the
+    // table layout.
+    let pane = info_pane_text(&mut app, 46, 40);
+    let rows = info_pane_rows(&pane);
+    let row = rows
+        .iter()
+        .find(|r| r.contains("long branch name"))
+        .unwrap_or_else(|| panic!("no row continues the branch name:\n{pane}"));
+    assert_eq!(
+        row.find("long branch name"),
+        Some(INFO_PANE_LABEL_WIDTH),
+        "the rest of a value must stay in the value's column:\n{pane}"
+    );
+}
+
+/// The text of a laid-out line: its spans' contents in order.
+fn info_pane_line_text(line: &Line) -> String {
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
+/// The table layout, one row at a time: the value starts in the label's
+/// column, and a value too long for the column continues in it — the lines
+/// that carry the rest of it are indented to the same column.
+#[test]
+fn info_pane_table_layout_keeps_a_long_value_in_its_column() {
+    let rows = vec![InfoRow::Field(vec![
+        label_span("Cost: "),
+        Span::raw("467.8899 session - 84.3464 today"),
+    ])];
+    // 39 cells wide: the label column takes sixteen, the value column the
+    // rest.
+    let lines = layout_info_rows(rows, PaneLayout::Table, 39);
+    assert_eq!(lines.len(), 2, "the value must wrap inside the column");
+    assert_eq!(
+        info_pane_line_text(&lines[0]).find("467.8899"),
+        Some(INFO_PANE_LABEL_WIDTH),
+        "the value must start in the label's column"
+    );
+    assert_eq!(
+        info_pane_line_text(&lines[1]).find("84.3464"),
+        Some(INFO_PANE_LABEL_WIDTH),
+        "the rest of the value must stay in the label's column"
+    );
+}
+
+/// The stacked layout, one row at a time: the label takes a row of its
+/// own, without the padding it carries in the table layout, and the value
+/// follows flush left under it.
+#[test]
+fn info_pane_stacked_layout_drops_the_labels_padding() {
+    let rows = vec![InfoRow::Field(vec![
+        label_span("Topic: "),
+        Span::raw("jyc"),
+    ])];
+    let lines = layout_info_rows(rows, PaneLayout::Stacked, 29);
+    assert_eq!(info_pane_line_text(&lines[0]), "Topic:");
+    assert_eq!(info_pane_line_text(&lines[1]), "jyc");
+}
+
 /// The table layout: every label is padded to the same width, so every
 /// value of the pane starts in the same column and the pane reads as one
 /// table rather than a ragged list.

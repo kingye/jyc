@@ -546,8 +546,7 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # # params = { prompt_cache_key = "jyc-{channel}-{topic}", prompt_cache_options = { mode = "implicit", ttl = "30m" } }
 # #
 # Two figures are tracked per topic:
-#   - session: resets when the agent session resets (context auto-reset,
-#     /reset, or a model switch to a smaller context window)
+#   - session: resets when the agent session is reset (`/reset`)
 #   - today:   durable UTC-day total, appended per call to
 #     <topic>/.jyc/bill-YYYY-MM-DD.jsonl and never reset or truncated
 

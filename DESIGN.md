@@ -3161,6 +3161,13 @@ works counts too, because the model may have given up on the call that
 failed — and a failure that stands still leaves the topic in error until
 the next turn starts.
 
+Both writes — the report and the turn's end — follow the "if known" rule: a
+topic closed mid-turn has no status entry any more, and re-creating one
+would report a topic that is gone as failed, and a name reused later would
+inherit that failure. The turn's end closes the "processing" flag only when
+the turn left it open, so a turn that died without saying so cannot leave
+the topic working forever.
+
 `last_active_at` is the other field both carry, and they carry the same one:
 the event stream's stamp for the topic. The state dir's mtime is only the
 fallback, for a topic the tracker has not seen yet.

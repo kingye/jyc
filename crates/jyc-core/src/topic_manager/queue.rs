@@ -388,7 +388,7 @@ impl TopicManager {
                 // publishes the events the status mirrors); this guard
                 // covers the paths where it does not — a panic, a cancel —
                 // so "Processing" cannot outlive the turn.
-                let mut status_guard =
+                let _status_guard =
                     TurnStatusGuard::new(tm.live_status.clone(), topic_name.clone());
                 let processed = process_message(
                     &mut item,
@@ -404,7 +404,6 @@ impl TopicManager {
                     topic_cancel.clone(),
                 )
                 .await;
-                status_guard.disarm();
                 if let Err(e) = processed {
                     let err_display = format!("{:#}", e);
                     tracing::error!(
@@ -416,8 +415,10 @@ impl TopicManager {
                     // The turn failed without publishing a completion of its
                     // own: close its live status here, before the events
                     // below go out, so every consumer that reads the status
-                    // on that event already sees the turn as failed.
-                    tm.set_topic_turn_ended(&topic_name, false);
+                    // on that event already sees the turn as failed. A topic
+                    // closed mid-turn is left alone — it is gone, and
+                    // re-creating it would report it as failed.
+                    tm.end_topic_turn_if_known(&topic_name, false);
 
                     if let Some(event_bus) = event_bus_for_error.clone() {
                         let truncated: String = err_display.chars().take(200).collect();

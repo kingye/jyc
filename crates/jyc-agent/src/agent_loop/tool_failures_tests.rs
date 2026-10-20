@@ -1,8 +1,11 @@
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::tools::ToolOutput;
 
-use super::tool_failures::{ToolFailures, TurnStatus, report_standing_failures, settle_turn};
+use super::tool_failures::{
+    ToolFailures, TurnStatus, finish_turn, report_standing_failures, settle_turn,
+};
 
 #[test]
 fn a_failed_tool_stands() {
@@ -55,7 +58,7 @@ fn each_tool_stands_on_its_own() {
 /// The status the turn's outcome was written to.
 #[derive(Default)]
 struct Recorded {
-    calls: RefCell<Vec<String>>,
+    calls: Rc<RefCell<Vec<String>>>,
 }
 
 impl TurnStatus for Recorded {
@@ -122,5 +125,33 @@ fn the_failure_is_reported_even_when_the_turn_dies() {
         status.calls(),
         vec!["tool_error(t)".to_string()],
         "the report stands on its own when the turn's end is not this path's to write"
+    );
+}
+
+/// The turn is settled before it is announced.
+///
+/// The inspect server publishes the live status when it sees the turn's
+/// end, so a failure that landed after it would reach the dashboard one
+/// event too late.
+#[tokio::test]
+async fn the_turn_is_settled_before_it_is_announced() {
+    let mut failures = ToolFailures::default();
+    failures.record("edit", &ToolOutput::error("oldString not found"));
+
+    let status = Recorded::default();
+    let log = status.calls.clone();
+    finish_turn(Some(&status), "t", &failures, true, move || async move {
+        log.borrow_mut().push("announced".to_string());
+    })
+    .await;
+
+    assert_eq!(
+        status.calls(),
+        vec![
+            "tool_error(t)".to_string(),
+            "turn_ended(t, true)".to_string(),
+            "announced".to_string(),
+        ],
+        "the status is settled first, then the turn's end is announced"
     );
 }

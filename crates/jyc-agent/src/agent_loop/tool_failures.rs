@@ -18,6 +18,7 @@
 //! (a different call) works.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 
 use jyc_core::topic_manager::TopicManager;
 
@@ -44,7 +45,7 @@ impl TurnStatus for ManagerStatus<'_> {
     }
 
     fn turn_ended(&self, topic: &str, success: bool) {
-        self.0.set_topic_turn_ended(topic, success);
+        self.0.end_topic_turn_if_known(topic, success);
     }
 }
 
@@ -113,6 +114,26 @@ pub(super) fn settle_turn(
     if let Some(status) = status {
         status.turn_ended(topic, success);
     }
+}
+
+/// Settle the turn and announce its end.
+///
+/// The two belong together: every path that ends a turn settles the status
+/// and says so, and the order between them is the one
+/// [`settle_turn`] documents. The announcement is a closure so that the
+/// order can be pinned without a whole event bus.
+pub(super) async fn finish_turn<F, Fut>(
+    status: Option<&impl TurnStatus>,
+    topic: &str,
+    failures: &ToolFailures,
+    success: bool,
+    announce: F,
+) where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = ()>,
+{
+    settle_turn(status, topic, failures, success);
+    announce().await;
 }
 
 /// The failure's message, trimmed — the log line wants to name the call,

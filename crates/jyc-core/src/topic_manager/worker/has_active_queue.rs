@@ -1743,7 +1743,7 @@ async fn topic_snapshots_report_the_live_status() {
     );
 
     // A turn that failed leaves the topic in error...
-    tm.set_topic_turn_ended("live-status-topic", false);
+    tm.end_topic_turn_if_known("live-status-topic", false);
     assert_eq!(status(&tm).await, jyc_types::TopicStatus::Error);
 
     // ...until the next turn starts.
@@ -1753,7 +1753,7 @@ async fn topic_snapshots_report_the_live_status() {
     // A failure the model recovered from leaves the topic as it was: the
     // report never reached the status, and the turn ended fine.
     tm.set_topic_processing("live-status-topic");
-    tm.set_topic_turn_ended("live-status-topic", true);
+    tm.end_topic_turn_if_known("live-status-topic", true);
     assert_eq!(status(&tm).await, jyc_types::TopicStatus::Idle);
 
     // A failure that stands is reported before the turn ends — the order
@@ -1761,17 +1761,20 @@ async fn topic_snapshots_report_the_live_status() {
     // turn itself succeeded.
     tm.set_topic_processing("live-status-topic");
     tm.set_topic_tool_error_if_known("live-status-topic");
-    tm.set_topic_turn_ended("live-status-topic", true);
+    tm.end_topic_turn_if_known("live-status-topic", true);
     assert_eq!(status(&tm).await, jyc_types::TopicStatus::Error);
 
     // ...until the next turn starts.
     tm.set_topic_processing("live-status-topic");
     assert_eq!(status(&tm).await, jyc_types::TopicStatus::Processing);
 
-    // A topic closed mid-turn is not brought back by the report: the close
-    // cleared it, and re-creating it would report a closed topic as failed.
+    // A topic closed mid-turn is not brought back by the report, nor by the
+    // turn's end: the close cleared it, and re-creating it would report a
+    // closed topic as failed — and a name reused later would inherit that
+    // failure.
     tm.live_status.clear("live-status-topic");
     tm.set_topic_tool_error_if_known("live-status-topic");
+    tm.end_topic_turn_if_known("live-status-topic", false);
     assert!(
         !tm.topic_live_status("live-status-topic").has_error,
         "a closed topic stays gone"

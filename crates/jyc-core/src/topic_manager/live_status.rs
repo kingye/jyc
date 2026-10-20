@@ -72,22 +72,12 @@ impl LiveStatusStore {
     /// The turn ended. A turn that did not succeed leaves the topic in
     /// error; one that did keeps the error an unrecovered tool failure left
     /// behind, so the topic still reports what went wrong.
-    pub fn set_turn_ended(&self, topic: &str, success: bool) {
-        let mut statuses = self.statuses();
-        let entry = statuses.entry(topic.to_string()).or_default();
-        entry.is_processing = false;
-        if !success {
-            entry.has_error = true;
-        }
-    }
-
-    /// The turn ended, for a topic the store still knows.
     ///
-    /// A topic that was closed mid-turn has no entry any more — the close
-    /// clears it — and re-creating it here would report the topic as failed
-    /// until its next turn, and a name reused later would inherit that
-    /// failure. A topic that never ran has no entry to fail in the first
-    /// place.
+    /// The write follows the "if known" rule: a topic that was closed
+    /// mid-turn has no entry any more — the close clears it — and
+    /// re-creating it here would report the topic as failed until its next
+    /// turn, and a name reused later would inherit that failure. A topic
+    /// that never ran has no entry to end in the first place.
     pub fn end_turn_if_known(&self, topic: &str, success: bool) {
         let mut statuses = self.statuses();
         if let Some(entry) = statuses.get_mut(topic) {
@@ -142,8 +132,11 @@ impl TopicManager {
     }
 
     /// The topic's turn ended — `success` says whether it went through.
-    pub fn set_topic_turn_ended(&self, topic_name: &str, success: bool) {
-        self.live_status.set_turn_ended(topic_name, success);
+    ///
+    /// A topic the store does not know — one that was closed mid-turn — is
+    /// left alone: the report says nothing about a topic that is gone.
+    pub fn end_topic_turn_if_known(&self, topic_name: &str, success: bool) {
+        self.live_status.end_turn_if_known(topic_name, success);
     }
 
     /// A tool failed during the topic's turn and the model did not recover
@@ -167,27 +160,21 @@ impl TopicManager {
 pub(crate) struct TurnStatusGuard {
     store: Arc<LiveStatusStore>,
     topic_name: String,
-    closed: bool,
 }
 
 impl TurnStatusGuard {
     pub(crate) fn new(store: Arc<LiveStatusStore>, topic_name: String) -> Self {
-        Self {
-            store,
-            topic_name,
-            closed: false,
-        }
-    }
-
-    /// The turn closed itself — nothing left to clean up.
-    pub(crate) fn disarm(&mut self) {
-        self.closed = true;
+        Self { store, topic_name }
     }
 }
 
 impl Drop for TurnStatusGuard {
     fn drop(&mut self) {
-        if !self.closed {
+        // Only a turn that left the flag open: a turn that ended on its own
+        // closed it, and a topic closed mid-turn has no entry to close. A
+        // turn that died without saying so (a panic) leaves the flag open —
+        // close it as failed.
+        if self.store.get(&self.topic_name).is_processing {
             // Only for a topic the store still knows: a topic closed while
             // the turn was in flight has no entry any more, and writing one
             // here would report it as failed (see `end_turn_if_known`).
@@ -219,14 +206,14 @@ mod tests {
 
     /// A turn that closed its own status leaves the guard nothing to do.
     #[test]
-    fn a_disarmed_guard_changes_nothing() {
+    fn a_guard_over_a_closed_turn_changes_nothing() {
         let store = store();
         store.set_processing("t");
+        store.end_turn_if_known("t", true);
         {
-            let mut guard = TurnStatusGuard::new(store.clone(), "t".to_string());
-            guard.disarm();
+            let _guard = TurnStatusGuard::new(store.clone(), "t".to_string());
         }
-        assert_eq!(store.get("t").status(), TopicStatus::Processing);
+        assert_eq!(store.get("t").status(), TopicStatus::Idle);
     }
 
     /// A topic closed mid-turn has no entry any more. The guard must not
@@ -240,6 +227,21 @@ mod tests {
         {
             let _guard = TurnStatusGuard::new(store.clone(), "t".to_string());
         }
+        let statuses = store.statuses.lock().unwrap();
+        assert!(
+            !statuses.contains_key("t"),
+            "the closed topic came back as a failed one"
+        );
+    }
+
+    /// The turn's end follows the "if known" rule too: a topic closed
+    /// mid-turn stays gone, and a failed turn does not bring it back.
+    #[test]
+    fn a_failed_turn_does_not_revive_a_closed_topic() {
+        let store = store();
+        store.set_processing("t");
+        store.clear("t");
+        store.end_turn_if_known("t", false);
         let statuses = store.statuses.lock().unwrap();
         assert!(
             !statuses.contains_key("t"),

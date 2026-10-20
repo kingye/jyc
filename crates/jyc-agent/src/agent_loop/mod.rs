@@ -179,6 +179,10 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             .and_then(|managers| managers.by_channel(channel))
     });
 
+    // Where this turn's outcome goes. One binding for the whole loop, so
+    // every path that settles the turn writes it the same way.
+    let status = status_topic.as_deref().map(ManagerStatus);
+
     let max_iter = max_iterations.unwrap_or(DEFAULT_MAX_ITERATIONS);
 
     // Build internal history: prior context + current message
@@ -431,7 +435,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             Err(e) => {
                 // The turn dies here, so the failures that stand are
                 // reported now — the turn's end is this path's to write.
-                let status = status_topic.as_deref().map(ManagerStatus);
                 report_standing_failures(status.as_ref(), topic_name, &tool_failures);
                 return Err(e);
             }
@@ -644,17 +647,25 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
             let duration = start_time.elapsed();
             // The turn's outcome: the tool failures that stand put the topic
-            // in error, the ones the model recovered from say nothing.
-            let status = status_topic.as_deref().map(ManagerStatus);
-            settle_turn(status.as_ref(), topic_name, &tool_failures, true);
-            publish_event(
-                event_bus,
-                TopicEvent::ProcessingCompleted {
-                    topic_name: topic_name.to_string(),
-                    message_id: "agent-loop".to_string(),
-                    success: true,
-                    duration_secs: duration.as_secs(),
-                    timestamp: Utc::now(),
+            // in error, the ones the model recovered from say nothing. The
+            // status is settled before the turn's end is announced.
+            finish_turn(
+                status.as_ref(),
+                topic_name,
+                &tool_failures,
+                true,
+                move || async move {
+                    publish_event(
+                        event_bus,
+                        TopicEvent::ProcessingCompleted {
+                            topic_name: topic_name.to_string(),
+                            message_id: "agent-loop".to_string(),
+                            success: true,
+                            duration_secs: duration.as_secs(),
+                            timestamp: Utc::now(),
+                        },
+                    )
+                    .await
                 },
             )
             .await;
@@ -689,7 +700,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 );
                 // The turn is over: report the failures that stand before
                 // it ends, so the topic's status says what happened.
-                let status = status_topic.as_deref().map(ManagerStatus);
                 report_standing_failures(status.as_ref(), topic_name, &tool_failures);
                 anyhow::bail!(
                     "model generated tool calls with empty arguments for {} consecutive \
@@ -972,16 +982,23 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     // it managed to deliver first, including a question that ended the turn.
     let duration = start_time.elapsed();
     let turn_succeeded = handed_over && !cancel.is_cancelled();
-    let status = status_topic.as_deref().map(ManagerStatus);
-    settle_turn(status.as_ref(), topic_name, &tool_failures, turn_succeeded);
-    publish_event(
-        event_bus,
-        TopicEvent::ProcessingCompleted {
-            topic_name: topic_name.to_string(),
-            message_id: "agent-loop".to_string(),
-            success: turn_succeeded,
-            duration_secs: duration.as_secs(),
-            timestamp: Utc::now(),
+    finish_turn(
+        status.as_ref(),
+        topic_name,
+        &tool_failures,
+        turn_succeeded,
+        move || async move {
+            publish_event(
+                event_bus,
+                TopicEvent::ProcessingCompleted {
+                    topic_name: topic_name.to_string(),
+                    message_id: "agent-loop".to_string(),
+                    success: turn_succeeded,
+                    duration_secs: duration.as_secs(),
+                    timestamp: Utc::now(),
+                },
+            )
+            .await
         },
     )
     .await;
@@ -1298,6 +1315,6 @@ mod embedded_ask;
 mod response;
 mod retry;
 
-use tool_failures::{ManagerStatus, ToolFailures, report_standing_failures, settle_turn};
+use tool_failures::{ManagerStatus, ToolFailures, finish_turn, report_standing_failures};
 
 use retry::{SSE_RETRY_BACKOFF_MS, complete_with_retry};

@@ -157,6 +157,9 @@ impl TopicManager {
         // activity-log entries from event subscribers) are dropped instead of
         // recreating the directory. The topic-open path lifts the freeze.
         jyc_types::state_dir::mark_closed(topic_name);
+        // The topic is gone: forget its live status, so the map does not
+        // keep an entry for a topic that no longer exists.
+        self.live_status.clear(topic_name);
         let topic_path = self
             .topic_path(topic_name)
             .await

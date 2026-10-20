@@ -45,31 +45,16 @@ fn explorer_move_clamps_and_saturates() {
     app.state = Some(jyc_types::InspectOverview {
         topics: (0..5)
             .map(|i| jyc_types::TopicSummary {
-                tasks: Default::default(),
                 name: format!("t{i}"),
                 channel: "test".to_string(),
                 agent: None,
                 pattern: None,
                 status: jyc_types::TopicStatus::Idle,
-                model: None,
-                mode: None,
-                branch: None,
-                changed_files: None,
                 context_input_tokens: None,
-                total_input_tokens: None,
-                total_cache_hit_tokens: None,
-                total_cache_creation_tokens: None,
-                avg_call_ms: None,
-                call_count: None,
-                avg_turn_call_ms: None,
-                turn_call_count: None,
                 max_tokens: None,
-                output_tokens: None,
                 last_active_at: None,
-                skills: vec![],
                 topic_path: None,
                 parent: None,
-                cost: None,
                 commands: vec![],
             })
             .collect(),
@@ -96,31 +81,16 @@ fn opening_explorer_snaps_selection_to_chat_topic() {
     app.state = Some(jyc_types::InspectOverview {
         topics: (0..5)
             .map(|i| jyc_types::TopicSummary {
-                tasks: Default::default(),
                 name: format!("t{i}"),
                 channel: "test".to_string(),
                 agent: None,
                 pattern: None,
                 status: jyc_types::TopicStatus::Idle,
-                model: None,
-                mode: None,
-                branch: None,
-                changed_files: None,
                 context_input_tokens: None,
-                total_input_tokens: None,
-                total_cache_hit_tokens: None,
-                total_cache_creation_tokens: None,
-                avg_call_ms: None,
-                call_count: None,
-                avg_turn_call_ms: None,
-                turn_call_count: None,
                 max_tokens: None,
-                output_tokens: None,
                 last_active_at: None,
-                skills: vec![],
                 topic_path: None,
                 parent: None,
-                cost: None,
                 commands: vec![],
             })
             .collect(),
@@ -146,31 +116,16 @@ fn opening_explorer_keeps_selection_when_chat_topic_not_in_list() {
     let mut app = App::new(rx, None);
     app.state = Some(jyc_types::InspectOverview {
         topics: vec![jyc_types::TopicSummary {
-            tasks: Default::default(),
             name: "t0".to_string(),
             channel: "test".to_string(),
             agent: None,
             pattern: None,
             status: jyc_types::TopicStatus::Idle,
-            model: None,
-            mode: None,
-            branch: None,
-            changed_files: None,
             context_input_tokens: None,
-            total_input_tokens: None,
-            total_cache_hit_tokens: None,
-            total_cache_creation_tokens: None,
-            avg_call_ms: None,
-            call_count: None,
-            avg_turn_call_ms: None,
-            turn_call_count: None,
             max_tokens: None,
-            output_tokens: None,
             last_active_at: None,
-            skills: vec![],
             topic_path: None,
             parent: None,
-            cost: None,
             commands: vec![],
         }],
         ..Default::default()
@@ -242,59 +197,29 @@ async fn explorer_switch_sets_pending_hydrate_and_hides_explorer() {
         }],
         topics: vec![
             jyc_types::TopicSummary {
-                tasks: Default::default(),
                 name: "current".to_string(),
                 channel: "local_dev".to_string(),
                 agent: None,
                 pattern: None,
                 status: jyc_types::TopicStatus::Idle,
-                model: None,
-                mode: None,
-                branch: None,
-                changed_files: None,
                 context_input_tokens: None,
-                total_input_tokens: None,
-                total_cache_hit_tokens: None,
-                total_cache_creation_tokens: None,
-                avg_call_ms: None,
-                call_count: None,
-                avg_turn_call_ms: None,
-                turn_call_count: None,
                 max_tokens: None,
-                output_tokens: None,
                 last_active_at: None,
-                skills: vec![],
                 topic_path: None,
                 parent: None,
-                cost: None,
                 commands: vec![],
             },
             jyc_types::TopicSummary {
-                tasks: Default::default(),
                 name: "other".to_string(),
                 channel: "local_dev".to_string(),
                 agent: None,
                 pattern: None,
                 status: jyc_types::TopicStatus::Idle,
-                model: None,
-                mode: None,
-                branch: None,
-                changed_files: None,
                 context_input_tokens: None,
-                total_input_tokens: None,
-                total_cache_hit_tokens: None,
-                total_cache_creation_tokens: None,
-                avg_call_ms: None,
-                call_count: None,
-                avg_turn_call_ms: None,
-                turn_call_count: None,
                 max_tokens: None,
-                output_tokens: None,
                 last_active_at: None,
-                skills: vec![],
                 topic_path: None,
                 parent: None,
-                cost: None,
                 commands: vec![],
             },
         ],
@@ -578,34 +503,104 @@ fn explorer_scrolls_to_keep_the_cursor_visible() {
     );
 }
 
+/// The info pane reads the topic's *detail* — the same source `/info` reads —
+/// and only when that detail is the topic on screen: a detail left over from
+/// another topic must not be shown.
+#[test]
+fn info_pane_reads_the_shown_topics_detail() {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.visible = true;
+    app.chat.info_visible = true;
+    app.chat.topic = Some("jyc".to_string());
+    app.chat.channel = Some("local_dev".to_string());
+    app.state = Some(jyc_types::InspectOverview {
+        topics: vec![jyc_types::TopicSummary {
+            name: "jyc".to_string(),
+            channel: "local_dev".to_string(),
+            agent: None,
+            pattern: None,
+            status: jyc_types::TopicStatus::Idle,
+            context_input_tokens: None,
+            max_tokens: None,
+            last_active_at: None,
+            topic_path: None,
+            parent: None,
+            commands: vec![],
+        }],
+        ..Default::default()
+    });
+
+    // No detail fetched yet — nothing to show.
+    assert!(
+        selected_topic_detail(&app).is_none(),
+        "without a detail the pane has no topic to render"
+    );
+
+    // A detail for another topic is not the topic on screen.
+    app.topic_detail = Some(topic_detail_for("other", "local_dev"));
+    assert!(
+        selected_topic_detail(&app).is_none(),
+        "another topic's detail must not be shown"
+    );
+
+    // The detail of the topic on screen is.
+    app.topic_detail = Some(topic_detail_for("jyc", "local_dev"));
+    assert_eq!(
+        selected_topic_detail(&app).map(|d| d.name.as_str()),
+        Some("jyc"),
+        "the pane must render the topic on screen"
+    );
+}
+
+/// A topic's detail, with nothing but its identity filled in.
+fn topic_detail_for(name: &str, channel: &str) -> jyc_types::TopicInfo {
+    jyc_types::TopicInfo {
+        name: name.to_string(),
+        channel: channel.to_string(),
+        pattern: None,
+        status: jyc_types::TopicStatus::Idle,
+        model: None,
+        mode: None,
+        context_input_tokens: None,
+        max_tokens: None,
+        output_tokens: None,
+        total_input_tokens: None,
+        total_cache_hit_tokens: None,
+        total_cache_creation_tokens: None,
+        total_reasoning_tokens: None,
+        avg_call_ms: None,
+        call_count: None,
+        avg_turn_call_ms: None,
+        turn_call_count: None,
+        activity: vec![],
+        last_active_at: None,
+        skills: vec![],
+        available_skills: vec![],
+        recent_messages: vec![],
+        thinking_text: None,
+        topic_path: None,
+        branch: None,
+        changed_files: None,
+        tasks: Default::default(),
+        cost: None,
+        commands: vec![],
+    }
+}
+
 /// Minimal idle topic for the explorer rendering tests.
 fn explorer_topic(name: &str) -> jyc_types::TopicSummary {
     jyc_types::TopicSummary {
-        tasks: Default::default(),
         name: name.to_string(),
         channel: "test".to_string(),
         agent: None,
         pattern: None,
         status: jyc_types::TopicStatus::Idle,
-        model: None,
-        mode: None,
-        branch: None,
-        changed_files: None,
         context_input_tokens: None,
-        total_input_tokens: None,
-        total_cache_hit_tokens: None,
-        total_cache_creation_tokens: None,
-        avg_call_ms: None,
-        call_count: None,
-        avg_turn_call_ms: None,
-        turn_call_count: None,
         max_tokens: None,
-        output_tokens: None,
         last_active_at: None,
-        skills: vec![],
         topic_path: None,
         parent: None,
-        cost: None,
         commands: vec![],
     }
 }
@@ -632,77 +627,95 @@ fn files_section_colors_uncommitted_paths_yellow() {
     app.chat.info_visible = true;
     app.state = Some(jyc_types::InspectOverview {
         topics: vec![jyc_types::TopicSummary {
-            tasks: Default::default(),
             name: "jyc".to_string(),
             channel: "local_dev".to_string(),
             agent: None,
             pattern: Some("jyc".to_string()),
             status: jyc_types::TopicStatus::Idle,
-            model: None,
-            mode: None,
-            branch: None,
-            // One of each kind — sorted alphabetically on render.
-            // added.rs       Added      clean    +7 -0
-            // deleted.rs     Deleted    clean    (binary: no counts)
-            // dirty_add.rs   Added      dirty (yellow) +2 -0
-            // dirty_mod.rs   Modified   dirty (yellow) (no counts)
-            // modified.rs    Modified   clean    (no counts)
-            changed_files: Some(vec![
-                ChangedFileEntry {
-                    path: "modified.rs".into(),
-                    uncommitted: false,
-                    change: ChangeKind::Modified,
-                    lines: None,
-                },
-                ChangedFileEntry {
-                    path: "added.rs".into(),
-                    uncommitted: false,
-                    change: ChangeKind::Added,
-                    lines: Some(LineStats {
-                        insertions: 7,
-                        deletions: 0,
-                    }),
-                },
-                ChangedFileEntry {
-                    path: "deleted.rs".into(),
-                    uncommitted: false,
-                    change: ChangeKind::Deleted,
-                    lines: None,
-                },
-                ChangedFileEntry {
-                    path: "dirty_add.rs".into(),
-                    uncommitted: true,
-                    change: ChangeKind::Added,
-                    lines: Some(LineStats {
-                        insertions: 2,
-                        deletions: 0,
-                    }),
-                },
-                ChangedFileEntry {
-                    path: "dirty_mod.rs".into(),
-                    uncommitted: true,
-                    change: ChangeKind::Modified,
-                    lines: None,
-                },
-            ]),
             context_input_tokens: None,
-            total_input_tokens: None,
-            total_cache_hit_tokens: None,
-            total_cache_creation_tokens: None,
-            avg_call_ms: None,
-            call_count: None,
-            avg_turn_call_ms: None,
-            turn_call_count: None,
             max_tokens: None,
-            output_tokens: None,
             last_active_at: None,
-            skills: vec![],
             topic_path: None,
             parent: None,
-            cost: None,
             commands: vec![],
         }],
         ..Default::default()
+    });
+    // The file list comes from the topic's detail — the same source `/info`
+    // reads.
+    app.topic_detail = Some(jyc_types::TopicInfo {
+        name: "jyc".to_string(),
+        channel: "local_dev".to_string(),
+        pattern: Some("jyc".to_string()),
+        status: jyc_types::TopicStatus::Idle,
+        model: None,
+        mode: None,
+        context_input_tokens: None,
+        max_tokens: None,
+        output_tokens: None,
+        total_input_tokens: None,
+        total_cache_hit_tokens: None,
+        total_cache_creation_tokens: None,
+        total_reasoning_tokens: None,
+        avg_call_ms: None,
+        call_count: None,
+        avg_turn_call_ms: None,
+        turn_call_count: None,
+        activity: vec![],
+        last_active_at: None,
+        skills: vec![],
+        available_skills: vec![],
+        recent_messages: vec![],
+        thinking_text: None,
+        topic_path: None,
+        branch: None,
+        // One of each kind — sorted alphabetically on render.
+        // added.rs       Added      clean    +7 -0
+        // deleted.rs     Deleted    clean    (binary: no counts)
+        // dirty_add.rs   Added      dirty (yellow) +2 -0
+        // dirty_mod.rs   Modified   dirty (yellow) (no counts)
+        // modified.rs    Modified   clean    (no counts)
+        changed_files: Some(vec![
+            ChangedFileEntry {
+                path: "modified.rs".into(),
+                uncommitted: false,
+                change: ChangeKind::Modified,
+                lines: None,
+            },
+            ChangedFileEntry {
+                path: "added.rs".into(),
+                uncommitted: false,
+                change: ChangeKind::Added,
+                lines: Some(LineStats {
+                    insertions: 7,
+                    deletions: 0,
+                }),
+            },
+            ChangedFileEntry {
+                path: "deleted.rs".into(),
+                uncommitted: false,
+                change: ChangeKind::Deleted,
+                lines: None,
+            },
+            ChangedFileEntry {
+                path: "dirty_add.rs".into(),
+                uncommitted: true,
+                change: ChangeKind::Added,
+                lines: Some(LineStats {
+                    insertions: 2,
+                    deletions: 0,
+                }),
+            },
+            ChangedFileEntry {
+                path: "dirty_mod.rs".into(),
+                uncommitted: true,
+                change: ChangeKind::Modified,
+                lines: None,
+            },
+        ]),
+        tasks: Default::default(),
+        cost: None,
+        commands: vec![],
     });
     app.table_state.select(Some(0));
 
@@ -864,54 +877,72 @@ fn info_scroll_is_clamped_after_render() {
     app.chat.info_visible = true;
     app.state = Some(jyc_types::InspectOverview {
         topics: vec![jyc_types::TopicSummary {
-            tasks: Default::default(),
             name: "jyc".to_string(),
             channel: "local_dev".to_string(),
             agent: None,
             pattern: Some("jyc".to_string()),
             status: jyc_types::TopicStatus::Idle,
-            model: None,
-            mode: None,
-            branch: None,
-            // Three files — fits easily in a tall pane.
-            changed_files: Some(vec![
-                ChangedFileEntry {
-                    path: "a.rs".into(),
-                    uncommitted: false,
-                    change: jyc_types::ChangeKind::Modified,
-                    lines: None,
-                },
-                ChangedFileEntry {
-                    path: "b.rs".into(),
-                    uncommitted: false,
-                    change: jyc_types::ChangeKind::Modified,
-                    lines: None,
-                },
-                ChangedFileEntry {
-                    path: "c.rs".into(),
-                    uncommitted: false,
-                    change: jyc_types::ChangeKind::Modified,
-                    lines: None,
-                },
-            ]),
             context_input_tokens: None,
-            total_input_tokens: None,
-            total_cache_hit_tokens: None,
-            total_cache_creation_tokens: None,
-            avg_call_ms: None,
-            call_count: None,
-            avg_turn_call_ms: None,
-            turn_call_count: None,
             max_tokens: None,
-            output_tokens: None,
             last_active_at: None,
-            skills: vec![],
             topic_path: None,
             parent: None,
-            cost: None,
             commands: vec![],
         }],
         ..Default::default()
+    });
+    // The file list comes from the topic's detail — the same source `/info`
+    // reads.
+    app.topic_detail = Some(jyc_types::TopicInfo {
+        name: "jyc".to_string(),
+        channel: "local_dev".to_string(),
+        pattern: Some("jyc".to_string()),
+        status: jyc_types::TopicStatus::Idle,
+        model: None,
+        mode: None,
+        context_input_tokens: None,
+        max_tokens: None,
+        output_tokens: None,
+        total_input_tokens: None,
+        total_cache_hit_tokens: None,
+        total_cache_creation_tokens: None,
+        total_reasoning_tokens: None,
+        avg_call_ms: None,
+        call_count: None,
+        avg_turn_call_ms: None,
+        turn_call_count: None,
+        activity: vec![],
+        last_active_at: None,
+        skills: vec![],
+        available_skills: vec![],
+        recent_messages: vec![],
+        thinking_text: None,
+        topic_path: None,
+        branch: None,
+        // Three files — fits easily in a tall pane.
+        changed_files: Some(vec![
+            ChangedFileEntry {
+                path: "a.rs".into(),
+                uncommitted: false,
+                change: jyc_types::ChangeKind::Modified,
+                lines: None,
+            },
+            ChangedFileEntry {
+                path: "b.rs".into(),
+                uncommitted: false,
+                change: jyc_types::ChangeKind::Modified,
+                lines: None,
+            },
+            ChangedFileEntry {
+                path: "c.rs".into(),
+                uncommitted: false,
+                change: jyc_types::ChangeKind::Modified,
+                lines: None,
+            },
+        ]),
+        tasks: Default::default(),
+        cost: None,
+        commands: vec![],
     });
     app.table_state.select(Some(0));
     // Pretend we previously scrolled way past the end.
@@ -1732,35 +1763,53 @@ fn info_pane_app(tasks: jyc_types::task::TaskList) -> App {
             agent: None,
             pattern: Some("jyc".to_string()),
             status: jyc_types::TopicStatus::Idle,
-            model: None,
-            mode: None,
-            branch: None,
-            // Empty-but-resolved, so `Files:` renders — that is the section the
-            // task list has to sit above.
-            changed_files: Some(vec![]),
             context_input_tokens: None,
-            total_input_tokens: None,
-            total_cache_hit_tokens: None,
-            total_cache_creation_tokens: None,
-            avg_call_ms: None,
-            call_count: None,
-            avg_turn_call_ms: None,
-            turn_call_count: None,
             max_tokens: None,
-            output_tokens: None,
             last_active_at: None,
-            skills: vec![],
             topic_path: None,
             parent: None,
-            cost: Some(jyc_types::TopicCost {
-                session: 0.42,
-                today: 1.23,
-                currency: "USD".to_string(),
-            }),
             commands: vec![],
-            tasks,
         }],
         ..Default::default()
+    });
+    // The topic's own figures — the cost row, the task list, the files
+    // section — come from the detail, the same source `/info` reads.
+    app.topic_detail = Some(jyc_types::TopicInfo {
+        name: "jyc".to_string(),
+        channel: "local_dev".to_string(),
+        pattern: Some("jyc".to_string()),
+        status: jyc_types::TopicStatus::Idle,
+        model: None,
+        mode: None,
+        context_input_tokens: None,
+        max_tokens: None,
+        output_tokens: None,
+        total_input_tokens: None,
+        total_cache_hit_tokens: None,
+        total_cache_creation_tokens: None,
+        total_reasoning_tokens: None,
+        avg_call_ms: None,
+        call_count: None,
+        avg_turn_call_ms: None,
+        turn_call_count: None,
+        activity: vec![],
+        last_active_at: None,
+        skills: vec![],
+        available_skills: vec![],
+        recent_messages: vec![],
+        thinking_text: None,
+        topic_path: None,
+        branch: None,
+        // Empty-but-resolved, so `Files:` renders — that is the section the
+        // task list has to sit above.
+        changed_files: Some(vec![]),
+        cost: Some(jyc_types::TopicCost {
+            session: 0.42,
+            today: 1.23,
+            currency: "USD".to_string(),
+        }),
+        commands: vec![],
+        tasks,
     });
     app.table_state.select(Some(0));
     app
@@ -1881,8 +1930,8 @@ fn info_pane_status_block_stays_when_topic_info_scrolls() {
     let mut app = status_block_app();
     // Overflow the topic info so `End`/`G`-style scrolling has somewhere
     // to go: ~30 changed files in a 24-row pane.
-    if let Some(state) = app.state.as_mut() {
-        state.topics[0].changed_files = Some(
+    if let Some(detail) = app.topic_detail.as_mut() {
+        detail.changed_files = Some(
             (0..30)
                 .map(|i| ChangedFileEntry {
                     path: format!("file_{i:02}.rs"),
@@ -2194,8 +2243,7 @@ fn info_pane_end_reaches_the_last_wrapped_row() {
         change: jyc_types::ChangeKind::Added,
         lines: None,
     });
-    let mut topic = explorer_topic("t");
-    topic.changed_files = Some(files);
+    let topic = explorer_topic("t");
 
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
@@ -2205,6 +2253,39 @@ fn info_pane_end_reaches_the_last_wrapped_row() {
     app.state = Some(jyc_types::InspectOverview {
         topics: vec![topic],
         ..Default::default()
+    });
+    // The file list comes from the topic's detail — the same source `/info`
+    // reads.
+    app.topic_detail = Some(jyc_types::TopicInfo {
+        name: "t".to_string(),
+        channel: "test".to_string(),
+        pattern: None,
+        status: jyc_types::TopicStatus::Idle,
+        model: None,
+        mode: None,
+        context_input_tokens: None,
+        max_tokens: None,
+        output_tokens: None,
+        total_input_tokens: None,
+        total_cache_hit_tokens: None,
+        total_cache_creation_tokens: None,
+        total_reasoning_tokens: None,
+        avg_call_ms: None,
+        call_count: None,
+        avg_turn_call_ms: None,
+        turn_call_count: None,
+        activity: vec![],
+        last_active_at: None,
+        skills: vec![],
+        available_skills: vec![],
+        recent_messages: vec![],
+        thinking_text: None,
+        topic_path: None,
+        branch: None,
+        changed_files: Some(files),
+        tasks: Default::default(),
+        cost: None,
+        commands: vec![],
     });
 
     let mut terminal =

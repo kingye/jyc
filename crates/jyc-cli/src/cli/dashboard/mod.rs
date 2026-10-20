@@ -90,12 +90,11 @@ struct App {
     /// Detail for the one topic the screen shows, fetched by the poll loop
     /// from `GET /api/topics/{channel}/{topic}/info`.
     ///
-    /// The overview poll carries no `branch` and no `changed_files`: resolving
-    /// them reads the checkout's `.git/HEAD` and runs up to four `git diff`s
-    /// per topic, which — paid for every topic on every poll — dominated the
-    /// round trip. The renderers
-    /// keep reading those two rows off the summary; [`App::apply_topic_detail`]
-    /// stamps them onto it from here.
+    /// The topic's own figures — model, mode, branch, tokens, cost, latency,
+    /// tasks, changed files, status — come from here, and from nowhere else:
+    /// the overview poll carries the list's own fields (identity, status,
+    /// context, last activity) and no more. The detail endpoint is also what
+    /// `/info` reads, so the pane and the command report the same numbers.
     topic_detail: Option<jyc_types::TopicInfo>,
     error: Option<String>,
     table_state: TableState,
@@ -155,7 +154,7 @@ struct App {
 /// chat is bound to, looked up through the shared
 /// [`jyc_types::find_topic`] by name (the channel narrows it when the chat
 /// knows one); otherwise it is the row under the dashboard cursor. Both the
-/// renderers (`chat::selected_topic_summary`) and the detail fetch go through
+/// renderers (`chat::selected_topic_detail`) and the detail fetch go through
 /// this, so they cannot disagree about which topic is on screen.
 /// Which pane owns the keys. One enum for both screens: the chat screen's
 /// panes, plus [`Focus::TopicsTable`] for the overview's topic table. The
@@ -218,27 +217,6 @@ impl App {
             chat: ChatState::new(ws_rx),
             link_regions: Rc::new(RefCell::new(Vec::new())),
         }
-    }
-
-    /// Stamp the fetched detail's `git`-derived rows onto the matching polled
-    /// summary.
-    ///
-    /// The overview leaves `branch` and `changed_files` empty, and every new
-    /// poll replaces the summaries, so this runs again on every poll result.
-    /// A detail for a topic the poll does not carry (yet) stamps nothing.
-    fn apply_topic_detail(&mut self) {
-        let Some(detail) = self.topic_detail.as_ref() else {
-            return;
-        };
-        let Some(state) = self.state.as_mut() else {
-            return;
-        };
-        let Some(i) = jyc_types::topic_index(&state.topics, &detail.name, Some(&detail.channel))
-        else {
-            return;
-        };
-        state.topics[i].branch = detail.branch.clone();
-        state.topics[i].changed_files = detail.changed_files.clone();
     }
 
     fn set_status(&mut self, msg: String) {
@@ -763,7 +741,6 @@ pub async fn run(
                         // Drop a detail the screen has already moved away from.
                         if shown_topic_key(&app) == Some(key) {
                             app.topic_detail = Some(info);
-                            app.apply_topic_detail();
                         }
                     }
                     Err(e) => {
@@ -817,7 +794,6 @@ pub async fn run(
                         }
 
                         app.state = Some(overview);
-                        app.apply_topic_detail();
                         // Auto-select the first topic on initial load so the
                         // activity pane is populated immediately via the existing
                         // hydrate + ensure_overview_ws paths. The user can still
@@ -2020,39 +1996,6 @@ mod tests {
 
     /// A `TopicInfo` as the per-topic info endpoint returns it — the detail
     /// the poll loop fetches for the topic on screen.
-    fn topic_detail(name: &str, channel: &str, branch: &str) -> jyc_types::TopicInfo {
-        jyc_types::TopicInfo {
-            name: name.into(),
-            channel: channel.into(),
-            pattern: None,
-            status: jyc_types::TopicStatus::Idle,
-            model: None,
-            mode: None,
-            context_input_tokens: None,
-            max_tokens: None,
-            output_tokens: None,
-            total_input_tokens: None,
-            total_cache_hit_tokens: None,
-            total_cache_creation_tokens: None,
-            total_reasoning_tokens: None,
-            avg_call_ms: None,
-            call_count: None,
-            avg_turn_call_ms: None,
-            turn_call_count: None,
-            activity: Vec::new(),
-            last_active_at: None,
-            skills: Vec::new(),
-            available_skills: Vec::new(),
-            recent_messages: Vec::new(),
-            thinking_text: None,
-            topic_path: None,
-            branch: Some(branch.into()),
-            changed_files: Some(Vec::new()),
-            tasks: Default::default(),
-            commands: Vec::new(),
-            cost: None,
-        }
-    }
 
     /// The detail fetch and the renderers must agree on which topic is on
     /// screen — the screen rule lives in `shown_topic_key` for exactly that.
@@ -2078,36 +2021,6 @@ mod tests {
         // falling back to the row under the cursor.
         app.chat.topic = Some("not-polled".to_string());
         assert_eq!(shown_topic_key(&app), None);
-    }
-
-    /// The two rows the overview leaves empty are exactly what the detail
-    /// fills: the stamping must land on the row the fetch was for, and on no
-    /// other.
-    #[test]
-    fn apply_topic_detail_stamps_only_its_own_row() {
-        let mut app = make_test_app();
-        let mut overview = make_overview_with_topics(&["a", "b"]);
-        overview.topics[1].channel = "mail".to_string();
-        app.state = Some(overview);
-        assert!(app.state.as_ref().unwrap().topics[1].branch.is_none());
-
-        app.topic_detail = Some(topic_detail("b", "mail", "feat/x"));
-        app.apply_topic_detail();
-
-        let topics = &app.state.as_ref().unwrap().topics;
-        assert_eq!(topics[1].branch.as_deref(), Some("feat/x"));
-        assert_eq!(topics[1].changed_files, Some(Vec::new()));
-        assert!(
-            topics[0].branch.is_none(),
-            "another topic must not be stamped"
-        );
-
-        // A detail for a topic the poll does not carry stamps nothing.
-        app.topic_detail = Some(topic_detail("gone", "mail", "feat/y"));
-        app.apply_topic_detail();
-        let topics = &app.state.as_ref().unwrap().topics;
-        assert_eq!(topics[1].branch.as_deref(), Some("feat/x"));
-        assert!(topics[0].branch.is_none());
     }
 
     #[tokio::test]
@@ -2178,31 +2091,16 @@ mod tests {
             topics: names
                 .iter()
                 .map(|n| TopicSummary {
-                    tasks: Default::default(),
                     name: (*n).to_string(),
                     channel: "chan".to_string(),
                     agent: None,
                     pattern: None,
                     status: TopicStatus::Idle,
-                    model: None,
-                    mode: None,
-                    branch: None,
-                    changed_files: None,
                     context_input_tokens: None,
-                    total_input_tokens: None,
-                    total_cache_hit_tokens: None,
-                    total_cache_creation_tokens: None,
-                    avg_call_ms: None,
-                    call_count: None,
-                    avg_turn_call_ms: None,
-                    turn_call_count: None,
                     max_tokens: None,
-                    output_tokens: None,
                     last_active_at: None,
-                    skills: vec![],
                     topic_path: None,
                     parent: None,
-                    cost: None,
                     commands: vec![],
                 })
                 .collect(),
@@ -2232,31 +2130,16 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(i, n)| TopicSummary {
-                    tasks: Default::default(),
                     name: (*n).to_string(),
                     channel: "chan".to_string(),
                     agent: None,
                     pattern: Some((*n).to_string()),
                     status: TopicStatus::Idle,
-                    model: None,
-                    mode: None,
-                    branch: None,
-                    changed_files: None,
                     context_input_tokens: None,
-                    total_input_tokens: None,
-                    total_cache_hit_tokens: None,
-                    total_cache_creation_tokens: None,
-                    avg_call_ms: None,
-                    call_count: None,
-                    avg_turn_call_ms: None,
-                    turn_call_count: None,
                     max_tokens: None,
-                    output_tokens: None,
                     last_active_at: None,
-                    skills: vec![],
                     topic_path: None,
                     parent: None,
-                    cost: None,
                     commands: cmds.get(i).cloned().unwrap_or_default(),
                 })
                 .collect(),

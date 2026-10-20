@@ -72,12 +72,10 @@ pub(crate) const MAX_RECENT_MESSAGES: usize = 50;
 /// topics (e.g. both have `issue-20`) do not collide.
 pub type SharedActivityMap = Arc<Mutex<HashMap<(String, String), TopicActivityState>>>;
 
-/// Per-topic activity state: bounded event log + processing flag.
+/// Per-topic activity state: bounded event log + the live buffers.
 #[derive(Debug, Default)]
 pub struct TopicActivityState {
     pub entries: VecDeque<ActivityEntry>,
-    pub is_processing: bool,
-    pub has_error: bool,
     pub last_active_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Recent chat messages (incoming + replies) for live dashboard display.
     pub recent_messages: VecDeque<ChatMessageEntry>,
@@ -248,20 +246,18 @@ impl InspectServer {
         let (mut topics, total_topics, active_workers, max_concurrent, per_channel_workers) =
             collect_topic_snapshot(context, false).await;
 
-        // Override status from activity_map (Processing / Error flags) but skip
-        // copying activity/messages/thinking — that's the whole point.
+        // The status comes from the topic's own snapshot — the runtime's live
+        // status, the one source of truth for it (the same value `/info` and
+        // the info pane report). Only the last-activity stamp is refreshed
+        // here, from the event stream; the activity/messages/thinking buffers
+        // stay out of the list — that's the whole point.
         let activity_map = context.activity_map.lock().await;
         for topic in &mut topics {
             let key = (topic.channel.clone(), topic.name.clone());
-            if let Some(state) = activity_map.get(&key) {
-                if state.is_processing {
-                    topic.status = TopicStatus::Processing;
-                } else if state.has_error {
-                    topic.status = TopicStatus::Error;
-                }
-                if let Some(last_active) = state.last_active_at {
-                    topic.last_active_at = Some(last_active.to_rfc3339());
-                }
+            if let Some(state) = activity_map.get(&key)
+                && let Some(last_active) = state.last_active_at
+            {
+                topic.last_active_at = Some(last_active.to_rfc3339());
             }
         }
         drop(activity_map);
@@ -319,29 +315,11 @@ impl InspectServer {
                     agent,
                     pattern: t.pattern.clone(),
                     status: t.status,
-                    model: t.model,
-                    mode: t.mode,
                     context_input_tokens: t.context_input_tokens,
                     max_tokens: t.max_tokens,
-                    output_tokens: t.output_tokens,
-                    total_input_tokens: t.total_input_tokens,
-                    total_cache_hit_tokens: t.total_cache_hit_tokens,
-                    total_cache_creation_tokens: t.total_cache_creation_tokens,
                     last_active_at: t.last_active_at,
-                    skills: t.skills,
                     topic_path: t.topic_path,
                     parent,
-                    // Always None on the overview: `collect_topic_snapshot` skips
-                    // the probe there, and the client stamps the shown topic's
-                    // values from the per-topic info endpoint.
-                    branch: t.branch,
-                    changed_files: t.changed_files,
-                    cost: t.cost,
-                    avg_call_ms: t.avg_call_ms,
-                    call_count: t.call_count,
-                    avg_turn_call_ms: t.avg_turn_call_ms,
-                    turn_call_count: t.turn_call_count,
-                    tasks: t.tasks,
                     commands,
                 }
             })
@@ -369,7 +347,9 @@ impl InspectServer {
         let (mut topics, total_topics, active_workers, max_concurrent, per_channel_workers) =
             collect_topic_snapshot(context, true).await;
 
-        // Merge activity logs and status into topics
+        // Merge the activity logs into topics. The status is not merged: it
+        // comes from the topic's own snapshot — the runtime's live status, the
+        // one source of truth for it.
         let activity_map = context.activity_map.lock().await;
         for topic in &mut topics {
             let key = (topic.channel.clone(), topic.name.clone());
@@ -377,11 +357,6 @@ impl InspectServer {
                 topic.activity = state.entries.iter().cloned().collect();
                 topic.recent_messages = state.recent_messages.iter().cloned().collect();
                 topic.thinking_text = state.thinking_text.clone();
-                if state.is_processing {
-                    topic.status = TopicStatus::Processing;
-                } else if state.has_error {
-                    topic.status = TopicStatus::Error;
-                }
                 if let Some(last_active) = state.last_active_at {
                     topic.last_active_at = Some(last_active.to_rfc3339());
                 }
@@ -813,27 +788,6 @@ mod no_reply_rendering_tests {
             "AI produced no text and no tool call"
         );
         assert!(entry.text.is_none());
-        assert!(!is_error_event(&no_reply_event()));
-    }
-
-    #[test]
-    fn error_event_classification() {
-        let retry = TopicEvent::SessionStatus {
-            topic_name: "t1".to_string(),
-            status_type: "retry".to_string(),
-            attempt: Some(2),
-            message: None,
-            timestamp: Utc::now(),
-        };
-        assert!(!is_error_event(&retry));
-        let err = TopicEvent::SessionStatus {
-            topic_name: "t1".to_string(),
-            status_type: "error".to_string(),
-            attempt: None,
-            message: None,
-            timestamp: Utc::now(),
-        };
-        assert!(is_error_event(&err));
     }
 }
 

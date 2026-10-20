@@ -3121,6 +3121,33 @@ wscat -c ws://127.0.0.1:9876/ws/feishu_bot/issue-42 \
 > every route, response shape, server-pushed event, type schema, and
 > worked example, see [`docs/api.md`](docs/api.md).
 
+### Topic data: one list, one detail
+
+A topic's figures reach a reader through exactly one of two shapes, and the
+two never carry the same figure:
+
+| Shape | Endpoint | In-process API | Carries | Read by |
+|-------|----------|----------------|---------|----------|
+| **List** | `GET /api/state/overview` | `TopicManager::list_topics_without_git` | identity (name, channel, agent, pattern), `status`, context usage, `last_active_at`, `parent`, `commands` | the overview table |
+| **Detail** | `GET /api/topics/{channel}/{topic}/info` | `TopicManager::topic_info` | model, mode, token and cost figures, latency, task list, branch, changed files, `status` | the topic info pane, `/info` |
+| **Progress** | `WS /ws/<channel>/<topic>` | per-topic `TopicEventBus` | activity entries, chat messages, thinking text, the processing frame | the chat pane, the progress indicators (TUI, feishu), pipe processes |
+
+The rule behind the table: **one figure, one source**. A field is either in
+the list or in the detail, and the two consumers that want the same field
+read the same shape. The info pane and `/info` are the same consumer of the
+detail — the pane over HTTP, the command in-process through the same
+`TopicManager::topic_info` call — so they cannot report different numbers
+for one topic.
+
+`status` is the one field both the list and the detail carry, and they carry
+the same one: the runtime's **live status**
+(`jyc_core::topic_manager::live_status`). The runtime writes it as turns
+start and end — the agent loop when it publishes `ProcessingStarted` /
+`ProcessingCompleted`, the queue when a turn fails — and every reader
+(`/info`, the overview table, the info pane, the progress frame) reports
+that value. No consumer computes a status of its own, so "the topic is
+working" cannot be true in one view and false in another.
+
 ### TUI Dashboard Layout
 
 The TUI has two screens and one set of pane renderers: the **overview** (topics

@@ -168,12 +168,16 @@ curl -H 'Authorization: Bearer <token>' http://127.0.0.1:9876/api/state
 
 #### 2.4.2 `GET /api/state/overview`
 
-Same shape as `GET /api/state` but `topics` is `Vec<TopicSummary>`
-(no `activity`, `recent_messages`, or `thinking_text` per topic), and
-`branch` / `changed_files` are `null` for every topic: resolving them probes
-the checkout per topic, which a poll covering every topic does not pay.
-Fetch §2.4.11 for the one topic you show. The dashboard's polling loop uses
-this endpoint.
+The topic *list*: `topics` is `Vec<TopicSummary>`, which carries what the
+overview table reads and nothing else — the topic's identity (`name`,
+`channel`, `agent`, `pattern`), its `status`, its context usage
+(`context_input_tokens`, `max_tokens`), `last_active_at`, its `parent` and
+the `commands` available in it. Every other figure (model, mode, tokens,
+cost, latency, tasks, branch, changed files) is the topic's *detail* and
+lives on §2.4.11 only.
+
+The dashboard's polling loop uses this endpoint for the table, and fetches
+§2.4.11 for the one topic it shows.
 
 #### 2.4.3 `GET /api/topics/{channel}/{topic}/activity`
 
@@ -459,11 +463,15 @@ for t in overview["topics"]:
 
 #### 2.4.11 `GET /api/topics/{channel}/{topic}/info`
 
-One topic's full `TopicInfo` — the same shape as an element of
-`GET /api/state`'s `topics`, including `branch` and `changed_files`, which
-`GET /api/state/overview` leaves `null`. `branch` comes from the checkout's
-`.git/HEAD`; `changed_files` runs `git diff` against the repo's default branch
-(up to four invocations) — which is why the overview poll carries neither.
+One topic's full `TopicInfo` — the topic's *detail*: its model and mode, its
+token and cost figures, its task list, its branch and changed files, and its
+`status`. `branch` comes from the checkout's `.git/HEAD`; `changed_files` runs
+`git diff` against the repo's default branch (up to four invocations) — which
+is why the list (§2.4.2) carries neither.
+
+This is the one source for the topic's figures: the dashboard's topic info
+pane reads it, and so does the `/info` command (in-process, through the same
+`TopicManager::topic_info` call).
 
 `404` when the channel has no topic manager, or that channel has no topic of
 this name.
@@ -650,50 +658,55 @@ All shared types live in `crates/jyc-types/src/inspect.rs`.
 
 ### 4.2 `InspectOverview` (`GET /api/state/overview`)
 
-Identical to `InspectState` except `topics: Vec<TopicSummary>` — i.e.
-no `activity`, no `recent_messages`, no `thinking_text` per topic, and
-`branch` / `changed_files` always `null` (see §2.4.2; fetch §2.4.11 for the
-one topic you show).
+Identical to `InspectState` except `topics: Vec<TopicSummary>` — the list
+form (see §2.4.2): the topic's identity, its status, its context usage, and
+when it was last active. The detail figures are not in it at all; fetch
+§2.4.11 for the one topic you show.
 
 ### 4.3 `TopicInfo` vs `TopicSummary`
 
-Both have the fields below, except `TopicSummary` **omits** `activity`,
-`recent_messages`, and `thinking_text`, and carries `parent`, which
-`TopicInfo` does not.
+The two types are the two views of a topic, and they do not overlap in the
+figures they carry: the list has what the table needs, the detail has what
+the topic's own figures are. A field is in one or the other — never in both,
+so a client can never read the same figure from two places that could
+disagree.
 
 | Field                        | Type                  | In `TopicInfo` | In `TopicSummary` |
 |------------------------------|-----------------------|:---------------:|:------------------:|
 | `name`                       | string                | ✓               | ✓                  |
 | `channel`                    | string                | ✓               | ✓                  |
+| `agent`                      | string?               | —               | ✓                  |
 | `pattern`                    | string?               | ✓               | ✓                  |
 | `status`                     | `TopicStatus`        | ✓               | ✓                  |
-| `model`                      | string?               | ✓               | ✓                  |
-| `mode`                       | string?               | ✓               | ✓                  |
 | `context_input_tokens`       | u64?                  | ✓               | ✓                  |
 | `max_tokens`                 | u64?                  | ✓               | ✓                  |
-| `output_tokens`              | u64?                  | ✓               | ✓                  |
-| `total_input_tokens`         | u64?                  | ✓               | ✓                  |
-| `total_cache_hit_tokens`     | u64?                  | ✓               | ✓                  |
-| `total_cache_creation_tokens`| u64?                  | ✓               | ✓                  |
-| `avg_call_ms`                | u64?                  | ✓               | ✓                  |
-| `call_count`                 | u64?                  | ✓               | ✓                  |
 | `last_active_at`             | string? (RFC 3339)    | ✓               | ✓                  |
-| `skills`                     | `Vec<string>`         | ✓               | ✓                  |
-| `available_skills`           | `Vec<SkillMeta>`      | ✓               | —                  |
 | `topic_path`                | `PathBuf?`            | ✓               | ✓                  |
 | `parent`                     | string?               | —               | ✓                  |
-| `branch`                     | string?               | ✓               | ✓                  |
-| `changed_files`              | `Vec<{path, uncommitted, change, lines?}?>` | ✓          | ✓                  |
-| `tasks`                      | `TaskList`            | ✓               | ✓                  |
-| `cost`                       | `TopicCost?`         | ✓               | ✓                  |
+| `commands`                   | `Vec<CommandInfo>`    | ✓               | ✓                  |
+| `model`                      | string?               | ✓               | —                  |
+| `mode`                       | string?               | ✓               | —                  |
+| `output_tokens`              | u64?                  | ✓               | —                  |
+| `total_input_tokens`         | u64?                  | ✓               | —                  |
+| `total_cache_hit_tokens`     | u64?                  | ✓               | —                  |
+| `total_cache_creation_tokens`| u64?                  | ✓               | —                  |
+| `total_reasoning_tokens`     | u64?                  | ✓               | —                  |
+| `avg_call_ms`                | u64?                  | ✓               | —                  |
+| `call_count`                 | u64?                  | ✓               | —                  |
+| `avg_turn_call_ms`           | u64?                  | ✓               | —                  |
+| `turn_call_count`            | u64?                  | ✓               | —                  |
+| `skills`                     | `Vec<string>`         | ✓               | —                  |
+| `available_skills`           | `Vec<SkillMeta>`      | ✓               | —                  |
+| `branch`                     | string?               | ✓               | —                  |
+| `changed_files`              | `Vec<{path, uncommitted, change, lines?}?>` | ✓          | —                  |
+| `tasks`                      | `TaskList`            | ✓               | —                  |
+| `cost`                       | `TopicCost?`         | ✓               | —                  |
 | `activity`                   | `Vec<ActivityEntry>`  | ✓               | —                  |
 | `recent_messages`            | `Vec<ChatMessageEntry>`| ✓              | —                  |
 | `thinking_text`              | string?               | ✓               | —                  |
 
-`branch` and `changed_files` are the two fields the overview poll does not
-resolve (see §2.4.2): on `TopicSummary` they are `null` there, for every
-topic. `GET /api/topics/{channel}/{topic}/info` (§2.4.11) carries both for one
-topic.
+`status` is the one figure both carry, and both carry the same one: the
+runtime's live status, written as turns start and end (see §2.4.11).
 
 ### 4.4 Other types
 

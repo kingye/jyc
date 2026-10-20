@@ -2,9 +2,13 @@
 
 ### Changed
 
+- The topic info pane and `/info` read one source: the topic's *detail* (`GET /api/topics/{channel}/{topic}/info` — in-process, the same `TopicManager::topic_info` call the endpoint serves). They now show the same rows for the same topic: the pane gained `Status` and `Reasoning`, `/info` gained `Cache util`, and the two percentages come from one shared helper, so the pane and the command cannot drift apart. The overview's list payload carries only what the topic table reads — the topic's identity, its status, its context usage, when it was last active — instead of a second copy of every detail figure; the pane, the chat status line and the topic's mode now read the detail, and the branch/changed-files stamping the overview used to do is gone (the pane reads them off the detail) (#958)
+
 - The dashboard overview's topic table no longer starts flush against the top of the screen: it gets the same blank row of top padding the topic info pane beside it carries, plus a full-width horizontal rule under its header in the resting pane border colour (`PANE_BORDER`), so both columns share one top edge and the header no longer runs straight into the rows. The table stays borderless and its `→ ` selection gutter is untouched — the rule is drawn into the blank row the header's `bottom_margin(1)` leaves, and is dropped entirely when the table area is too short to hold it (#956)
 
 ### Fixed
+
+- `/info` no longer reports every topic as `Idle`: the status comes from the runtime's live status — written as turns start and end, and the one source every reader shares — so a topic that is working says `Processing` and a topic whose turn failed says `Error`. The dashboard's overview used to compute its own status from the event stream while `/info` read a hardcoded `Idle`, which is why the two surfaces disagreed; the live status is now the only place a status is decided, and the overview, the info pane, `/info` and the progress frame all report it (#958)
 
 - `jyc_send_to_topic` no longer refuses a `topic` that names the agent it is addressed to: an agent's own topic is named after the agent, so `agent="c21-sfm-reuse-lib"` with `topic="c21-sfm-reuse-lib"` names the default topic, not a named one — the two spellings now mean the same thing, and the message lands on the agent's own topic, created on demand exactly like the `topic`-less form. The refusal stays for a *named* topic — one whose name differs from the agent's — when nobody owns it, since re-creating it under the same name elsewhere would collide with state dirs keyed by topic name process-wide. The tool's `topic` parameter now says which name counts as the agent's own, and the confirmation names the destination the way the `topic`-less form does (#957)
 

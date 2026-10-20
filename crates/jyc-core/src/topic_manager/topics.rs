@@ -6,7 +6,7 @@ use jyc_types::state_dir::resolve_state_dir;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use jyc_types::{TopicCost, TopicInfo, TopicStatus};
+use jyc_types::{TopicCost, TopicInfo};
 
 use super::TopicManager;
 /// Per-topic queue stats.
@@ -665,10 +665,11 @@ impl TopicManager {
                 self.agent
                     .available_skills(&name, &topic_path, pattern.as_deref());
 
-            // Determine status. The legacy `WaitingForAnswer` state (question
-            // MCP tool) was removed in #188; both active and dormant topics
-            // report `Idle` here — liveness is tracked via the activity log.
-            let status = TopicStatus::Idle;
+            // The topic's live status — the one source of truth for
+            // `TopicStatus` (see `live_status.rs`). The runtime writes it
+            // as turns start and end, so `/info`, the dashboard's topic
+            // table and the info pane all report the same value.
+            let status = self.topic_status(&name);
 
             // Fallback: read .jyc directory mtime if no activity tracker data
             let last_active_at =

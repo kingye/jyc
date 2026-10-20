@@ -1676,6 +1676,93 @@ async fn list_topics_without_git_skips_the_probe_and_topic_info_resolves_one() {
     tm.shutdown().await;
 }
 
+/// The topic's name is its identity. A parent and the children that share
+/// its directory (`share_topic_path`) carry one path, and the lookup the
+/// `/info` command and the per-topic endpoint use must still tell them
+/// apart — the reported bug was `/info` answering with whichever of them
+/// came first in the list.
+#[tokio::test]
+async fn topic_info_picks_the_topic_by_name_when_paths_are_shared() {
+    let tmp = tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+    let shared = workspace.join("shared");
+    std::fs::create_dir_all(state_dir("shared-owner", &shared)).unwrap();
+
+    let tm = make_test_tm(&workspace);
+    {
+        let mut paths = tm.topic_paths.lock().await;
+        paths.insert("shared-owner".to_string(), shared.clone());
+        paths.insert("shared-child".to_string(), shared.clone());
+    }
+
+    let owner = tm
+        .topic_info("shared-owner", true)
+        .await
+        .expect("the owner resolves");
+    assert_eq!(owner.name, "shared-owner");
+    let child = tm
+        .topic_info("shared-child", true)
+        .await
+        .expect("the child resolves");
+    assert_eq!(child.name, "shared-child");
+    assert_eq!(
+        child.topic_path, owner.topic_path,
+        "one directory, two topics"
+    );
+
+    // A name nobody holds resolves to nothing — the endpoint's 404.
+    assert!(tm.topic_info("shared-nobody", true).await.is_none());
+
+    tm.shutdown().await;
+}
+
+/// The live status is the one source of truth for `TopicStatus`: what the
+/// runtime writes as a turn runs is what every snapshot reports, and the
+/// list and the detail agree.
+#[tokio::test]
+async fn topic_snapshots_report_the_live_status() {
+    let tmp = tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+    let topic = workspace.join("live-status-topic");
+    std::fs::create_dir_all(state_dir("live-status-topic", &topic)).unwrap();
+
+    let tm = make_test_tm(&workspace);
+    async fn status(tm: &Arc<TopicManager>) -> jyc_types::TopicStatus {
+        tm.topic_info("live-status-topic", true)
+            .await
+            .expect("the topic resolves")
+            .status
+    }
+
+    // Idle until a turn starts.
+    assert_eq!(status(&tm).await, jyc_types::TopicStatus::Idle);
+
+    tm.set_topic_processing("live-status-topic");
+    assert_eq!(status(&tm).await, jyc_types::TopicStatus::Processing);
+    assert_eq!(
+        tm.list_topics_without_git().await[0].status,
+        jyc_types::TopicStatus::Processing,
+        "the list reports the same status as the detail"
+    );
+
+    // A turn that failed leaves the topic in error...
+    tm.set_topic_turn_ended("live-status-topic", false);
+    assert_eq!(status(&tm).await, jyc_types::TopicStatus::Error);
+
+    // ...until the next turn starts.
+    tm.set_topic_processing("live-status-topic");
+    assert_eq!(status(&tm).await, jyc_types::TopicStatus::Processing);
+
+    // A failed tool latches the error, and the next turn clears it.
+    tm.set_topic_turn_ended("live-status-topic", true);
+    tm.set_topic_tool_error("live-status-topic");
+    assert_eq!(status(&tm).await, jyc_types::TopicStatus::Error);
+    tm.set_topic_processing("live-status-topic");
+    assert_eq!(status(&tm).await, jyc_types::TopicStatus::Processing);
+
+    tm.shutdown().await;
+}
+
 /// Regression for #220: `TopicManager::list_topics` must populate
 /// `TopicInfo::changed_files` by running the default-branch diff under
 /// each topic's path. Without this test, a

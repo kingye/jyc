@@ -193,7 +193,6 @@ impl ActivityTracker {
                         let mut map = activity_map.lock().await;
                         let state = map.entry((channel.clone(), name.clone())).or_default();
                         state.entries = entries.into_iter().collect();
-                        state.is_processing = false;
                         if let Some(last) = state.entries.back()
                             && let Some(ref ts) = last.timestamp
                             && let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts)
@@ -237,18 +236,16 @@ impl ActivityTracker {
                                     }
                                     None => {
                                         // Topic is idle (no active queue, no event bus).
-                                        // Clear any stale processing state so the dashboard
-                                        // doesn't get stuck showing "Processing" forever.
                                         // Do NOT insert into `subscribed` — that would
                                         // permanently exclude this topic from future checks,
                                         // so if the event bus is created just after this tick
                                         // (race with create_and_enqueue), the ActivityTracker
                                         // would never subscribe.
-                                        let mut map = activity_map.lock().await;
-                                        if let Some(state) = map.get_mut(&key) {
-                                            state.is_processing = false;
-                                        }
-                                        drop(map);
+                                        //
+                                        // The topic's processing flag is not touched here:
+                                        // it lives in the runtime's live status (the one
+                                        // source of truth for it), which the turn itself
+                                        // closes.
                                         continue;
                                     }
                                 };
@@ -265,6 +262,9 @@ impl ActivityTracker {
                                         let subscribed_clone = subscribed.clone();
                                         let key_clone = key.clone();
                                         let inspect_broadcast_for_task = inspect_broadcast.clone();
+                                        // The topic's manager — it holds the live
+                                        // status the processing frames report.
+                                        let tm_for_task = tm.clone();
                                         tokio::spawn(async move {
                                             use futures_util::FutureExt;
                                             use std::panic::AssertUnwindSafe;
@@ -293,18 +293,6 @@ impl ActivityTracker {
                                                                             &event,
                                                                         );
                                                                     }
-
-                                                                    let is_processing = matches!(
-                                                                        &event,
-                                                                        TopicEvent::ProcessingStarted { .. }
-                                                                        | TopicEvent::ProcessingProgress { .. }
-                                                                        | TopicEvent::ToolStarted { .. }
-                                                                        | TopicEvent::LLMRequestStarted { .. }
-                                                                    );
-                                                                    let is_completed = matches!(
-                                                                        &event,
-                                                                        TopicEvent::ProcessingCompleted { .. }
-                                                                    );
 
                                                                     // Capture chat messages for live dashboard display
                                                                     let chat_msg: Option<ChatMessageEntry> = match &event {
@@ -337,7 +325,6 @@ impl ActivityTracker {
                                                                     // activity pane).
                                                                     if !is_thinking {
                                                                         let mut entry = event_to_activity(&event);
-                                                                        let is_error = is_error_event(&event);
                                                                         // Internal events (ProcessingProgress heartbeats) are
                                                                         // debug-only: skip persisting to disk and skip the
                                                                         // in-memory log + WS broadcast so they don't flood the
@@ -400,29 +387,29 @@ impl ActivityTracker {
                                                                             state.thinking_text = None;
                                                                         }
                                                                         state.last_active_at = Some(event.timestamp());
-                                                                        if is_processing {
-                                                                            state.is_processing = true;
-                                                                            state.has_error = false;
-                                                                        } else if is_completed {
-                                                                            state.is_processing = false;
-                                                                            }
-                                                                        if is_error {
-                                                                            state.has_error = true;
-                                                                        }
-                                                                        // Publish processing-status AFTER the state
-                                                                        // update so that ProcessingCompleted sends
-                                                                        // is_processing=false, not the stale true value.
+                                                                        // The topic's processing state is not tracked here: it lives in
+                                                                        // the runtime's live status — the one source of truth for it, the
+                                                                        // same value `/info` and the dashboard's topic table report. The
+                                                                        // turn that published this event wrote it before the event went
+                                                                        // out, so reading it now gives the state the event describes.
+                                                                        //
+                                                                        // The values are the topic's live
+                                                                        // status, read after the event that
+                                                                        // describes them: ProcessingCompleted
+                                                                        // sends is_processing=false, not the
+                                                                        // stale true value.
                                                                         if matches!(
                                                                             &event,
                                                                             TopicEvent::ProcessingStarted { .. }
                                                                             | TopicEvent::ProcessingCompleted { .. }
                                                                         ) {
+                                                                            let live = tm_for_task.topic_live_status(&name);
                                                                             publish_processing_event(
                                                                                 &inspect_broadcast_for_task,
                                                                                 &channel_for_task,
                                                                                 &name,
-                                                                                state.is_processing,
-                                                                                state.has_error,
+                                                                                live.is_processing,
+                                                                                live.has_error,
                                                                             );
                                                                         }
                                                                     } else {
@@ -522,20 +509,6 @@ pub(crate) fn event_to_activity(event: &TopicEvent) -> ActivityEntry {
         id: 0, // assigned by ActivityTracker on push (see fanout step)
         text: None,
     }
-}
-
-/// Whether a TopicEvent marks the topic as errored (overview red status).
-/// Mirrors the client-side severity mapping for error kinds.
-pub(crate) fn is_error_event(event: &TopicEvent) -> bool {
-    matches!(
-        event,
-        TopicEvent::SessionStatus { status_type, .. }
-            if status_type == "error" || status_type == "timeout"
-    ) || matches!(
-        event,
-        TopicEvent::ToolCompleted { success: false, .. }
-            | TopicEvent::ProcessingCompleted { success: false, .. }
-    )
 }
 
 #[cfg(test)]

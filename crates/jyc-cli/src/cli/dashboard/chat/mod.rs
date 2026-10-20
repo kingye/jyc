@@ -5,7 +5,8 @@ use std::collections::{HashMap, HashSet};
 
 use super::token_render::{
     input_token_pct, push_cache_creation_span, push_cache_hit_span, push_cache_utilization_span,
-    push_cost_span, push_latency_span, push_output_span, push_tokens_span, push_total_input_span,
+    push_cost_span, push_latency_span, push_output_span, push_reasoning_span, push_tokens_span,
+    push_total_input_span,
 };
 use super::*;
 use jyc_core::duration::{DurationStyle, format_duration_ms, format_duration_secs};
@@ -859,11 +860,11 @@ pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
 /// route `ctrl+c` takes with `/cancel`.
 ///
 /// The mode is read through the lookup the header and the topic info pane
-/// display ([`selected_topic_summary`]), so what the pane shows and what the
+/// display ([`selected_topic_detail`]), so what the pane shows and what the
 /// shortcut does cannot disagree. A topic whose mode the server has not
 /// reported yet counts as build, matching the server's default.
 fn toggle_topic_mode(app: &mut App) {
-    let in_plan = selected_topic_summary(app)
+    let in_plan = selected_topic_detail(app)
         .and_then(|t| t.mode.as_deref())
         .is_some_and(|m| m.eq_ignore_ascii_case("plan"));
     app.chat
@@ -1641,20 +1642,19 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Find the `TopicSummary` currently in scope. Used by both the
-/// topic info pane and the chat header so the two views agree on
-/// which topic is "selected".
+/// The topic's detail, when it is the one on screen.
 ///
-/// The screen rule itself — the visible chat's own topic, else the row under
-/// the dashboard cursor — lives in [`super::shown_topic_key`], shared with the
-/// detail fetch so the two cannot drift apart. Resolving that key back through
-/// the shared lookup is what keeps a visible chat whose topic has not appeared
-/// in the poll yet from falling back to the cursor row and showing another
-/// topic's model, mode and branch.
-fn selected_topic_summary(app: &App) -> Option<&jyc_types::TopicSummary> {
+/// The detail comes from `GET /api/topics/{channel}/{topic}/info` — the
+/// same source `/info` reads — so the pane and the command report the same
+/// figures. The screen rule itself — the visible chat's own topic, else the
+/// row under the dashboard cursor — lives in [`super::shown_topic_key`],
+/// shared with the detail fetch so the two cannot drift apart. A detail for
+/// another topic (the fetch for the current one has not landed yet) is not
+/// the topic on screen, so it is not shown.
+fn selected_topic_detail(app: &App) -> Option<&jyc_types::TopicInfo> {
     let (channel, name) = super::shown_topic_key(app)?;
-    let state = app.state.as_ref()?;
-    jyc_types::find_topic(&state.topics, &name, Some(&channel))
+    let detail = app.topic_detail.as_ref()?;
+    (detail.channel == channel && detail.name == name).then_some(detail)
 }
 
 /// Render the topic info pane (the right-hand column, always 20% wide when
@@ -1739,7 +1739,7 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
     // chat side of that line.
     app.chat.last_info_area = Some(topic_inner);
 
-    let lines: Vec<Line> = if let Some(t) = selected_topic_summary(app) {
+    let lines: Vec<Line> = if let Some(t) = selected_topic_detail(app) {
         let mut out: Vec<Line> = Vec::new();
         out.push(Line::from(vec![
             Span::styled("Topic: ", Style::default().add_modifier(Modifier::BOLD)),
@@ -1763,10 +1763,8 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
             Span::styled("Mode: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(t.mode.as_deref().unwrap_or("build")),
         ]));
-        // Branch is stamped onto the summary from the per-topic detail
-        // (`App::topic_detail` → `apply_topic_detail`) for the topic the screen
-        // shows; the overview poll leaves it `None`. Skipped when the topic's
-        // topic_path isn't a git repo
+        // Branch comes from the topic's detail — the same source `/info`
+        // reads. Skipped when the topic's topic_path isn't a git repo
         // (most chat-channel topics: feishu/wecom).
         if let Some(branch) = t.branch.as_deref() {
             out.push(Line::from(vec![
@@ -1774,6 +1772,12 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
                 Span::raw(branch),
             ]));
         }
+        // Status row — the topic's live status, the same value `/info`
+        // reports and the overview table shows.
+        out.push(Line::from(vec![
+            Span::styled("Status: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(format!("{}", t.status)),
+        ]));
         // Tokens row — push tokens span into a fresh Vec, wrap in a Line.
         let mut token_spans = Vec::with_capacity(2);
         push_tokens_span(&mut token_spans, t);
@@ -1817,6 +1821,13 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         if !cache_creation_spans.is_empty() {
             out.push(Line::from(cache_creation_spans));
         }
+        // Reasoning row — the hidden chain-of-thought share of the output.
+        // Rendered only when the provider reports some.
+        let mut reasoning_spans = Vec::with_capacity(2);
+        push_reasoning_span(&mut reasoning_spans, t);
+        if !reasoning_spans.is_empty() {
+            out.push(Line::from(reasoning_spans));
+        }
         // Cost row — session-scoped spend plus today's durable total.
         // Omitted entirely when the model has no configured pricing.
         let mut cost_spans = Vec::with_capacity(2);
@@ -1859,9 +1870,13 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         // Separated section: the subagents this topic spawned, as a tree —
         // their own subagents nest beneath them. Same status dot and colours
         // as the explorer, so a topic reads the same in both panes. Omitted
-        // entirely when there are none.
-        if let Some(s) = app.state.as_ref() {
-            let rows = subagent_tree(s, t);
+        // entirely when there are none. The tree is a view of the topic
+        // *list*, so it comes from the overview poll, not from this topic's
+        // detail.
+        if let Some(s) = app.state.as_ref()
+            && let Some(root) = jyc_types::find_topic(&s.topics, &t.name, Some(&t.channel))
+        {
+            let rows = subagent_tree(s, root);
             if !rows.is_empty() {
                 out.push(Line::default());
                 out.push(Line::from(Span::styled(
@@ -2280,12 +2295,12 @@ struct ChatHeaderCtx<'a> {
 }
 
 fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
-    let t = selected_topic_summary(app);
+    let t = selected_topic_detail(app);
     ChatHeaderCtx {
         mode: t.and_then(|t| t.mode.as_deref()).unwrap_or("build"),
         topic: t.map(|t| t.name.as_str()),
-        // Stamped per poll from the per-topic detail for the shown topic —
-        // read it straight off the summary.
+        // Read straight off the topic's detail — the same source the info
+        // pane renders.
         branch: t.and_then(|t| t.branch.as_deref()),
         model: t.and_then(|t| t.model.as_deref()),
         pct: t.and_then(input_token_pct),

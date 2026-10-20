@@ -823,7 +823,7 @@ fn leader_toggle_mode_sends_build_when_the_topic_is_in_plan() {
 #[test]
 fn leader_toggle_mode_sends_plan_when_the_topic_is_in_build() {
     let mut app = app_with_topic_summary();
-    app.state.as_mut().expect("overview").topics[0].mode = Some("build".to_string());
+    app.topic_detail.as_mut().expect("detail").mode = Some("build".to_string());
     execute_local_action(
         &mut app,
         &mut test_terminal(),
@@ -847,7 +847,7 @@ fn leader_toggle_mode_defaults_to_plan_when_the_mode_is_unknown() {
     assert_eq!(app.chat.messages.last().expect("echo").text, "/plan");
 
     let mut app = app_with_topic_summary();
-    app.state.as_mut().expect("overview").topics[0].mode = None;
+    app.topic_detail.as_mut().expect("detail").mode = None;
     execute_local_action(
         &mut app,
         &mut test_terminal(),
@@ -1658,41 +1658,59 @@ fn input_area_rows_reserves_the_bottom_rule() {
     );
 }
 
-/// A polled topic summary so the status line has real content: `plan ·
-/// jyc · main` on the left, `[ kimi/kimi-for-coding · 10% ]` on the right.
+/// A polled topic with its detail, so the status line has real content:
+/// `plan · jyc · main` on the left, `[ kimi/kimi-for-coding · 10% ]` on the
+/// right. The list carries the topic, the detail its figures — the same
+/// split the server keeps.
 fn app_with_topic_summary() -> App {
     let mut app = chatting_app();
     app.chat.info_visible = false;
     app.state = Some(jyc_types::InspectOverview {
         topics: vec![jyc_types::TopicSummary {
-            tasks: Default::default(),
             name: "jyc".to_string(),
             channel: "agents".to_string(),
             agent: None,
             pattern: None,
             status: jyc_types::TopicStatus::Idle,
-            model: Some("kimi/kimi-for-coding".to_string()),
-            mode: Some("plan".to_string()),
-            branch: Some("main".to_string()),
-            changed_files: None,
             context_input_tokens: Some(1_000),
-            total_input_tokens: None,
-            total_cache_hit_tokens: None,
-            total_cache_creation_tokens: None,
-            avg_call_ms: None,
-            call_count: None,
-            avg_turn_call_ms: None,
-            turn_call_count: None,
             max_tokens: Some(10_000),
-            output_tokens: None,
             last_active_at: None,
-            skills: vec![],
             topic_path: None,
             parent: None,
-            cost: None,
             commands: vec![],
         }],
         ..Default::default()
+    });
+    app.topic_detail = Some(jyc_types::TopicInfo {
+        name: "jyc".to_string(),
+        channel: "agents".to_string(),
+        pattern: None,
+        status: jyc_types::TopicStatus::Idle,
+        model: Some("kimi/kimi-for-coding".to_string()),
+        mode: Some("plan".to_string()),
+        context_input_tokens: Some(1_000),
+        max_tokens: Some(10_000),
+        output_tokens: None,
+        total_input_tokens: None,
+        total_cache_hit_tokens: None,
+        total_cache_creation_tokens: None,
+        total_reasoning_tokens: None,
+        avg_call_ms: None,
+        call_count: None,
+        avg_turn_call_ms: None,
+        turn_call_count: None,
+        activity: vec![],
+        last_active_at: None,
+        skills: vec![],
+        available_skills: vec![],
+        recent_messages: vec![],
+        thinking_text: None,
+        topic_path: None,
+        branch: Some("main".to_string()),
+        changed_files: None,
+        tasks: Default::default(),
+        cost: None,
+        commands: vec![],
     });
     app
 }

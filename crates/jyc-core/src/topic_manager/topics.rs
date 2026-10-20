@@ -32,19 +32,11 @@ pub struct TopicDisplayState {
 
 impl TopicDisplayState {
     /// Input-token percentage of the context window. `None` when either
-    /// bound is missing or `max_tokens` is zero (mirrors the dashboard's
-    /// `input_token_pct`).
+    /// bound is missing or `max_tokens` is zero — the same helper the
+    /// dashboard and `/info` use, so the progress cards cannot report a
+    /// different figure than the topic's own figures.
     pub fn context_pct(&self) -> Option<u32> {
-        let cur = self.input_tokens?;
-        let max = self.max_tokens?;
-        if max == 0 {
-            return None;
-        }
-        Some(
-            cur.checked_mul(100)
-                .and_then(|v| v.checked_div(max))
-                .unwrap_or(0) as u32,
-        )
+        jyc_types::input_token_pct(self.input_tokens, self.max_tokens)
     }
 }
 

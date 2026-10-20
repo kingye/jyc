@@ -80,6 +80,23 @@ impl LiveStatusStore {
         }
     }
 
+    /// The turn ended, for a topic the store still knows.
+    ///
+    /// A topic that was closed mid-turn has no entry any more — the close
+    /// clears it — and re-creating it here would report the topic as failed
+    /// until its next turn, and a name reused later would inherit that
+    /// failure. A topic that never ran has no entry to fail in the first
+    /// place.
+    pub fn end_turn_if_known(&self, topic: &str, success: bool) {
+        let mut statuses = self.statuses();
+        if let Some(entry) = statuses.get_mut(topic) {
+            entry.is_processing = false;
+            if !success {
+                entry.has_error = true;
+            }
+        }
+    }
+
     /// A tool failed during the turn.
     pub fn set_tool_error(&self, topic: &str) {
         let mut statuses = self.statuses();
@@ -159,7 +176,76 @@ impl TurnStatusGuard {
 impl Drop for TurnStatusGuard {
     fn drop(&mut self) {
         if !self.closed {
-            self.store.set_turn_ended(&self.topic_name, false);
+            // Only for a topic the store still knows: a topic closed while
+            // the turn was in flight has no entry any more, and writing one
+            // here would report it as failed (see `end_turn_if_known`).
+            self.store.end_turn_if_known(&self.topic_name, false);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store() -> Arc<LiveStatusStore> {
+        Arc::new(LiveStatusStore::default())
+    }
+
+    /// The guard is what keeps "Processing" from outliving the turn: a turn
+    /// that ends without saying so still closes its own flag.
+    #[test]
+    fn the_guard_closes_the_flag_when_the_turn_does_not() {
+        let store = store();
+        store.set_processing("t");
+        {
+            let _guard = TurnStatusGuard::new(store.clone(), "t".to_string());
+        }
+        assert!(!store.get("t").is_processing, "the flag stayed open");
+        assert_eq!(store.get("t").status(), TopicStatus::Error);
+    }
+
+    /// A turn that closed its own status leaves the guard nothing to do.
+    #[test]
+    fn a_disarmed_guard_changes_nothing() {
+        let store = store();
+        store.set_processing("t");
+        {
+            let mut guard = TurnStatusGuard::new(store.clone(), "t".to_string());
+            guard.disarm();
+        }
+        assert_eq!(store.get("t").status(), TopicStatus::Processing);
+    }
+
+    /// A topic closed mid-turn has no entry any more. The guard must not
+    /// bring it back as a failed topic — a name reused later would report
+    /// the failure of the topic that was closed.
+    #[test]
+    fn the_guard_does_not_revive_a_closed_topic() {
+        let store = store();
+        store.set_processing("t");
+        store.clear("t");
+        {
+            let _guard = TurnStatusGuard::new(store.clone(), "t".to_string());
+        }
+        let statuses = store.statuses.lock().unwrap();
+        assert!(
+            !statuses.contains_key("t"),
+            "the closed topic came back as a failed one"
+        );
+    }
+
+    /// A turn that panics never closes its own status — the guard's drop on
+    /// the way out is the only thing that closes it.
+    #[test]
+    fn a_panicking_turn_still_closes_the_flag() {
+        let store = store();
+        store.set_processing("t");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = TurnStatusGuard::new(store.clone(), "t".to_string());
+            panic!("the turn blew up");
+        }));
+        assert!(result.is_err(), "the panic must not be swallowed");
+        assert!(!store.get("t").is_processing, "the flag stayed open");
     }
 }

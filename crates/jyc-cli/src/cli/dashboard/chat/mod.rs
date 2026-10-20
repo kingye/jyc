@@ -1966,6 +1966,11 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
             }
         }
         out
+    } else if super::shown_topic_key(app).is_some() {
+        // A topic is on screen, but its detail has not landed yet — the
+        // fetch runs on a timer, and a failed fetch leaves it unset. Say so
+        // instead of claiming that no topic is selected.
+        vec![Line::from("Loading topic details...")]
     } else {
         vec![Line::from("Select a topic")]
     };

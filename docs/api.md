@@ -473,6 +473,11 @@ This is the one source for the topic's figures: the dashboard's topic info
 pane reads it, and so does the `/info` command (in-process, through the same
 `TopicManager::topic_info` call).
 
+`last_active_at` is the event stream's stamp for the topic — the same value
+the list (§2.4.2) carries, so the two shapes cannot report different times
+for one topic. The state dir's mtime is only the fallback, for a topic the
+tracker has not seen yet.
+
 `404` when the channel has no topic manager, or that channel has no topic of
 this name.
 
@@ -665,11 +670,12 @@ when it was last active. The detail figures are not in it at all; fetch
 
 ### 4.3 `TopicInfo` vs `TopicSummary`
 
-The two types are the two views of a topic, and they do not overlap in the
-figures they carry: the list has what the table needs, the detail has what
-the topic's own figures are. A field is in one or the other — never in both,
-so a client can never read the same figure from two places that could
-disagree.
+The two types are the two views of a topic, and their *figures* do not
+overlap: the list has what the table needs, the detail has what the topic's
+own figures are, so a client can never read the same figure from two places
+that could disagree. The fields both carry — name, channel, pattern, the
+context bounds, `last_active_at`, `topic_path`, `commands` — identify the
+topic rather than measure it, and both carry the same value for each.
 
 | Field                        | Type                  | In `TopicInfo` | In `TopicSummary` |
 |------------------------------|-----------------------|:---------------:|:------------------:|
@@ -707,10 +713,13 @@ disagree.
 
 `status` is the one figure both carry, and both carry the same one: the
 runtime's live status, written as turns start and end (see §2.4.11).
+`last_active_at` is the other field both carry, and both carry the same one:
+the event stream's stamp for the topic, with the state dir's mtime as the
+fallback for a topic the tracker has not seen yet.
 
 ### 4.4 Other types
 
-- `TopicStatus` — `queued` / `processing` / `idle` / `waiting_for_answer` / `error`
+- `TopicStatus` — `queued` / `processing` / `idle` / `error`
 - `Severity` — `info` / `warning` / `error` (default `info`)
 - `ActivityEntry` — `text`, `timestamp?`, `severity`, `id`, `is_internal`
 - `ChatMessageEntry` — `sender`, `text`, `timestamp?`, `id`

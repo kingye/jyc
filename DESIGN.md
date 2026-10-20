@@ -3129,11 +3129,11 @@ two never carry the same figure:
 | Shape | Endpoint | In-process API | Carries | Read by |
 |-------|----------|----------------|---------|----------|
 | **List** | `GET /api/state/overview` | `TopicManager::list_topics_without_git` | identity (name, channel, agent, pattern), `status`, context usage, `last_active_at`, `parent`, `commands` | the overview table |
-| **Detail** | `GET /api/topics/{channel}/{topic}/info` | `TopicManager::topic_info` | model, mode, token and cost figures, latency, task list, branch, changed files, `status` | the topic info pane, `/info` |
+| **Detail** | `GET /api/topics/{channel}/{topic}/info` | `TopicManager::topic_info` | model, mode, token and cost figures, latency, task list, branch, changed files, `status`, `last_active_at` | the topic info pane, `/info` |
 | **Progress** | `WS /ws/<channel>/<topic>` | per-topic `TopicEventBus` | activity entries, chat messages, thinking text, the processing frame | the chat pane, the progress indicators (TUI, feishu), pipe processes |
 
-The rule behind the table: **one figure, one source**. A field is either in
-the list or in the detail, and the two consumers that want the same field
+The rule behind the table: **one figure, one source**. A figure is either in
+the list or in the detail, and the two consumers that want the same figure
 read the same shape. The info pane and `/info` are the same consumer of the
 detail — the pane over HTTP, the command in-process through the same
 `TopicManager::topic_info` call — so they cannot report different numbers
@@ -3147,6 +3147,10 @@ start and end — the agent loop when it publishes `ProcessingStarted` /
 (`/info`, the overview table, the info pane, the progress frame) reports
 that value. No consumer computes a status of its own, so "the topic is
 working" cannot be true in one view and false in another.
+
+`last_active_at` is the other field both carry, and they carry the same one:
+the event stream's stamp for the topic. The state dir's mtime is only the
+fallback, for a topic the tracker has not seen yet.
 
 ### TUI Dashboard Layout
 

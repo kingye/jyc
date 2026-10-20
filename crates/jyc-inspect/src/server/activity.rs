@@ -391,13 +391,9 @@ impl ActivityTracker {
                                                                         // the runtime's live status — the one source of truth for it, the
                                                                         // same value `/info` and the dashboard's topic table report. The
                                                                         // turn that published this event wrote it before the event went
-                                                                        // out, so reading it now gives the state the event describes.
-                                                                        //
-                                                                        // The values are the topic's live
-                                                                        // status, read after the event that
-                                                                        // describes them: ProcessingCompleted
-                                                                        // sends is_processing=false, not the
-                                                                        // stale true value.
+                                                                        // out, so reading it now gives the state the event describes:
+                                                                        // ProcessingCompleted sends is_processing=false, not the stale
+                                                                        // true value.
                                                                         if matches!(
                                                                             &event,
                                                                             TopicEvent::ProcessingStarted { .. }

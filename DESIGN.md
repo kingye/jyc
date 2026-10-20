@@ -435,6 +435,7 @@ these names loosely, so they are fixed here.
 | **state dir** | A topic's `.jyc`: transcript, `agent-context.jsonl` (append-only raw context journal; legacy `agent-context.json` migrates once), `tasks`, `pattern`, `mode-override`, the lineage `spawned-from`, … — always under the agents dir, located by **topic name**, and always the home's `.jyc`: never inside a `topic_path` (which is the home's `.data`, a sibling) and never inside a pinned dir | see the table below | `jyc_types::state_dir::resolve_state_dir(name, topic_dir)` |
 | **inbound dir** | Where the hub stages inbound attachment bytes between their upload and the message announcing them, deliberately outside every topic and channel dir | `<data dir>/.inbound` | `topic_path::inbound_dir()` |
 | **L1 / L2 / L3** | Override layers only, not ownership | L1 = config dir; L2 = data dir; L3 = one topic (`topic_path` + state dir) | — |
+| **cache hit rate** | The share of a topic's input tokens served from the provider's prompt cache — cache-hit tokens ÷ total input tokens. "Cache util" is the older name for the same figure | the info pane's "Cache hit rate" row, `/info`, `/bill` | `jyc_types::cache_util_pct` |
 
 Readings this table exists to rule out:
 
@@ -456,6 +457,9 @@ Readings this table exists to rule out:
    weigh a dir against either root) the data-dir-based one is spelled out at
    the call site as `agents_dir(&self.data_dir)`. With an explicit
    `--data-dir` the two differ.
+5. "Cache util" and **cache hit rate** are the same number — the cache-hit
+   tokens as a share of the total input tokens. The UI says "Cache hit rate";
+   the code keeps the older name (`cache_util_pct`).
 
 ## Topic State Directory (.jyc)
 
@@ -3158,9 +3162,10 @@ Not connected: connection refused
                                                                       │ Model: claude-opus-4-8
                                                                       │ Mode: build           
                                                                       │ Branch: feat/issue-42 
-                                                                      │ Tokens: 45231/120000  
+                                                                      │ Tokens:         ──···· 45231 / 120000 (38%)
                                                                       │ Total input: 90311    
                                                                       │ Cache hits: 80120     
+                                                                      │ Cache hit rate: ──────· 88%
                                                                       │ Changed files (2):    
                                                                       │   crates/…/mod.rs     
                                                                       │ ───────────────────── 
@@ -3186,6 +3191,22 @@ Not connected: connection refused
   changed files) scrolls; the status sub-pane is pinned to the bottom behind a
   gray top edge, carrying `JYC AI v<version>` plus the server stats in gray. A
   transient message replaces that block with one yellow line for a few seconds.
+  The two percentage rows draw their share as a bar in front of the numbers —
+  `─` for the filled part (bold yellow), `·` for the rest (dim gray):
+  `Tokens:         ──···· 45231 / 120000 (38%)` and
+  `Cache hit rate: ──────· 88%`. Both labels are padded to one width, so
+  the two bars start in the same column and the shares can be compared by
+  eye. The bar is as wide as the column allows — up to twenty cells — and
+  the wrapping never cuts it in half: a narrow column gets a shorter bar
+  and the figures wrap below it. The fill rounds to the nearest cell, so a
+  bar of five cells is within ten points of the share; below five cells the
+  rounding error grows past that and the bar would misreport the share, so a
+  column that narrow gets the figures alone; the percentage is printed
+  either way, so the bar is a glance aid and never the only source. The
+  sketch above draws the right column wider than the layout's 20% share, so
+  its bar is longer than a terminal that narrow would give. The second row
+  used to read "Cache util"; cache util and cache hit rate are the same
+  number.
 - **Activity pane** (bottom 20%) — top border only, because the other edges are
   the screen edge or sit against the pane above. Internal entries and thinking
   heartbeats are filtered out: they are dozens of identical markers that would

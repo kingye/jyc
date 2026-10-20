@@ -303,8 +303,8 @@ fn render_report(
             let mut provider_total = BillRow::default();
             out.push_str(&format!(
                 "\n**{provider}**\n\
-                 | model | topic | calls | input | output | cache | cache util | cost |\n\
-                 |-------|-------|------:|------:|-------:|------:|-----------:|-----:|\n"
+                 | model | topic | calls | input | output | cache | cache hit rate | cost |\n\
+                 |-------|-------|------:|------:|-------:|------:|---------------:|-----:|\n"
             ));
             for ((billing, row_provider, model), topics) in &table {
                 if billing != mode || row_provider != provider {

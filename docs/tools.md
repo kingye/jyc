@@ -274,7 +274,7 @@ The command form is `/send <agent> [--topic|-t <topic>] [--reply] [--attach <fil
 
 **Parameters:**
 - `agent` (string, required): Target agent name (e.g. `"invoice"`, `"mail-bot"`). The name is matched against topic names first; only a name no topic owns becomes this agent's own topic, created if it does not exist yet
-- `topic` (string, optional): One of that agent's topics (e.g. `"invoice-processing"`), for when it has more than one. A topic's name is its address — it is unique process-wide, so a named topic identifies its agent too
+- `topic` (string, optional): One of that agent's topics (e.g. `"invoice-processing"`), for when it has more than one. A topic's name is its address — it is unique process-wide, so a named topic identifies its agent too. An agent's own topic is named after the agent, so passing the same name as `agent` addresses that same default topic
 - `message` (string, required): Message body to inject into the target topic
 - `attachments` (string[], optional): List of filenames within the current topic directory to attach
 - `recipient` (string, optional): Recipient address/ID. Sets the sender_address on the injected message for channel-appropriate reply routing
@@ -282,7 +282,7 @@ The command form is `/send <agent> [--topic|-t <topic>] [--reply] [--attach <fil
 
 **Behavior:**
 - Resolves the addressee to the `TopicManager` that serves it — the one running the topic's queue or able to locate its directory, otherwise the channel the topic's own state records (`.jyc/topic-meta.json`), which is what reaches a topic idle since the last restart; the channel is never named by the caller
-- A name no channel owns is created as a new agent's own topic in the `agents` channel; a *named* topic nobody owns is refused (re-creating it elsewhere would collide, since state dirs are keyed by topic name), as is a recorded channel that is not running
+- A name no channel owns is created as a new agent's own topic in the `agents` channel; a *named* topic nobody owns is refused (re-creating it elsewhere would collide, since state dirs are keyed by topic name), as is a recorded channel that is not running. A `topic` equal to the `agent` is that agent's own topic, not a named one, so it is created on demand like the `topic`-less form
 - Builds an `InboundMessage` with source metadata (`source_channel`, `source_topic`, `require_reply`)
 - Enqueues the message into the target topic's queue
 - The target agent sees a `**Source:**` header in its incoming message prompt

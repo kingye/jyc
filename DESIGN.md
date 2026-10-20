@@ -2686,13 +2686,15 @@ Injects a message into another agent's topic queue for agent processing. Unlike 
 
 The name is matched against topic names first, because that is the address: a name some topic already owns belongs to that topic, and only a name no topic owns becomes the agent's own topic — the one named after it, `<agents dir>/<agent>/`, created when it does not exist yet. An agent whose name another channel's topic already holds is therefore reached through that topic, not by a second topic of the same name.
 
+An agent's own topic is named after the agent, so `topic` carrying the agent's own name addresses that same default topic — the two spellings mean one thing, and both land on `<agents dir>/<agent>/`.
+
 The command form is `/send <agent> [--topic|-t <topic>] [--reply] [--attach <file>] [--recipient <id>] <message>`. Both triggers parse their own input and call the same `jyc_core::command::send_handler::send_to_topic` — one implementation with two entries, exactly as `/spawn` and `jyc_spawn_subagent`.
 
 Which manager serves the name is then answered by looking, in three steps:
 
 - **Running it** — a manager whose queue map holds the topic. A topic exists because a channel routed to it (which enqueued), so a live queue is the first answer.
 - **Its own state** — `channel` in the topic's `.jyc/topic-meta.json`, written on the message that first routed to it and backfilled on a later one when the record predates the key. This is what keeps a topic idle since the last restart addressable instead of making it wait for its next inbound message. The state dir comes from the state registry, or — a sub-topic's home being two directories down, past what the startup scan walks — from probing `<agents dir>/<agent>/<topic>/.jyc`. A recorded channel this process does not run is refused rather than guessed at.
-- **Nobody owns it** — an agent's own topic is created in the **agents channel**, which is where `/spawn` and the dashboard keep agents; a *named* topic is refused, since re-creating it under the same name elsewhere would collide with state dirs keyed by topic name process-wide.
+- **Nobody owns it** — an agent's own topic is created in the **agents channel**, which is where `/spawn` and the dashboard keep agents; a *named* topic is refused, since re-creating it under the same name elsewhere would collide with state dirs keyed by topic name process-wide. A `topic` equal to the `agent` is not a named topic — it names the agent's own topic — so it is created on demand like the `topic`-less form.
 
 ```
 Topic A (feishu_bot / "greenfield 下单")

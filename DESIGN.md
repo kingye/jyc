@@ -3162,10 +3162,10 @@ Not connected: connection refused
                                                                       │ Model: claude-opus-4-8
                                                                       │ Mode: build           
                                                                       │ Branch: feat/issue-42 
-                                                                      │ Tokens: ────────── 45231/120000
+                                                                      │ Tokens: ──────────────────── 45231/120000
                                                                       │ Total input: 90311    
                                                                       │ Cache hits: 80120     
-                                                                      │ Cache hit rate: ────────── 88%
+                                                                      │ Cache hit rate: ──────────────────── 88%
                                                                       │ Changed files (2):    
                                                                       │   crates/…/mod.rs     
                                                                       │ ───────────────────── 
@@ -3193,8 +3193,8 @@ Not connected: connection refused
   transient message replaces that block with one yellow line for a few seconds.
   The two percentage rows draw their share as a bar in front of the numbers —
   `─` for the filled part (bold yellow), `·` for the rest (dim gray):
-  `Tokens: ────────── 45231 / 120000 (38%)` and
-  `Cache hit rate: ────────── 88%`. The second row used to read "Cache util";
+  `Tokens: ──────────────────── 45231 / 120000 (38%)` and
+  `Cache hit rate: ──────────────────── 88%`. The second row used to read "Cache util";
   cache util and cache hit rate are the same number.
 - **Activity pane** (bottom 20%) — top border only, because the other edges are
   the screen edge or sit against the pane above. Internal entries and thinking

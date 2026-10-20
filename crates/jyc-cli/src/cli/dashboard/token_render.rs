@@ -15,7 +15,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 
 /// Number of cells in the percentage bars the info pane draws.
-const BAR_WIDTH: usize = 10;
+const BAR_WIDTH: usize = 20;
 
 /// Append a `BAR_WIDTH`-cell bar for `pct` (0..=100): `─` for the filled
 /// part (bold yellow), `·` for the rest (dim gray). Rounds to the nearest
@@ -335,8 +335,8 @@ mod tests {
         push_tokens_span(&mut spans, &t);
         assert_eq!(spans.len(), 4);
         assert_eq!(spans[0].content, "Tokens: ");
-        assert_eq!(spans[1].content, "─".repeat(5));
-        assert_eq!(spans[2].content, "·".repeat(5));
+        assert_eq!(spans[1].content, "─".repeat(9));
+        assert_eq!(spans[2].content, "·".repeat(11));
         assert_eq!(spans[3].content, " 4750 / 10000 (47%)");
     }
 
@@ -567,8 +567,8 @@ mod tests {
         push_cache_utilization_span(&mut spans, &t);
         assert_eq!(spans.len(), 4);
         assert_eq!(spans[0].content, "Cache hit rate: ");
-        assert_eq!(spans[1].content, "─".repeat(9));
-        assert_eq!(spans[2].content, "·");
+        assert_eq!(spans[1].content, "─".repeat(18));
+        assert_eq!(spans[2].content, "·".repeat(2));
         assert_eq!(spans[3].content, " 88%");
     }
 

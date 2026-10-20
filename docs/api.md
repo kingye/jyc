@@ -731,9 +731,9 @@ The lineage is split the same way: the list carries only the one-hop
 `parent` (a topic's own parent, read from the `spawned-from` breadcrumb the
 subagent wrote into its state dir), while the detail carries the whole tree
 in `subagents` — the topic's descendants, each node holding the subagents it
-spawned in turn. The list shape does not resolve the lineage at all, so a
-summary's `subagents` is `None`; the detail's is `Some(vec![])` when the
-topic has no subagents.
+spawned in turn. The list shape does not resolve the lineage at all, and
+`TopicSummary` has no `subagents` field to carry it; in the detail,
+`subagents` is `Some(vec![])` when the topic has no subagents.
 
 ### 4.4 Other types
 

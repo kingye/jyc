@@ -340,9 +340,10 @@ pub struct TopicInfo {
     /// The subagents this topic spawned, as a tree: every node's
     /// `children` are the subagents it spawned in turn.
     ///
-    /// `None` when the shape did not resolve the lineage — the list shape
-    /// does not, so a summary carries no tree — and `Some(vec![])` when the
-    /// topic has no subagents at all.
+    /// `None` when the lineage was not resolved — the manager resolves it
+    /// for a topic's detail and leaves it out for the list shape, which has
+    /// no field to carry a tree — and `Some(vec![])` when the topic has no
+    /// subagents at all.
     #[serde(default)]
     pub subagents: Option<Vec<TopicNode>>,
 }

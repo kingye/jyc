@@ -283,6 +283,11 @@ mod tests {
             ],
             "tree order"
         );
+        assert_eq!(
+            node_count(&forest),
+            topics.len(),
+            "every topic of the list is in the forest exactly once"
+        );
     }
 
     // A breadcrumb cycle — hand-edited state only — has no root for the walk
@@ -300,6 +305,11 @@ mod tests {
             shape(&forest, 0),
             [(0, "a".to_string()), (1, "b".to_string())],
             "both members stay listed, once each"
+        );
+        assert_eq!(
+            node_count(&forest),
+            topics.len(),
+            "a cycle loses an edge, not a topic"
         );
     }
 

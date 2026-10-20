@@ -60,10 +60,9 @@ pub async fn read_total_input_tokens(topic_name: &str, topic_path: &Path) -> Opt
 /// accumulated value is zero. Mirrors `read_total_input_tokens`; zero
 /// covers both "no calls yet" and "provider didn't surface cache hits".
 pub async fn read_total_cache_hit_tokens(topic_name: &str, topic_path: &Path) -> Option<u64> {
-    let cache_hit = read_token_state(topic_name, topic_path)
+    read_token_state(topic_name, topic_path)
         .await
-        .total_cache_hit_tokens;
-    cache_hit
+        .total_cache_hit_tokens
 }
 
 /// Read accumulated prompt-cache-**creation** (write) tokens from the
@@ -76,10 +75,9 @@ pub async fn read_total_cache_hit_tokens(topic_name: &str, topic_path: &Path) ->
 /// reads; for every other vendor this is always `None` unless the
 /// caller actively fills it.
 pub async fn read_total_cache_creation_tokens(topic_name: &str, topic_path: &Path) -> Option<u64> {
-    let cache_creation = read_token_state(topic_name, topic_path)
+    read_token_state(topic_name, topic_path)
         .await
-        .total_cache_creation_tokens;
-    cache_creation
+        .total_cache_creation_tokens
 }
 
 /// Read accumulated reasoning (thinking) tokens from the agent session

@@ -1657,24 +1657,64 @@ fn selected_topic_detail(app: &App) -> Option<&jyc_types::TopicInfo> {
     (detail.channel == channel && detail.name == name).then_some(detail)
 }
 
-/// Lay the info pane's `label: value` rows out. Each row is a group of
-/// spans whose first span is the label and whose rest is the value.
+/// One row of the info pane: a `label: value` field, or a line of a
+/// section that keeps its own shape (the task list, the changed files).
+enum InfoRow<'a> {
+    /// A `label: value` row: the first span is the label, the rest is
+    /// the value.
+    Field(Vec<Span<'a>>),
+    /// A line that is not a `label: value` row and keeps its own shape.
+    Raw(Line<'a>),
+}
+
+/// Lay the info pane's rows out. A field is laid out by the pane's
+/// layout; a section line keeps its own shape.
 ///
-/// In the table layout the two share one row: the label is padded, so
-/// every value of the pane starts in the same column and the pane reads
-/// as one table. In the stacked layout the label takes a row of its own
-/// and the value follows flush left on the next one — a pane too narrow
-/// for a value column would otherwise cut every value short.
-fn layout_label_rows(rows: Vec<Vec<Span>>, layout: PaneLayout) -> Vec<Line> {
+/// In the table layout the label and the value share one row: the label is
+/// padded, so every value of the pane starts in the same column and the
+/// pane reads as one table. A value too long for its column wraps inside
+/// it, and the lines that continue it are indented to the column, so the
+/// column keeps the values it holds.
+///
+/// In the stacked layout the label takes a row of its own and the value
+/// follows flush left on the next one — a pane too narrow for a value
+/// column would otherwise cut every value short.
+fn layout_info_rows(rows: Vec<InfoRow>, layout: PaneLayout, inner_width: u16) -> Vec<Line> {
+    use unicode_width::UnicodeWidthStr;
+
     let mut out = Vec::with_capacity(rows.len());
-    for mut spans in rows {
+    for row in rows {
+        let mut spans = match row {
+            InfoRow::Raw(line) => {
+                out.push(line);
+                continue;
+            }
+            InfoRow::Field(spans) => spans,
+        };
+        // A row without a label has no value to lay out beside it.
+        if spans.is_empty() {
+            continue;
+        }
         let label = spans.remove(0);
         match layout {
             PaneLayout::Table => {
-                let mut row = Vec::with_capacity(spans.len() + 1);
-                row.push(label);
-                row.extend(spans);
-                out.push(Line::from(row));
+                // The value wraps inside the pane's value column, and every
+                // line that continues it is indented to that column, so a
+                // value too long for the column keeps the pane's shape.
+                let label_width = label.content.width();
+                let value_col = (inner_width as usize).saturating_sub(label_width).max(1);
+                let mut chunks = wrap_styled_lines(vec![Line::from(spans)], value_col).into_iter();
+                let first = chunks.next().unwrap_or_default();
+                let mut line = Vec::with_capacity(first.spans.len() + 1);
+                line.push(label);
+                line.extend(first.spans);
+                out.push(Line::from(line));
+                for chunk in chunks {
+                    let mut line = Vec::with_capacity(chunk.spans.len() + 1);
+                    line.push(Span::raw(" ".repeat(label_width)));
+                    line.extend(chunk.spans);
+                    out.push(Line::from(line));
+                }
             }
             PaneLayout::Stacked => {
                 // The label's own padding goes: a label alone on its row
@@ -1780,36 +1820,48 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         // The pane's `label: value` rows are kept as span groups — the
         // label first, the value after it — until the layout is known:
         // the table layout puts the two on one row, the stacked layout
-        // gives the label a row of its own. The sections below (the task
-        // list, the files, the subagent tree) are not `label: value`
-        // rows and keep the shape they have.
-        let mut rows: Vec<Vec<Span>> = Vec::new();
-        let mut sections: Vec<Line> = Vec::new();
-        rows.push(vec![label_span("Topic: "), Span::raw(&t.name)]);
-        rows.push(vec![label_span("Channel: "), Span::raw(&t.channel)]);
-        rows.push(vec![
+        // gives the label a row of its own. The sections (the task list,
+        // the files, the subagent tree) are not `label: value` rows and
+        // keep the shape they have. Both kinds share one list, in the
+        // order they are drawn, so a row added to either keeps its place.
+        let mut rows: Vec<InfoRow> = Vec::new();
+        rows.push(InfoRow::Field(vec![
+            label_span("Topic: "),
+            Span::raw(&t.name),
+        ]));
+        rows.push(InfoRow::Field(vec![
+            label_span("Channel: "),
+            Span::raw(&t.channel),
+        ]));
+        rows.push(InfoRow::Field(vec![
             label_span("Pattern: "),
             Span::raw(t.pattern.as_deref().unwrap_or("-")),
-        ]);
+        ]));
         if let Some(ref model) = t.model {
-            rows.push(vec![label_span("Model: "), Span::raw(model)]);
+            rows.push(InfoRow::Field(vec![
+                label_span("Model: "),
+                Span::raw(model),
+            ]));
         }
-        rows.push(vec![
+        rows.push(InfoRow::Field(vec![
             label_span("Mode: "),
             Span::raw(t.mode.as_deref().unwrap_or("build")),
-        ]);
+        ]));
         // Branch comes from the topic's detail — the same source `/info`
         // reads. Skipped when the topic's topic_path isn't a git repo
         // (most chat-channel topics: feishu/wecom).
         if let Some(branch) = t.branch.as_deref() {
-            rows.push(vec![label_span("Branch: "), Span::raw(branch)]);
+            rows.push(InfoRow::Field(vec![
+                label_span("Branch: "),
+                Span::raw(branch),
+            ]));
         }
         // Status row — the topic's live status, the same value `/info`
         // reports and the overview table shows.
-        rows.push(vec![
+        rows.push(InfoRow::Field(vec![
             label_span("Status: "),
             Span::raw(format!("{}", t.status)),
-        ]);
+        ]));
         // The two percentage rows draw their bar as wide as this pane
         // allows — never wider, or the wrapping would cut it in half, and
         // never narrower than a bar can carry the share honestly: a pane
@@ -1820,19 +1872,19 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         let mut token_spans = Vec::with_capacity(4);
         push_tokens_span(&mut token_spans, t, bar_cells);
         if !token_spans.is_empty() {
-            rows.push(token_spans);
+            rows.push(InfoRow::Field(token_spans));
         }
         // Output row — same pattern.
         let mut output_spans = Vec::with_capacity(2);
         push_output_span(&mut output_spans, t);
         if !output_spans.is_empty() {
-            rows.push(output_spans);
+            rows.push(InfoRow::Field(output_spans));
         }
         // Total input row — accumulated lifetime sum across all LLM calls.
         let mut total_input_spans = Vec::with_capacity(2);
         push_total_input_span(&mut total_input_spans, t);
         if !total_input_spans.is_empty() {
-            rows.push(total_input_spans);
+            rows.push(InfoRow::Field(total_input_spans));
         }
         // Cache hits row — accumulated prompt-cache hits across all LLM
         // calls in the session. Distinct from `total_input_tokens`
@@ -1841,7 +1893,7 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         let mut cache_hit_spans = Vec::with_capacity(2);
         push_cache_hit_span(&mut cache_hit_spans, t);
         if !cache_hit_spans.is_empty() {
-            rows.push(cache_hit_spans);
+            rows.push(InfoRow::Field(cache_hit_spans));
         }
         // Cache hit rate row — cache hits as a share of total input.
         // Omitted when the provider reports no cache data. Label + bar +
@@ -1849,7 +1901,7 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         let mut cache_util_spans = Vec::with_capacity(4);
         push_cache_utilization_span(&mut cache_util_spans, t, bar_cells);
         if !cache_util_spans.is_empty() {
-            rows.push(cache_util_spans);
+            rows.push(InfoRow::Field(cache_util_spans));
         }
         // Cache create row — cache **write** tokens billed at the
         // creation rate (Anthropic ~1.25× input; GPT-5.6 reports
@@ -1858,28 +1910,28 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         let mut cache_creation_spans = Vec::with_capacity(2);
         push_cache_creation_span(&mut cache_creation_spans, t);
         if !cache_creation_spans.is_empty() {
-            rows.push(cache_creation_spans);
+            rows.push(InfoRow::Field(cache_creation_spans));
         }
         // Reasoning row — the hidden chain-of-thought share of the output.
         // Rendered only when the provider reports some.
         let mut reasoning_spans = Vec::with_capacity(2);
         push_reasoning_span(&mut reasoning_spans, t);
         if !reasoning_spans.is_empty() {
-            rows.push(reasoning_spans);
+            rows.push(InfoRow::Field(reasoning_spans));
         }
         // Cost row — session-scoped spend plus today's durable total.
         // Omitted entirely when the model has no configured pricing.
         let mut cost_spans = Vec::with_capacity(2);
         push_cost_span(&mut cost_spans, t);
         if !cost_spans.is_empty() {
-            rows.push(cost_spans);
+            rows.push(InfoRow::Field(cost_spans));
         }
         // Latency row — the session's average wall-clock time of one API
         // call. Omitted until a call has been measured.
         let mut latency_spans = Vec::with_capacity(2);
         push_latency_span(&mut latency_spans, t);
         if !latency_spans.is_empty() {
-            rows.push(latency_spans);
+            rows.push(InfoRow::Field(latency_spans));
         }
         // Separated section: the agent's task list (`.jyc/tasks.json`),
         // placed between the cost row and the files section. Same
@@ -1888,22 +1940,22 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         // in-progress is the row you want to spot. Omitted entirely when the
         // topic has no list; the whole pane (list included) scrolls.
         if !t.tasks.is_empty() {
-            sections.push(Line::default());
+            rows.push(InfoRow::Raw(Line::default()));
             let (done, total) = t.tasks.progress();
-            sections.push(Line::from(Span::styled(
+            rows.push(InfoRow::Raw(Line::from(Span::styled(
                 format!("Tasks ({done}/{total}):"),
                 Style::default().add_modifier(Modifier::BOLD),
-            )));
+            ))));
             for item in &t.tasks.items {
                 let style = match item.status {
                     jyc_types::task::TaskStatus::InProgress => Style::default().fg(Color::Yellow),
                     jyc_types::task::TaskStatus::Completed => Style::default().fg(Color::DarkGray),
                     jyc_types::task::TaskStatus::Pending => Style::default(),
                 };
-                sections.push(Line::from(Span::styled(
+                rows.push(InfoRow::Raw(Line::from(Span::styled(
                     format!("  {} {}. {}", item.status.marker(), item.id, item.text),
                     style,
-                )));
+                ))));
             }
         }
         // Separated section: the subagents this topic spawned, as a tree —
@@ -1917,18 +1969,18 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         {
             let tree = subagent_tree(s, root);
             if !tree.is_empty() {
-                sections.push(Line::default());
-                sections.push(Line::from(Span::styled(
+                rows.push(InfoRow::Raw(Line::default()));
+                rows.push(InfoRow::Raw(Line::from(Span::styled(
                     format!("Subagents ({}):", tree.len()),
                     Style::default().add_modifier(Modifier::BOLD),
-                )));
+                ))));
                 for row in &tree {
                     let kid = &s.topics[row.topic];
-                    sections.push(Line::from(vec![
+                    rows.push(InfoRow::Raw(Line::from(vec![
                         Span::raw(format!(" {}", row.prefix)),
                         Span::styled("● ", status_dot_style(&kid.status)),
                         Span::raw(kid.name.as_str()),
-                    ]));
+                    ])));
                 }
             }
         }
@@ -1950,7 +2002,7 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
                         .add_modifier(Modifier::ITALIC),
                 ));
             }
-            sections.push(Line::from(thinking_line));
+            rows.push(InfoRow::Raw(Line::from(thinking_line)));
         }
         // Separated section at the end: files changed relative to `main`,
         // stamped from the per-topic detail (like the branch row above) onto
@@ -1965,17 +2017,17 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         // as `Files: (none)` so the user knows the field resolved to
         // "no changes".
         if let Some(files) = t.changed_files.as_deref() {
-            sections.push(Line::default());
+            rows.push(InfoRow::Raw(Line::default()));
             if files.is_empty() {
-                sections.push(Line::from(vec![
+                rows.push(InfoRow::Raw(Line::from(vec![
                     Span::styled("Files: ", Style::default().add_modifier(Modifier::BOLD)),
                     Span::styled("(none)", Style::default().fg(Color::DarkGray)),
-                ]));
+                ])));
             } else {
-                sections.push(Line::from(Span::styled(
+                rows.push(InfoRow::Raw(Line::from(Span::styled(
                     format!("Files ({}):", files.len()),
                     Style::default().add_modifier(Modifier::BOLD),
-                )));
+                ))));
                 for entry in files {
                     // One-column glyph + one space, then the path.
                     // Two-space prefix for Modified keeps the path
@@ -2000,15 +2052,13 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
                             Style::default().fg(Color::DarkGray),
                         ));
                     }
-                    sections.push(Line::from(spans));
+                    rows.push(InfoRow::Raw(Line::from(spans)));
                 }
             }
         }
-        // The rows first, then the sections: the label rows are the
-        // pane's table, the sections are what follows it.
-        let mut out = layout_label_rows(rows, layout);
-        out.extend(sections);
-        out
+        // The pane's rows in the order they are drawn: the fields and the
+        // sections share one list, so a row added to either keeps its place.
+        layout_info_rows(rows, layout, topic_inner.width)
     } else if super::shown_topic_key(app).is_some() {
         // A topic is on screen, but its detail has not landed yet — the
         // fetch runs on a timer, and a failed fetch leaves it unset. Say so

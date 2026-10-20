@@ -26,12 +26,17 @@ const CACHE_HIT_RATE_LABEL: &str = "Cache hit rate: ";
 /// table instead of a ragged list. The longest label sets it: a longer
 /// one would leave less room for the values than [`BAR_LABEL_ROOM`]
 /// allows, and the wrapping would cut them.
+///
+/// A label longer than this pushes its own value out of the column —
+/// raise it when a longer label arrives.
 const LABEL_WIDTH: usize = CACHE_HIT_RATE_LABEL.len();
 
 /// The room a bar leaves for its row: the padded label, plus one cell so
 /// the bar never touches the pane's edge. The space between the bar and
 /// the figures needs no room here — it sits after the bar, and the figures
-/// wrap onto the next line when they do not fit.
+/// wrap onto the next line when they do not fit. Only the table layout
+/// has to leave this room: in the stacked one the bar has the row to
+/// itself.
 const BAR_LABEL_ROOM: usize = LABEL_WIDTH + 1;
 
 /// The widest bar the info pane draws, in cells.
@@ -42,6 +47,10 @@ const MAX_BAR_WIDTH: usize = 20;
 /// rounding error grows past it and the bar misreports the figure it stands
 /// for — the percentage printed beside it says everything anyway, so a
 /// narrow pane gets its figures alone.
+///
+/// Only a column of fewer than five cells can reach it: the table layout
+/// leaves the label's room (at least seventeen cells) to the bar, and the
+/// stacked one gives the bar the whole column.
 const MIN_BAR_WIDTH: usize = 5;
 
 /// How the info pane lays its rows out. Decided by the pane's inner

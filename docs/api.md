@@ -177,6 +177,10 @@ the `commands` available in it. Every other figure (model, mode, tokens,
 cost, latency, tasks, branch, changed files) is the topic's *detail* and
 lives on §2.4.11 only.
 
+The list carries no tree either: the lineage behind it is the one-hop
+`parent`, and the tree a topic spawned lives in the detail (§2.4.11) — a
+poll would pay a walk per topic for it.
+
 The dashboard's polling loop uses this endpoint for the table, and fetches
 §2.4.11 for the one topic it shows.
 

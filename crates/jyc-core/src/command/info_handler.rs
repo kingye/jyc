@@ -89,7 +89,7 @@ fn format_topic_info(t: &TopicInfo) -> String {
         lines.push(format!("Cache hits: {hits}"));
     }
     if let Some(pct) = jyc_types::cache_util_pct(t.total_cache_hit_tokens, t.total_input_tokens) {
-        lines.push(format!("Cache util: {pct}%"));
+        lines.push(format!("Cache hit rate: {pct}%"));
     }
     if let Some(creation) = t.total_cache_creation_tokens
         && creation > 0
@@ -245,7 +245,7 @@ Tokens: 107480 / 256000 (41%)
 Output: 12345
 Total input: 1234567
 Cache hits: 987654
-Cache util: 80%
+Cache hit rate: 80%
 Cache create: 111
 Reasoning: 4096
 Cost: $0.4200 session · $1.2300 today

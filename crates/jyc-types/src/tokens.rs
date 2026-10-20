@@ -42,11 +42,15 @@ pub fn context_token_pct(
     )
 }
 
-/// The prompt-cache hits as a share of the total input tokens, in percent.
+/// The prompt-cache hits as a share of the total input tokens, in percent —
+/// the **cache hit rate**.
 ///
 /// `total_input_tokens` already includes the cache-hit portion, so it is the
 /// right denominator. `None` when either bound is missing or the total is
 /// zero. Checked arithmetic, so a very large count cannot wrap.
+///
+/// The name follows the older "cache util" wording; cache util and cache
+/// hit rate are the same figure.
 pub fn cache_util_pct(cache_hits: Option<u64>, total_input: Option<u64>) -> Option<u32> {
     match (cache_hits, total_input) {
         (Some(hit), Some(total)) if total > 0 => Some(

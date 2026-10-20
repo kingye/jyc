@@ -1,18 +1,98 @@
 //! Shared token-display helpers for the dashboard TUI.
 //!
-//! Two render sites show the same two fields (input token usage and
-//! accumulated output tokens): the chat info pane pushes one `Line` per
-//! row into a `Vec<Line>`, while the dashboard status line pushes
-//! `Span`s into a single flat `Vec<Span>`. Both call these helpers so the
-//! format and styling stay consistent.
+//! The topic info pane (the chat screen's right column, and the overview's
+//! twin) pushes one `Line` per row into a `Vec<Line>`, and these helpers
+//! build the `Span`s of those rows — the token counts, the two percentage
+//! rows with their bars, the cost and latency figures — so the format and
+//! styling stay consistent across the pane and `/info`.
 //!
 //! Kept module-private (`pub(super)`) — these are TUI internals, not part
 //! of the dashboard's public surface.
 
 use jyc_core::duration::format_latency;
 use jyc_types::{TopicInfo, format_amount};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
+
+/// The label of the token-usage row.
+const TOKENS_LABEL: &str = "Tokens: ";
+
+/// The label of the cache-hit-rate row — the longer of the two, so it sets
+/// the column the bars start in.
+const CACHE_HIT_RATE_LABEL: &str = "Cache hit rate: ";
+
+/// The width a percentage row's label is padded to, so that every bar
+/// starts in the same column and the two shares can be compared by eye
+/// rather than by counting cells. The longest percentage-row label sets
+/// it: a longer one would leave less room for the bar than
+/// [`BAR_LABEL_ROOM`] allows, and the wrapping would cut the bar.
+const BAR_LABEL_WIDTH: usize = CACHE_HIT_RATE_LABEL.len();
+
+/// The room a bar leaves for its row: the padded label, plus one cell so
+/// the bar never touches the pane's edge. The space between the bar and
+/// the figures needs no room here — it sits after the bar, and the figures
+/// wrap onto the next line when they do not fit.
+const BAR_LABEL_ROOM: usize = BAR_LABEL_WIDTH + 1;
+
+/// The widest bar the info pane draws, in cells.
+const MAX_BAR_WIDTH: usize = 20;
+
+/// The narrowest bar worth drawing. The fill rounds to the nearest cell, so
+/// a bar of five cells is within ten points of the share; below that the
+/// rounding error grows past it and the bar misreports the figure it stands
+/// for — the percentage printed beside it says everything anyway, so a
+/// narrow pane gets its figures alone.
+const MIN_BAR_WIDTH: usize = 5;
+
+/// The bar width for a pane of the given inner width: as wide as the pane
+/// allows, up to [`MAX_BAR_WIDTH`]. A bar wider than the room its label
+/// leaves would be cut in half by the paragraph's wrapping — half a bar
+/// reads worse than a short one — and a bar narrower than
+/// [`MIN_BAR_WIDTH`] would misreport the share, so both ends are refused.
+/// Zero means the row carries its figures alone.
+pub(super) fn bar_width(inner_width: u16) -> usize {
+    let room = (inner_width as usize).saturating_sub(BAR_LABEL_ROOM);
+    if room < MIN_BAR_WIDTH {
+        return 0;
+    }
+    room.min(MAX_BAR_WIDTH)
+}
+
+/// The label of a percentage row, padded so that every bar starts in the
+/// same column. Without a bar there is nothing to align, so the label is
+/// left as it is.
+fn bar_label(label: &str, bar_cells: usize) -> String {
+    if bar_cells == 0 {
+        label.to_string()
+    } else {
+        format!("{label:<width$}", width = BAR_LABEL_WIDTH)
+    }
+}
+
+/// Append a `width`-cell bar for `pct` (0..=100): `─` for the filled
+/// part (bold yellow), `·` for the rest (dim gray). The filled part rounds
+/// to the nearest cell, so the bar claims at most half a cell of share it
+/// does not have. A zero width draws no bar at all.
+fn push_bar_spans(spans: &mut Vec<Span>, pct: u32, width: usize) {
+    if width == 0 {
+        return;
+    }
+    let filled = (((pct.min(100) as usize) * width) + 50) / 100;
+    if filled > 0 {
+        spans.push(Span::styled(
+            "─".repeat(filled),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    if filled < width {
+        spans.push(Span::styled(
+            "·".repeat(width - filled),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+}
 
 /// Compute the context-window percentage for a topic: the last LLM call's
 /// input plus its output, against the model's context window. Returns
@@ -27,18 +107,27 @@ pub(super) fn context_pct(t: &TopicInfo) -> Option<u32> {
     )
 }
 
-/// Append the "Tokens: X / Y (Z%)" row to `spans` — the context size
-/// (the last call's input plus its output) against the context window.
-/// Pushes nothing when `context_input_tokens` or `max_tokens` is missing.
-pub(super) fn push_tokens_span(spans: &mut Vec<Span>, t: &TopicInfo) {
+/// Append the "Tokens: <bar> X / Y (Z%)" row to `spans` — the context
+/// size (the last call's input plus its output) against the context
+/// window, with the same share drawn as a bar of `bar_cells` cells. The
+/// label is padded to the width the other percentage rows use, so the two
+/// bars start in the same column. Pushes nothing when `context_input_tokens`
+/// or `max_tokens` is missing.
+pub(super) fn push_tokens_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_cells: usize) {
     if let (Some(cur), Some(max)) = (t.context_input_tokens, t.max_tokens) {
         let used = jyc_types::context_tokens(Some(cur), t.context_output_tokens).unwrap_or(cur);
         let pct = context_pct(t).unwrap_or(0);
         spans.push(Span::styled(
-            "Tokens: ",
+            bar_label(TOKENS_LABEL, bar_cells),
             Style::default().add_modifier(Modifier::BOLD),
         ));
-        spans.push(Span::raw(format!("{used} / {max} ({pct}%)")));
+        push_bar_spans(spans, pct, bar_cells);
+        let figures = format!("{used} / {max} ({pct}%)");
+        spans.push(Span::raw(if bar_cells > 0 {
+            format!(" {figures}")
+        } else {
+            figures
+        }));
     }
 }
 
@@ -102,29 +191,43 @@ pub(super) fn push_cache_creation_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     }
 }
 
-/// Compute the cache-utilization percentage for a topic: cache-hit
-/// tokens as a share of total input tokens (`total_input_tokens`
-/// already includes the cache-hit portion, so it is the correct
-/// denominator). Returns `None` when either bound is missing or `total`
-/// is zero. The figure itself comes from the shared helper, so `/info`
-/// prints the same percentage.
+/// Compute the cache hit rate for a topic: cache-hit tokens as a share of
+/// total input tokens (`total_input_tokens` already includes the cache-hit
+/// portion, so it is the correct denominator). Returns `None` when either
+/// bound is missing or `total` is zero. The figure itself comes from the
+/// shared helper, so `/info` prints the same percentage.
+///
+/// The helper is named after the older "cache util" wording; cache util
+/// and cache hit rate are the same number.
 pub(super) fn cache_util_pct(t: &TopicInfo) -> Option<u32> {
     jyc_types::cache_util_pct(t.total_cache_hit_tokens, t.total_input_tokens)
 }
 
-/// Append the "Cache util: Z%" row to `spans`. Pushes nothing when
-/// cache-hit or total-input data is missing (e.g. providers without
-/// prompt caching), so such topics show no row rather than a
+/// Append the "Cache hit rate: <bar> Z%" row to `spans`, the bar being
+/// `bar_cells` cells wide. The label is padded to the width the other
+/// percentage rows use, so the two bars start in the same column. Pushes
+/// nothing when cache-hit or total-input data is missing (e.g. providers
+/// without prompt caching), so such topics show no row rather than a
 /// misleading 0%. Sits next to [`push_cache_hit_span`] /
-/// [`push_cache_creation_span`] in the chat info pane and dashboard
-/// topic info area.
-pub(super) fn push_cache_utilization_span(spans: &mut Vec<Span>, t: &TopicInfo) {
+/// [`push_cache_creation_span`] in the chat info pane and dashboard topic
+/// info area.
+///
+/// The row used to read "Cache util"; "cache util" and "cache hit rate"
+/// are the same figure — see [`cache_util_pct`] and
+/// `jyc_types::cache_util_pct`.
+pub(super) fn push_cache_utilization_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_cells: usize) {
     if let Some(pct) = cache_util_pct(t) {
         spans.push(Span::styled(
-            "Cache util: ",
+            bar_label(CACHE_HIT_RATE_LABEL, bar_cells),
             Style::default().add_modifier(Modifier::BOLD),
         ));
-        spans.push(Span::raw(format!("{pct}%")));
+        push_bar_spans(spans, pct, bar_cells);
+        let figures = format!("{pct}%");
+        spans.push(Span::raw(if bar_cells > 0 {
+            format!(" {figures}")
+        } else {
+            figures
+        }));
     }
 }
 
@@ -289,18 +392,125 @@ mod tests {
     fn push_tokens_span_omits_when_max_missing() {
         let t = info_with(Some(100), None, None, None, None, None);
         let mut spans = Vec::new();
-        push_tokens_span(&mut spans, &t);
+        push_tokens_span(&mut spans, &t, MAX_BAR_WIDTH);
         assert!(spans.is_empty());
     }
 
     #[test]
-    fn push_tokens_span_writes_label_and_value() {
+    fn push_tokens_span_writes_label_bar_and_value() {
         let t = info_with(Some(4750), Some(10000), None, None, None, None);
         let mut spans = Vec::new();
-        push_tokens_span(&mut spans, &t);
+        push_tokens_span(&mut spans, &t, MAX_BAR_WIDTH);
+        assert_eq!(spans.len(), 4);
+        // The label is padded to the width the cache row's label takes, so
+        // that the two bars start in the same column.
+        assert_eq!(
+            spans[0].content,
+            format!(
+                "{:<width$}",
+                TOKENS_LABEL,
+                width = CACHE_HIT_RATE_LABEL.len()
+            )
+        );
+        assert_eq!(spans[1].content, "─".repeat(9));
+        assert_eq!(spans[2].content, "·".repeat(11));
+        assert_eq!(spans[3].content, " 4750 / 10000 (47%)");
+    }
+
+    /// A pane too narrow for an honest bar gets the figures alone — no bar,
+    /// an unpadded label, and none of the spans a bar would have added.
+    #[test]
+    fn push_tokens_span_without_a_bar() {
+        let t = info_with(Some(4750), Some(10000), None, None, None, None);
+        let mut spans = Vec::new();
+        push_tokens_span(&mut spans, &t, 0);
         assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].content, "Tokens: ");
+        assert_eq!(spans[0].content, TOKENS_LABEL);
         assert_eq!(spans[1].content, "4750 / 10000 (47%)");
+    }
+
+    /// The two percentage rows share one bar width and one label width, so
+    /// their bars start in the same column and their shares can be compared
+    /// by eye.
+    #[test]
+    fn the_two_bars_start_in_the_same_column() {
+        let t = info_with(Some(4750), Some(10000), None, Some(1000), Some(880), None);
+        let mut tokens = Vec::new();
+        push_tokens_span(&mut tokens, &t, MAX_BAR_WIDTH);
+        let mut cache = Vec::new();
+        push_cache_utilization_span(&mut cache, &t, MAX_BAR_WIDTH);
+        // The labels are the same width, and the bars follow them directly.
+        assert_eq!(tokens[0].content.len(), cache[0].content.len());
+        assert_eq!(tokens[0].content.len(), CACHE_HIT_RATE_LABEL.len());
+        assert_eq!(cache[0].content, CACHE_HIT_RATE_LABEL);
+    }
+
+    /// The bar is as wide as the pane allows: a wide pane gets the full
+    /// bar, a narrow one a shorter bar, and a pane too narrow for an
+    /// honest bar gets none.
+    #[test]
+    fn bar_width_follows_the_pane() {
+        // The longest label ("Cache hit rate: ", 16 cells) plus the one cell
+        // the bar keeps to itself at the pane's edge.
+        assert_eq!(bar_width(39), MAX_BAR_WIDTH);
+        assert_eq!(bar_width(37), MAX_BAR_WIDTH);
+        assert_eq!(bar_width(36), MAX_BAR_WIDTH - 1);
+        assert_eq!(bar_width(23), 6);
+        // The narrowest bar still worth drawing.
+        assert_eq!(bar_width(22), MIN_BAR_WIDTH);
+        // Below that a cell would carry too much of the share to be honest.
+        assert_eq!(bar_width(21), 0);
+        assert_eq!(bar_width(17), 0);
+        assert_eq!(bar_width(16), 0);
+        assert_eq!(bar_width(0), 0);
+    }
+
+    /// The bar rounds to the nearest cell and the filled part is the bold
+    /// yellow one. A share too small to fill a cell draws no filled part
+    /// at all: the bar never claims more than the share it stands for.
+    #[test]
+    fn push_bar_spans_fills_and_pads() {
+        let mut spans = Vec::new();
+        push_bar_spans(&mut spans, 0, MAX_BAR_WIDTH);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, "·".repeat(MAX_BAR_WIDTH));
+
+        let mut spans = Vec::new();
+        push_bar_spans(&mut spans, 5, MAX_BAR_WIDTH);
+        assert_eq!(spans[0].content, "─");
+        assert_eq!(spans[1].content, "·".repeat(MAX_BAR_WIDTH - 1));
+        assert_eq!(spans[0].style.fg, Some(Color::Yellow));
+        assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(spans[1].style.fg, Some(Color::DarkGray));
+
+        let mut spans = Vec::new();
+        push_bar_spans(&mut spans, 50, MAX_BAR_WIDTH);
+        assert_eq!(spans[0].content, "─".repeat(MAX_BAR_WIDTH / 2));
+        assert_eq!(spans[1].content, "·".repeat(MAX_BAR_WIDTH / 2));
+
+        // A full bar has no padding left to draw.
+        let mut spans = Vec::new();
+        push_bar_spans(&mut spans, 100, MAX_BAR_WIDTH);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, "─".repeat(MAX_BAR_WIDTH));
+
+        // Above 100% fills the bar without overflowing it.
+        let mut spans = Vec::new();
+        push_bar_spans(&mut spans, 140, MAX_BAR_WIDTH);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, "─".repeat(MAX_BAR_WIDTH));
+
+        // A share too small for a cell draws no filled part: the bar stays
+        // empty rather than overstating the share.
+        let mut spans = Vec::new();
+        push_bar_spans(&mut spans, 2, MAX_BAR_WIDTH);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, "·".repeat(MAX_BAR_WIDTH));
+
+        // A zero width draws no bar at all.
+        let mut spans = Vec::new();
+        push_bar_spans(&mut spans, 50, 0);
+        assert!(spans.is_empty());
     }
 
     #[test]
@@ -483,18 +693,20 @@ mod tests {
     fn push_cache_utilization_span_omits_when_missing() {
         let t = info_with(None, None, None, None, None, None);
         let mut spans = Vec::new();
-        push_cache_utilization_span(&mut spans, &t);
+        push_cache_utilization_span(&mut spans, &t, MAX_BAR_WIDTH);
         assert!(spans.is_empty());
     }
 
     #[test]
-    fn push_cache_utilization_span_writes_label_and_value() {
+    fn push_cache_utilization_span_writes_label_bar_and_value() {
         let t = info_with(None, None, None, Some(720), Some(640), None);
         let mut spans = Vec::new();
-        push_cache_utilization_span(&mut spans, &t);
-        assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].content, "Cache util: ");
-        assert_eq!(spans[1].content, "88%");
+        push_cache_utilization_span(&mut spans, &t, MAX_BAR_WIDTH);
+        assert_eq!(spans.len(), 4);
+        assert_eq!(spans[0].content, "Cache hit rate: ");
+        assert_eq!(spans[1].content, "─".repeat(18));
+        assert_eq!(spans[2].content, "·".repeat(2));
+        assert_eq!(spans[3].content, " 88%");
     }
 
     /// No measured call → no row at all, rather than a misleading `0ms`.

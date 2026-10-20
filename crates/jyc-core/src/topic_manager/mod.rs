@@ -16,6 +16,7 @@ use jyc_types::{OutboundAdapter, QueueItem};
 mod events;
 mod git;
 mod lifecycle;
+mod live_status;
 mod managers;
 mod queue;
 mod template;
@@ -23,6 +24,7 @@ mod topics;
 mod worker;
 
 pub use lifecycle::PurgeOutcome;
+pub use live_status::LiveStatus;
 pub use managers::TopicManagers;
 pub use topics::TopicDisplayState;
 
@@ -107,6 +109,13 @@ pub struct TopicManager {
     // per overview poll), so the read-parallelism of `RwLock` is not
     // worth the extra type complexity.
     pub(crate) topic_patterns: Arc<Mutex<HashMap<String, String>>>,
+
+    // Per-topic live status — the single source of truth for `TopicStatus`.
+    // The runtime writes it as turns start and end (see `live_status.rs`),
+    // and every reader — `list_topics`, `topic_info`, the inspect server —
+    // reports the value it holds. Shared via Arc so the worker clones that
+    // write it and the main manager that reads it see the same map.
+    pub(crate) live_status: Arc<live_status::LiveStatusStore>,
 
     // The set of managers this one is part of, for resolving a topic name to
     // the manager that serves it (see `managers.rs`). Weak: the registry holds
@@ -204,6 +213,7 @@ impl TopicManager {
             worker_handles: Mutex::new(Vec::new()),
             topic_paths: Arc::new(Mutex::new(HashMap::new())),
             topic_patterns: Arc::new(Mutex::new(HashMap::new())),
+            live_status: Arc::new(live_status::LiveStatusStore::default()),
             managers: Arc::new(std::sync::OnceLock::new()),
             billing_dir_override: std::sync::OnceLock::new(),
         }

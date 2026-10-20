@@ -6,7 +6,7 @@ use jyc_types::state_dir::resolve_state_dir;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use jyc_types::{TopicCost, TopicInfo, TopicStatus};
+use jyc_types::{TopicCost, TopicInfo};
 
 use super::TopicManager;
 /// Per-topic queue stats.
@@ -32,19 +32,11 @@ pub struct TopicDisplayState {
 
 impl TopicDisplayState {
     /// Input-token percentage of the context window. `None` when either
-    /// bound is missing or `max_tokens` is zero (mirrors the dashboard's
-    /// `input_token_pct`).
+    /// bound is missing or `max_tokens` is zero — the same helper the
+    /// dashboard and `/info` use, so the progress cards cannot report a
+    /// different figure than the topic's own figures.
     pub fn context_pct(&self) -> Option<u32> {
-        let cur = self.input_tokens?;
-        let max = self.max_tokens?;
-        if max == 0 {
-            return None;
-        }
-        Some(
-            cur.checked_mul(100)
-                .and_then(|v| v.checked_div(max))
-                .unwrap_or(0) as u32,
-        )
+        jyc_types::input_token_pct(self.input_tokens, self.max_tokens)
     }
 }
 
@@ -531,7 +523,18 @@ impl TopicManager {
         {
             let mut paths = self.topic_paths.lock().await;
             paths.retain(|name, path| {
-                let exists = resolve_state_dir(name.as_str(), path.as_path()).is_dir();
+                // A topic with no registered state dir has no state to read —
+                // a lost adoption stays unregistered on purpose (see
+                // `activate_workspace_state`), and `resolve_state_dir` would
+                // panic on it. Keep the entry (the registration may still be
+                // on its way) and leave the topic out of the names below: a
+                // topic whose state cannot be read is not one this list can
+                // report, and one such entry must not take the whole list
+                // down.
+                let Some(state) = jyc_types::state_dir::registered_state(name) else {
+                    return true;
+                };
+                let exists = state.is_dir();
                 if !exists {
                     tracing::info!(
                         topic = %name,
@@ -542,6 +545,9 @@ impl TopicManager {
                 exists
             });
             for name in paths.keys() {
+                if jyc_types::state_dir::registered_state(name).is_none() {
+                    continue;
+                }
                 if !topic_names.contains(name) {
                     topic_names.push(name.clone());
                 }
@@ -665,10 +671,11 @@ impl TopicManager {
                 self.agent
                     .available_skills(&name, &topic_path, pattern.as_deref());
 
-            // Determine status. The legacy `WaitingForAnswer` state (question
-            // MCP tool) was removed in #188; both active and dormant topics
-            // report `Idle` here — liveness is tracked via the activity log.
-            let status = TopicStatus::Idle;
+            // The topic's live status — the one source of truth for
+            // `TopicStatus` (see `live_status.rs`). The runtime writes it
+            // as turns start and end, so `/info`, the dashboard's topic
+            // table and the info pane all report the same value.
+            let status = self.topic_status(&name);
 
             // Fallback: read .jyc directory mtime if no activity tracker data
             let last_active_at =

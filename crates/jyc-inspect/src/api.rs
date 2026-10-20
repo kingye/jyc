@@ -454,9 +454,21 @@ pub async fn get_topic_info(
     let tm = ctx.topic_managers.by_channel(&channel).ok_or_else(|| {
         ApiError::not_found(format!("no topic manager found for channel '{channel}'"))
     })?;
-    tm.topic_info(&topic, true).await.map(Json).ok_or_else(|| {
+    let mut info = tm.topic_info(&topic, true).await.ok_or_else(|| {
         ApiError::not_found(format!("topic '{topic}' not found in channel '{channel}'"))
-    })
+    })?;
+    // The last-activity stamp comes from the event stream — the same source
+    // the overview list reads, so the two shapes cannot report different
+    // values for one topic. The manager's own value (the state dir's mtime)
+    // is the fallback for a topic the tracker has not seen yet.
+    let activity_map = ctx.activity_map.lock().await;
+    if let Some(state) = activity_map.get(&(channel.clone(), topic.clone()))
+        && let Some(last_active) = state.last_active_at
+    {
+        info.last_active_at = Some(last_active.to_rfc3339());
+    }
+    drop(activity_map);
+    Ok(Json(info))
 }
 
 pub async fn get_patterns(

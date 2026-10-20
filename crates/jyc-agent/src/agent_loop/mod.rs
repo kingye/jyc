@@ -174,6 +174,16 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     let billing_label =
         jyc_core::billing_log_store::BillingLogStore::label_for(topic_name, topic_path);
 
+    // The manager that serves this topic — the writer of the topic's live
+    // status (the one source of truth for `TopicStatus`). `None` where the
+    // loop runs without a channel (tests, sub-agents): there is no status
+    // to write there.
+    let status_topic = current_channel.as_deref().and_then(|channel| {
+        topic_managers
+            .as_ref()
+            .and_then(|managers| managers.by_channel(channel))
+    });
+
     let max_iter = max_iterations.unwrap_or(DEFAULT_MAX_ITERATIONS);
 
     // Build internal history: prior context + current message
@@ -264,6 +274,13 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     let mut consecutive_empty_tool_iterations: u32 = 0;
 
     // Publish ProcessingStarted
+    // The topic's live status follows the events this loop publishes (see
+    // `jyc_core::topic_manager::live_status`): write it first, so every
+    // consumer that reads the status when the event lands sees the turn as
+    // started.
+    if let Some(tm) = status_topic.as_ref() {
+        tm.set_topic_processing(topic_name);
+    }
     publish_event(
         event_bus,
         TopicEvent::ProcessingStarted {
@@ -664,6 +681,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             }
 
             let duration = start_time.elapsed();
+            if let Some(tm) = status_topic.as_ref() {
+                tm.set_topic_turn_ended(topic_name, true);
+            }
             publish_event(
                 event_bus,
                 TopicEvent::ProcessingCompleted {
@@ -820,6 +840,14 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             let tool_duration = tool_start.elapsed();
 
             // Publish ToolCompleted
+            // A failed tool leaves the topic in error: the turn may still
+            // succeed, but the topic reports what went wrong until the next
+            // turn starts.
+            if output.is_error
+                && let Some(tm) = status_topic.as_ref()
+            {
+                tm.set_topic_tool_error(topic_name);
+            }
             publish_event(
                 event_bus,
                 TopicEvent::ToolCompleted {
@@ -980,12 +1008,16 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     // max-cycles limit). A turn cancelled by the user is a failed turn whatever
     // it managed to deliver first, including a question that ended the turn.
     let duration = start_time.elapsed();
+    let turn_succeeded = handed_over && !cancel.is_cancelled();
+    if let Some(tm) = status_topic.as_ref() {
+        tm.set_topic_turn_ended(topic_name, turn_succeeded);
+    }
     publish_event(
         event_bus,
         TopicEvent::ProcessingCompleted {
             topic_name: topic_name.to_string(),
             message_id: "agent-loop".to_string(),
-            success: handed_over && !cancel.is_cancelled(),
+            success: turn_succeeded,
             duration_secs: duration.as_secs(),
             timestamp: Utc::now(),
         },

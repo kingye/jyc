@@ -362,7 +362,7 @@ builtin_commands! {
         make: |_| Arc::new(GrantCommandHandler)
     },
     "/info" => {
-        desc: "Show topic info (mode, model, tokens, cost, tasks, files)",
+        desc: "Show topic info (status, mode, model, tokens, cost, tasks, files)",
         make: |tm| Arc::new(InfoCommandHandler::new(tm))
     },
     "/mcp" => {

@@ -19,6 +19,7 @@ use jyc_types::{InboundMessage, PatternMatch, QueueItem};
 
 use super::TopicManager;
 /// Per-topic queue stats.
+use super::live_status::TurnStatusGuard;
 use super::template::{TemplateMismatch, initialize_topic_from_template};
 use super::worker::process_message;
 
@@ -167,6 +168,7 @@ impl TopicManager {
             worker_handles: Mutex::new(vec![]),
             topic_paths: self.topic_paths.clone(),
             topic_patterns: self.topic_patterns.clone(),
+            live_status: self.live_status.clone(),
             managers: Arc::clone(&self.managers),
             // Workers never read the billing dir (only list_topics does,
             // on the main TM), so a fresh unset cell is fine here.
@@ -382,7 +384,13 @@ impl TopicManager {
                 }
 
                 let processing_started = std::time::Instant::now();
-                if let Err(e) = process_message(
+                // The turn closes its own live status (the agent loop
+                // publishes the events the status mirrors); this guard
+                // covers the paths where it does not — a panic, a cancel —
+                // so "Processing" cannot outlive the turn.
+                let mut status_guard =
+                    TurnStatusGuard::new(tm.live_status.clone(), topic_name.clone());
+                let processed = process_message(
                     &mut item,
                     &topic_name,
                     &storage,
@@ -394,13 +402,22 @@ impl TopicManager {
                     &tx_for_reenqueue,
                     tm.clone(),
                     topic_cancel.clone(),
-                ).await {
+                )
+                .await;
+                status_guard.disarm();
+                if let Err(e) = processed {
                     let err_display = format!("{:#}", e);
                     tracing::error!(
                         error = %err_display,
                         "Failed to process message"
                     );
                     tm.metrics.processing_error(&topic_name, &err_display);
+
+                    // The turn failed without publishing a completion of its
+                    // own: close its live status here, before the events
+                    // below go out, so every consumer that reads the status
+                    // on that event already sees the turn as failed.
+                    tm.set_topic_turn_ended(&topic_name, false);
 
                     if let Some(event_bus) = event_bus_for_error.clone() {
                         let truncated: String = err_display.chars().take(200).collect();

@@ -1996,7 +1996,7 @@ mod tests {
 
     /// A `TopicInfo` as the per-topic info endpoint returns it — the detail
     /// the poll loop fetches for the topic on screen.
-
+    ///
     /// The detail fetch and the renderers must agree on which topic is on
     /// screen — the screen rule lives in `shown_topic_key` for exactly that.
     #[test]

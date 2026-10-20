@@ -1779,7 +1779,8 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
             Span::raw(format!("{}", t.status)),
         ]));
         // Tokens row — push tokens span into a fresh Vec, wrap in a Line.
-        let mut token_spans = Vec::with_capacity(2);
+        // The row is label + bar + figures, hence the four spans.
+        let mut token_spans = Vec::with_capacity(4);
         push_tokens_span(&mut token_spans, t);
         if !token_spans.is_empty() {
             out.push(Line::from(token_spans));
@@ -1806,8 +1807,9 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
             out.push(Line::from(cache_hit_spans));
         }
         // Cache hit rate row — cache hits as a share of total input.
-        // Omitted when the provider reports no cache data.
-        let mut cache_util_spans = Vec::with_capacity(2);
+        // Omitted when the provider reports no cache data. Label + bar +
+        // percentage, hence the four spans.
+        let mut cache_util_spans = Vec::with_capacity(4);
         push_cache_utilization_span(&mut cache_util_spans, t);
         if !cache_util_spans.is_empty() {
             out.push(Line::from(cache_util_spans));

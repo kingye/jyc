@@ -1,10 +1,10 @@
 //! Shared token-display helpers for the dashboard TUI.
 //!
-//! Two render sites show the same two fields (input token usage and
-//! accumulated output tokens): the chat info pane pushes one `Line` per
-//! row into a `Vec<Line>`, while the dashboard status line pushes
-//! `Span`s into a single flat `Vec<Span>`. Both call these helpers so the
-//! format and styling stay consistent.
+//! The topic info pane (the chat screen's right column, and the overview's
+//! twin) pushes one `Line` per row into a `Vec<Line>`, and these helpers
+//! build the `Span`s of those rows — the token counts, the two percentage
+//! rows with their bars, the cost and latency figures — so the format and
+//! styling stay consistent across the pane and `/info`.
 //!
 //! Kept module-private (`pub(super)`) — these are TUI internals, not part
 //! of the dashboard's public surface.

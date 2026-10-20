@@ -3162,7 +3162,7 @@ Not connected: connection refused
                                                                       │ Model: claude-opus-4-8
                                                                       │ Mode: build           
                                                                       │ Branch: feat/issue-42 
-                                                                      │ Tokens: ──────────────────── 45231/120000
+                                                                      │ Tokens: ──────────────────── 45231 / 120000 (38%)
                                                                       │ Total input: 90311    
                                                                       │ Cache hits: 80120     
                                                                       │ Cache hit rate: ──────────────────── 88%

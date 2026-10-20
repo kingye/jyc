@@ -2872,3 +2872,41 @@ fn info_pane_renders_subagents_as_a_tree() {
         "the tree is out of place:\n{pane}"
     );
 }
+
+/// The bar the pane draws for a share: `filled` cells of `─`, the rest `·`.
+/// Twenty cells wide — the width is pinned here on purpose, so a change to
+/// the bar's length has to show up in this test.
+fn info_pane_bar(filled: usize) -> String {
+    "─".repeat(filled) + &"·".repeat(20 - filled)
+}
+
+/// The pane's two percentage rows lead with a bar: the context share and
+/// the cache hit rate, each in front of its figures. The pane is what
+/// renders them, so this looks at the pane rather than at the helper.
+#[test]
+fn info_pane_draws_the_percentage_bars() {
+    let mut app = info_pane_app(Default::default());
+    {
+        let detail = app.topic_detail.as_mut().expect("the topic's detail");
+        detail.context_input_tokens = Some(47_500);
+        detail.max_tokens = Some(100_000);
+        detail.total_input_tokens = Some(90_311);
+        detail.total_cache_hit_tokens = Some(80_120);
+    }
+
+    // Wide enough that neither row wraps.
+    let pane = info_pane_text(&mut app, 70, 30);
+
+    // 47% of the window, 88% of the input served from the cache.
+    assert!(
+        pane.contains(&format!(
+            "Tokens: {} 47500 / 100000 (47%)",
+            info_pane_bar(9)
+        )),
+        "the tokens row must lead with its bar:\n{pane}"
+    );
+    assert!(
+        pane.contains(&format!("Cache hit rate: {} 88%", info_pane_bar(18))),
+        "the cache hit rate row must lead with its bar:\n{pane}"
+    );
+}

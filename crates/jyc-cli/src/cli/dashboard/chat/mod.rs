@@ -758,11 +758,10 @@ fn line_text(line: &Line<'_>) -> String {
 /// Move the explorer selection by `delta` rows, clamped to the current
 /// topic list.
 fn explorer_move(app: &mut App, delta: i64) {
-    let len = app
-        .state
-        .as_ref()
-        .map(|s| node_count(&topic_forest(&s.topics)))
-        .unwrap_or(0);
+    // The explorer's rows are the lineage forest flattened, and the forest
+    // holds every topic exactly once — so the row count is the topic count,
+    // and the forest does not have to be built to know it.
+    let len = app.state.as_ref().map_or(0, |s| s.topics.len());
     if len == 0 {
         app.chat.explorer_selected = 0;
         return;

@@ -11,6 +11,7 @@ use jyc_types::{TopicCost, TopicInfo};
 use super::TopicManager;
 /// Per-topic queue stats.
 use super::git::{branch_for_topic_path, changed_files_for_topic_path};
+use super::topic_tree;
 use super::worker::read_skills;
 
 /// Display-relevant state for one topic (mode, model, context usage).
@@ -807,7 +808,7 @@ impl TopicManager {
                 // the overview's `parent` comes from — so the pane and
                 // `/info` draw the tree this detail carries.
                 subagents: if resolve_lineage {
-                    Some(crate::topic_manager::topic_tree::subagent_tree(
+                    Some(topic_tree::subagent_tree(
                         &lineage,
                         &name,
                         &self.channel_name,
@@ -825,10 +826,7 @@ impl TopicManager {
     /// from the `spawned-from` breadcrumb in its state dir — the same file
     /// the inspect server reads to fill `TopicSummary::parent`, so a topic's
     /// own tree and the overview's tree are the same data.
-    async fn topic_lineage(
-        &self,
-        names: &[String],
-    ) -> Vec<crate::topic_manager::topic_tree::LineageEntry> {
+    async fn topic_lineage(&self, names: &[String]) -> Vec<topic_tree::LineageEntry> {
         // The paths are resolved under the lock and the lock is dropped
         // before the breadcrumbs are read: reading them is the slow part and
         // it must not hold the map other callers wait for.
@@ -846,7 +844,7 @@ impl TopicManager {
         };
         let mut lineage = Vec::with_capacity(names.len());
         for (name, topic_path) in names.iter().zip(paths) {
-            lineage.push(crate::topic_manager::topic_tree::LineageEntry {
+            lineage.push(topic_tree::LineageEntry {
                 name: name.clone(),
                 channel: self.channel_name.clone(),
                 parent: crate::command::spawn_handler::spawned_from(name, &topic_path),

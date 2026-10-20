@@ -135,6 +135,11 @@ fn push_subtree<T: TopicLineage>(
 /// The roots keep the list's own order. A topic whose parent is not in the
 /// list — the parent was closed while the child lived on — is a root too, so
 /// no topic disappears from the pane.
+///
+/// Every topic of the list ends up in the forest exactly once: `seen` cuts a
+/// cycle's back-edge instead of following it, and the leftover walk at the end
+/// picks up whatever the first walk could not reach. So the forest holds as
+/// many nodes as the list has topics.
 pub fn topic_forest<T: TopicLineage>(topics: &[T]) -> Vec<TopicNode> {
     let index = children_index(topics);
     let listed: HashSet<(&str, &str)> = topics

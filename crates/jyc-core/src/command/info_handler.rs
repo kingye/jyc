@@ -7,6 +7,7 @@ use jyc_types::{ChangeKind, TopicInfo, format_amount};
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use crate::duration::format_latency;
 use crate::topic_manager::TopicManager;
+use crate::topic_manager::topic_tree;
 
 /// /info command — show this topic's info, mirroring the dashboard chat
 /// screen's Topic Info pane (name, channel, pattern, model, mode, branch,
@@ -129,7 +130,7 @@ fn format_topic_info(t: &TopicInfo) -> String {
     {
         lines.push(format!(
             "Subagents ({}):",
-            crate::topic_manager::topic_tree::node_count(subagents)
+            topic_tree::node_count(subagents)
         ));
         lines.extend(subagent_lines(subagents, 1));
     }

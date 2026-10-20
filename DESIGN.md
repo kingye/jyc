@@ -3203,10 +3203,10 @@ Not connected: connection refused
   rounding error grows past that and the bar would misreport the share, so a
   column that narrow gets the figures alone; the percentage is printed
   either way, so the bar is a glance aid and never the only source. The
-  sketch above draws the right
-  column wider than the layout's 20% share, so its bar is longer than a
-  terminal that narrow would give. The second row used to
-  read "Cache util"; cache util and cache hit rate are the same number.
+  sketch above draws the right column wider than the layout's 20% share, so
+  its bar is longer than a terminal that narrow would give. The second row
+  used to read "Cache util"; cache util and cache hit rate are the same
+  number.
 - **Activity pane** (bottom 20%) — top border only, because the other edges are
   the screen edge or sit against the pane above. Internal entries and thinking
   heartbeats are filtered out: they are dozens of identical markers that would

@@ -2880,6 +2880,13 @@ fn info_pane_bar(filled: usize, width: usize) -> String {
     "─".repeat(filled) + &"·".repeat(width - filled)
 }
 
+/// The label of a percentage row, padded to the width the pane's rows
+/// share (the length of the longer label, "Cache hit rate: ") so that the
+/// two bars start in the same column.
+fn info_pane_label(label: &str) -> String {
+    format!("{label:<16}")
+}
+
 /// The pane's two percentage rows lead with a bar: the context share and
 /// the cache hit rate, each in front of its figures. The pane is what
 /// renders them, so this looks at the pane rather than at the helper.
@@ -2900,13 +2907,18 @@ fn info_pane_draws_the_percentage_bars() {
     // 47% of the window, 88% of the input served from the cache.
     assert!(
         pane.contains(&format!(
-            "Tokens: {} 47500 / 100000 (47%)",
+            "{} {} 47500 / 100000 (47%)",
+            info_pane_label("Tokens: "),
             info_pane_bar(9, 20)
         )),
         "the tokens row must lead with its bar:\n{pane}"
     );
     assert!(
-        pane.contains(&format!("Cache hit rate: {} 88%", info_pane_bar(18, 20))),
+        pane.contains(&format!(
+            "{} {} 88%",
+            info_pane_label("Cache hit rate: "),
+            info_pane_bar(18, 20)
+        )),
         "the cache hit rate row must lead with its bar:\n{pane}"
     );
 }
@@ -2929,11 +2941,50 @@ fn info_pane_bar_fits_a_narrow_pane() {
     // takes 17 of them, so the bar is 12 cells and the figures wrap below.
     let pane = info_pane_text(&mut app, 30, 30);
     assert!(
-        pane.contains(&format!("Tokens: {}", info_pane_bar(6, 12))),
+        pane.contains(&format!(
+            "{} {}",
+            info_pane_label("Tokens: "),
+            info_pane_bar(6, 12)
+        )),
         "the bar must stay whole in a narrow pane:\n{pane}"
     );
     assert!(
-        pane.contains(&format!("Cache hit rate: {}", info_pane_bar(11, 12))),
+        pane.contains(&format!(
+            "{} {}",
+            info_pane_label("Cache hit rate: "),
+            info_pane_bar(11, 12)
+        )),
         "the bar must stay whole in a narrow pane:\n{pane}"
+    );
+}
+
+/// A pane too narrow for an honest bar — one where a single cell would
+/// carry a fifth of the share or more — draws the figures alone rather
+/// than a bar that misreports them.
+#[test]
+fn info_pane_draws_no_bar_in_a_too_narrow_pane() {
+    let mut app = info_pane_app(Default::default());
+    {
+        let detail = app.topic_detail.as_mut().expect("the topic's detail");
+        detail.context_input_tokens = Some(47_500);
+        detail.max_tokens = Some(100_000);
+        detail.total_input_tokens = Some(90_311);
+        detail.total_cache_hit_tokens = Some(80_120);
+    }
+
+    // 22 columns wide: the pane's inner width is 21, which leaves four
+    // cells for the bar — too coarse to be honest, so there is no bar.
+    let pane = info_pane_text(&mut app, 22, 40);
+    let tokens_row = pane
+        .lines()
+        .find(|line| line.contains("Tokens:"))
+        .expect("the pane must show the tokens row");
+    assert!(
+        !tokens_row.contains('─'),
+        "a pane too narrow for an honest bar must draw none:\n{pane}"
+    );
+    assert!(
+        tokens_row.contains("47500"),
+        "the figures must still be there:\n{pane}"
     );
 }

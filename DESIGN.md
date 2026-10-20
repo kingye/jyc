@@ -3162,10 +3162,10 @@ Not connected: connection refused
                                                                       │ Model: claude-opus-4-8
                                                                       │ Mode: build           
                                                                       │ Branch: feat/issue-42 
-                                                                      │ Tokens: ────── 45231 / 120000 (38%)
+                                                                      │ Tokens:         ──···· 45231 / 120000 (38%)
                                                                       │ Total input: 90311    
                                                                       │ Cache hits: 80120     
-                                                                      │ Cache hit rate: ────── 88%
+                                                                      │ Cache hit rate: ──────· 88%
                                                                       │ Changed files (2):    
                                                                       │   crates/…/mod.rs     
                                                                       │ ───────────────────── 
@@ -3193,11 +3193,17 @@ Not connected: connection refused
   transient message replaces that block with one yellow line for a few seconds.
   The two percentage rows draw their share as a bar in front of the numbers —
   `─` for the filled part (bold yellow), `·` for the rest (dim gray):
-  `Tokens: ────── 45231 / 120000 (38%)` and
-  `Cache hit rate: ────── 88%`. The bar is as wide as the pane allows — up
-  to twenty cells — and the wrapping never cuts it in half: a narrow column
-  gets a shorter bar (six cells in the 120-column sketch above) and the
-  figures wrap below it. The second row used to
+  `Tokens:         ──···· 45231 / 120000 (38%)` and
+  `Cache hit rate: ──────· 88%`. Both labels are padded to one width, so
+  the two bars start in the same column and the shares can be compared by
+  eye. The bar is as wide as the column allows — up to twenty cells — and
+  the wrapping never cuts it in half: a narrow column gets a shorter bar
+  and the figures wrap below it. Under five cells a bar would quantise the
+  share to fifths and misreport it, so a column that narrow gets the
+  figures alone; the percentage is printed either way, so the bar is a
+  glance aid and never the only source. The sketch above draws the right
+  column wider than the layout's 20% share, so its bar is longer than a
+  terminal that narrow would give. The second row used to
   read "Cache util"; cache util and cache hit rate are the same number.
 - **Activity pane** (bottom 20%) — top border only, because the other edges are
   the screen edge or sit against the pane above. Internal entries and thinking

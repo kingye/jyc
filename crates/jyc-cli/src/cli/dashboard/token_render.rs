@@ -514,15 +514,19 @@ mod tests {
         assert_eq!(bar_width(0, PaneLayout::Table), 0);
     }
 
-    /// The stacked layout gives the bar a row of its own, so it can use
-    /// the pane's full width — it is never cut by the label beside it,
-    /// because there is no label beside it.
+    /// The stacked layout gives the bar a row of its own, so it is never
+    /// shortened by a label beside it: it can use the pane's whole width,
+    /// up to the widest bar the pane draws.
     #[test]
     fn bar_width_in_the_stacked_layout_uses_the_whole_row() {
         assert_eq!(bar_width(39, PaneLayout::Stacked), MAX_BAR_WIDTH);
         assert_eq!(bar_width(23, PaneLayout::Stacked), MAX_BAR_WIDTH);
-        assert_eq!(bar_width(21, PaneLayout::Stacked), 21);
-        assert_eq!(bar_width(20, PaneLayout::Stacked), 20);
+        // The pane's whole width, up to the widest bar: the label takes
+        // no cell of it, where the table layout's bar gets six cells at
+        // the same width.
+        assert_eq!(bar_width(21, PaneLayout::Stacked), MAX_BAR_WIDTH);
+        assert_eq!(bar_width(20, PaneLayout::Stacked), MAX_BAR_WIDTH);
+        assert_eq!(bar_width(23, PaneLayout::Table), 6);
         // The narrowest bar still worth drawing.
         assert_eq!(bar_width(5, PaneLayout::Stacked), MIN_BAR_WIDTH);
         // Below that a cell would carry too much of the share to be honest.

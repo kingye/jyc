@@ -2909,9 +2909,19 @@ fn info_pane_topic_row() -> String {
 /// The pane's rows, with the border column dropped: what the pane says,
 /// one row per line. Each row is trimmed at the end, so a row's own
 /// padding does not show.
+///
+/// The border is dropped by *character*, not by byte: the pane's border
+/// is `│`, three bytes wide, so a byte offset of one is not a character
+/// boundary and would drop the whole row.
 fn info_pane_rows(pane: &str) -> Vec<String> {
     pane.lines()
-        .map(|row| row.get(1..).unwrap_or("").trim_end().to_string())
+        .map(|row| {
+            row.chars()
+                .skip(1)
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
         .collect()
 }
 
@@ -3008,6 +3018,9 @@ fn info_pane_draws_no_bar_in_a_too_narrow_pane() {
         detail.total_input_tokens = Some(90_311);
         detail.total_cache_hit_tokens = Some(80_120);
     }
+    // The status block is hidden: its own separator is a row of `─`, and
+    // this test looks for the absence of a bar.
+    app.chat.status_visible = false;
 
     // 5 columns wide: the pane's inner width is four, too narrow for an
     // honest bar, so there is none.

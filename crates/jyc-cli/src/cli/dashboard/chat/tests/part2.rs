@@ -2882,7 +2882,9 @@ fn info_pane_bar(filled: usize, width: usize) -> String {
 
 /// The label of a percentage row, padded to the width the pane's rows
 /// share (the length of the longer label, "Cache hit rate: ") so that the
-/// two bars start in the same column.
+/// two bars start in the same column. Pinned on purpose: a change to that
+/// width breaks this test loudly, so the sketches and the docs are
+/// updated with it.
 fn info_pane_label(label: &str) -> String {
     format!("{label:<16}")
 }
@@ -2907,7 +2909,7 @@ fn info_pane_draws_the_percentage_bars() {
     // 47% of the window, 88% of the input served from the cache.
     assert!(
         pane.contains(&format!(
-            "{} {} 47500 / 100000 (47%)",
+            "{}{} 47500 / 100000 (47%)",
             info_pane_label("Tokens: "),
             info_pane_bar(9, 20)
         )),
@@ -2915,7 +2917,7 @@ fn info_pane_draws_the_percentage_bars() {
     );
     assert!(
         pane.contains(&format!(
-            "{} {} 88%",
+            "{}{} 88%",
             info_pane_label("Cache hit rate: "),
             info_pane_bar(18, 20)
         )),
@@ -2942,7 +2944,7 @@ fn info_pane_bar_fits_a_narrow_pane() {
     let pane = info_pane_text(&mut app, 30, 30);
     assert!(
         pane.contains(&format!(
-            "{} {}",
+            "{}{}",
             info_pane_label("Tokens: "),
             info_pane_bar(6, 12)
         )),
@@ -2950,7 +2952,7 @@ fn info_pane_bar_fits_a_narrow_pane() {
     );
     assert!(
         pane.contains(&format!(
-            "{} {}",
+            "{}{}",
             info_pane_label("Cache hit rate: "),
             info_pane_bar(11, 12)
         )),

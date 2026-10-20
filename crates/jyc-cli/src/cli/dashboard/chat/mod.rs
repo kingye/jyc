@@ -1779,7 +1779,9 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
             Span::raw(format!("{}", t.status)),
         ]));
         // The two percentage rows draw their bar as wide as this pane
-        // allows — never wider, or the wrapping would cut it in half.
+        // allows — never wider, or the wrapping would cut it in half, and
+        // never narrower than a bar can carry the share honestly: a pane
+        // too narrow for that gets the figures alone.
         let bar_cells = bar_width(topic_inner.width);
         // Tokens row — push tokens span into a fresh Vec, wrap in a Line.
         // The row is label + bar + figures, hence the four spans.

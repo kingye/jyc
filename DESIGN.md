@@ -3198,10 +3198,12 @@ Not connected: connection refused
   the two bars start in the same column and the shares can be compared by
   eye. The bar is as wide as the column allows — up to twenty cells — and
   the wrapping never cuts it in half: a narrow column gets a shorter bar
-  and the figures wrap below it. Under five cells a bar would quantise the
-  share to fifths and misreport it, so a column that narrow gets the
-  figures alone; the percentage is printed either way, so the bar is a
-  glance aid and never the only source. The sketch above draws the right
+  and the figures wrap below it. The fill rounds to the nearest cell, so a
+  bar of five cells is within ten points of the share; below five cells the
+  rounding error grows past that and the bar would misreport the share, so a
+  column that narrow gets the figures alone; the percentage is printed
+  either way, so the bar is a glance aid and never the only source. The
+  sketch above draws the right
   column wider than the layout's 20% share, so its bar is longer than a
   terminal that narrow would give. The second row used to
   read "Cache util"; cache util and cache hit rate are the same number.

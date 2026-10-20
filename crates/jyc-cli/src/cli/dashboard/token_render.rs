@@ -23,7 +23,9 @@ const CACHE_HIT_RATE_LABEL: &str = "Cache hit rate: ";
 
 /// The width a percentage row's label is padded to, so that every bar
 /// starts in the same column and the two shares can be compared by eye
-/// rather than by counting cells.
+/// rather than by counting cells. The longest percentage-row label sets
+/// it: a longer one would leave less room for the bar than
+/// [`BAR_LABEL_ROOM`] allows, and the wrapping would cut the bar.
 const BAR_LABEL_WIDTH: usize = CACHE_HIT_RATE_LABEL.len();
 
 /// The room a bar leaves for its row: the padded label, plus one cell so

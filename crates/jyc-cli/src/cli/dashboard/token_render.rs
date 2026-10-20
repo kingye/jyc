@@ -14,15 +14,35 @@ use jyc_types::{TopicInfo, format_amount};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 
-/// Number of cells in the percentage bars the info pane draws.
-const BAR_WIDTH: usize = 20;
+/// The widest bar the info pane draws, in cells.
+const MAX_BAR_WIDTH: usize = 20;
 
-/// Append a `BAR_WIDTH`-cell bar for `pct` (0..=100): `─` for the filled
+/// The room the longest percentage-row label takes: the label itself plus
+/// the space before the figures that follow the bar. One bar width has to
+/// fit every row, so the longest label sets it.
+const BAR_LABEL_ROOM: usize = "Cache hit rate: ".len() + 1;
+
+/// The bar width for a pane of the given inner width: as wide as the pane
+/// allows, up to [`MAX_BAR_WIDTH`]. A bar wider than the room its label
+/// leaves would be cut in half by the paragraph's wrapping — half a bar
+/// reads worse than a short one. Zero when the pane is too narrow for a
+/// bar at all, and then the row carries its figures alone.
+pub(super) fn bar_width(inner_width: u16) -> usize {
+    (inner_width as usize)
+        .saturating_sub(BAR_LABEL_ROOM)
+        .min(MAX_BAR_WIDTH)
+}
+
+/// Append a `width`-cell bar for `pct` (0..=100): `─` for the filled
 /// part (bold yellow), `·` for the rest (dim gray). Rounds to the nearest
 /// cell, and a non-zero percentage always shows at least one filled cell
-/// so a small share does not read as an empty bar.
-fn push_bar_spans(spans: &mut Vec<Span>, pct: u32) {
-    let filled = (((pct.min(100) as usize) * BAR_WIDTH) + 50) / 100;
+/// so a small share does not read as an empty bar. A zero width draws no
+/// bar at all.
+fn push_bar_spans(spans: &mut Vec<Span>, pct: u32, width: usize) {
+    if width == 0 {
+        return;
+    }
+    let filled = (((pct.min(100) as usize) * width) + 50) / 100;
     let filled = if pct > 0 { filled.max(1) } else { 0 };
     if filled > 0 {
         spans.push(Span::styled(
@@ -32,9 +52,9 @@ fn push_bar_spans(spans: &mut Vec<Span>, pct: u32) {
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    if filled < BAR_WIDTH {
+    if filled < width {
         spans.push(Span::styled(
-            "·".repeat(BAR_WIDTH - filled),
+            "·".repeat(width - filled),
             Style::default().fg(Color::DarkGray),
         ));
     }
@@ -55,9 +75,9 @@ pub(super) fn context_pct(t: &TopicInfo) -> Option<u32> {
 
 /// Append the "Tokens: <bar> X / Y (Z%)" row to `spans` — the context
 /// size (the last call's input plus its output) against the context
-/// window, with the same share drawn as a bar. Pushes nothing when
-/// `context_input_tokens` or `max_tokens` is missing.
-pub(super) fn push_tokens_span(spans: &mut Vec<Span>, t: &TopicInfo) {
+/// window, with the same share drawn as a bar of `bar_cells` cells.
+/// Pushes nothing when `context_input_tokens` or `max_tokens` is missing.
+pub(super) fn push_tokens_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_cells: usize) {
     if let (Some(cur), Some(max)) = (t.context_input_tokens, t.max_tokens) {
         let used = jyc_types::context_tokens(Some(cur), t.context_output_tokens).unwrap_or(cur);
         let pct = context_pct(t).unwrap_or(0);
@@ -65,7 +85,7 @@ pub(super) fn push_tokens_span(spans: &mut Vec<Span>, t: &TopicInfo) {
             "Tokens: ",
             Style::default().add_modifier(Modifier::BOLD),
         ));
-        push_bar_spans(spans, pct);
+        push_bar_spans(spans, pct, bar_cells);
         spans.push(Span::raw(format!(" {used} / {max} ({pct}%)")));
     }
 }
@@ -142,23 +162,23 @@ pub(super) fn cache_util_pct(t: &TopicInfo) -> Option<u32> {
     jyc_types::cache_util_pct(t.total_cache_hit_tokens, t.total_input_tokens)
 }
 
-/// Append the "Cache hit rate: <bar> Z%" row to `spans`. Pushes nothing
-/// when cache-hit or total-input data is missing (e.g. providers without
-/// prompt caching), so such topics show no row rather than a misleading
-/// 0%. Sits next to [`push_cache_hit_span`] /
-/// [`push_cache_creation_span`] in the chat info pane and dashboard
-/// topic info area.
+/// Append the "Cache hit rate: <bar> Z%" row to `spans`, the bar being
+/// `bar_cells` cells wide. Pushes nothing when cache-hit or total-input
+/// data is missing (e.g. providers without prompt caching), so such topics
+/// show no row rather than a misleading 0%. Sits next to
+/// [`push_cache_hit_span`] / [`push_cache_creation_span`] in the chat
+/// info pane and dashboard topic info area.
 ///
 /// The row used to read "Cache util"; "cache util" and "cache hit rate"
 /// are the same figure — see [`cache_util_pct`] and
 /// `jyc_types::cache_util_pct`.
-pub(super) fn push_cache_utilization_span(spans: &mut Vec<Span>, t: &TopicInfo) {
+pub(super) fn push_cache_utilization_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_cells: usize) {
     if let Some(pct) = cache_util_pct(t) {
         spans.push(Span::styled(
             "Cache hit rate: ",
             Style::default().add_modifier(Modifier::BOLD),
         ));
-        push_bar_spans(spans, pct);
+        push_bar_spans(spans, pct, bar_cells);
         spans.push(Span::raw(format!(" {pct}%")));
     }
 }
@@ -324,7 +344,7 @@ mod tests {
     fn push_tokens_span_omits_when_max_missing() {
         let t = info_with(Some(100), None, None, None, None, None);
         let mut spans = Vec::new();
-        push_tokens_span(&mut spans, &t);
+        push_tokens_span(&mut spans, &t, MAX_BAR_WIDTH);
         assert!(spans.is_empty());
     }
 
@@ -332,12 +352,38 @@ mod tests {
     fn push_tokens_span_writes_label_bar_and_value() {
         let t = info_with(Some(4750), Some(10000), None, None, None, None);
         let mut spans = Vec::new();
-        push_tokens_span(&mut spans, &t);
+        push_tokens_span(&mut spans, &t, MAX_BAR_WIDTH);
         assert_eq!(spans.len(), 4);
         assert_eq!(spans[0].content, "Tokens: ");
         assert_eq!(spans[1].content, "─".repeat(9));
         assert_eq!(spans[2].content, "·".repeat(11));
         assert_eq!(spans[3].content, " 4750 / 10000 (47%)");
+    }
+
+    /// A pane too narrow for a bar gets the figures alone — no bar, and
+    /// none of the spans a bar would have added.
+    #[test]
+    fn push_tokens_span_without_a_bar() {
+        let t = info_with(Some(4750), Some(10000), None, None, None, None);
+        let mut spans = Vec::new();
+        push_tokens_span(&mut spans, &t, 0);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].content, "Tokens: ");
+        assert_eq!(spans[1].content, " 4750 / 10000 (47%)");
+    }
+
+    /// The bar is as wide as the pane allows: a wide pane gets the full
+    /// bar, a narrow one a shorter bar, and a very narrow one none.
+    #[test]
+    fn bar_width_follows_the_pane() {
+        // The longest label plus the space before the figures.
+        assert_eq!(bar_width(39), MAX_BAR_WIDTH);
+        assert_eq!(bar_width(36), MAX_BAR_WIDTH);
+        assert_eq!(bar_width(35), MAX_BAR_WIDTH - 1);
+        assert_eq!(bar_width(23), 7);
+        // Too narrow for a bar at all.
+        assert_eq!(bar_width(16), 0);
+        assert_eq!(bar_width(0), 0);
     }
 
     /// The bar rounds to the nearest cell, a non-zero percentage always
@@ -346,34 +392,39 @@ mod tests {
     #[test]
     fn push_bar_spans_fills_and_pads() {
         let mut spans = Vec::new();
-        push_bar_spans(&mut spans, 0);
+        push_bar_spans(&mut spans, 0, MAX_BAR_WIDTH);
         assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].content, "·".repeat(BAR_WIDTH));
+        assert_eq!(spans[0].content, "·".repeat(MAX_BAR_WIDTH));
 
         let mut spans = Vec::new();
-        push_bar_spans(&mut spans, 5);
+        push_bar_spans(&mut spans, 5, MAX_BAR_WIDTH);
         assert_eq!(spans[0].content, "─");
-        assert_eq!(spans[1].content, "·".repeat(BAR_WIDTH - 1));
+        assert_eq!(spans[1].content, "·".repeat(MAX_BAR_WIDTH - 1));
         assert_eq!(spans[0].style.fg, Some(Color::Yellow));
         assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(spans[1].style.fg, Some(Color::DarkGray));
 
         let mut spans = Vec::new();
-        push_bar_spans(&mut spans, 50);
-        assert_eq!(spans[0].content, "─".repeat(BAR_WIDTH / 2));
-        assert_eq!(spans[1].content, "·".repeat(BAR_WIDTH / 2));
+        push_bar_spans(&mut spans, 50, MAX_BAR_WIDTH);
+        assert_eq!(spans[0].content, "─".repeat(MAX_BAR_WIDTH / 2));
+        assert_eq!(spans[1].content, "·".repeat(MAX_BAR_WIDTH / 2));
 
         // A full bar has no padding left to draw.
         let mut spans = Vec::new();
-        push_bar_spans(&mut spans, 100);
+        push_bar_spans(&mut spans, 100, MAX_BAR_WIDTH);
         assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].content, "─".repeat(BAR_WIDTH));
+        assert_eq!(spans[0].content, "─".repeat(MAX_BAR_WIDTH));
 
         // Above 100% fills the bar without overflowing it.
         let mut spans = Vec::new();
-        push_bar_spans(&mut spans, 140);
+        push_bar_spans(&mut spans, 140, MAX_BAR_WIDTH);
         assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].content, "─".repeat(BAR_WIDTH));
+        assert_eq!(spans[0].content, "─".repeat(MAX_BAR_WIDTH));
+
+        // A zero width draws no bar at all.
+        let mut spans = Vec::new();
+        push_bar_spans(&mut spans, 50, 0);
+        assert!(spans.is_empty());
     }
 
     #[test]
@@ -556,7 +607,7 @@ mod tests {
     fn push_cache_utilization_span_omits_when_missing() {
         let t = info_with(None, None, None, None, None, None);
         let mut spans = Vec::new();
-        push_cache_utilization_span(&mut spans, &t);
+        push_cache_utilization_span(&mut spans, &t, MAX_BAR_WIDTH);
         assert!(spans.is_empty());
     }
 
@@ -564,7 +615,7 @@ mod tests {
     fn push_cache_utilization_span_writes_label_bar_and_value() {
         let t = info_with(None, None, None, Some(720), Some(640), None);
         let mut spans = Vec::new();
-        push_cache_utilization_span(&mut spans, &t);
+        push_cache_utilization_span(&mut spans, &t, MAX_BAR_WIDTH);
         assert_eq!(spans.len(), 4);
         assert_eq!(spans[0].content, "Cache hit rate: ");
         assert_eq!(spans[1].content, "─".repeat(18));

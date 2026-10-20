@@ -4,9 +4,9 @@
 use std::collections::{HashMap, HashSet};
 
 use super::token_render::{
-    context_pct, push_cache_creation_span, push_cache_hit_span, push_cache_utilization_span,
-    push_cost_span, push_latency_span, push_output_span, push_reasoning_span, push_tokens_span,
-    push_total_input_span,
+    bar_width, context_pct, push_cache_creation_span, push_cache_hit_span,
+    push_cache_utilization_span, push_cost_span, push_latency_span, push_output_span,
+    push_reasoning_span, push_tokens_span, push_total_input_span,
 };
 use super::*;
 use jyc_core::duration::{DurationStyle, format_duration_ms, format_duration_secs};
@@ -1778,10 +1778,13 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
             Span::styled("Status: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(format!("{}", t.status)),
         ]));
+        // The two percentage rows draw their bar as wide as this pane
+        // allows — never wider, or the wrapping would cut it in half.
+        let bar_cells = bar_width(topic_inner.width);
         // Tokens row — push tokens span into a fresh Vec, wrap in a Line.
         // The row is label + bar + figures, hence the four spans.
         let mut token_spans = Vec::with_capacity(4);
-        push_tokens_span(&mut token_spans, t);
+        push_tokens_span(&mut token_spans, t, bar_cells);
         if !token_spans.is_empty() {
             out.push(Line::from(token_spans));
         }
@@ -1810,7 +1813,7 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         // Omitted when the provider reports no cache data. Label + bar +
         // percentage, hence the four spans.
         let mut cache_util_spans = Vec::with_capacity(4);
-        push_cache_utilization_span(&mut cache_util_spans, t);
+        push_cache_utilization_span(&mut cache_util_spans, t, bar_cells);
         if !cache_util_spans.is_empty() {
             out.push(Line::from(cache_util_spans));
         }

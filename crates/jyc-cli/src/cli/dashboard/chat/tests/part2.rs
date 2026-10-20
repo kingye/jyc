@@ -2873,11 +2873,11 @@ fn info_pane_renders_subagents_as_a_tree() {
     );
 }
 
-/// The bar the pane draws for a share: `filled` cells of `─`, the rest `·`.
-/// Twenty cells wide — the width is pinned here on purpose, so a change to
-/// the bar's length has to show up in this test.
-fn info_pane_bar(filled: usize) -> String {
-    "─".repeat(filled) + &"·".repeat(20 - filled)
+/// The bar the pane draws for a share: `filled` cells of `─`, the rest `·`,
+/// `width` cells in all. The width is pinned here on purpose, so a change
+/// to the bar's length has to show up in these tests.
+fn info_pane_bar(filled: usize, width: usize) -> String {
+    "─".repeat(filled) + &"·".repeat(width - filled)
 }
 
 /// The pane's two percentage rows lead with a bar: the context share and
@@ -2901,12 +2901,39 @@ fn info_pane_draws_the_percentage_bars() {
     assert!(
         pane.contains(&format!(
             "Tokens: {} 47500 / 100000 (47%)",
-            info_pane_bar(9)
+            info_pane_bar(9, 20)
         )),
         "the tokens row must lead with its bar:\n{pane}"
     );
     assert!(
-        pane.contains(&format!("Cache hit rate: {} 88%", info_pane_bar(18))),
+        pane.contains(&format!("Cache hit rate: {} 88%", info_pane_bar(18, 20))),
         "the cache hit rate row must lead with its bar:\n{pane}"
+    );
+}
+
+/// The bar is as wide as the pane allows, and it stays whole: in a narrow
+/// column it is shorter, and the wrapping moves the figures below it
+/// rather than cutting the bar in half.
+#[test]
+fn info_pane_bar_fits_a_narrow_pane() {
+    let mut app = info_pane_app(Default::default());
+    {
+        let detail = app.topic_detail.as_mut().expect("the topic's detail");
+        detail.context_input_tokens = Some(47_500);
+        detail.max_tokens = Some(100_000);
+        detail.total_input_tokens = Some(90_311);
+        detail.total_cache_hit_tokens = Some(80_120);
+    }
+
+    // 30 columns wide: the pane's inner width is 29, the longest label
+    // takes 16 of them, so the bar is 13 cells and the figures wrap below.
+    let pane = info_pane_text(&mut app, 30, 30);
+    assert!(
+        pane.contains(&format!("Tokens: {}", info_pane_bar(6, 13))),
+        "the bar must stay whole in a narrow pane:\n{pane}"
+    );
+    assert!(
+        pane.contains(&format!("Cache hit rate: {}", info_pane_bar(11, 13))),
+        "the bar must stay whole in a narrow pane:\n{pane}"
     );
 }

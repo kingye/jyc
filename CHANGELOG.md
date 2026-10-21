@@ -8,7 +8,7 @@
 
 ### Changed
 
-- The info pane's `Cache (turn)` row is now always there: before the turn's first call it reads `0 / 0 (0%)` instead of vanishing. The turn's counters are zeroed at every turn start, so the row used to disappear and come back with each turn — it read as missing data rather than as a zero. The session's row keeps waiting for the session's first input tokens, so the overview does not carry a zero row for every topic (#965)
+- The info pane's `Cache (turn)` row is now always there: before the turn's first call it reads `0 / 0 (0%)` instead of vanishing. The turn's counters are zeroed at every turn start, so the row used to disappear and come back with each turn — it read as missing data rather than as a zero. The session's row still waits for the session's first input tokens, so a topic that has never made a call shows a zero turn row and no session row — in the chat pane and in the overview's selected topic alike (#965)
 
 - Token counts read at a glance: the info pane, `/info` and the overview's context column print them in K and M with two decimals (`12.00K`, `1.18M`), and raw below 1024. One shared formatter does it, so the three surfaces cannot spell the same number two ways — the overview used to round to whole thousands while the pane printed the raw count. Cost figures carry two decimals (`$0.42`) rather than four: a cent is the smallest unit that reads as money (#964)
 

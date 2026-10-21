@@ -226,7 +226,9 @@ pub(super) fn push_cache_creation_span(spans: &mut Vec<Span>, t: &TopicInfo) {
 /// without prompt caching simply has no hits to report.
 ///
 /// The figures come from the shared helper, so `/info` prints the same
-/// string.
+/// string where it prints a row at all. At zero the two surfaces differ
+/// on purpose: the pane synthesizes `0 / 0 (0%)`, and `/info` omits a
+/// scope it has no figures for.
 fn push_cache_rate_row(
     spans: &mut Vec<Span>,
     label: &str,
@@ -718,7 +720,8 @@ mod tests {
 
     /// A turn with input tokens but no cache hits shows its row at 0%:
     /// the hits are a share of the input, and a provider without prompt
-    /// caching has none to report.
+    /// caching has none to report. Pinned here so the two kinds of zero
+    /// — no call yet, and no hits — stay distinguishable.
     #[test]
     fn push_turn_cache_span_shows_zero_when_only_the_hits_are_missing() {
         let mut t = info_with(None, None, None, Some(720), Some(640), None);

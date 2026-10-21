@@ -180,6 +180,7 @@ async fn drain_folds_the_whole_batch_in_order() {
         &mut history,
         &mut raw_context,
         &provider,
+        None,
         topic,
         &topic_path,
     );
@@ -240,6 +241,7 @@ async fn drain_of_an_empty_queue_is_a_no_op() {
         &mut history,
         &mut raw_context,
         &provider,
+        None,
         topic,
         &topic_path,
     );
@@ -247,6 +249,104 @@ async fn drain_of_an_empty_queue_is_a_no_op() {
     assert_eq!(count, 0);
     assert!(history.is_empty());
     assert!(raw_context.is_empty());
+}
+
+/// An outbound adapter that strips a quoted tail, the way the email
+/// channel strips the quoted history of a reply.
+struct QuoteStrippingOutbound;
+
+#[async_trait::async_trait]
+impl jyc_types::channel::OutboundAdapter for QuoteStrippingOutbound {
+    fn channel_type(&self) -> &str {
+        "test"
+    }
+    async fn connect(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn disconnect(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn clean_body(&self, raw_body: &str) -> String {
+        raw_body
+            .split("\n> ")
+            .next()
+            .unwrap_or(raw_body)
+            .trim()
+            .to_string()
+    }
+    async fn send_reply(
+        &self,
+        _original: &InboundMessage,
+        _reply_text: &str,
+        _topic_path: &std::path::Path,
+        _message_dir: &str,
+        _attachments: Option<&[jyc_types::channel::OutboundAttachment]>,
+    ) -> anyhow::Result<jyc_types::channel::SendResult> {
+        Ok(jyc_types::channel::SendResult {
+            message_id: "test".to_string(),
+        })
+    }
+    async fn send_message(
+        &self,
+        _recipient: &str,
+        _subject: &str,
+        _body: &str,
+    ) -> anyhow::Result<jyc_types::channel::SendResult> {
+        Ok(jyc_types::channel::SendResult {
+            message_id: "test".to_string(),
+        })
+    }
+}
+
+/// The body the model reads is cleaned the way the turn's own body is;
+/// the transcript keeps the raw words.
+#[tokio::test]
+async fn the_model_reads_the_cleaned_body_and_the_log_the_raw_one() {
+    let tmp = TempDir::new().unwrap();
+    let topic_path = tmp.path().to_path_buf();
+    let topic = "inject-drain-clean";
+    jyc_types::state_dir::register(topic, &topic_path.join(".jyc"));
+
+    let (tx, mut rx) = mpsc::channel::<QueueItem>(8);
+    tx.send(queue_item("extra info\n> earlier message"))
+        .await
+        .unwrap();
+
+    let provider = InjectingProvider {
+        calls: AtomicUsize::new(0),
+        seen_raw: Mutex::new(Vec::new()),
+        inject: Mutex::new(None),
+    };
+    let mut history: Vec<Message> = Vec::new();
+    let mut raw_context: Vec<serde_json::Value> = Vec::new();
+
+    let count = super::drain_injections(
+        &mut rx,
+        &mut history,
+        &mut raw_context,
+        &provider,
+        Some(&QuoteStrippingOutbound),
+        topic,
+        &topic_path,
+    );
+
+    assert_eq!(count, 1);
+    assert_eq!(
+        raw_context[0]["content"], "extra info",
+        "the model reads the body without the quoted history"
+    );
+    let log = std::fs::read_to_string(
+        std::fs::read_dir(topic_path.join(".jyc"))
+            .expect("state dir")
+            .map(|e| e.expect("dir entry").path())
+            .find(|p| p.to_string_lossy().ends_with(".jsonl"))
+            .expect("chat log file"),
+    )
+    .expect("chat log");
+    assert!(
+        log.contains("earlier message"),
+        "the transcript keeps the raw words: {log}"
+    );
 }
 
 /// The loop picks the injected message up before it builds the next

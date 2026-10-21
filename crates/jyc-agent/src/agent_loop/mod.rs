@@ -330,6 +330,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 &mut history,
                 &mut raw_context,
                 provider,
+                ctx.outbound.as_deref(),
                 topic_name,
                 topic_path,
             );
@@ -1116,6 +1117,11 @@ async fn drain_pending_texts(
 /// batch in the next call it makes. An injected message is information
 /// for the running turn — it gets no turn and no reply of its own.
 ///
+/// The body the model reads is cleaned the way the turn's own body is
+/// cleaned (the channel strips the quoted history of a reply), so both
+/// reach the model in the same shape. The transcript keeps the raw
+/// words: the chat log entry is written from the message as it arrived.
+///
 /// Each folded message is appended to the topic's chat log, so the
 /// transcript shows what the user actually said. Storing happens here,
 /// where the message enters the conversation: a message this turn never
@@ -1129,17 +1135,27 @@ fn drain_injections(
     history: &mut Vec<Message>,
     raw_context: &mut Vec<serde_json::Value>,
     provider: &dyn Provider,
+    outbound: Option<&dyn jyc_types::channel::OutboundAdapter>,
     topic_name: &str,
     topic_path: &Path,
 ) -> usize {
     let mut count = 0usize;
     while let Ok(item) = rx.try_recv() {
-        let Some(text) = item.message.content.text.as_deref().map(str::trim) else {
+        let Some(raw) = item.message.content.text.as_deref().map(str::trim) else {
             continue;
         };
-        if text.is_empty() {
+        if raw.is_empty() {
             continue;
         }
+        // A body that is nothing but quoted history cleans down to
+        // nothing — keep the raw words then: the message still says
+        // something the user wants the model to see.
+        let cleaned = outbound.map(|o| o.clean_body(raw)).unwrap_or_default();
+        let text = if cleaned.trim().is_empty() {
+            raw
+        } else {
+            cleaned.trim()
+        };
         let blocks = vec![ContentBlock::Text {
             text: text.to_string(),
         }];

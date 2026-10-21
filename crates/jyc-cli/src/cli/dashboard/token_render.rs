@@ -213,27 +213,44 @@ pub(super) fn push_cache_creation_span(spans: &mut Vec<Span>, t: &TopicInfo) {
 /// Append a cache-rate row: the cache-hit tokens, the input tokens they
 /// are a share of, and that share — with the share drawn as a bar of
 /// `bar_cells` cells. The label is padded to the pane's label width, so
-/// the bar starts in the column every other value starts in. Pushes
-/// nothing when the scope has no input tokens yet (e.g. a turn that has
-/// made no call), so such topics show no row rather than a misleading 0%.
+/// the bar starts in the column every other value starts in.
+///
+/// `always` decides what a scope with no input tokens yet looks like.
+/// `false` omits the row — there is nothing for the hits to be a share
+/// of, and a zero would misreport it. `true` draws the row at zero, for
+/// the surface where a row that stays put reads better than one that
+/// comes and goes.
 ///
 /// A scope that has input tokens but no recorded hits still shows its
 /// row, at 0%: the hits are a share of the input tokens, and a provider
 /// without prompt caching simply has no hits to report.
 ///
 /// The figures come from the shared helper, so `/info` prints the same
-/// string.
+/// string where it prints a row at all. At zero the two surfaces differ
+/// on purpose: the pane synthesizes `0 / 0 (0%)`, and `/info` omits a
+/// scope it has no figures for.
 fn push_cache_rate_row(
     spans: &mut Vec<Span>,
     label: &str,
     cache_hits: Option<u64>,
     total_input: Option<u64>,
     bar_cells: usize,
+    always: bool,
 ) {
-    let Some(figures) = jyc_types::format_cache_rate(cache_hits, total_input) else {
-        return;
+    let (figures, pct) = match jyc_types::format_cache_rate(cache_hits, total_input) {
+        Some(figures) => (
+            figures,
+            jyc_types::cache_util_pct(cache_hits, total_input).unwrap_or(0),
+        ),
+        None if always => {
+            // The scope has no input tokens yet — the turn has made no
+            // call. Draw it at zero: the row stays put across the turn
+            // boundary instead of vanishing until the first call lands.
+            let zero = jyc_types::format_token_count(0);
+            (format!("{zero} / {zero} (0%)"), 0)
+        }
+        None => return,
     };
-    let pct = jyc_types::cache_util_pct(cache_hits, total_input).unwrap_or(0);
     spans.push(label_span(label));
     push_bar_spans(spans, pct, bar_cells);
     spans.push(Span::raw(if bar_cells > 0 {
@@ -246,6 +263,11 @@ fn push_cache_rate_row(
 /// Append the "Cache (turn): <bar> hits / input (Z%)" row — the cache
 /// figures of the latest turn, so a long turn's own cache rate is
 /// visible next to the session's.
+///
+/// The row is drawn even before the turn's first call: the turn's
+/// counters are zeroed at every turn boundary, and a row that vanishes
+/// until the first call lands reads as missing data rather than as a
+/// zero.
 pub(super) fn push_turn_cache_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_cells: usize) {
     push_cache_rate_row(
         spans,
@@ -253,12 +275,15 @@ pub(super) fn push_turn_cache_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_cel
         t.turn_cache_hit_tokens,
         t.turn_input_tokens,
         bar_cells,
+        true,
     );
 }
 
 /// Append the "Cache (session): <bar> hits / input (Z%)" row — the
 /// cache-hit tokens of every LLM call in the session and the input
-/// tokens they are a share of.
+/// tokens they are a share of. Omitted while the session has no input
+/// tokens: a session that has made no call has no rate to report, and
+/// the overview would carry the zero row for every topic.
 pub(super) fn push_session_cache_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_cells: usize) {
     push_cache_rate_row(
         spans,
@@ -266,6 +291,7 @@ pub(super) fn push_session_cache_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_
         t.total_cache_hit_tokens,
         t.total_input_tokens,
         bar_cells,
+        false,
     );
 }
 
@@ -678,14 +704,37 @@ mod tests {
         assert_eq!(spans[3].content, " 300 / 1000 (30%)");
     }
 
-    /// A turn that has made no call yet has no row — the pair is zeroed
-    /// at every turn start.
+    /// A turn that has made no call yet still gets its row, at zero: the
+    /// turn's counters are zeroed at every turn start, and a row that
+    /// vanishes until the first call lands reads as missing data.
     #[test]
-    fn push_turn_cache_span_omits_before_the_first_call() {
+    fn push_turn_cache_span_shows_zero_before_the_first_call() {
         let t = info_with(None, None, None, Some(720), Some(640), None);
         let mut spans = Vec::new();
         push_turn_cache_span(&mut spans, &t, MAX_BAR_WIDTH);
-        assert!(spans.is_empty());
+        assert_eq!(spans.len(), 3, "the row is drawn at zero: {spans:?}");
+        assert_eq!(spans[0].content, padded(CACHE_TURN_LABEL));
+        assert_eq!(spans[1].content, "·".repeat(MAX_BAR_WIDTH));
+        assert_eq!(spans[2].content, " 0 / 0 (0%)");
+    }
+
+    /// A turn with input tokens but no cache hits shows its row at 0%:
+    /// the hits are a share of the input, and a provider without prompt
+    /// caching has none to report. Pinned here so the two kinds of zero
+    /// — no call yet, and no hits — stay distinguishable.
+    #[test]
+    fn push_turn_cache_span_shows_zero_when_only_the_hits_are_missing() {
+        let mut t = info_with(None, None, None, Some(720), Some(640), None);
+        t.turn_cache_hit_tokens = None;
+        t.turn_input_tokens = Some(1000);
+        let mut spans = Vec::new();
+        push_turn_cache_span(&mut spans, &t, MAX_BAR_WIDTH);
+        // Three spans: the label, the bar (at 0% it is all dots, with no
+        // filled part) and the figures.
+        assert_eq!(spans.len(), 3, "the row is drawn at zero: {spans:?}");
+        assert_eq!(spans[0].content, padded(CACHE_TURN_LABEL));
+        assert_eq!(spans[1].content, "·".repeat(MAX_BAR_WIDTH));
+        assert_eq!(spans[2].content, " 0 / 1000 (0%)");
     }
 
     /// No cost data (unpriced model) → no row, rather than `$0.00`.

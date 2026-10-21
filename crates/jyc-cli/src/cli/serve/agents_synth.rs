@@ -4,9 +4,8 @@
 //! Each `[agents.<name>]` becomes a `ChannelPattern` inside a single
 //! synthesized channel named `"agents"` with `channel_type =
 //! "websocket"`. The synthesized channel goes through the same
-//! websocket construction path as the legacy
-//! `[channels.<name>] type = "websocket"` form, so no WebSocket
-//! adapter code is touched.
+//! websocket construction path as any other websocket channel, so no
+//! WebSocket adapter code is touched.
 //!
 //! The synthesis logic (`synthesize_agents_channel`) lives in
 //! `jyc-types` so it is callable from both this module (startup) and

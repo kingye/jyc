@@ -442,7 +442,7 @@ mode = "agent"
     assert_eq!(p.topic_path.as_deref(), Some(custom_path.to_str().unwrap()));
     assert_eq!(p.template.as_deref(), Some("dev"));
     assert_eq!(p.role.as_deref(), Some("Developer"));
-    assert!(p.live_injection);
+    assert!(p.live_injection());
     assert!(tm.pattern_for_topic("disabled").is_none());
     assert!(tm.pattern_for_topic("unknown").is_none());
 }

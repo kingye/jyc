@@ -132,8 +132,8 @@ pub struct AppConfig {
     /// Named agents — websocket-based endpoints with behavior but no
     /// matching rules. Each `[agents.<name>]` becomes one pattern
     /// inside the synthesized channel "agents" (channel_type =
-    /// "websocket"). Supersedes the legacy
-    /// `[channels.<name>] type = "websocket"` + `[[patterns]]` form.
+    /// "websocket"). The legacy `[channels.<name>] type = "websocket"`
+    /// + `[[patterns]]` form is rejected by config validation.
     #[serde(default)]
     pub agents: HashMap<String, AgentConfig>,
 

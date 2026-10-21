@@ -620,7 +620,7 @@ mod tests {
             topic_name: None,
             topic_prefix: None,
             role: None,
-            live_injection: true,
+            live_injection: Some(true),
             ..Default::default()
         };
 

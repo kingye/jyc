@@ -1,10 +1,9 @@
 use anyhow::Result;
 use regex::Regex;
 
-use crate::channel::ChannelPattern;
-use crate::config::AppConfig;
+use crate::channel::{ChannelPattern, SUPPORTED_CHANNEL_TYPES};
 use crate::config::agent::AgentConfig;
-use crate::config::{CustomCommand, HookConfig, HookEvent};
+use crate::config::{AppConfig, ChannelConfig, CustomCommand, HookConfig, HookEvent};
 
 /// A single validation error with context.
 #[derive(Debug)]
@@ -96,15 +95,30 @@ pub fn validate_config(config: &AppConfig, builtin_names: &[&str]) -> Vec<Valida
             });
         }
 
-        // [channels.<name>] type="websocket" with no matching
-        // [agents.<name>] is deprecated — but `channels.agents` is the
-        // synthesized target of `[agents.*]`, so it is exempted.
-        if channel.channel_type == "websocket"
-            && name != "agents"
-            && !config.agents.contains_key(name)
-        {
-            // Allowed (deprecated). The CLI emits a runtime warn; we
-            // don't fail validation so existing configs keep loading.
+        // An explicit `[channels.<name>]` with type="websocket" is gone:
+        // channels are forwarders owned by the pipe process, and the only
+        // hub-side websocket channel is the "agents" channel synthesized
+        // from `[agents.*]`. `channels.agents` is that slot, so it stays.
+        if channel.channel_type == "websocket" && name != "agents" {
+            errors.push(ValidationError {
+                path: format!("{prefix}.type"),
+                message: "explicit websocket channels are no longer supported — declare the agent as `[agents.<name>]` instead".into(),
+            });
+        }
+
+        // A pipe channel only forwards: the agent that finally handles the
+        // message is the one whose pattern the hub matches, and that
+        // pattern carries the processing configuration. Channel-level
+        // processing settings are dead here for the same reason.
+        if SUPPORTED_CHANNEL_TYPES.contains(&channel.channel_type.as_str()) {
+            for attr in pipe_forbidden_channel_attrs(channel) {
+                errors.push(ValidationError {
+                    path: format!("{prefix}.{attr}"),
+                    message: format!(
+                        "`{attr}` does not belong on a pipe channel — it only forwards; configure it on the target agent (`[agents.<name>]`)"
+                    ),
+                });
+            }
         }
 
         // Validate email channel specifics
@@ -336,6 +350,23 @@ pub fn validate_config(config: &AppConfig, builtin_names: &[&str]) -> Vec<Valida
                 let pp = format!("{prefix}.patterns[{i}]");
                 validate_pattern(&pp, pattern, &mut errors);
 
+                // A pipe channel only forwards: the agent that finally
+                // handles the message is the one whose pattern the hub
+                // matches, and that pattern carries the processing
+                // configuration. Anything set here is dead configuration,
+                // so it is rejected outright — any value, including one
+                // equal to the default.
+                if SUPPORTED_CHANNEL_TYPES.contains(&channel.channel_type.as_str()) {
+                    for attr in pipe_forbidden_attrs(pattern) {
+                        errors.push(ValidationError {
+                            path: format!("{pp}.{attr}"),
+                            message: format!(
+                                "`{attr}` does not belong on a pipe channel — it only forwards; configure it on the target agent (`[agents.<name>]`)"
+                            ),
+                        });
+                    }
+                }
+
                 // Feishu-specific pattern validation
                 if channel.channel_type == "feishu" && pattern.enabled {
                     // Validate mentions list is non-empty if present
@@ -526,6 +557,107 @@ fn validate_agents(config: &AppConfig, errors: &mut Vec<ValidationError>) {
         let prefix = format!("agents.{name}");
         validate_agent(&prefix, name, agent, errors);
     }
+}
+
+/// Processing attributes a pipe channel itself must not carry.
+///
+/// Same reasoning as [`pipe_forbidden_attrs`], one level up: the hub never
+/// processes a pipe channel's messages under that channel's own settings.
+fn pipe_forbidden_channel_attrs(channel: &ChannelConfig) -> Vec<&'static str> {
+    let mut attrs = Vec::new();
+    if channel.ai.is_some() {
+        attrs.push("ai");
+    }
+    if channel.model.is_some() {
+        attrs.push("model");
+    }
+    if channel.small_model.is_some() {
+        attrs.push("small_model");
+    }
+    if channel.mcps.is_some() {
+        attrs.push("mcps");
+    }
+    if channel.disabled_tools.is_some() {
+        attrs.push("disabled_tools");
+    }
+    if channel.disabled_mcps.is_some() {
+        attrs.push("disabled_mcps");
+    }
+    if channel.skills.is_some() {
+        attrs.push("skills");
+    }
+    if channel.disabled_skills.is_some() {
+        attrs.push("disabled_skills");
+    }
+    attrs
+}
+
+/// Processing attributes a pipe channel's patterns must not carry.
+///
+/// A pipe channel forwards messages; the agent that finally handles one is
+/// the one whose pattern the hub matches, and that pattern carries the
+/// processing configuration. Every attribute listed here is therefore dead
+/// configuration on a pipe channel — so it is rejected, whatever its value.
+fn pipe_forbidden_attrs(pattern: &ChannelPattern) -> Vec<&'static str> {
+    let mut attrs = Vec::new();
+    if pattern.live_injection.is_some() {
+        attrs.push("live_injection");
+    }
+    if pattern.inject_inbound_images.is_some() {
+        attrs.push("inject_inbound_images");
+    }
+    if pattern.model.is_some() {
+        attrs.push("model");
+    }
+    if pattern.plan_model.is_some() {
+        attrs.push("plan_model");
+    }
+    if pattern.build_model.is_some() {
+        attrs.push("build_model");
+    }
+    if pattern.small_model.is_some() {
+        attrs.push("small_model");
+    }
+    if pattern.mode.is_some() {
+        attrs.push("mode");
+    }
+    if pattern.mcps.is_some() {
+        attrs.push("mcps");
+    }
+    if pattern.disabled_mcps.is_some() {
+        attrs.push("disabled_mcps");
+    }
+    if pattern.disabled_tools.is_some() {
+        attrs.push("disabled_tools");
+    }
+    if pattern.disabled_builtin_tools.is_some() {
+        attrs.push("disabled_builtin_tools");
+    }
+    if pattern.skills.is_some() {
+        attrs.push("skills");
+    }
+    if pattern.disabled_skills.is_some() {
+        attrs.push("disabled_skills");
+    }
+    if pattern.template.is_some() {
+        attrs.push("template");
+    }
+    if pattern.topic_path.is_some() {
+        attrs.push("topic_path");
+    }
+    if pattern.reset_compression.is_some() {
+        attrs.push("reset_compression");
+    }
+    if pattern.auto_reset_threshold.is_some() {
+        attrs.push("auto_reset_threshold");
+    }
+    if pattern.access.is_some() {
+        attrs.push("access");
+    }
+    if pattern.context_strategy.is_some() {
+        attrs.push("context_strategy");
+    }
+    attrs
 }
 
 fn validate_pattern(prefix: &str, pattern: &ChannelPattern, errors: &mut Vec<ValidationError>) {

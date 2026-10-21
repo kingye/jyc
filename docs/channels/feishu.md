@@ -94,11 +94,11 @@ name = "mention_bot"
 enabled = true
 
 # Required: feishu is a pipe-only channel — every enabled pattern must pipe
-# into an agent's websocket channel (here: "local_dev"). The target pattern
-# ("group_chat") supplies the topic config (template/topic_path/skills);
-# "${msg.chat_name}" gives each group chat its own topic.
+# into an agent (here: "jin"). The agent supplies the topic config
+# (template/topic_path/skills); "${msg.chat_name}" gives each group chat its
+# own topic.
 # A matched pattern without `pipe` drops the message with a warning.
-pipe = { channel = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
+pipe = { agent = "jin", topic = "${msg.chat_name}" }
 
 [channels.feishu_bot.patterns.rules]
 mentions = ["jyc"]                     # Your bot's display name
@@ -170,8 +170,8 @@ INFO  feishu pipe reply forwarder subscribed
 
 `jyc_send_message(channel = "<agent channel>", recipient = "<topic>")` broadcasts
 a reply payload keyed by topic, which the pipe forwarder relays to the wired
-feishu chat — use the agent channel (e.g. `local_dev`), not the feishu channel,
-as the target. The recipient must be the exact piped topic name (the sanitized
+feishu chat — use the agent (e.g. `jin`), not the feishu channel, as the
+target. The recipient must be the exact piped topic name (the sanitized
 chat name). Limitation: after a restart the topic→chat mapping only exists
 once a new feishu message has arrived (see above).
 
@@ -211,7 +211,7 @@ half-minutes of silence waiting for a card that would never show up.
 
 Piped topics live in the **agent channel's** workspace, named by the pipe
 mapping — typically the sanitized chat name (`${msg.chat_name}`), e.g.
-`<data dir>/local_dev/workspace/Project Alpha`. The feishu adapter itself owns
+`<data dir>/agents/jin/Project Alpha`. The feishu adapter itself owns
 no topic directories.
 
 If you rename the bot's display name in Feishu or change group names, new messages will create new topic directories. Rename old directories manually if you want to preserve conversation history.

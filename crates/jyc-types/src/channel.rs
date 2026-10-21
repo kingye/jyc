@@ -575,16 +575,22 @@ pub struct ChannelPattern {
     /// When true (default), new messages arriving while the AI is processing
     /// are injected into the active session immediately.
     /// When false, messages queue and are processed sequentially.
-    #[serde(default = "crate::default_true")]
-    pub live_injection: bool,
+    ///
+    /// `None` means "not set" — the effective value is true. Keeping the
+    /// explicit `None`/`Some` distinction lets config validation reject the
+    /// field on pipe channels, where it would be dead configuration.
+    #[serde(default)]
+    pub live_injection: Option<bool>,
     /// Whether to auto-inject inbound `image/*` attachments into the first
     /// user turn of the agent loop as multimodal content blocks.
     ///
     /// Only takes effect when the active model has `supports_images = true`.
     /// When false (default), image attachments stay on disk and the agent
     /// must use the `read_image` built-in tool to load them on demand.
+    ///
+    /// `None` means "not set" — the effective value is false.
     #[serde(default)]
-    pub inject_inbound_images: bool,
+    pub inject_inbound_images: Option<bool>,
     /// Override model for this pattern's topic (e.g., "anthropic/claude-opus-4-6").
     /// Takes priority over channel-level model and global [agent].model,
     /// but below the runtime `.jyc/model-override` file.
@@ -706,6 +712,19 @@ pub struct ChannelPattern {
     /// unset.
     #[serde(default)]
     pub context_strategy: Option<ContextStrategyConfig>,
+}
+
+impl ChannelPattern {
+    /// Effective live-injection setting — `None` means the default, true.
+    pub fn live_injection(&self) -> bool {
+        self.live_injection.unwrap_or(true)
+    }
+
+    /// Effective inbound-image injection setting — `None` means the
+    /// default, false.
+    pub fn inject_inbound_images(&self) -> bool {
+        self.inject_inbound_images.unwrap_or(false)
+    }
 }
 
 /// Compression strategy for session reset.
@@ -912,8 +931,8 @@ impl Default for ChannelPattern {
             topic_prefix: None,
             topic_path: None,
             role: None,
-            live_injection: true,
-            inject_inbound_images: false,
+            live_injection: None,
+            inject_inbound_images: None,
             model: None,
             plan_model: None,
             build_model: None,

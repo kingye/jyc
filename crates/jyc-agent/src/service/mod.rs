@@ -444,7 +444,7 @@ impl AgentService for JycAgentService {
             .matched_pattern
             .as_deref()
             .and_then(|name| self.patterns.iter().find(|p| p.name == name))
-            .map(|p| p.inject_inbound_images)
+            .map(|p| p.inject_inbound_images())
             .unwrap_or(false);
 
         // 7. Run agent loop

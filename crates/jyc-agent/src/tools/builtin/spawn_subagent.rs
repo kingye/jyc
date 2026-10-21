@@ -68,7 +68,8 @@ impl Tool for SpawnSubagentTool {
          argument. Seed its directory with `write`, then send the task with \
          `jyc_send_to_topic` (require_reply=true); reconfigure it by sending a command body \
          (`/build`, `/plan`, `/model`, …), which spends none of its turns. When the subagent \
-         list in your system prompt already holds one that fits, continue it."
+         list in your system prompt already holds one that fits, continue it. Send `/close` to \
+         close it (`--force` if its queue is busy); messaging a closed child starts a new topic."
     }
 
     fn input_schema(&self) -> Value {

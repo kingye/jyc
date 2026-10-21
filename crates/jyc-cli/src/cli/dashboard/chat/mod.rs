@@ -33,6 +33,11 @@ pub(super) const STATUS_LINE_ROWS: u16 = 1;
 ///
 /// The list already carries each topic's parent — the topic manager resolved
 /// it — so this is a shape change, not a second resolution.
+///
+/// The price is a `Vec` and three cloned strings per topic, and the
+/// explorer pays it once per frame while it is open. That is the same order
+/// as the forest the frame builds anyway; if it ever shows up in a profile,
+/// build the `Vec` once per state update and pass it down.
 fn lineage_of(topics: &[jyc_types::TopicSummary]) -> Vec<Lineage> {
     topics.iter().map(Lineage::from).collect()
 }

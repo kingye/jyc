@@ -98,7 +98,7 @@ Reach for what exists before you write something new.
 - Prefer extending what exists over adding a parallel path beside it.
 - Two surfaces showing the same thing show it from the same source.
 
-**The test:** every new function either calls something that already existed, or is called by something that already existed.
+**The test:** every new function either calls something that already existed, or is called — directly or transitively — by something that already existed.
 
 ### 7. No Overdesign
 

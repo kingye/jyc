@@ -44,8 +44,8 @@ Evaluate every change against the following criteria:
    - **Goal-Driven Execution (P4)**: Check goal traceability — every changed line should trace to user's request
    - **Single Point of Responsibility (P5)**: Flag a responsibility owned twice — a second place that re-derives, re-implements or re-decides what an owner already decides
    - **Reuse Before Adding (P6)**: Flag new code that duplicates an existing implementation instead of calling it
-   - **No Overdesign (P7)**: Flag abstractions that don't earn themselves — a trait with one implementor, a struct mirroring another, a wrapper that adds nothing
-   - **Growth in functional code**: Count the diff's *functional* lines — excluding comments, doc comments, documentation and tests — against the base. If they grew, apply P5/P6/P7 with extra care and **state the numbers in the review**: added functional lines vs. moved or reused ones, where the growth went, and whether every new abstraction earns its keep — even when the verdict is clean. Growth with no stated reason is a finding; a responsibility owned twice, or an abstraction nobody uses, is **High 🟠**.
+   - **No Overdesign (P7)**: Flag abstractions that don't earn themselves — a trait with one implementor, a struct mirroring another, a wrapper that adds nothing. P7 is P2 sharpened: report the finding once, under P7.
+   - **Growth in functional code**: Count the diff's *functional* lines — excluding comments, doc comments, documentation and tests — against the base. If they grew, apply P5/P6/P7 with extra care and **state the numbers in the verdict section**: added functional lines vs. moved or reused ones, where the growth went, and whether every new abstraction earns its keep — even when the verdict is clean. Growth with no stated reason is a finding, at least Medium 🟡; a responsibility owned twice, or an abstraction nobody uses, is **High 🟠**.
 8. **Documentation**: CHANGELOG.md updated for user-facing changes; DESIGN.md updated for architecture changes (if applicable)
 9. **Commit structure**: Does each commit map to one step from the Implementation Plan? Are commit messages clear?
 

@@ -629,32 +629,39 @@ impl TopicManager {
         // Resolved once: the central billing dir does not change per topic.
         let billing_dir = self.billing_dir();
 
+        // Each topic's registered path, read under the lock once. The
+        // lineage reads the breadcrumbs under it and the topic's own state
+        // lives there too, so both need the same directory.
+        let paths: HashMap<&str, PathBuf> = {
+            let guard = self.topic_paths.lock().await;
+            topic_names
+                .iter()
+                .filter_map(|name| guard.get(name).map(|path| (name.as_str(), path.clone())))
+                .collect()
+        };
+
         // The channel's lineage, resolved once: who spawned whom, read from
         // the `spawned-from` breadcrumb in each topic's state dir. It fills
         // the list's `parent` and — for the detail shape — the topic's own
         // `subagents` tree, so both come from one answer.
-        let lineage = self.lineage(&topic_names).await;
+        let lineage = self.lineage(&topic_names, &paths).await;
 
-        for (name, entry) in topic_names.into_iter().zip(lineage.iter()) {
+        for entry in &lineage {
+            let name = entry.name.as_str();
             if let Some(only) = only
                 && name != only
             {
                 continue;
             }
 
-            // Check for custom topic_path from pattern override first
-            let paths = self.topic_paths.lock().await;
-            let topic_path = paths
-                .get(&name)
-                .cloned()
-                .unwrap_or_else(|| self.workspace_dir.join(&name));
-            drop(paths);
+            // The topic's own directory — the one the lineage read under.
+            let topic_path = self.path_of(&paths, name);
 
             // Resolve display state (pattern, mode, model, token usage) —
             // shared with `topic_display_state()` so consumers can never
             // drift apart.
             let (pattern, token_state, mode, model) =
-                self.resolve_display_state(&name, &topic_path).await;
+                self.resolve_display_state(name, &topic_path).await;
             let input_tokens = token_state.context_input_tokens;
             let context_output_tokens = token_state.context_output_tokens;
             let max_tokens = token_state.context_window;
@@ -664,24 +671,24 @@ impl TopicManager {
             let total_cache_creation_tokens = token_state.total_cache_creation_tokens;
 
             // Read skills from .jyc/skills.json
-            let skills = read_skills(&name, &topic_path).await;
+            let skills = read_skills(name, &topic_path).await;
 
             // What the topic *could* use, live-resolved through the agent's
             // discovery (config filters, toggle ignored) — this is what turns
             // into `/skill:<name>` rows in the command popup.
             let available_skills =
                 self.agent
-                    .available_skills(&name, &topic_path, pattern.as_deref());
+                    .available_skills(name, &topic_path, pattern.as_deref());
 
             // The topic's live status — the one source of truth for
             // `TopicStatus` (see `live_status.rs`). The runtime writes it
             // as turns start and end, so `/info`, the dashboard's topic
             // table and the info pane all report the same value.
-            let status = self.topic_status(&name);
+            let status = self.topic_status(name);
 
             // Fallback: read .jyc directory mtime if no activity tracker data
             let last_active_at =
-                match tokio::fs::metadata(resolve_state_dir(&name, &topic_path)).await {
+                match tokio::fs::metadata(resolve_state_dir(name, &topic_path)).await {
                     Ok(meta) => match meta.modified() {
                         Ok(mtime) => {
                             let dt: chrono::DateTime<chrono::Utc> = mtime.into();
@@ -698,11 +705,11 @@ impl TopicManager {
             // pricing, in which case `cost` stays `None` and the
             // dashboard omits the row.
             let cost = {
-                let session = read_session_cost(&name, &topic_path).await;
+                let session = read_session_cost(name, &topic_path).await;
                 let today = billing_dir.as_deref().and_then(|dir| {
                     crate::billing_log_store::BillingLogStore::today_total(
                         dir,
-                        &crate::billing_log_store::BillingLogStore::label_for(&name, &topic_path),
+                        &crate::billing_log_store::BillingLogStore::label_for(name, &topic_path),
                     )
                 });
                 match (session, today) {
@@ -748,10 +755,10 @@ impl TopicManager {
             // read from the same file the token counters above come from.
             // `None` until a call is measured, and the panes then omit the
             // row rather than claim `0 ms`.
-            let call_latency = crate::session_state::read_call_latency(&name, &topic_path).await;
+            let call_latency = crate::session_state::read_call_latency(name, &topic_path).await;
 
             topics.push(TopicInfo {
-                name: name.clone(),
+                name: entry.name.clone(),
                 channel: self.channel_name.clone(),
                 pattern,
                 status,
@@ -768,11 +775,11 @@ impl TopicManager {
                 total_cache_hit_tokens,
                 total_cache_creation_tokens,
                 total_reasoning_tokens: crate::session_state::read_total_reasoning_tokens(
-                    &name,
+                    name,
                     &topic_path,
                 )
                 .await,
-                tasks: crate::session_state::read_tasks_at(&resolve_state_dir(&name, &topic_path))
+                tasks: crate::session_state::read_tasks_at(&resolve_state_dir(name, &topic_path))
                     .await
                     .unwrap_or_default(),
                 activity: vec![], // Filled by InspectServer from event bus
@@ -807,7 +814,7 @@ impl TopicManager {
                 subagents: if only.is_some() {
                     Some(topic_tree::subagent_tree(
                         &lineage,
-                        &name,
+                        name,
                         &self.channel_name,
                     ))
                 } else {
@@ -825,24 +832,14 @@ impl TopicManager {
     /// The one owner of a topic's lineage: the list's `parent` and the
     /// detail's `subagents` tree are both built from this, so the overview
     /// and a topic's own tree cannot drift apart.
-    async fn lineage(&self, names: &[String]) -> Vec<topic_tree::Lineage> {
-        // The paths are resolved under the lock and the lock is dropped
-        // before the breadcrumbs are read: reading them is the slow part and
-        // it must not hold the map other callers wait for.
-        let paths: Vec<PathBuf> = {
-            let guard = self.topic_paths.lock().await;
-            names
-                .iter()
-                .map(|name| {
-                    guard
-                        .get(name)
-                        .cloned()
-                        .unwrap_or_else(|| self.workspace_dir.join(name))
-                })
-                .collect()
-        };
+    async fn lineage<'a>(
+        &self,
+        names: &'a [String],
+        paths: &HashMap<&'a str, PathBuf>,
+    ) -> Vec<topic_tree::Lineage> {
         let mut lineage = Vec::with_capacity(names.len());
-        for (name, topic_path) in names.iter().zip(paths) {
+        for name in names {
+            let topic_path = self.path_of(paths, name);
             lineage.push(topic_tree::Lineage {
                 name: name.clone(),
                 channel: self.channel_name.clone(),
@@ -851,6 +848,16 @@ impl TopicManager {
             });
         }
         lineage
+    }
+
+    /// Where a topic works: the path registered for it, or the workspace
+    /// default. One place, so the lineage and the topic's own state cannot
+    /// disagree about where the topic lives.
+    fn path_of(&self, paths: &HashMap<&str, PathBuf>, name: &str) -> PathBuf {
+        paths
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| self.workspace_dir.join(name))
     }
 }
 

@@ -1883,33 +1883,36 @@ root_cancel (top-level)
 
 ### Live Message Injection
 
-When a user sends a follow-up message while the AI is still processing the first message in the same topic, the follow-up is injected into the ongoing AI session rather than waiting in the queue.
+When a user sends a follow-up message while the AI is still processing the first message in the same topic, the follow-up is injected into the ongoing turn rather than waiting in the queue.
 
 **Behavior:**
 
-- Message 2 arrives while AI processes Message 1 → Message 2 body injected into same session → user gets one combined reply
+- Message 2 arrives while AI processes Message 1 → Message 2 joins the running turn → the model sees it in the next call it makes → one combined reply
 - Message 2 arrives after AI finished Message 1 → normal sequential processing → two separate replies
 
-**How it works:**
+**The flag:** `live_injection`, per channel pattern, default `true`. With `false` the follow-up waits in the queue for a turn of its own — the behavior every release had before the flag was wired up.
 
-1. The worker passes its queue receiver (`rx`) to `agent.process()` during processing
-2. The agent passes `rx` through to the SSE streaming loop (`prompt_with_sse()`)
-3. The SSE `tokio::select!` loop monitors `rx.recv()` alongside SSE events and timeout checks
-4. When a new message arrives during streaming:
-   - Append the new message to the daily chat log (`chat_history_YYYY-MM-DD.jsonl`)
-   - Process commands from the new message (e.g., `/model` switch)
-   - Strip quoted history from the body
-   - Update `.jyc/reply-context.json` with the new `incomingMessageDir`
-   - Send the body as a follow-up prompt via `POST /session/:id/prompt_async`
-5. The AI receives the follow-up in the same conversation context and adjusts its work
+**How it works (in-process agent):**
 
-**Injection format:** Raw body only — no framing, no instructions. This matches how the agent TUI handles messages sent during AI processing. The AI treats it as a natural follow-up in the conversation.
+1. The worker owns the topic's queue receiver and selects on it while the turn runs. A slash command is executed immediately through the command registry (`/cancel`, `/model` — instant feedback even during a 429 retry). A plain message is handed to the agent through a per-turn injection channel.
+2. The agent loop drains that channel at the top of every iteration — the whole batch, in arrival order — and folds each message into the conversation as a user message: the internal history and the provider-formatted raw context both grow by one message.
+3. The next LLM call therefore carries the injected messages. The model reads them as a natural follow-up and adjusts its work; the turn's reply covers them.
+4. Each folded message is appended to the topic's chat log, so the transcript shows what the user said.
+5. A message the turn never picks up — the turn ended before its next drain point — is drained by the worker and re-queued, so it becomes a turn of its own instead of being lost.
+
+**Injection format:** The body only — no framing, no instructions. This matches how the agent TUI handles messages sent during AI processing. The AI treats it as a natural follow-up in the conversation. The body the model reads is cleaned the way the turn's own body is cleaned (the email channel strips the quoted history of a reply), so a follow-up email does not feed the model the whole quoted thread; the transcript keeps the raw words. A body that cleans to nothing keeps its raw words, so the model is never blind to a message the transcript shows.
 
 ```
 Please also add a chart to the PPT.
 ```
 
-**Agent API support:** `POST /session/:id/prompt_async` can be called while a session is busy. The agent queues the message internally — this is the same mechanism the agent TUI uses.
+**Only plain text is injected:** a message carrying attachments or a template needs the full turn pipeline — its own storage, hooks and reply target — so it keeps a turn of its own. A message headed for another directory (its topic path points elsewhere than the running turn's) keeps its own turn too. A topic path that merely names the topic's own directory is not a reason to wait: the worker registers that directory the first time it stores a message, so every message after the topic's first carries one.
+
+**On the wire:** the Anthropic protocol carries a tool result as a `user` message, so an injected message would put two `user` turns back to back. The Anthropic provider merges consecutive `user` turns into one before sending — what the Messages API does anyway, and what the strict routes built on it (Bedrock, Vertex, and the gateways that re-implement the validation) require: `messages: roles must alternate between "user" and "assistant"`. The same shape arises from an image a tool loaded, so the merge covers both.
+
+**The moderation gate still applies:** a `message_received` hook that blocks the message keeps it out of the running turn — it waits for a turn of its own, where the same hook blocks it again and the chat log records it. An injected message reaches the model just as much as a message that starts a turn, so it passes the same gate.
+
+**Ordering:** an injected message overtakes the messages already waiting. A message that cannot be injected (an attachment, a template, a topic path pointing elsewhere than the running turn's) and arrived earlier is re-queued and processed *after* the injected content was folded into the running turn and answered: the absorbed turn comes first, the queued one follows.
 
 ## Worker (Agent Service)
 

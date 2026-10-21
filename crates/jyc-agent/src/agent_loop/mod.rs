@@ -16,6 +16,7 @@ use jyc_core::topic_event::TopicEvent;
 use jyc_core::topic_event_bus::TopicEventBusRef;
 use jyc_core::topic_manager::TopicManagers;
 
+use jyc_types::QueueItem;
 use jyc_types::channel::ContextStrategyConfig;
 
 use crate::provider::Provider;
@@ -60,6 +61,15 @@ pub struct AgentLoopConfig<'a> {
     pub prior_history: Vec<Message>,
     /// Prior raw context (provider-formatted JSON, for API calls).
     pub prior_raw_context: std::sync::Arc<Vec<serde_json::Value>>,
+    /// Messages that arrived while this turn was running, handed over by
+    /// the worker when the pattern's `live_injection` is on.
+    ///
+    /// The loop folds them into the conversation at its next drain point
+    /// (the top of an iteration), so the model sees them in the next
+    /// call it makes — as user messages, not as turns of their own.
+    /// `None` when the caller has no live queue to drain (tests,
+    /// sub-agents, the static agent).
+    pub injection_rx: Option<&'a mut tokio::sync::mpsc::Receiver<QueueItem>>,
     /// Maximum loop iterations. Defaults to DEFAULT_MAX_ITERATIONS.
     pub max_iterations: Option<usize>,
     /// SSE read timeout — maximum gap between SSE events before the stream
@@ -146,6 +156,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         event_bus,
         prior_history,
         prior_raw_context,
+        mut injection_rx,
         max_iterations,
         sse_read_timeout,
         additional_read_roots,
@@ -308,6 +319,21 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         if cancel.is_cancelled() {
             tracing::info!(total_iterations, "Agent loop cancelled");
             break;
+        }
+
+        // Fold in the messages that arrived while this turn was running
+        // (`live_injection`). They join the conversation here, before
+        // this iteration's call is built, so the model sees them in it.
+        if let Some(rx) = injection_rx.as_deref_mut() {
+            drain_injections(
+                rx,
+                &mut history,
+                &mut raw_context,
+                provider,
+                ctx.outbound.as_deref(),
+                topic_name,
+                topic_path,
+            );
         }
 
         // Check for cycle boundary: send a heartbeat reply and reset the
@@ -1083,6 +1109,76 @@ async fn drain_pending_texts(
     undelivered
 }
 
+/// Fold the messages that arrived while this turn was running into the
+/// conversation.
+///
+/// The channel is drained completely: everything queued at this moment
+/// becomes one batch, in arrival order, and the model sees the whole
+/// batch in the next call it makes. An injected message is information
+/// for the running turn — it gets no turn and no reply of its own.
+///
+/// The body the model reads is cleaned the way the turn's own body is
+/// cleaned (the channel strips the quoted history of a reply), so both
+/// reach the model in the same shape. The transcript keeps the raw
+/// words: the chat log entry is written from the message as it arrived.
+///
+/// Each folded message is appended to the topic's chat log, so the
+/// transcript shows what the user actually said. Storing happens here,
+/// where the message enters the conversation: a message this turn never
+/// folds in is never stored by it, and the turn that later processes
+/// that message stores it then — so every message lands in the log
+/// exactly once.
+///
+/// Returns how many messages were folded in.
+fn drain_injections(
+    rx: &mut tokio::sync::mpsc::Receiver<QueueItem>,
+    history: &mut Vec<Message>,
+    raw_context: &mut Vec<serde_json::Value>,
+    provider: &dyn Provider,
+    outbound: Option<&dyn jyc_types::channel::OutboundAdapter>,
+    topic_name: &str,
+    topic_path: &Path,
+) -> usize {
+    let mut count = 0usize;
+    while let Ok(item) = rx.try_recv() {
+        let Some(raw) = item.message.content.text.as_deref().map(str::trim) else {
+            continue;
+        };
+        if raw.is_empty() {
+            continue;
+        }
+        // A body that is nothing but quoted history cleans down to
+        // nothing — keep the raw words then: the message still says
+        // something the user wants the model to see.
+        let cleaned = outbound.map(|o| o.clean_body(raw)).unwrap_or_default();
+        let text = if cleaned.trim().is_empty() {
+            raw
+        } else {
+            cleaned.trim()
+        };
+        let blocks = vec![ContentBlock::Text {
+            text: text.to_string(),
+        }];
+        history.push(Message::user_with_blocks(blocks.clone()));
+        raw_context.push(provider.format_user_message(&blocks));
+
+        let is_matched = !item.pattern_match.pattern_name.is_empty();
+        let mut chat_log = jyc_core::chat_log_store::ChatLogStore::new(topic_name, topic_path);
+        if let Err(e) = chat_log.append_message(&item.message, is_matched) {
+            tracing::warn!(error = %e, "Failed to append an injected message to the chat log");
+        }
+        count += 1;
+    }
+    if count > 0 {
+        tracing::info!(
+            topic = %topic_name,
+            count,
+            "Injected live messages into the running turn"
+        );
+    }
+    count
+}
+
 /// Compute and record the cost of one LLM call, returning the amount so
 /// the caller can fold it into `session_cost`.
 ///
@@ -1323,6 +1419,11 @@ mod tool_failures_tests;
 /// the session's counts instead of restarting them.
 #[cfg(test)]
 mod session_totals_tests;
+
+/// Live injection: the messages that arrive while a turn is running join
+/// the conversation instead of waiting for the turn to end.
+#[cfg(test)]
+mod injection_tests;
 
 mod context;
 mod embedded_ask;

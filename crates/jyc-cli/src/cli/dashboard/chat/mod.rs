@@ -3,8 +3,8 @@
 
 use super::token_render::{
     PaneLayout, bar_width, context_pct, label_span, layout_for, push_cache_creation_span,
-    push_cache_hit_span, push_cache_utilization_span, push_cost_span, push_latency_span,
-    push_output_span, push_reasoning_span, push_tokens_span, push_total_input_span,
+    push_cost_span, push_latency_span, push_output_span, push_reasoning_span,
+    push_session_cache_span, push_today_all_span, push_tokens_span, push_turn_cache_span,
 };
 use super::*;
 use jyc_core::duration::{DurationStyle, format_duration_ms, format_duration_secs};
@@ -1764,10 +1764,6 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
             Span::raw(&t.name),
         ]));
         rows.push(InfoRow::Field(vec![
-            label_span("Channel: "),
-            Span::raw(&t.channel),
-        ]));
-        rows.push(InfoRow::Field(vec![
             label_span("Pattern: "),
             Span::raw(t.pattern.as_deref().unwrap_or("-")),
         ]));
@@ -1814,28 +1810,18 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         if !output_spans.is_empty() {
             rows.push(InfoRow::Field(output_spans));
         }
-        // Total input row — accumulated lifetime sum across all LLM calls.
-        let mut total_input_spans = Vec::with_capacity(2);
-        push_total_input_span(&mut total_input_spans, t);
-        if !total_input_spans.is_empty() {
-            rows.push(InfoRow::Field(total_input_spans));
+        // The two cache rows — the latest turn's and the session's — each
+        // carry their own hits, input and share, with the share drawn as a
+        // bar. Omitted when the scope has no input tokens yet.
+        let mut turn_cache_spans = Vec::with_capacity(4);
+        push_turn_cache_span(&mut turn_cache_spans, t, bar_cells);
+        if !turn_cache_spans.is_empty() {
+            rows.push(InfoRow::Field(turn_cache_spans));
         }
-        // Cache hits row — accumulated prompt-cache hits across all LLM
-        // calls in the session. Distinct from `total_input_tokens`
-        // (which counts all tokens billed as input); this counts only
-        // the portion served from the provider's prompt cache.
-        let mut cache_hit_spans = Vec::with_capacity(2);
-        push_cache_hit_span(&mut cache_hit_spans, t);
-        if !cache_hit_spans.is_empty() {
-            rows.push(InfoRow::Field(cache_hit_spans));
-        }
-        // Cache hit rate row — cache hits as a share of total input.
-        // Omitted when the provider reports no cache data. Label + bar +
-        // percentage, hence the four spans.
-        let mut cache_util_spans = Vec::with_capacity(4);
-        push_cache_utilization_span(&mut cache_util_spans, t, bar_cells);
-        if !cache_util_spans.is_empty() {
-            rows.push(InfoRow::Field(cache_util_spans));
+        let mut session_cache_spans = Vec::with_capacity(4);
+        push_session_cache_span(&mut session_cache_spans, t, bar_cells);
+        if !session_cache_spans.is_empty() {
+            rows.push(InfoRow::Field(session_cache_spans));
         }
         // Cache create row — cache **write** tokens billed at the
         // creation rate (Anthropic ~1.25× input; GPT-5.6 reports
@@ -1859,6 +1845,13 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         push_cost_span(&mut cost_spans, t);
         if !cost_spans.is_empty() {
             rows.push(InfoRow::Field(cost_spans));
+        }
+        // The day's spend across every topic, per currency — the same
+        // figure `/bill` reports.
+        let mut today_all_spans = Vec::with_capacity(2);
+        push_today_all_span(&mut today_all_spans, t);
+        if !today_all_spans.is_empty() {
+            rows.push(InfoRow::Field(today_all_spans));
         }
         // Latency row — the session's average wall-clock time of one API
         // call. Omitted until a call has been measured.

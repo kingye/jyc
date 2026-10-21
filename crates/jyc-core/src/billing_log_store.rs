@@ -29,6 +29,7 @@
 //! these small lines; readers skip a torn line rather than failing
 //! (see `load_date`).
 
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -141,6 +142,21 @@ fn default_billing_metered() -> String {
     "metered".to_string()
 }
 
+/// Today's ledger in the two shapes the display needs: what each topic
+/// spent, and what the day spent per currency.
+///
+/// Sums of different currencies are never added together — each currency
+/// keeps its own total, and a topic whose entries span currencies is
+/// labelled [`MIXED_CURRENCY`].
+#[derive(Debug, Clone, Default)]
+pub struct TodayTotals {
+    /// Per topic label: the amount spent today and its currency label.
+    pub by_topic: HashMap<String, (f64, String)>,
+    /// Per currency: the day's total across every topic, sorted by
+    /// currency label.
+    pub by_currency: BTreeMap<String, f64>,
+}
+
 /// Append-only billing ledger, one file per UTC day in a central dir.
 pub struct BillingLogStore;
 
@@ -216,6 +232,34 @@ impl BillingLogStore {
     /// presented as a real figure.
     pub fn today_total(billing_dir: &Path, topic: &str) -> Option<(f64, String)> {
         Self::date_total(billing_dir, topic, &Self::today())
+    }
+
+    /// Today's ledger read once, in the two shapes the display needs.
+    ///
+    /// A list of topics used to parse today's file per topic — N reads
+    /// of the same file per dashboard poll. One read answers every
+    /// question: [`TodayTotals::by_topic`] feeds each topic's own cost
+    /// row, [`TodayTotals::by_currency`] the day's total across all
+    /// topics.
+    pub fn today_totals(billing_dir: &Path) -> TodayTotals {
+        let mut by_topic: HashMap<String, (f64, String)> = HashMap::new();
+        let mut by_currency: BTreeMap<String, f64> = BTreeMap::new();
+        for entry in Self::load_date(billing_dir, &Self::today()) {
+            *by_currency.entry(entry.currency.clone()).or_insert(0.0) += entry.cost;
+            let (total, currency) = by_topic
+                .entry(entry.topic.clone())
+                .or_insert((0.0, entry.currency.clone()));
+            *total += entry.cost;
+            if &entry.currency != currency {
+                // The topic spent in more than one currency: the sum
+                // stays, the label becomes the mixed marker.
+                *currency = MIXED_CURRENCY.to_string();
+            }
+        }
+        TodayTotals {
+            by_topic,
+            by_currency,
+        }
     }
 
     /// Total cost for one topic on a specific date, with its currency.
@@ -378,6 +422,53 @@ mod tests {
         assert!(BillingLogStore::today_total(dir.path(), "chan/t").is_none());
         BillingLogStore::append(dir.path(), &entry("chan/other", 1.0, "USD")).unwrap();
         assert!(BillingLogStore::today_total(dir.path(), "chan/t").is_none());
+    }
+
+    /// One read answers both questions: each topic's own total and the
+    /// day's total per currency.
+    #[test]
+    fn today_totals_splits_by_topic_and_by_currency() {
+        let dir = tempdir().unwrap();
+        for c in [0.01, 0.02] {
+            BillingLogStore::append(dir.path(), &entry("chan/t", c, "USD")).unwrap();
+        }
+        BillingLogStore::append(dir.path(), &entry("chan/other", 9.0, "USD")).unwrap();
+        BillingLogStore::append(dir.path(), &entry("chan/third", 3.0, "CNY")).unwrap();
+
+        let totals = BillingLogStore::today_totals(dir.path());
+        assert_eq!(totals.by_topic.len(), 3);
+        let (total, currency) = totals.by_topic.get("chan/t").unwrap();
+        assert!((total - 0.03).abs() < 1e-9, "got {total}");
+        assert_eq!(currency, "USD");
+        // The day's total, per currency — the currencies never mix.
+        assert_eq!(totals.by_currency.len(), 2);
+        assert!((totals.by_currency["USD"] - 9.03).abs() < 1e-9);
+        assert!((totals.by_currency["CNY"] - 3.0).abs() < 1e-9);
+    }
+
+    /// A topic that spent in two currencies keeps the sum but is labelled
+    /// as mixed — the same rule the per-topic total follows.
+    #[test]
+    fn today_totals_marks_a_mixed_topic() {
+        let dir = tempdir().unwrap();
+        BillingLogStore::append(dir.path(), &entry("chan/t", 1.0, "USD")).unwrap();
+        BillingLogStore::append(dir.path(), &entry("chan/t", 2.0, "CNY")).unwrap();
+
+        let totals = BillingLogStore::today_totals(dir.path());
+        let (total, currency) = totals.by_topic.get("chan/t").unwrap();
+        assert!((total - 3.0).abs() < 1e-9, "got {total}");
+        assert_eq!(currency, MIXED_CURRENCY);
+        // The day's totals still keep the currencies apart.
+        assert_eq!(totals.by_currency.len(), 2);
+    }
+
+    /// An empty day reads as nothing at all, not as a zero.
+    #[test]
+    fn today_totals_is_empty_without_entries() {
+        let dir = tempdir().unwrap();
+        let totals = BillingLogStore::today_totals(dir.path());
+        assert!(totals.by_topic.is_empty());
+        assert!(totals.by_currency.is_empty());
     }
 
     /// The core reason for date-stamped files: yesterdays spending must

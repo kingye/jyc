@@ -496,11 +496,11 @@ impl AgentService for JycAgentService {
         // preserved.
         session::ensure_session_file(topic_name, topic_path, context_window).await;
 
-        // Start this turn's latency window: the dashboard's "latest turn"
-        // figure must describe this turn, not the previous one. Placed
+        // Start this turn's counters: the dashboard's "latest turn"
+        // figures must describe this turn, not the previous one. Placed
         // after `ensure_session_file` so the file (and a reset session
         // rebuilt by the pre-check) is already settled.
-        session::begin_turn_latency(topic_name, topic_path).await;
+        session::begin_turn_counters(topic_name, topic_path).await;
 
         // Load session and prior raw context.
         let (prior_history, prior_raw_context) =
@@ -574,9 +574,9 @@ impl AgentService for JycAgentService {
         .await;
 
         // 9. Update session token tracking. The loop already persisted
-        // these figures after every LLM call; this is the round's final
-        // write, with no cost or duration to add (both were banked per
-        // call).
+        // these figures after every LLM call; this is the turn's final
+        // write, with no cost, duration or cache figure to add (all were
+        // banked per call).
         session::persist_tokens(
             topic_name,
             topic_path,
@@ -589,6 +589,8 @@ impl AgentService for JycAgentService {
             result.total_reasoning_tokens,
             context_window,
             0.0,
+            0,
+            0,
             0,
         )
         .await;

@@ -3220,13 +3220,13 @@ Not connected: connection refused
                                                                                            │ Model:       claude-opus-4-8         
                                                                                            │ Mode:        build                   
                                                                                            │ Branch:      feat/issue-42           
-                                                                                           │ Tokens:      ────────············    
-                                                                                           │             44.17K / 117.19K (38%)   
+                                                                                           │ Tokens:      ────────··············  
+                                                                                           │              44.17K / 117.19K (38%)  
                                                                                            │ Cache:                               
-                                                                                           │ Turn:        ──────────────────··    
-                                                                                           │             12.00K / 15.00K (80%)    
-                                                                                           │ Session:     ──────────────────··    
-                                                                                           │             78.24K / 88.19K (88%)    
+                                                                                           │ Turn:        ──────────────────····  
+                                                                                           │              12.00K / 15.00K (80%)   
+                                                                                           │ Session:     ───────────────────···  
+                                                                                           │              78.24K / 88.19K (88%)   
                                                                                            │ Files (2):                           
                                                                                            │   crates/…/mod.rs                    
                                                                                            │ ──────────────────────────────────── 
@@ -3261,16 +3261,17 @@ Not connected: connection refused
   length of the longest label (`Today (all): `) — so, in the table layout,
   every value starts in the same column and the pane reads as one table
   rather than a ragged list. The percentage rows draw their share as a bar
-  in front of the numbers — `─` for the filled part (bold yellow), `·` for
-  the rest (dim gray): the bar shares the label's row and the figures
-  follow on the next one, indented to the same column —
-  `Tokens:      ────────············` with `44.17K / 117.19K (38%)` under
-  it, and `Session:   ──────────────────··` with
+  — `─` for the filled part (bold yellow), `·` for the rest (dim gray):
+  the bar has the label's row to itself and the figures follow on the
+  next one, in the same column —
+  `Tokens:      ────────··············` with `44.17K / 117.19K (38%)` under
+  it, and `Session:   ───────────────────···` with
   `78.24K / 88.19K (88%)` under it; the bars start in that column too, so the
-  shares can be compared by eye. The
-  bar is as wide as the column allows — up to twenty cells — and the
-  wrapping never cuts it in half: a narrow column gets a shorter bar and
-  the figures wrap below it. The fill rounds to the nearest cell, so a bar
+  shares can be compared by eye. The figures have a row of their own so
+  that the bar can reach for the edge: the bar is as wide as the column
+  allows — what the label's room leaves, less the two cells it keeps to
+  the pane's edge — and the wrapping never cuts it in half: a narrow
+  column gets a shorter bar. The fill rounds to the nearest cell, so a bar
   of five cells is within ten points of the share; below five cells the
   rounding error grows past that and the bar would misreport the share, so
   a column that narrow gets the figures alone — only a column of fewer
@@ -3278,8 +3279,8 @@ Not connected: connection refused
   bar the label's room. The percentage is printed either way, so the bar is
   a glance aid and never the only source. The sketch above draws the right
   column wider than the layout's 20% share — thirty-seven cells, enough for
-  the table layout and for the widest bar — so its bars are longer than a
-  terminal that narrow would give. The second row used to read "Cache
+  the table layout — so its bars are longer than a terminal that narrow
+  would give. The second row used to read "Cache
   util"; cache util and cache hit rate are the same number. The pane lays
   its rows out one way, decided by its inner width: while the column can
   hold the label column and a value column (31 cells or more), every row
@@ -3288,8 +3289,9 @@ Not connected: connection refused
   flush left under it, so a narrow column cuts no value short — each field
   then takes two rows, so a narrow column shows fewer fields at once. The
   bar follows the layout: in the table layout it shares its row with the
-  label, in the stacked one it has the row to itself and can use the
-  column's full width — so a bar appears wherever the column can carry an
+  label, in the stacked one it has the row to itself — either way it stops
+  two cells short of the column's edge — so a bar appears wherever the
+  column can carry an
   honest one, not only in a wide terminal. The pane's other sections — the
   task list, the changed files — are not `label: value` rows and keep their
   own shape. A value too long for its column wraps *inside* it: the lines

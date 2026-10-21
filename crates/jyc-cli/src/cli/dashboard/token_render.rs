@@ -39,18 +39,20 @@ const TODAY_ALL_LABEL: &str = "Today (all): ";
 ///
 /// A label longer than this pushes its own value out of the column —
 /// raise it when a longer label arrives.
-const LABEL_WIDTH: usize = TODAY_ALL_LABEL.len();
+pub(super) const LABEL_WIDTH: usize = TODAY_ALL_LABEL.len();
 
-/// The room a bar leaves for its row: the padded label, plus one cell so
-/// the bar never touches the pane's edge. The space between the bar and
-/// the figures needs no room here — it sits after the bar, and the figures
-/// wrap onto the next line when they do not fit. Only the table layout
-/// has to leave this room: in the stacked one the bar has the row to
-/// itself.
-const BAR_LABEL_ROOM: usize = LABEL_WIDTH + 1;
+/// The cells a bar keeps to the pane's right edge. The bar stops two
+/// cells short of the edge, so it never touches the border and the pane
+/// keeps a margin of its own.
+const BAR_EDGE_ROOM: usize = 2;
 
-/// The widest bar the info pane draws, in cells.
-const MAX_BAR_WIDTH: usize = 20;
+/// The room a bar leaves for its row: the padded label, plus the cells
+/// the bar keeps to the pane's edge. The figures need no room here —
+/// they have a row of their own under the bar, so the bar does not have
+/// to leave space for them beside it and can reach for the edge. Only
+/// the table layout has to leave the label's room: in the stacked one
+/// the bar has the row to itself.
+const BAR_LABEL_ROOM: usize = LABEL_WIDTH + BAR_EDGE_ROOM;
 
 /// The narrowest bar worth drawing. The fill rounds to the nearest cell, so
 /// a bar of five cells is within ten points of the share; below that the
@@ -97,25 +99,26 @@ pub(super) fn layout_for(inner_width: u16) -> PaneLayout {
 }
 
 /// The bar width for a pane of the given inner width, laid out as
-/// `layout` says: as wide as the pane allows, up to [`MAX_BAR_WIDTH`]. A
-/// bar wider than the room its row leaves would be cut in half by the
-/// paragraph's wrapping — half a bar reads worse than a short one — and a
-/// bar narrower than [`MIN_BAR_WIDTH`] would misreport the share, so both
-/// ends are refused. Zero means the row carries its figures alone.
+/// `layout` says: as wide as the pane allows, stopping
+/// [`BAR_EDGE_ROOM`] cells short of its right edge. A bar wider than the
+/// room its row leaves would be cut in half by the paragraph's wrapping —
+/// half a bar reads worse than a short one — and a bar narrower than
+/// [`MIN_BAR_WIDTH`] would misreport the share, so both ends are refused.
+/// Zero means the row carries its figures alone.
 ///
 /// In the table layout the bar shares its row with the padded label, so
 /// the room is what the label leaves; in the stacked layout the bar has
-/// the row to itself and can use the pane's full width.
+/// the row to itself.
 pub(super) fn bar_width(inner_width: u16, layout: PaneLayout) -> usize {
     let width = inner_width as usize;
     let room = match layout {
         PaneLayout::Table => width.saturating_sub(BAR_LABEL_ROOM),
-        PaneLayout::Stacked => width,
+        PaneLayout::Stacked => width.saturating_sub(BAR_EDGE_ROOM),
     };
     if room < MIN_BAR_WIDTH {
         return 0;
     }
-    room.min(MAX_BAR_WIDTH)
+    room
 }
 
 /// A pane label: bold, and padded on the right to [`LABEL_WIDTH`] so that
@@ -167,28 +170,39 @@ pub(super) fn context_pct(t: &TopicInfo) -> Option<u32> {
     )
 }
 
-/// Append the "Tokens: <bar> X / Y (Z%)" row to `spans` — the context
-/// size (the last call's input plus its output) against the context
-/// window, with the same share drawn as a bar of `bar_cells` cells. The
-/// label is padded to the pane's label width, so the bar starts in the
-/// column every other value starts in. Pushes nothing when
-/// `context_input_tokens` or `max_tokens` is missing.
-pub(super) fn push_tokens_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_cells: usize) {
+/// Append the "Tokens: <bar>" row to `spans` — the context size (the
+/// last call's input plus its output) against the context window, with
+/// the same share drawn as a bar of `bar_cells` cells. The label is
+/// padded to the pane's label width, so the bar starts in the column
+/// every other value starts in.
+///
+/// Returns the row's figures — "44.17K / 117.19K (38%)" — for the
+/// caller to lay out on the row under the bar, where they line up with
+/// it. A pane too narrow for a bar keeps the figures in the row itself
+/// and gets `None` back. Pushes nothing when `context_input_tokens` or
+/// `max_tokens` is missing.
+pub(super) fn push_tokens_span(
+    spans: &mut Vec<Span>,
+    t: &TopicInfo,
+    bar_cells: usize,
+) -> Option<Span<'static>> {
     if let (Some(cur), Some(max)) = (t.context_input_tokens, t.max_tokens) {
         let used = jyc_types::context_tokens(Some(cur), t.context_output_tokens).unwrap_or(cur);
         let pct = context_pct(t).unwrap_or(0);
-        spans.push(label_span(TOKENS_LABEL));
-        push_bar_spans(spans, pct, bar_cells);
         let figures = format!(
             "{} / {} ({pct}%)",
             jyc_types::format_token_count(used),
             jyc_types::format_token_count(max)
         );
-        spans.push(Span::raw(if bar_cells > 0 {
-            format!(" {figures}")
-        } else {
-            figures
-        }));
+        spans.push(label_span(TOKENS_LABEL));
+        if bar_cells == 0 {
+            spans.push(Span::raw(figures));
+            return None;
+        }
+        push_bar_spans(spans, pct, bar_cells);
+        Some(Span::raw(figures))
+    } else {
+        None
     }
 }
 
@@ -222,6 +236,10 @@ pub(super) fn push_cache_creation_span(spans: &mut Vec<Span>, t: &TopicInfo) {
 /// `bar_cells` cells. The label is padded to the pane's label width, so
 /// the bar starts in the column every other value starts in.
 ///
+/// Returns the row's figures for the caller to lay out on the row under
+/// the bar, where they line up with it; a row too narrow for a bar keeps
+/// the figures in the row itself and gets `None` back.
+///
 /// `always` decides what a scope with no input tokens yet looks like.
 /// `false` omits the row — there is nothing for the hits to be a share
 /// of, and a zero would misreport it. `true` draws the row at zero, for
@@ -243,7 +261,7 @@ fn push_cache_rate_row(
     total_input: Option<u64>,
     bar_cells: usize,
     always: bool,
-) {
+) -> Option<Span<'static>> {
     let (figures, pct) = match jyc_types::format_cache_rate(cache_hits, total_input) {
         Some(figures) => (
             figures,
@@ -256,26 +274,29 @@ fn push_cache_rate_row(
             let zero = jyc_types::format_token_count(0);
             (format!("{zero} / {zero} (0%)"), 0)
         }
-        None => return,
+        None => return None,
     };
     spans.push(label_span(label));
+    if bar_cells == 0 {
+        spans.push(Span::raw(figures));
+        return None;
+    }
     push_bar_spans(spans, pct, bar_cells);
-    spans.push(Span::raw(if bar_cells > 0 {
-        format!(" {figures}")
-    } else {
-        figures
-    }));
+    Some(Span::raw(figures))
 }
 
-/// Append the "Turn: <bar> hits / input (Z%)" row — the cache
-/// figures of the latest turn, so a long turn's own cache rate is
-/// visible next to the session's.
+/// Append the "Turn: <bar>" row — the cache figures of the latest turn,
+/// so a long turn's own cache rate is visible next to the session's.
 ///
 /// The row is drawn even before the turn's first call: the turn's
 /// counters are zeroed at every turn boundary, and a row that vanishes
 /// until the first call lands reads as missing data rather than as a
 /// zero.
-pub(super) fn push_turn_cache_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_cells: usize) {
+pub(super) fn push_turn_cache_span(
+    spans: &mut Vec<Span>,
+    t: &TopicInfo,
+    bar_cells: usize,
+) -> Option<Span<'static>> {
     push_cache_rate_row(
         spans,
         CACHE_TURN_LABEL,
@@ -283,15 +304,19 @@ pub(super) fn push_turn_cache_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_cel
         t.turn_input_tokens,
         bar_cells,
         true,
-    );
+    )
 }
 
-/// Append the "Session: <bar> hits / input (Z%)" row — the
-/// cache-hit tokens of every LLM call in the session and the input
-/// tokens they are a share of. Omitted while the session has no input
-/// tokens: a session that has made no call has no rate to report, and
-/// the overview would carry the zero row for every topic.
-pub(super) fn push_session_cache_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_cells: usize) {
+/// Append the "Session: <bar>" row — the cache-hit tokens of every LLM
+/// call in the session and the input tokens they are a share of. Omitted
+/// while the session has no input tokens: a session that has made no call
+/// has no rate to report, and the overview would carry the zero row for
+/// every topic.
+pub(super) fn push_session_cache_span(
+    spans: &mut Vec<Span>,
+    t: &TopicInfo,
+    bar_cells: usize,
+) -> Option<Span<'static>> {
     push_cache_rate_row(
         spans,
         CACHE_SESSION_LABEL,
@@ -299,7 +324,7 @@ pub(super) fn push_session_cache_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_
         t.total_input_tokens,
         bar_cells,
         false,
-    );
+    )
 }
 
 /// Append the "Reasoning: N" row to `spans`. Pushes nothing when the
@@ -373,6 +398,11 @@ mod tests {
     fn padded(label: &str) -> String {
         format!("{label:<width$}", width = LABEL_WIDTH)
     }
+
+    /// A bar of twenty cells — the width the tests that draw a bar use.
+    /// The bar's width follows the pane; these tests pin what a bar of a
+    /// given width looks like, not the width the pane picks.
+    const BAR: usize = 20;
 
     /// A topic's detail, with the token figures the helpers render.
     fn info_with(
@@ -475,36 +505,42 @@ mod tests {
     fn push_tokens_span_omits_when_max_missing() {
         let t = info_with(Some(100), None, None, None, None, None);
         let mut spans = Vec::new();
-        push_tokens_span(&mut spans, &t, MAX_BAR_WIDTH);
+        let figures = push_tokens_span(&mut spans, &t, BAR);
         assert!(spans.is_empty());
+        assert!(figures.is_none());
     }
 
+    /// The row carries the label and the bar; the figures come back to the
+    /// caller, which lays them out on the row under the bar.
     #[test]
-    fn push_tokens_span_writes_label_bar_and_value() {
+    fn push_tokens_span_writes_label_bar_and_returns_the_figures() {
         let t = info_with(Some(4750), Some(10000), None, None, None, None);
         let mut spans = Vec::new();
-        push_tokens_span(&mut spans, &t, MAX_BAR_WIDTH);
-        assert_eq!(spans.len(), 4);
+        let figures = push_tokens_span(&mut spans, &t, BAR);
+        assert_eq!(spans.len(), 3);
         // The label is padded to the pane's label width, so the bar
         // starts in the column every other value starts in.
         assert_eq!(spans[0].content, padded(TOKENS_LABEL));
         assert_eq!(spans[1].content, "─".repeat(9));
         assert_eq!(spans[2].content, "·".repeat(11));
-        assert_eq!(spans[3].content, " 4.64K / 9.77K (47%)");
+        // The figures have a row of their own, under the bar.
+        assert_eq!(figures.unwrap().content, "4.64K / 9.77K (47%)");
     }
 
     /// A pane too narrow for an honest bar gets the figures alone — no
     /// bar, and none of the spans a bar would have added. The label is
     /// still padded: the pane's values share a column whether or not a
-    /// bar stands in front of them.
+    /// bar stands in front of them. The figures stay in the row, and
+    /// there is no second row to hand them to.
     #[test]
     fn push_tokens_span_without_a_bar() {
         let t = info_with(Some(4750), Some(10000), None, None, None, None);
         let mut spans = Vec::new();
-        push_tokens_span(&mut spans, &t, 0);
+        let figures = push_tokens_span(&mut spans, &t, 0);
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content, padded(TOKENS_LABEL));
         assert_eq!(spans[1].content, "4.64K / 9.77K (47%)");
+        assert!(figures.is_none());
     }
 
     /// The two cache rows share one bar width and one label width, so
@@ -514,9 +550,9 @@ mod tests {
     fn the_two_bars_start_in_the_same_column() {
         let t = info_with(Some(4750), Some(10000), None, Some(1000), Some(880), None);
         let mut tokens = Vec::new();
-        push_tokens_span(&mut tokens, &t, MAX_BAR_WIDTH);
+        push_tokens_span(&mut tokens, &t, BAR);
         let mut cache = Vec::new();
-        push_session_cache_span(&mut cache, &t, MAX_BAR_WIDTH);
+        push_session_cache_span(&mut cache, &t, BAR);
         // The labels are the same width, and the bars follow them directly.
         assert_eq!(tokens[0].content.len(), cache[0].content.len());
         assert_eq!(tokens[0].content.len(), LABEL_WIDTH);
@@ -561,34 +597,34 @@ mod tests {
     #[test]
     fn bar_width_follows_the_pane() {
         // The table layout: the longest label ("Today (all): ", 13 cells)
-        // plus the one cell the bar keeps to itself at the pane's edge.
-        assert_eq!(bar_width(38, PaneLayout::Table), MAX_BAR_WIDTH);
-        assert_eq!(bar_width(33, PaneLayout::Table), 19);
-        assert_eq!(bar_width(32, PaneLayout::Table), 18);
-        assert_eq!(bar_width(19, PaneLayout::Table), MIN_BAR_WIDTH);
+        // plus the two cells the bar keeps to the pane's edge.
+        assert_eq!(bar_width(38, PaneLayout::Table), 23);
+        assert_eq!(bar_width(33, PaneLayout::Table), 18);
+        assert_eq!(bar_width(32, PaneLayout::Table), 17);
+        assert_eq!(bar_width(20, PaneLayout::Table), MIN_BAR_WIDTH);
         // Below that a cell would carry too much of the share to be honest.
-        assert_eq!(bar_width(18, PaneLayout::Table), 0);
+        assert_eq!(bar_width(19, PaneLayout::Table), 0);
         assert_eq!(bar_width(14, PaneLayout::Table), 0);
         assert_eq!(bar_width(0, PaneLayout::Table), 0);
     }
 
     /// The stacked layout gives the bar a row of its own, so it is never
-    /// shortened by a label beside it: it can use the pane's whole width,
-    /// up to the widest bar the pane draws.
+    /// shortened by a label beside it: it takes the pane's whole width,
+    /// less the two cells it keeps to the pane's edge.
     #[test]
     fn bar_width_in_the_stacked_layout_uses_the_whole_row() {
-        assert_eq!(bar_width(39, PaneLayout::Stacked), MAX_BAR_WIDTH);
-        assert_eq!(bar_width(23, PaneLayout::Stacked), MAX_BAR_WIDTH);
-        // The pane's whole width, up to the widest bar: the label takes
+        assert_eq!(bar_width(39, PaneLayout::Stacked), 37);
+        assert_eq!(bar_width(23, PaneLayout::Stacked), 21);
+        // The pane's whole width less the edge's cells: the label takes
         // no cell of it, where the table layout's bar gets what the
         // label's room leaves.
-        assert_eq!(bar_width(21, PaneLayout::Stacked), MAX_BAR_WIDTH);
-        assert_eq!(bar_width(20, PaneLayout::Stacked), MAX_BAR_WIDTH);
-        assert_eq!(bar_width(23, PaneLayout::Table), 9);
+        assert_eq!(bar_width(21, PaneLayout::Stacked), 19);
+        assert_eq!(bar_width(20, PaneLayout::Stacked), 18);
+        assert_eq!(bar_width(23, PaneLayout::Table), 8);
         // The narrowest bar still worth drawing.
-        assert_eq!(bar_width(5, PaneLayout::Stacked), MIN_BAR_WIDTH);
+        assert_eq!(bar_width(7, PaneLayout::Stacked), MIN_BAR_WIDTH);
         // Below that a cell would carry too much of the share to be honest.
-        assert_eq!(bar_width(4, PaneLayout::Stacked), 0);
+        assert_eq!(bar_width(6, PaneLayout::Stacked), 0);
         assert_eq!(bar_width(0, PaneLayout::Stacked), 0);
     }
 
@@ -611,41 +647,41 @@ mod tests {
     #[test]
     fn push_bar_spans_fills_and_pads() {
         let mut spans = Vec::new();
-        push_bar_spans(&mut spans, 0, MAX_BAR_WIDTH);
+        push_bar_spans(&mut spans, 0, BAR);
         assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].content, "·".repeat(MAX_BAR_WIDTH));
+        assert_eq!(spans[0].content, "·".repeat(BAR));
 
         let mut spans = Vec::new();
-        push_bar_spans(&mut spans, 5, MAX_BAR_WIDTH);
+        push_bar_spans(&mut spans, 5, BAR);
         assert_eq!(spans[0].content, "─");
-        assert_eq!(spans[1].content, "·".repeat(MAX_BAR_WIDTH - 1));
+        assert_eq!(spans[1].content, "·".repeat(BAR - 1));
         assert_eq!(spans[0].style.fg, Some(Color::Yellow));
         assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(spans[1].style.fg, Some(Color::DarkGray));
 
         let mut spans = Vec::new();
-        push_bar_spans(&mut spans, 50, MAX_BAR_WIDTH);
-        assert_eq!(spans[0].content, "─".repeat(MAX_BAR_WIDTH / 2));
-        assert_eq!(spans[1].content, "·".repeat(MAX_BAR_WIDTH / 2));
+        push_bar_spans(&mut spans, 50, BAR);
+        assert_eq!(spans[0].content, "─".repeat(BAR / 2));
+        assert_eq!(spans[1].content, "·".repeat(BAR / 2));
 
         // A full bar has no padding left to draw.
         let mut spans = Vec::new();
-        push_bar_spans(&mut spans, 100, MAX_BAR_WIDTH);
+        push_bar_spans(&mut spans, 100, BAR);
         assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].content, "─".repeat(MAX_BAR_WIDTH));
+        assert_eq!(spans[0].content, "─".repeat(BAR));
 
         // Above 100% fills the bar without overflowing it.
         let mut spans = Vec::new();
-        push_bar_spans(&mut spans, 140, MAX_BAR_WIDTH);
+        push_bar_spans(&mut spans, 140, BAR);
         assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].content, "─".repeat(MAX_BAR_WIDTH));
+        assert_eq!(spans[0].content, "─".repeat(BAR));
 
         // A share too small for a cell draws no filled part: the bar stays
         // empty rather than overstating the share.
         let mut spans = Vec::new();
-        push_bar_spans(&mut spans, 2, MAX_BAR_WIDTH);
+        push_bar_spans(&mut spans, 2, BAR);
         assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].content, "·".repeat(MAX_BAR_WIDTH));
+        assert_eq!(spans[0].content, "·".repeat(BAR));
 
         // A zero width draws no bar at all.
         let mut spans = Vec::new();
@@ -672,17 +708,18 @@ mod tests {
     }
 
     /// The session's cache row: the cache-hit tokens, the input tokens
-    /// they are a share of, and that share — with the share as a bar.
+    /// they are a share of, and that share — with the share as a bar and
+    /// the figures handed back for the row under it.
     #[test]
-    fn push_session_cache_span_writes_label_bar_and_value() {
+    fn push_session_cache_span_writes_label_bar_and_returns_the_figures() {
         let t = info_with(None, None, None, Some(720), Some(640), None);
         let mut spans = Vec::new();
-        push_session_cache_span(&mut spans, &t, MAX_BAR_WIDTH);
-        assert_eq!(spans.len(), 4);
+        let figures = push_session_cache_span(&mut spans, &t, BAR);
+        assert_eq!(spans.len(), 3);
         assert_eq!(spans[0].content, padded(CACHE_SESSION_LABEL));
         assert_eq!(spans[1].content, "─".repeat(18));
         assert_eq!(spans[2].content, "·".repeat(2));
-        assert_eq!(spans[3].content, " 640 / 720 (88%)");
+        assert_eq!(figures.unwrap().content, "640 / 720 (88%)");
     }
 
     /// A session without input tokens has nothing to be a share of: no
@@ -691,8 +728,9 @@ mod tests {
     fn push_session_cache_span_omits_when_missing() {
         let t = info_with(None, None, None, None, None, None);
         let mut spans = Vec::new();
-        push_session_cache_span(&mut spans, &t, MAX_BAR_WIDTH);
+        let figures = push_session_cache_span(&mut spans, &t, BAR);
         assert!(spans.is_empty());
+        assert!(figures.is_none());
     }
 
     /// The turn's cache row carries the turn's own figures, so a long
@@ -703,10 +741,10 @@ mod tests {
         t.turn_cache_hit_tokens = Some(300);
         t.turn_input_tokens = Some(1000);
         let mut spans = Vec::new();
-        push_turn_cache_span(&mut spans, &t, MAX_BAR_WIDTH);
-        assert_eq!(spans.len(), 4);
+        let figures = push_turn_cache_span(&mut spans, &t, BAR);
+        assert_eq!(spans.len(), 3);
         assert_eq!(spans[0].content, padded(CACHE_TURN_LABEL));
-        assert_eq!(spans[3].content, " 300 / 1000 (30%)");
+        assert_eq!(figures.unwrap().content, "300 / 1000 (30%)");
     }
 
     /// A turn that has made no call yet still gets its row, at zero: the
@@ -716,11 +754,11 @@ mod tests {
     fn push_turn_cache_span_shows_zero_before_the_first_call() {
         let t = info_with(None, None, None, Some(720), Some(640), None);
         let mut spans = Vec::new();
-        push_turn_cache_span(&mut spans, &t, MAX_BAR_WIDTH);
-        assert_eq!(spans.len(), 3, "the row is drawn at zero: {spans:?}");
+        let figures = push_turn_cache_span(&mut spans, &t, BAR);
+        assert_eq!(spans.len(), 2, "the row is drawn at zero: {spans:?}");
         assert_eq!(spans[0].content, padded(CACHE_TURN_LABEL));
-        assert_eq!(spans[1].content, "·".repeat(MAX_BAR_WIDTH));
-        assert_eq!(spans[2].content, " 0 / 0 (0%)");
+        assert_eq!(spans[1].content, "·".repeat(BAR));
+        assert_eq!(figures.unwrap().content, "0 / 0 (0%)");
     }
 
     /// A turn with input tokens but no cache hits shows its row at 0%:
@@ -733,13 +771,13 @@ mod tests {
         t.turn_cache_hit_tokens = None;
         t.turn_input_tokens = Some(1000);
         let mut spans = Vec::new();
-        push_turn_cache_span(&mut spans, &t, MAX_BAR_WIDTH);
-        // Three spans: the label, the bar (at 0% it is all dots, with no
-        // filled part) and the figures.
-        assert_eq!(spans.len(), 3, "the row is drawn at zero: {spans:?}");
+        let figures = push_turn_cache_span(&mut spans, &t, BAR);
+        // Two spans: the label and the bar (at 0% it is all dots, with no
+        // filled part). The figures have a row of their own.
+        assert_eq!(spans.len(), 2, "the row is drawn at zero: {spans:?}");
         assert_eq!(spans[0].content, padded(CACHE_TURN_LABEL));
-        assert_eq!(spans[1].content, "·".repeat(MAX_BAR_WIDTH));
-        assert_eq!(spans[2].content, " 0 / 1000 (0%)");
+        assert_eq!(spans[1].content, "·".repeat(BAR));
+        assert_eq!(figures.unwrap().content, "0 / 1000 (0%)");
     }
 
     /// No cost data (unpriced model) → no row, rather than `$0.00`.

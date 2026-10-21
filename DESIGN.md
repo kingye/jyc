@@ -3190,25 +3190,25 @@ the ones that sit on the screen boundary open. Every border goes through
 ```
 Not connected: connection refused
 
-  Agent     Topic       Pattern    Status     Context      Last Active 
-───────────────────────────────────────────────────────────────────────────
-→ jyc       jyc         pipe       idle       0/117.19K    2m ago            │ Topic:          issue-42             
-  invoice   invoice     feishu     processing 44.17K/117.19K now               │ Pattern:        planner              
-                                                                           │ Model:          claude-opus-4-8      
-                                                                           │ Mode:           build                
-                                                                           │ Branch:         feat/issue-42        
-                                                                           │ Tokens:         ────────············ 
-                                                                           │                 44.17K / 117.19K (38%)
-                                                                           │ Cache (turn):   ──────────────────·· 
-                                                                           │                 12.00K / 15.00K (80%)
-                                                                           │ Cache (session):──────────────────·· 
-                                                                           │                 78.24K / 88.19K (88%)
-                                                                           │ Files (2):                           
-                                                                           │   crates/…/mod.rs                    
-                                                                           │ ──────────────────────────────────── 
-                                                                           │ JYC AI v0.6.0                        
-                                                                           │ 2 active / 4 thread                  
-─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Agent     Topic       Pattern    Status     Context        Last Active 
+─────────────────────────────────────────────────────────────────────────────
+→ jyc       jyc         pipe       idle       0/117.19K    2m ago              │ Topic:          issue-42             
+  invoice   invoice     feishu     processing 44.17K/117.19K now                 │ Pattern:        planner              
+                                                                             │ Model:          claude-opus-4-8      
+                                                                             │ Mode:           build                
+                                                                             │ Branch:         feat/issue-42        
+                                                                             │ Tokens:         ────────············ 
+                                                                             │                 44.17K / 117.19K (38%)
+                                                                             │ Cache (turn):   ──────────────────·· 
+                                                                             │                 12.00K / 15.00K (80%)
+                                                                             │ Cache (session):──────────────────·· 
+                                                                             │                 78.24K / 88.19K (88%)
+                                                                             │ Files (2):                           
+                                                                             │   crates/…/mod.rs                    
+                                                                             │ ──────────────────────────────────── 
+                                                                             │ JYC AI v0.6.0                        
+                                                                             │ 2 active / 4 thread                  
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 2m  reply sent · emf
 2m  err  ·  emf  ·  unhandled
 ```
@@ -3222,11 +3222,12 @@ Not connected: connection refused
   then the topics. The `→ ` gutter plus `DIM` marks the selected row, and the
   gutter is reserved on every row so a selection never shifts the columns.
   Columns: Agent, Topic, Pattern, Status, Context, Last Active. Agent and Topic
-  share the width the dropped Channel column gave up. The Context column is
-  wide enough for the longest figure the shared formatter prints —
-  `999.99K/999.99K`, fifteen cells — so a context is never cut off
+  share the width the dropped Channel column gave up — the Agent column gives
+  two of those cells back to the Context column. The Context column is wide
+  enough for the widest pair a real context window produces —
+  `1022.46K/1023.02K`, seventeen cells — so a context is never cut off
   mid-number; Status needs only its longest value and Last Active only its
-  header, and they give the cells back.
+  header.
 - **Topic info pane** (right 20%) — left border only, one row of top padding.
   The topic detail (pattern, model, mode, branch, token counts, changed
   files) scrolls; the status sub-pane is pinned to the bottom behind a

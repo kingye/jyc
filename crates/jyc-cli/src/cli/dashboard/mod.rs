@@ -1592,17 +1592,20 @@ fn render_topics(frame: &mut Frame, area: Rect, app: &mut App) {
     // what the table is read for, and the two are the same value for an
     // agent-keyed topic. The rest keep their fixed widths.
     //
-    // The Context column is wide enough for the longest figure the shared
-    // formatter can print — `999.99K/999.99K`, fifteen cells — so a context
-    // is never cut off mid-number. Status needs only its longest value
-    // (`Processing`) and Last Active only its header, so the three cells
-    // come from there and the table keeps the width it had.
+    // The Context column is wide enough for the widest pair a real context
+    // window produces: a model with a one-million-token window reports
+    // eight-cell figures (`1022.46K/1023.02K`, seventeen cells), and
+    // ratatui clips a cell without an ellipsis — a clipped number reads
+    // like a smaller one. Status needs only its longest value
+    // (`Processing`) and Last Active only its header, and the Agent
+    // column gives back the two cells the Context column takes, so the
+    // table keeps the width it had.
     let widths = [
-        Constraint::Min(20),
+        Constraint::Min(18),
         Constraint::Length(16),
         Constraint::Length(12),
         Constraint::Length(10),
-        Constraint::Length(15),
+        Constraint::Length(17),
         Constraint::Length(11),
     ];
 
@@ -2336,8 +2339,9 @@ mod tests {
     }
 
     /// The context column is wide enough for the whole figure: the shared
-    /// formatter prints two decimals in K and M, so a context is never cut
-    /// off mid-number.
+    /// formatter prints two decimals in K and M, and a model with a
+    /// one-million-token window reports eight-cell figures — the pair is
+    /// seventeen cells, and ratatui would clip it without an ellipsis.
     #[test]
     fn topics_table_shows_the_whole_context_figure() {
         use ratatui::Terminal;
@@ -2345,8 +2349,10 @@ mod tests {
 
         let mut app = make_test_app();
         let mut overview = make_overview_with_topics(&["issue-42"]);
-        overview.topics[0].context_input_tokens = Some(45_231);
-        overview.topics[0].max_tokens = Some(120_000);
+        // A one-million-token window, with the context nearly full: the
+        // widest pair the formatter can print for a real window.
+        overview.topics[0].context_input_tokens = Some(1_024_000);
+        overview.topics[0].max_tokens = Some(1_048_575);
         app.state = Some(overview);
 
         let area = Rect::new(0, 0, 120, 4);
@@ -2361,7 +2367,7 @@ mod tests {
             .map(|x| buffer[(x, 2)].symbol().to_string())
             .collect();
         assert!(
-            first.contains("44.17K/117.19K"),
+            first.contains("1000.00K/1024.00K"),
             "the context figure should not be cut off, got: {first:?}"
         );
     }

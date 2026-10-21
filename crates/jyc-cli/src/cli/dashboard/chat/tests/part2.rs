@@ -3015,6 +3015,61 @@ fn info_pane_shows_the_turn_cache_row_at_zero() {
     );
 }
 
+/// The pane's cache rows sit under one header: the group names the
+/// subject — the cache — and the rows under it name their own scope. The
+/// header is a raw line, so it is bold and keeps its own shape instead of
+/// being padded into the label column.
+#[test]
+fn info_pane_groups_the_cache_rows_under_a_header() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = info_pane_app(Default::default());
+    {
+        let detail = app.topic_detail.as_mut().expect("the topic's detail");
+        detail.total_input_tokens = Some(90_311);
+        detail.total_cache_hit_tokens = Some(80_120);
+    }
+
+    // Wide enough that no row of the group wraps.
+    let backend = TestBackend::new(70, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| render_topic_info_pane(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    let pane = (0..30)
+        .map(|y| {
+            (0..70)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let rows = info_pane_rows(&pane);
+    let at = rows
+        .iter()
+        .position(|r| r == "Cache:")
+        .unwrap_or_else(|| panic!("the cache rows must sit under a header:\n{pane}"));
+    // The turn's row is always drawn, so the header never dangles over
+    // nothing.
+    assert!(
+        rows[at + 1].starts_with(&info_pane_label("Turn: ")),
+        "the header must have the turn's row under it:\n{pane}"
+    );
+    // The session's row names its own scope.
+    assert!(
+        rows.iter()
+            .any(|r| r.starts_with(&info_pane_label("Session: "))),
+        "the session's row must name its scope:\n{pane}"
+    );
+    // The header is bold: it is a heading, not a value.
+    assert!(
+        buffer[(1, at as u16)].modifier.contains(Modifier::BOLD),
+        "the header must be bold:\n{pane}"
+    );
+}
+
 /// The bar is as wide as the pane allows, and it stays whole: in the
 /// stacked layout the bar has a row of its own, so it can use the
 /// pane's full width, and the wrapping moves the figures below it
@@ -3087,24 +3142,50 @@ fn info_pane_draws_no_bar_in_a_too_narrow_pane() {
 #[test]
 fn info_pane_indents_a_continued_value_to_its_column() {
     let mut app = info_pane_app(Default::default());
+    // A branch name longer than the pane's value column, so it has to
+    // wrap. Where the wrap falls depends on the column's width, so the
+    // test does not name the words that end up on a row.
+    let branch = "feat/issue-42 add a very long branch name for the info pane";
     {
         let detail = app.topic_detail.as_mut().expect("the topic's detail");
-        detail.branch = Some("feat/issue-42 add a very long branch name".to_string());
+        detail.branch = Some(branch.to_string());
     }
 
     // 46 columns wide: the pane's inner width is 45, wide enough for the
     // table layout.
     let pane = info_pane_text(&mut app, 46, 40);
     let rows = info_pane_rows(&pane);
-    let row = rows
+    // The branch's own row, and the rows that continue it: they carry the
+    // rest of the value, each indented to the value's column.
+    let at = rows
         .iter()
-        .find(|r| r.contains("long branch name"))
-        .unwrap_or_else(|| panic!("no row continues the branch name:\n{pane}"));
-    assert_eq!(
-        row.find("long branch name"),
-        Some(INFO_PANE_LABEL_WIDTH),
-        "the rest of a value must stay in the value's column:\n{pane}"
+        .position(|r| r.starts_with(&info_pane_label("Branch: ")))
+        .unwrap_or_else(|| panic!("no row for the branch:\n{pane}"));
+    let indent = " ".repeat(INFO_PANE_LABEL_WIDTH);
+    let continued: Vec<&str> = rows[at + 1..]
+        .iter()
+        .take_while(|r| r.starts_with(&indent))
+        .map(String::as_str)
+        .collect();
+    assert!(
+        !continued.is_empty(),
+        "a value too long for its column must wrap, not be cut:\n{pane}"
     );
+    for row in &continued {
+        assert_eq!(
+            row.chars().take_while(|c| *c == ' ').count(),
+            INFO_PANE_LABEL_WIDTH,
+            "the rest of a value must stay in the value's column:\n{pane}"
+        );
+    }
+    // The value is whole: the rows carry it between them, with the space
+    // the break fell on.
+    let mut shown: String = rows[at].chars().skip(INFO_PANE_LABEL_WIDTH).collect();
+    for row in &continued {
+        shown.push(' ');
+        shown.push_str(row.trim_start());
+    }
+    assert_eq!(shown, branch, "the value must not lose a word:\n{pane}");
 }
 
 /// The figures of a bar row stay in the pane's value column: the row that

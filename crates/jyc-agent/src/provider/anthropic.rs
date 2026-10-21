@@ -594,12 +594,14 @@ fn merge_consecutive_user_messages(messages: Vec<serde_json::Value>) -> Vec<serd
             continue;
         }
 
-        let blocks = content_blocks(&message);
-        let last = merged.last_mut().expect("the previous user message");
-        match last.get_mut("content").and_then(|c| c.as_array_mut()) {
-            Some(existing) => existing.extend(blocks),
-            None => last["content"] = serde_json::Value::Array(blocks),
-        }
+        // The two turns share one: the blocks of the previous turn
+        // first, then the ones this message carries. A previous turn
+        // whose content is a plain string becomes a text block, so
+        // merging never drops what the turn already said.
+        let last_index = merged.len() - 1;
+        let mut blocks = content_blocks(&merged[last_index]);
+        blocks.extend(content_blocks(&message));
+        merged[last_index]["content"] = serde_json::Value::Array(blocks);
     }
 
     merged
@@ -811,6 +813,22 @@ mod tests {
             blocks[0]["type"], "tool_result",
             "the tool result stays first"
         );
+        assert_eq!(blocks[1]["text"], "extra info");
+    }
+
+    /// A user turn whose content is a plain string keeps its words when
+    /// the next user turn joins it.
+    #[test]
+    fn merging_a_string_content_turn_keeps_both_texts() {
+        let merged = merge_consecutive_user_messages(vec![
+            json!({"role": "user", "content": "plain string"}),
+            json!({"role": "user", "content": [{"type": "text", "text": "extra info"}]}),
+        ]);
+
+        assert_eq!(merged.len(), 1);
+        let blocks = merged[0]["content"].as_array().expect("content blocks");
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["text"], "plain string");
         assert_eq!(blocks[1]["text"], "extra info");
     }
 

@@ -160,7 +160,7 @@ impl MessageRouter {
         let matched_pattern_name = pattern_name;
         let matched_pattern = patterns_ref.iter().find(|p| p.name == matched_pattern_name);
         let attachment_config = matched_pattern.and_then(|p| p.attachments.clone());
-        let live_injection = matched_pattern.map(|p| p.live_injection).unwrap_or(true);
+        let live_injection = matched_pattern.map(|p| p.live_injection()).unwrap_or(true);
 
         // Store template name in message metadata for topic initialization
         let matched_template = matched_pattern.and_then(|p| p.template.clone());
@@ -465,7 +465,7 @@ mod tests {
     fn test_live_injection_defaults_to_true() {
         let pattern = ChannelPattern::default();
         assert!(
-            pattern.live_injection,
+            pattern.live_injection(),
             "live_injection should default to true"
         );
     }
@@ -476,7 +476,7 @@ mod tests {
         let message = test_message("Hello");
         let patterns = vec![ChannelPattern {
             name: "no_inject".to_string(),
-            live_injection: false,
+            live_injection: Some(false),
             ..Default::default()
         }];
 
@@ -485,7 +485,7 @@ mod tests {
 
         let pattern_name = &pattern_match.as_ref().unwrap().pattern_name;
         let matched = patterns.iter().find(|p| &p.name == pattern_name);
-        let live_injection = matched.map(|p| p.live_injection).unwrap_or(true);
+        let live_injection = matched.map(|p| p.live_injection()).unwrap_or(true);
 
         assert!(
             !live_injection,
@@ -499,14 +499,14 @@ mod tests {
         let message = test_message("Hello");
         let patterns = vec![ChannelPattern {
             name: "with_inject".to_string(),
-            live_injection: true,
+            live_injection: Some(true),
             ..Default::default()
         }];
 
         let pattern_match = matcher.match_message(&message, &patterns);
         let pattern_name = &pattern_match.as_ref().unwrap().pattern_name;
         let matched = patterns.iter().find(|p| &p.name == pattern_name);
-        let live_injection = matched.map(|p| p.live_injection).unwrap_or(true);
+        let live_injection = matched.map(|p| p.live_injection()).unwrap_or(true);
 
         assert!(
             live_injection,
@@ -525,7 +525,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            pattern.live_injection,
+            pattern.live_injection(),
             "live_injection should default to true when omitted from config"
         );
     }
@@ -541,7 +541,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            !pattern.live_injection,
+            !pattern.live_injection(),
             "live_injection should be false when explicitly set in config"
         );
     }

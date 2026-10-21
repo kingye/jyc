@@ -286,27 +286,12 @@ mode = "static"
 }
 
 #[test]
-fn test_invalid_mcp_in_pattern() {
+fn test_invalid_mcp_in_agent() {
     let toml = r#"
 [general]
-[channels.work]
-type = "email"
-[channels.work.inbound]
-host = "h"
-port = 993
-username = "u"
-password = "p"
-[channels.work.outbound]
-host = "h"
-port = 465
-username = "u"
-password = "p"
+[agents.work]
 
-[[channels.work.patterns]]
-name = "mcp-test"
-[channels.work.patterns.rules]
-
-[[channels.work.patterns.mcps]]
+[[agents.work.mcps]]
 name = ""
 type = "local"
 command = []
@@ -328,24 +313,9 @@ mode = "agent"
 fn test_invalid_mcp_local_no_command() {
     let toml = r#"
 [general]
-[channels.work]
-type = "email"
-[channels.work.inbound]
-host = "h"
-port = 993
-username = "u"
-password = "p"
-[channels.work.outbound]
-host = "h"
-port = 465
-username = "u"
-password = "p"
+[agents.work]
 
-[[channels.work.patterns]]
-name = "mcp-test"
-[channels.work.patterns.rules]
-
-[[channels.work.patterns.mcps]]
+[[agents.work.mcps]]
 name = "my-mcp"
 type = "local"
 command = []
@@ -367,24 +337,9 @@ mode = "agent"
 fn test_invalid_mcp_remote_no_url() {
     let toml = r#"
 [general]
-[channels.work]
-type = "email"
-[channels.work.inbound]
-host = "h"
-port = 993
-username = "u"
-password = "p"
-[channels.work.outbound]
-host = "h"
-port = 465
-username = "u"
-password = "p"
+[agents.work]
 
-[[channels.work.patterns]]
-name = "mcp-test"
-[channels.work.patterns.rules]
-
-[[channels.work.patterns.mcps]]
+[[agents.work.mcps]]
 name = "my-remote"
 type = "remote"
 url = ""
@@ -403,27 +358,12 @@ mode = "agent"
 }
 
 #[test]
-fn test_valid_mcp_in_pattern_passes() {
+fn test_valid_mcp_in_agent_passes() {
     let toml = r#"
 [general]
-[channels.work]
-type = "email"
-[channels.work.inbound]
-host = "h"
-port = 993
-username = "u"
-password = "p"
-[channels.work.outbound]
-host = "h"
-port = 465
-username = "u"
-password = "p"
+[agents.work]
 
-[[channels.work.patterns]]
-name = "mcp-test"
-[channels.work.patterns.rules]
-
-[[channels.work.patterns.mcps]]
+[[agents.work.mcps]]
 name = "my-local"
 type = "local"
 command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
@@ -446,29 +386,14 @@ mode = "agent"
 fn test_invalid_mcp_remote_oauth_and_auth_header_conflict() {
     let toml = r#"
 [general]
-[channels.work]
-type = "email"
-[channels.work.inbound]
-host = "h"
-port = 993
-username = "u"
-password = "p"
-[channels.work.outbound]
-host = "h"
-port = 465
-username = "u"
-password = "p"
+[agents.work]
 
-[[channels.work.patterns]]
-name = "mcp-test"
-[channels.work.patterns.rules]
-
-[[channels.work.patterns.mcps]]
+[[agents.work.mcps]]
 name = "my-remote"
 type = "remote"
 url = "https://mcp.example.com"
 auth_header = "static-token"
-[channels.work.patterns.mcps.oauth]
+[agents.work.mcps.oauth]
 client_id = "id"
 client_secret = "secret"
 token_endpoint = "https://idp/token"
@@ -492,29 +417,14 @@ mode = "agent"
 fn test_invalid_mcp_remote_auth_header_and_oauth_dcr_conflict() {
     let toml = r#"
 [general]
-[channels.work]
-type = "email"
-[channels.work.inbound]
-host = "h"
-port = 993
-username = "u"
-password = "p"
-[channels.work.outbound]
-host = "h"
-port = 465
-username = "u"
-password = "p"
+[agents.work]
 
-[[channels.work.patterns]]
-name = "mcp-test"
-[channels.work.patterns.rules]
-
-[[channels.work.patterns.mcps]]
+[[agents.work.mcps]]
 name = "my-remote"
 type = "remote"
 url = "https://mcp.example.com"
 auth_header = "static-token"
-[channels.work.patterns.mcps.oauth_dcr]
+[agents.work.mcps.oauth_dcr]
 
 [agent]
 enabled = true
@@ -535,28 +445,13 @@ mode = "agent"
 fn test_valid_mcp_remote_oauth_dcr_alone() {
     let toml = r#"
 [general]
-[channels.work]
-type = "email"
-[channels.work.inbound]
-host = "h"
-port = 993
-username = "u"
-password = "p"
-[channels.work.outbound]
-host = "h"
-port = 465
-username = "u"
-password = "p"
+[agents.work]
 
-[[channels.work.patterns]]
-name = "mcp-test"
-[channels.work.patterns.rules]
-
-[[channels.work.patterns.mcps]]
+[[agents.work.mcps]]
 name = "my-remote"
 type = "remote"
 url = "https://mcp.example.com"
-[channels.work.patterns.mcps.oauth_dcr]
+[agents.work.mcps.oauth_dcr]
 scopes = ["jira.read"]
 
 [agent]
@@ -572,28 +467,13 @@ mode = "agent"
 fn test_invalid_mcp_remote_oauth_empty_client_id() {
     let toml = r#"
 [general]
-[channels.work]
-type = "email"
-[channels.work.inbound]
-host = "h"
-port = 993
-username = "u"
-password = "p"
-[channels.work.outbound]
-host = "h"
-port = 465
-username = "u"
-password = "p"
+[agents.work]
 
-[[channels.work.patterns]]
-name = "mcp-test"
-[channels.work.patterns.rules]
-
-[[channels.work.patterns.mcps]]
+[[agents.work.mcps]]
 name = "my-remote"
 type = "remote"
 url = "https://mcp.example.com"
-[channels.work.patterns.mcps.oauth]
+[agents.work.mcps.oauth]
 client_id = ""
 client_secret = "secret"
 token_endpoint = "https://idp/token"
@@ -811,24 +691,18 @@ mode = "agent"
     assert!(errors.iter().any(|e| e.path.contains("wecom.corp_secret")));
 }
 
+/// A channel-level `disabled_tools` entry may not be empty.
+///
+/// The fixture lives on the "agents" slot: it is the one channel that is
+/// not a pipe channel, so it is the only place where a channel-level
+/// processing field is still accepted.
 #[test]
 fn test_disabled_tools_empty_entry_fails() {
     let toml = r#"
 [general]
-[channels.work]
-type = "email"
+[channels.agents]
+type = "websocket"
 disabled_tools = ["bash", ""]
-
-[channels.work.inbound]
-host = "h"
-port = 993
-username = "u"
-password = "p"
-[channels.work.outbound]
-host = "h"
-port = 465
-username = "u"
-password = "p"
 
 [agent]
 enabled = true
@@ -843,24 +717,18 @@ mode = "agent"
     );
 }
 
+/// A channel-level `disabled_mcps` entry may not be empty.
+///
+/// The fixture lives on the "agents" slot: it is the one channel that is
+/// not a pipe channel, so it is the only place where a channel-level
+/// processing field is still accepted.
 #[test]
 fn test_disabled_mcps_empty_entry_fails() {
     let toml = r#"
 [general]
-[channels.work]
-type = "email"
+[channels.agents]
+type = "websocket"
 disabled_mcps = ["invoice", ""]
-
-[channels.work.inbound]
-host = "h"
-port = 993
-username = "u"
-password = "p"
-[channels.work.outbound]
-host = "h"
-port = 465
-username = "u"
-password = "p"
 
 [agent]
 enabled = true
@@ -875,32 +743,15 @@ mode = "agent"
     );
 }
 
+/// The agent side is where the processing attributes live — a valid
+/// `disabled_tools` / `disabled_mcps` list passes there.
 #[test]
 fn test_disabled_tools_valid_passes() {
     let toml = r#"
 [general]
-[channels.work]
-type = "email"
+[agents.work]
 disabled_tools = ["bash", "jyc_send_message"]
 disabled_mcps = ["invoice"]
-
-[channels.work.inbound]
-host = "h"
-port = 993
-username = "u"
-password = "p"
-[channels.work.outbound]
-host = "h"
-port = 465
-username = "u"
-password = "p"
-
-[[channels.work.patterns]]
-name = "p1"
-disabled_tools = ["write"]
-disabled_mcps = ["other"]
-
-[channels.work.patterns.rules]
 
 [agent]
 enabled = true
@@ -917,29 +768,14 @@ mode = "agent"
     );
 }
 
+/// The same on the agent's pattern (the agent config is filled into a
+/// pattern, so the per-pattern check is the one that fires).
 #[test]
 fn test_pattern_disabled_tools_empty_entry_fails() {
     let toml = r#"
 [general]
-[channels.work]
-type = "email"
-
-[channels.work.inbound]
-host = "h"
-port = 993
-username = "u"
-password = "p"
-[channels.work.outbound]
-host = "h"
-port = 465
-username = "u"
-password = "p"
-
-[[channels.work.patterns]]
-name = "p1"
+[agents.work]
 disabled_tools = ["bash", ""]
-
-[channels.work.patterns.rules]
 
 [agent]
 enabled = true
@@ -948,7 +784,7 @@ mode = "agent"
     let config = load_config_from_str(toml).unwrap();
     let errors = validate_config(&config, NO_BUILTINS);
     assert!(errors.iter().any(|e| {
-        e.path.contains("patterns[0].disabled_tools") && e.message.contains("must not be empty")
+        e.path.contains("agents.work.disabled_tools") && e.message.contains("must not be empty")
     }));
 }
 
@@ -1405,4 +1241,193 @@ shell = []
         errors.iter().any(|e| e.path == "hooks[2].shell"),
         "got: {errors:?}"
     );
+}
+
+/// An explicit `[channels.<name>]` with type="websocket" is gone: the
+/// synthesized "agents" channel is the only websocket channel in the hub.
+#[test]
+fn test_explicit_websocket_channel_fails() {
+    let toml = r#"
+[channels.local_dev]
+type = "websocket"
+
+[ai]
+mode = "agent"
+"#;
+    let config = load_config_from_str(toml).unwrap();
+    let errors = validate_config(&config, NO_BUILTINS);
+    assert!(
+        errors.iter().any(|e| e.path == "channels.local_dev.type"),
+        "expected channels.local_dev.type error, got: {errors:?}"
+    );
+}
+
+/// A pipe channel carries routing only — every processing attribute on
+/// its patterns is dead configuration and is rejected, whatever its
+/// value (including a value equal to the default).
+///
+/// The table is the full list of the pattern's processing attributes:
+/// a new one that is not listed here would slip through unnoticed.
+#[test]
+fn test_pipe_channel_pattern_processing_attrs_fail() {
+    for (field, value) in [
+        ("live_injection", "true"),
+        ("live_injection", "false"),
+        ("inject_inbound_images", "true"),
+        ("inject_inbound_images", "false"),
+        ("model", "\"anthropic/claude-opus-4-6\""),
+        ("plan_model", "\"anthropic/claude-opus-4-6\""),
+        ("build_model", "\"anthropic/claude-opus-4-6\""),
+        ("small_model", "\"anthropic/claude-opus-4-6\""),
+        ("mode", "\"plan\""),
+        ("skills", "[\"coding-principles\"]"),
+        ("disabled_skills", "[\"coding-principles\"]"),
+        ("mcps", "[]"),
+        ("disabled_tools", "[\"bash\"]"),
+        ("disabled_builtin_tools", "[\"bash\"]"),
+        ("disabled_mcps", "[\"invoice\"]"),
+        ("template", "\"general\""),
+        ("topic_path", "\"/tmp/topic\""),
+        ("access", "{ read = [\"/tmp\"] }"),
+        (
+            "context_strategy",
+            "{ mode = \"sliding_window\", window = 10 }",
+        ),
+        ("reset_compression", "{ mode = \"none\" }"),
+        ("auto_reset_threshold", "10.0"),
+    ] {
+        let toml = format!(
+            r#"
+[channels.work]
+type = "email"
+
+[[channels.work.patterns]]
+name = "p"
+{field} = {value}
+
+[ai]
+mode = "agent"
+"#
+        );
+        let config = load_config_from_str(&toml).unwrap();
+        let errors = validate_config(&config, NO_BUILTINS);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.path == format!("channels.work.patterns[0].{field}")),
+            "expected {field} = {value} to be rejected, got: {errors:?}"
+        );
+    }
+}
+
+/// The same at channel level: a pipe channel's own processing settings
+/// are dead configuration.
+///
+/// The table is the full list of the channel's processing attributes.
+#[test]
+fn test_pipe_channel_level_processing_attrs_fail() {
+    for (field, value) in [
+        ("ai", "{ mode = \"agent\" }"),
+        ("model", "\"anthropic/claude-opus-4-6\""),
+        ("small_model", "\"anthropic/claude-opus-4-6\""),
+        ("skills", "[\"coding-principles\"]"),
+        ("disabled_skills", "[\"coding-principles\"]"),
+        ("disabled_tools", "[\"bash\"]"),
+        ("disabled_mcps", "[\"invoice\"]"),
+        ("mcps", "[]"),
+    ] {
+        let toml = format!(
+            r#"
+[channels.work]
+type = "email"
+{field} = {value}
+
+[ai]
+mode = "agent"
+"#
+        );
+        let config = load_config_from_str(&toml).unwrap();
+        let errors = validate_config(&config, NO_BUILTINS);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.path == format!("channels.work.{field}")),
+            "expected {field} = {value} to be rejected, got: {errors:?}"
+        );
+    }
+}
+
+/// The agent channel is where processing configuration lives — the same
+/// keys are fine there.
+#[test]
+fn test_agent_pattern_processing_attrs_pass() {
+    let toml = r#"
+[agents.jyc]
+model = "anthropic/claude-opus-4-6"
+live_injection = false
+inject_inbound_images = true
+skills = ["coding-principles"]
+template = "general"
+topic_path = "/tmp/topic"
+
+[ai]
+mode = "agent"
+"#;
+    let config = load_config_from_str(toml).unwrap();
+    let errors = validate_config(&config, NO_BUILTINS);
+    assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
+}
+
+/// The "agents" slot is the one websocket channel the hub owns, and the
+/// only channel that is not a pipe channel: it passes validation, and so
+/// do the processing attributes its patterns carry. Dropping either
+/// exemption would reject every real config.
+#[test]
+fn test_agents_websocket_slot_passes() {
+    let toml = r#"
+[channels.agents]
+type = "websocket"
+
+[[channels.agents.patterns]]
+name = "jyc"
+model = "anthropic/claude-opus-4-6"
+skills = ["coding-principles"]
+
+[ai]
+mode = "agent"
+"#;
+    let config = load_config_from_str(toml).unwrap();
+    let errors = validate_config(&config, NO_BUILTINS);
+    assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
+}
+
+/// The routing keys a pipe pattern does carry stay legal: the rule
+/// rejects processing attributes, not the routing of a message.
+#[test]
+fn test_pipe_channel_pattern_routing_attrs_pass() {
+    let toml = r#"
+[channels.work]
+type = "email"
+
+[[channels.work.patterns]]
+name = "p"
+role = "Planner"
+topic_name = "fixed"
+topic_prefix = "pre-"
+
+[channels.work.patterns.attachments]
+enabled = true
+
+[channels.work.patterns.rules]
+subject = { prefix = ["[ops]"] }
+
+[channels.work.patterns.pipe]
+agent = "jin"
+
+[ai]
+mode = "agent"
+"#;
+    let config = load_config_from_str(toml).unwrap();
+    let errors = validate_config(&config, NO_BUILTINS);
+    assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
 }

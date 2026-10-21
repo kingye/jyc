@@ -445,9 +445,10 @@ inject a `template`; the agent initializes its own topic directory by following
 an init skill. Skills are discovered from the layered skill roots, so
 `{data dir}/skills/<name>/SKILL.md` is visible to every topic — that is where the
 init skill belongs. Note that per-pattern `skills`, `mode`, and `attachments`
-settings on GitHub/Gitee patterns stop applying (the agent channel's patterns
-are matched at route time), same as the other pipe-only channels. The `template`
-machinery itself stays for wecom.
+settings on GitHub/Gitee patterns are rejected by config validation (the agent
+channel's patterns are matched at route time), same as the other pipe-only
+channels: a pipe channel carries routing only, and processing configuration
+belongs to the agent. The `template` machinery itself stays for wecom.
 
 Two ready-made skills ship in `skills/`; copy them into `{data dir}/skills/`:
 

@@ -15,33 +15,18 @@ Unlike the old standalone `jyc local` command, the websocket channel is a first-
 
 ## Configuration
 
+The websocket channel is not configured directly: it is synthesized from the
+agent set, and an explicit `[channels.<name>]` with `type = "websocket"` is
+rejected by config validation. Declare agents instead — every
+`[agents.<name>]` entry becomes one pattern on the synthesized "agents"
+channel, its name being the agent name:
+
 ```toml
-[channels.my_ws]
-type = "websocket"
-
-# Optional: override model for this channel
-# model = "anthropic/claude-opus-4-6"
-# small_model = "deepseek/deepseek-v4-flash"
-
-# Define patterns for the chat pane (first enabled is the default)
-[[channels.my_ws.patterns]]
-name = "general"
-enabled = true
+[agents.my_agent]
+model = "anthropic/claude-opus-4-6"
 ```
 
-### Required Fields
-
-| Field | Description |
-|-------|-------------|
-| `type` | Must be `"websocket"` |
-
-### Optional Fields
-
-| Field | Description |
-|-------|-------------|
-| `model` | Per-channel model override |
-| `small_model` | Per-channel small model override |
-| `patterns` | Pattern rules (first enabled pattern is the default) |
+See [agents.md](agents.md) for the agent fields.
 
 ### Prerequisites
 
@@ -287,29 +272,26 @@ token links, which remain reserved for files the agent explicitly
 publishes via `jyc_publish_file`.
 
 Pipe reply forwarders (e.g. feishu patterns with
-`pipe = { channel = "local_dev", topic = "..." }`) consume the same
+`pipe = { agent = "my_agent", topic = "..." }`) consume the same
 `attachments` array: each file is fetched from the files endpoint,
 checked against `[attachments.outbound]`, and re-uploaded to the source
 chat (images as image messages, everything else as file messages).
 
 A pipe target has two independent knobs:
 
-- `pattern` — names a pattern on this channel whose config (`topic_path`,
-  template, skills, model) applies to the piped message;
+- `agent` — names the agent whose configuration (`topic_path`, template,
+  skills, model) applies to the piped message;
 - `topic` — the topic name, which may embed the runtime placeholder
   `${msg.chat_name}`, resolved per message from the source channel's
   chat-name metadata (sanitized for filesystem use).
 
-`topic` defaults to `pattern` when omitted, so
-`pipe = { channel = "local_dev", pattern = "jyc" }` is shorthand for
-`pattern = "jyc", topic = "jyc"`. The full dynamic form
-`pipe = { channel = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }`
+The full dynamic form
+`pipe = { agent = "my_agent", topic = "${msg.chat_name}" }`
 lets one feishu `mentions` pattern route each group chat to its own topic
-here while sharing the `group_chat` pattern's config. Unlike load-time
+here while sharing the agent's config. Unlike load-time
 `${ENV_VAR}` expansion, the `msg.` namespace is resolved at runtime per
 message. Messages lacking a chat name (e.g. P2P chats) are dropped with a
-warning when the placeholder is used; a `pattern` naming no enabled pattern
-on this channel falls back to topic-name matching with a warning.
+warning when the placeholder is used.
 
 ## Architecture
 
@@ -399,13 +381,12 @@ This enables completely isolated conversation contexts, skills, and file systems
 
 ## Pattern Matching
 
-WebSocket input bypasses complex pattern rules. The matcher always selects the **first enabled pattern** from the channel's pattern list. Patterns serve as entry points for the chat pane — the user explicitly selects which pattern (and thus which configuration) to use.
+WebSocket input bypasses complex pattern rules. The matcher always selects the **first enabled pattern** from the channel's pattern list — with agents, that is the first agent. Patterns serve as entry points for the chat pane — the user explicitly selects which pattern (and thus which configuration) to use.
 
 ```toml
-# First enabled pattern is the default in the chat pane
-[[channels.my_ws.patterns]]
-name = "general"
-enabled = true
+# One entry per agent — the chat pane lists them all, the first one is
+# the default
+[agents.general]
 ```
 
 ## Model Override Resolution

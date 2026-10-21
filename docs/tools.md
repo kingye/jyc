@@ -370,20 +370,24 @@ the optional `scopes` / `redirect_uri` fields.
 
 ## Tool Exclusion
 
-Tools can be disabled at channel, pattern and topic levels.
+Tools can be disabled at agent and topic levels. A pipe channel (email,
+feishu, …) only forwards, so its own `disabled_tools` / `disabled_mcps`
+are rejected by config validation — the exclusions belong to the agent
+that handles the message.
 
 ### Configuration
 
 ```toml
-[channels.email]
-type = "email"
-# Disable tools for ALL patterns in this channel
+[agents.jyc]
+# Disable tools for every topic of this agent
 disabled_tools = ["bash", "write"]
 disabled_mcps = ["my-mcp-server"]
+```
 
-[[channels.email.patterns]]
-name = "readonly"
-# Additional exclusions merged with channel-level (additive)
+Per-topic exclusions live in the topic's own `.jyc/config.toml`:
+
+```toml
+# <topic>/.jyc/config.toml
 disabled_tools = ["edit"]
 disabled_mcps = []
 ```
@@ -392,52 +396,47 @@ disabled_mcps = []
 
 | Field | Scope | Description |
 |-------|-------|-------------|
-| `disabled_tools` | Channel / Pattern | List of tool names to remove. Matches built-in tools, MCP bridge tools, and external MCP tools by registration name. **External MCP tools can also be targeted as `server_name/tool_name` for precise exclusion when multiple servers provide the same tool name.** |
-| `disabled_mcps` | Channel / Pattern | List of MCP server names to skip during tool loading. **Renamed from `disabled_mcp_servers`; the old key is still accepted.** |
-| `disabled_builtin_tools` | Pattern only | **Backward-compatible alias.** Merged into `disabled_tools` for built-in tool names. |
+| `disabled_tools` | Agent / Topic | List of tool names to remove. Matches built-in tools, MCP bridge tools, and external MCP tools by registration name. **External MCP tools can also be targeted as `server_name/tool_name` for precise exclusion when multiple servers provide the same tool name.** |
+| `disabled_mcps` | Agent / Topic | List of MCP server names to skip during tool loading. **Renamed from `disabled_mcp_servers`; the old key is still accepted.** |
+| `disabled_builtin_tools` | Agent only | **Backward-compatible alias.** Merged into `disabled_tools` for built-in tool names. |
 | `disabled_tools` | Topic (L3) | Same list in the topic's own `.jyc/config.toml` — where a subagent type's `disabled_tools` lands, so a spawned role can be bounded structurally (e.g. `["write", "edit", "jyc_spawn_subagent"]` for the `review` role) instead of by instruction. Only the tools listed are affected: `bash` is a shell and can still write, so a role that keeps it (a reviewer needs `git diff`) leans on plan mode and its instructions for the rest. |
 
 ### Merge Behavior
 
-Channel-level, pattern-level and topic-level exclusions are **additive** (merged,
+Agent-level and topic-level exclusions are **additive** (merged,
 not overriding):
 
 ```
-Effective disabled_tools = channel.disabled_tools ∪ pattern.disabled_tools ∪ topic.disabled_tools
-Effective disabled_mcps = channel.disabled_mcps ∪ pattern.disabled_mcps
+Effective disabled_tools = agent.disabled_tools ∪ topic.disabled_tools
+Effective disabled_mcps = agent.disabled_mcps ∪ topic.disabled_mcps
 ```
 
 **Validation:** Empty string entries in exclusion lists are rejected at config load time.
 
 ### Examples
 
-**Disable bash globally for a channel:**
+**Disable bash globally for an agent:**
 ```toml
-[channels.github]
-type = "github"
+[agents.jyc]
 disabled_tools = ["bash"]
 ```
 
-**Disable write/edit for a read-only pattern:**
+**Disable write/edit for a read-only topic** (in the topic's `.jyc/config.toml`):
 ```toml
-[[channels.email.patterns]]
-name = "readonly"
 disabled_tools = ["write", "edit"]
 ```
 
 **Disable a specific MCP tool by server:**
 ```toml
-[[channels.email.patterns]]
-name = "selective"
+[agents.jyc]
 disabled_tools = ["jin_public_mcp/product_list"]
 ```
 
 > **Note:** The `server_name/tool_name` format filters MCP tools **before** they are registered. Built-in and bridge tools should always use plain names (e.g. `"bash"`, not `"builtin/bash"`).
 
-**Disable all MCP tools for a pattern:**
+**Disable all MCP tools for an agent:**
 ```toml
-[[channels.email.patterns]]
-name = "no-external"
+[agents.jyc]
 disabled_mcps = ["*"]  # Disables all external MCP servers
 ```
 

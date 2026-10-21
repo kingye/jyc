@@ -168,7 +168,7 @@ pub async fn send_to_topic(
             (
                 p.name.clone(),
                 p.attachments.clone(),
-                p.live_injection,
+                p.live_injection(),
                 p.topic_path
                     .as_ref()
                     .map(|tp| crate::topic_path::resolve_topic_path(tp, target_tm.data_root()))

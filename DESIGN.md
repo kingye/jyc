@@ -27,6 +27,13 @@ JYC is a channel-agnostic AI agent that operates through messaging channels. Use
 > the legacy architecture and apply to the websocket channel synthesized by
 > an agent only.
 >
+> **Config surface:** an explicit `[channels.<name>]` with `type = "websocket"`
+> is rejected — the synthesized "agents" channel is the only websocket channel
+> in the hub. A pipe channel carries routing only (`rules` to match, `pipe` to
+> target); the processing configuration (model, mode, skills, mcps,
+> live_injection, topic_path, template, …) belongs to the agent that handles
+> the message, and config validation rejects those keys on a pipe channel.
+>
 > **Processes:** every pipe-only channel runs in a separate process,
 > `jyc-pipe`, which connects to the hub's websocket endpoint and owns no
 > topics, agents, or core state; the hub (`jyc` serve) claims only the
@@ -855,8 +862,7 @@ When the active model does NOT have `supports_images = true`, `read_image` falls
 ### Configuration
 
 ```toml
-[[channels.my_bot.patterns]]
-name = "my_bot"
+[agents.my_bot]
 inject_inbound_images = true
 
 [agent.providers.deepseek]
@@ -928,9 +934,9 @@ base_url = "https://open.feishu.cn"
 [[channels.feishu_bot.patterns]]
 name = "mention_bot"
 enabled = true
-# Required: pipe into an agent's websocket channel. A matched pattern
-# without `pipe` drops the message with a warning.
-pipe = { channel = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
+# Required: pipe into an agent. A matched pattern without `pipe` drops the
+# message with a warning.
+pipe = { agent = "jin", topic = "${msg.chat_name}" }
 
 [channels.feishu_bot.patterns.rules]
 mentions = ["jyc"]
@@ -1089,8 +1095,7 @@ poll_interval_secs = 60           # Default: 60
 [[channels.my_repo.patterns]]
 name = "planner"
 enabled = true
-role = "Planner"
-template = "github-planner"
+pipe = { agent = "planner" }
 
 [channels.my_repo.patterns.rules]
 github_type = ["issue"]
@@ -1098,8 +1103,7 @@ github_type = ["issue"]
 [[channels.my_repo.patterns]]
 name = "developer"
 enabled = true
-role = "Developer"
-template = "github-developer"
+pipe = { agent = "developer" }
 
 [channels.my_repo.patterns.rules]
 github_type = ["pull_request"]
@@ -1108,11 +1112,24 @@ assignees = ["alice", "bob"]      # Optional: restrict to specific assignees
 [[channels.my_repo.patterns]]
 name = "reviewer"
 enabled = true
-role = "Reviewer"
-template = "github-reviewer"
+pipe = { agent = "reviewer" }
 
 [channels.my_repo.patterns.rules]
 github_type = ["pull_request"]
+
+# The agents carry the topic configuration (a pipe pattern carries
+# routing only).
+[agents.planner]
+role = "Planner"
+template = "github-planner"
+
+[agents.developer]
+role = "Developer"
+template = "github-developer"
+
+[agents.reviewer]
+role = "Reviewer"
+template = "github-reviewer"
 ````
 
 ### Topic Naming
@@ -2933,13 +2950,12 @@ Only the email adapter keeps state: the IMAP mailbox cursor (sequence number +
 processed UIDs), a protocol-level dedup concern. It lives under
 `<data dir>/channels/<channel_name>/.imap/`.
 
-### Per-Pattern Overrides
+### Per-Agent Overrides
 
-Patterns can override global behavior for their matching topics:
+An agent overrides the global behavior for the topics it handles:
 
 ```toml
-[[channels.github.patterns]]
-name = "developer"
+[agents.developer]
 role = "Developer"
 template = "github-developer"
 model = "deepseek/deepseek-v4-flash"           # Override global [agent].model
@@ -2947,6 +2963,14 @@ small_model = "deepseek/deepseek-v4-flash"     # Override global [agent].small_m
 inject_inbound_images = true                   # Auto-inject image attachments
 mcps = ["mcp-a", "mcp-b"]                      # Only these MCP servers; [] = none
 disabled_builtin_tools = ["bash", "write"]     # Remove these built-in tools
+```
+
+The pipe pattern that routes into it carries matching only:
+
+```toml
+[[channels.github.patterns]]
+name = "developer"
+pipe = { agent = "developer" }
 
 [channels.github.patterns.rules]
 github_type = ["pull_request"]
@@ -2960,16 +2984,16 @@ resolver**), every step keyed by the mode the topic is in:
 
 1. `.jyc/<mode>-model-override` file, then the legacy `.jyc/model-override`
 2. Topic-level `[agent]` `plan_model` / `build_model`, then `model`
-3. Pattern-level `plan_model` / `build_model`, then `model`
+3. Agent-level `plan_model` / `build_model`, then `model`
 4. Global `plan_model` / `build_model`, then the channel-over-global `model`
 
 `small_model` has no file layer; the runtime resolves it per turn:
 
 1. Topic-level `[agent] small_model`
-2. Pattern-level `small_model`
-3. Channel-resolved `[agent] small_model` (channel override, else global)
+2. Agent-level `small_model`
+3. Global `[agent] small_model`
 
-**MCP scoping**: When `mcps` is present on a pattern, only those named servers are loaded for matching topics. When `mcps = []`, no MCP servers are loaded (fully restricted). When omitted, the global `[[mcps]]` list is used.
+**MCP scoping**: When `mcps` is present on an agent, only those named servers are loaded for matching topics. When `mcps = []`, no MCP servers are loaded (fully restricted). When omitted, the global `[[mcps]]` list is used.
 
 **Built-in tool disable**: `disabled_builtin_tools` removes named tools from the registry before the agent loop starts. Tool names match `Tool::name()`: `bash`, `write`, `edit`, `grep`, `glob`, `read`, `webfetch`, `read_image`.
 
@@ -3003,22 +3027,17 @@ resolver**), every step keyed by the mode the topic is in:
 
 ## Topic Template
 
-Topic Template allows initializing new topics with predefined files and directories. Templates are defined at the pattern level and applied when a topic is first created.
+Topic Template allows initializing new topics with predefined files and directories. Templates are defined at the agent level and applied when a topic is first created.
 
 ### Configuration
 
-Templates are configured at the pattern level in `config.toml`:
+Templates are configured per agent in `config.toml`:
 
 ```toml
-[channels.my_channel]
-type = "email"
+[agents.urgent]
+template = "urgent"  # Use templates/urgent/ for this agent
 
-[[channels.my_channel.patterns]]
-name = "urgent"
-template = "urgent"  # Use templates/urgent/ for this pattern
-
-[[channels.my_channel.patterns]]
-name = "normal"
+[agents.normal]
 # No template - topic starts empty
 ```
 

@@ -104,9 +104,9 @@ In the dashboard:
 URL: `ws://<addr>/ws/agents/<topic>` (URL-scoped topic, or
 `<topic>` from the WS payload's `topic` field).
 
-## Mapping from legacy `[channels.<name>] type="websocket"`
+## Mapping from the legacy `[channels.<name>] type="websocket"`
 
-OLD (still accepted, deprecation warning at startup):
+OLD (rejected by config validation):
 
 ```toml
 [channels.local_dev]
@@ -120,7 +120,7 @@ skills = ["coding-principles"]
 access = { read = [...], write = [...] }
 ```
 
-NEW (preferred):
+NEW:
 
 ```toml
 [agents.jyc]

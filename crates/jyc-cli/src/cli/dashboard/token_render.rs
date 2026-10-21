@@ -729,8 +729,12 @@ mod tests {
         t.turn_input_tokens = Some(1000);
         let mut spans = Vec::new();
         push_turn_cache_span(&mut spans, &t, MAX_BAR_WIDTH);
-        assert_eq!(spans.len(), 4, "the row is drawn at zero: {spans:?}");
-        assert_eq!(spans[3].content, " 0 / 1000 (0%)");
+        // Three spans: the label, the bar (at 0% it is all dots, with no
+        // filled part) and the figures.
+        assert_eq!(spans.len(), 3, "the row is drawn at zero: {spans:?}");
+        assert_eq!(spans[0].content, padded(CACHE_TURN_LABEL));
+        assert_eq!(spans[1].content, "·".repeat(MAX_BAR_WIDTH));
+        assert_eq!(spans[2].content, " 0 / 1000 (0%)");
     }
 
     /// No cost data (unpriced model) → no row, rather than `$0.00`.

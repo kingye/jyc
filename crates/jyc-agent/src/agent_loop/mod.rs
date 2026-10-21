@@ -205,20 +205,24 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     // appended to the context. Paired with `context_input_tokens` so the
     // two always describe the same call.
     let mut context_output_tokens: u64 = 0;
-    let mut total_input_tokens: u64 = 0;
-    let mut total_output_tokens: u64 = 0;
-    // Sum of every LLM call's prompt-cache-hit tokens in this round.
+    // The session's totals so far: this turn's calls are added on top of
+    // them, so the counters describe the session rather than restarting
+    // at zero every turn.
+    let seed = crate::session::session_token_totals(topic_name, topic_path).await;
+    let mut total_input_tokens: u64 = seed.input;
+    let mut total_output_tokens: u64 = seed.output;
+    // Sum of every LLM call's prompt-cache-hit tokens in the session.
     // Mirrors `total_input_tokens`; zeroed by callers on session reset
     // and surfaced to the dashboard as `total_cache_hit_tokens`.
-    let mut total_cache_hit_tokens: u64 = 0;
+    let mut total_cache_hit_tokens: u64 = seed.cache_hit;
     // Sum of every LLM call's prompt-cache-**creation** (write)
-    // tokens in this round. Anthropic and OpenAI (GPT-5.6+) report
+    // tokens in the session. Anthropic and OpenAI (GPT-5.6+) report
     // writes separately; for every other vendor this stays at `0`.
     // Surfaced to the dashboard as `total_cache_creation_tokens`.
-    let mut total_cache_creation_tokens: u64 = 0;
-    // Sum of every LLM call's reasoning (thinking) tokens in this round.
+    let mut total_cache_creation_tokens: u64 = seed.cache_creation;
+    // Sum of every LLM call's reasoning (thinking) tokens in the session.
     // Informational only — already included in `total_output_tokens`.
-    let mut total_reasoning_tokens: u64 = 0;
+    let mut total_reasoning_tokens: u64 = seed.reasoning;
     let mut reply_delivered = false;
     // Set when a tool handed the user everything they need this turn
     // (`ask_user`'s questions): the loop stops at the end of that batch, since
@@ -441,13 +445,14 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         };
         let call_ms = call_started.elapsed().as_millis() as u64;
 
-        // Track tokens across LLM calls in this round:
+        // Track tokens across LLM calls in this session:
         // - `context_input_tokens` = input tokens from the most recent LLM call
         //   (current context size, since each call sends full context).
         // - `total_input_tokens` / `total_output_tokens` = running sums across
-        //   every call in this round. Each call's `input_tokens` (= full context
-        //   size) is added via `+=`, so `total_input_tokens` also represents the
-        //   lifetime tokens billed as input by the API for this round.
+        //   every call in this session (seeded from the session file above).
+        //   Each call's `input_tokens` (= full context size) is added via `+=`,
+        //   so `total_input_tokens` also represents the lifetime tokens billed
+        //   as input by the API for this session.
         if response.input_tokens > 0 {
             context_input_tokens = response.input_tokens;
             context_output_tokens = response.output_tokens;
@@ -477,7 +482,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         );
 
         // Persist latest token counts to disk so dashboard polls see fresh
-        // data mid-round.
+        // data mid-round. The last two are this call's own cache-hit and
+        // input tokens — the turn-scoped cache pair is accumulated per
+        // call, the way the latency pair is.
         crate::session::persist_tokens(
             topic_name,
             topic_path,
@@ -491,6 +498,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             context_window,
             call_cost,
             call_ms,
+            response.cache_hit_tokens,
+            response.input_tokens,
         )
         .await;
 

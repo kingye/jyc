@@ -62,9 +62,92 @@ pub fn cache_util_pct(cache_hits: Option<u64>, total_input: Option<u64>) -> Opti
     }
 }
 
+/// Format a token count for display: the raw count below 1024, then K
+/// (1024) or M (1024²) with two decimals.
+///
+/// Both surfaces that report token counts — the topic info pane and
+/// `/info` — print them this way, so the same count reads the same in
+/// either place.
+pub fn format_token_count(count: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * 1024;
+    if count >= MIB {
+        format!("{:.2}M", count as f64 / MIB as f64)
+    } else if count >= KIB {
+        format!("{:.2}K", count as f64 / KIB as f64)
+    } else {
+        format!("{count}")
+    }
+}
+
+/// The cache figures of one scope — a turn or a session — as the pane and
+/// `/info` print them: the cache-hit tokens, the total input tokens they
+/// are a share of, and that share in percent, e.g. `"964.51K / 1.18M
+/// (93%)"`.
+///
+/// `None` when the scope has no input tokens yet — there is nothing for
+/// the hits to be a share of — so the caller omits the row rather than
+/// printing a misleading zero.
+pub fn format_cache_rate(cache_hits: Option<u64>, total_input: Option<u64>) -> Option<String> {
+    let total = total_input?;
+    if total == 0 {
+        return None;
+    }
+    let hits = cache_hits.unwrap_or(0);
+    let pct = cache_util_pct(Some(hits), Some(total)).unwrap_or(0);
+    Some(format!(
+        "{} / {} ({pct}%)",
+        format_token_count(hits),
+        format_token_count(total)
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_count_is_raw_below_a_kibibyte() {
+        assert_eq!(format_token_count(0), "0");
+        assert_eq!(format_token_count(999), "999");
+        assert_eq!(format_token_count(1023), "1023");
+    }
+
+    #[test]
+    fn token_count_is_two_decimals_from_a_kibibyte() {
+        assert_eq!(format_token_count(1024), "1.00K");
+        assert_eq!(format_token_count(12288), "12.00K");
+        assert_eq!(format_token_count(987654), "964.51K");
+        assert_eq!(format_token_count(1024 * 1024), "1.00M");
+        assert_eq!(format_token_count(1_234_567), "1.18M");
+    }
+
+    #[test]
+    fn cache_rate_prints_hits_over_input_and_the_share() {
+        assert_eq!(
+            format_cache_rate(Some(300), Some(1000)),
+            Some("300 / 1000 (30%)".to_string())
+        );
+        assert_eq!(
+            format_cache_rate(Some(12288), Some(15360)),
+            Some("12.00K / 15.00K (80%)".to_string())
+        );
+    }
+
+    /// A scope with input but no recorded hits still reports its share.
+    #[test]
+    fn cache_rate_counts_missing_hits_as_zero() {
+        assert_eq!(
+            format_cache_rate(None, Some(1000)),
+            Some("0 / 1000 (0%)".to_string())
+        );
+    }
+
+    #[test]
+    fn cache_rate_needs_input_tokens() {
+        assert_eq!(format_cache_rate(Some(300), None), None);
+        assert_eq!(format_cache_rate(Some(300), Some(0)), None);
+    }
 
     #[test]
     fn context_tokens_is_input_plus_output() {

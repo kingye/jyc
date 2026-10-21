@@ -577,6 +577,9 @@ fn topic_detail_for(name: &str, channel: &str) -> jyc_types::TopicInfo {
         total_cache_hit_tokens: None,
         total_cache_creation_tokens: None,
         total_reasoning_tokens: None,
+        turn_cache_hit_tokens: None,
+        turn_input_tokens: None,
+        today_all: Vec::new(),
         avg_call_ms: None,
         call_count: None,
         avg_turn_call_ms: None,
@@ -680,6 +683,9 @@ fn files_section_colors_uncommitted_paths_yellow() {
         total_cache_hit_tokens: None,
         total_cache_creation_tokens: None,
         total_reasoning_tokens: None,
+        turn_cache_hit_tokens: None,
+        turn_input_tokens: None,
+        today_all: Vec::new(),
         avg_call_ms: None,
         call_count: None,
         avg_turn_call_ms: None,
@@ -934,6 +940,9 @@ fn info_scroll_is_clamped_after_render() {
         total_cache_hit_tokens: None,
         total_cache_creation_tokens: None,
         total_reasoning_tokens: None,
+        turn_cache_hit_tokens: None,
+        turn_input_tokens: None,
+        today_all: Vec::new(),
         avg_call_ms: None,
         call_count: None,
         avg_turn_call_ms: None,
@@ -1819,6 +1828,9 @@ fn info_pane_app(tasks: jyc_types::task::TaskList) -> App {
         total_cache_hit_tokens: None,
         total_cache_creation_tokens: None,
         total_reasoning_tokens: None,
+        turn_cache_hit_tokens: None,
+        turn_input_tokens: None,
+        today_all: Vec::new(),
         avg_call_ms: None,
         call_count: None,
         avg_turn_call_ms: None,
@@ -2312,6 +2324,9 @@ fn info_pane_end_reaches_the_last_wrapped_row() {
         total_cache_hit_tokens: None,
         total_cache_creation_tokens: None,
         total_reasoning_tokens: None,
+        turn_cache_hit_tokens: None,
+        turn_input_tokens: None,
+        today_all: Vec::new(),
         avg_call_ms: None,
         call_count: None,
         avg_turn_call_ms: None,
@@ -2895,8 +2910,8 @@ fn info_pane_bar(filled: usize, width: usize) -> String {
 }
 
 /// The width every label of the info pane is padded to — the length of
-/// the longest one, "Cache hit rate: ".
-const INFO_PANE_LABEL_WIDTH: usize = 16;
+/// the longest one, "Cache (session): ".
+const INFO_PANE_LABEL_WIDTH: usize = 17;
 
 /// The label of a pane row, padded to the width every label of the pane
 /// shares so that every value starts in the same column. Pinned on
@@ -2963,7 +2978,7 @@ fn info_pane_draws_the_percentage_bars() {
     // 47% of the window, 88% of the input served from the cache.
     assert!(
         pane.contains(&format!(
-            "{}{} 47500 / 100000 (47%)",
+            "{}{} 46.39K / 97.66K (47%)",
             info_pane_label("Tokens: "),
             info_pane_bar(9, 20)
         )),
@@ -2971,11 +2986,11 @@ fn info_pane_draws_the_percentage_bars() {
     );
     assert!(
         pane.contains(&format!(
-            "{}{} 88%",
-            info_pane_label("Cache hit rate: "),
+            "{}{} 78.24K / 88.19K (88%)",
+            info_pane_label("Cache (session): "),
             info_pane_bar(18, 20)
         )),
-        "the cache hit rate row must lead with its bar:\n{pane}"
+        "the cache row must lead with its bar:\n{pane}"
     );
 }
 
@@ -3004,7 +3019,7 @@ fn info_pane_bar_fits_a_narrow_pane() {
         "the bar must stay whole in a narrow pane:\n{pane}"
     );
     assert!(
-        info_pane_value_row(&rows, "Cache hit rate:").starts_with(&info_pane_bar(18, 20)),
+        info_pane_value_row(&rows, "Cache (session):").starts_with(&info_pane_bar(18, 20)),
         "the bar must stay whole in a narrow pane:\n{pane}"
     );
 }
@@ -3161,12 +3176,11 @@ fn info_pane_aligns_every_value_in_one_column() {
     let rows = info_pane_rows(&pane);
     for (label, value) in [
         ("Topic: ", "jyc"),
-        ("Channel: ", "local_dev"),
         ("Pattern: ", "jyc"),
         ("Model: ", "minimax/Minimax-M3"),
         ("Mode: ", "build"),
         ("Status: ", "Idle"),
-        ("Output: ", "1234"),
+        ("Output: ", "1.21K"),
     ] {
         let row = rows
             .iter()
@@ -3191,11 +3205,7 @@ fn info_pane_stacks_the_value_under_its_label() {
     // table layout.
     let pane = info_pane_text(&mut app, 30, 40);
     let rows = info_pane_rows(&pane);
-    for (label, value) in [
-        ("Topic:", "jyc"),
-        ("Channel:", "local_dev"),
-        ("Status:", "Idle"),
-    ] {
+    for (label, value) in [("Topic:", "jyc"), ("Status:", "Idle")] {
         assert!(
             rows.iter().any(|r| r == label),
             "the label {label:?} must take a row of its own:\n{pane}"
@@ -3209,7 +3219,7 @@ fn info_pane_stacks_the_value_under_its_label() {
 }
 
 /// The layout switches at one width, and the whole pane switches with
-/// it: 33 inner cells still stack, 34 fit the table.
+/// it: 34 inner cells still stack, 35 fit the table.
 #[test]
 fn info_pane_switches_layout_at_the_threshold() {
     let mut app = info_pane_app(Default::default());
@@ -3227,9 +3237,9 @@ fn info_pane_switches_layout_at_the_threshold() {
         "a narrow pane must not lay its rows out as a table:\n{pane}"
     );
 
-    // 35 columns wide: the inner width is 34 — the table layout, label
+    // 36 columns wide: the inner width is 35 — the table layout, label
     // and value on one row.
-    let pane = info_pane_text(&mut app, 35, 40);
+    let pane = info_pane_text(&mut app, 36, 40);
     let rows = info_pane_rows(&pane);
     assert!(
         rows.iter().any(|r| r == &info_pane_topic_row()),

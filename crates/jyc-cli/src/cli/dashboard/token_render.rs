@@ -17,9 +17,12 @@ use ratatui::text::Span;
 /// The label of the token-usage row.
 const TOKENS_LABEL: &str = "Tokens: ";
 
-/// The label of the cache-hit-rate row — the longest label of the pane,
+/// The label of the latest turn's cache row.
+const CACHE_TURN_LABEL: &str = "Cache (turn): ";
+
+/// The label of the session's cache row — the longest label of the pane,
 /// so it sets the width every other label is padded to.
-const CACHE_HIT_RATE_LABEL: &str = "Cache hit rate: ";
+const CACHE_SESSION_LABEL: &str = "Cache (session): ";
 
 /// The width every label of the info pane is padded to, so that every
 /// value in the pane starts in the same column and the pane reads as one
@@ -29,7 +32,7 @@ const CACHE_HIT_RATE_LABEL: &str = "Cache hit rate: ";
 ///
 /// A label longer than this pushes its own value out of the column —
 /// raise it when a longer label arrives.
-const LABEL_WIDTH: usize = CACHE_HIT_RATE_LABEL.len();
+const LABEL_WIDTH: usize = CACHE_SESSION_LABEL.len();
 
 /// The room a bar leaves for its row: the padded label, plus one cell so
 /// the bar never touches the pane's edge. The space between the bar and
@@ -169,7 +172,11 @@ pub(super) fn push_tokens_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_cells: 
         let pct = context_pct(t).unwrap_or(0);
         spans.push(label_span(TOKENS_LABEL));
         push_bar_spans(spans, pct, bar_cells);
-        let figures = format!("{used} / {max} ({pct}%)");
+        let figures = format!(
+            "{} / {} ({pct}%)",
+            jyc_types::format_token_count(used),
+            jyc_types::format_token_count(max)
+        );
         spans.push(Span::raw(if bar_cells > 0 {
             format!(" {figures}")
         } else {
@@ -183,32 +190,7 @@ pub(super) fn push_tokens_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_cells: 
 pub(super) fn push_output_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     if let Some(out) = t.output_tokens {
         spans.push(label_span("Output: "));
-        spans.push(Span::raw(format!("{out}")));
-    }
-}
-
-/// Append the "Total input: N" row to `spans`. Pushes nothing when
-/// `total_input_tokens` is missing. Distinct from `push_tokens_span`
-/// (which shows the current context size); this shows the lifetime sum
-/// across all LLM calls in the session.
-pub(super) fn push_total_input_span(spans: &mut Vec<Span>, t: &TopicInfo) {
-    if let Some(total) = t.total_input_tokens {
-        spans.push(label_span("Total input: "));
-        spans.push(Span::raw(format!("{total}")));
-    }
-}
-
-/// Append the "Cache hits: N" row to `spans`. Pushes nothing when
-/// `total_cache_hit_tokens` is missing. Mirrors `push_total_input_span`
-/// but for prompt-cache hits — the running sum of every LLM call's
-/// cache-hit tokens (= tokens served from the provider's prompt cache
-/// rather than re-billed as fresh input). Not shown in the dashboard
-/// overview list — only the chat info pane and dashboard topic info
-/// area call this.
-pub(super) fn push_cache_hit_span(spans: &mut Vec<Span>, t: &TopicInfo) {
-    if let Some(cache_hit) = t.total_cache_hit_tokens {
-        spans.push(label_span("Cache hits: "));
-        spans.push(Span::raw(format!("{cache_hit}")));
+        spans.push(Span::raw(jyc_types::format_token_count(out)));
     }
 }
 
@@ -216,51 +198,69 @@ pub(super) fn push_cache_hit_span(spans: &mut Vec<Span>, t: &TopicInfo) {
 /// `total_cache_creation_tokens` is missing. Only Anthropic and GPT-5.6
 /// (`cache_write_tokens`) report writes separately from reads; for every
 /// other vendor this stays `None` and the row never renders. Sits next to
-/// [`push_cache_hit_span`] in the chat info pane and dashboard topic
-/// info area so users with cache-heavy Anthropic workflows can see
-/// the write volume that the cache-creation premium rate applies to.
+/// the cache rows in the chat info pane and dashboard topic info area so
+/// users with cache-heavy Anthropic workflows can see the write volume
+/// that the cache-creation premium rate applies to.
 pub(super) fn push_cache_creation_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     if let Some(cache_creation) = t.total_cache_creation_tokens {
         spans.push(label_span("Cache create: "));
-        spans.push(Span::raw(format!("{cache_creation}")));
+        spans.push(Span::raw(jyc_types::format_token_count(cache_creation)));
     }
 }
 
-/// Compute the cache hit rate for a topic: cache-hit tokens as a share of
-/// total input tokens (`total_input_tokens` already includes the cache-hit
-/// portion, so it is the correct denominator). Returns `None` when either
-/// bound is missing or `total` is zero. The figure itself comes from the
-/// shared helper, so `/info` prints the same percentage.
+/// Append a cache-rate row: the cache-hit tokens, the input tokens they
+/// are a share of, and that share — with the share drawn as a bar of
+/// `bar_cells` cells. The label is padded to the pane's label width, so
+/// the bar starts in the column every other value starts in. Pushes
+/// nothing when the scope has no input tokens yet (e.g. a turn that has
+/// made no call), so such topics show no row rather than a misleading 0%.
 ///
-/// The helper is named after the older "cache util" wording; cache util
-/// and cache hit rate are the same number.
-pub(super) fn cache_util_pct(t: &TopicInfo) -> Option<u32> {
-    jyc_types::cache_util_pct(t.total_cache_hit_tokens, t.total_input_tokens)
+/// The figures come from the shared helper, so `/info` prints the same
+/// string.
+fn push_cache_rate_row(
+    spans: &mut Vec<Span>,
+    label: &str,
+    cache_hits: Option<u64>,
+    total_input: Option<u64>,
+    bar_cells: usize,
+) {
+    let Some(figures) = jyc_types::format_cache_rate(cache_hits, total_input) else {
+        return;
+    };
+    let pct = jyc_types::cache_util_pct(cache_hits, total_input).unwrap_or(0);
+    spans.push(label_span(label));
+    push_bar_spans(spans, pct, bar_cells);
+    spans.push(Span::raw(if bar_cells > 0 {
+        format!(" {figures}")
+    } else {
+        figures
+    }));
 }
 
-/// Append the "Cache hit rate: <bar> Z%" row to `spans`, the bar being
-/// `bar_cells` cells wide. The label is padded to the pane's label
-/// width, so the bar starts in the column every other value starts in.
-/// Pushes nothing when cache-hit or total-input data is missing (e.g.
-/// providers without prompt caching), so such topics show no row rather
-/// than a misleading 0%. Sits next to [`push_cache_hit_span`] /
-/// [`push_cache_creation_span`] in the chat info pane and dashboard topic
-/// info area.
-///
-/// The row used to read "Cache util"; "cache util" and "cache hit rate"
-/// are the same figure — see [`cache_util_pct`] and
-/// `jyc_types::cache_util_pct`.
-pub(super) fn push_cache_utilization_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_cells: usize) {
-    if let Some(pct) = cache_util_pct(t) {
-        spans.push(label_span(CACHE_HIT_RATE_LABEL));
-        push_bar_spans(spans, pct, bar_cells);
-        let figures = format!("{pct}%");
-        spans.push(Span::raw(if bar_cells > 0 {
-            format!(" {figures}")
-        } else {
-            figures
-        }));
-    }
+/// Append the "Cache (turn): <bar> hits / input (Z%)" row — the cache
+/// figures of the latest turn, so a long turn's own cache rate is
+/// visible next to the session's.
+pub(super) fn push_turn_cache_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_cells: usize) {
+    push_cache_rate_row(
+        spans,
+        CACHE_TURN_LABEL,
+        t.turn_cache_hit_tokens,
+        t.turn_input_tokens,
+        bar_cells,
+    );
+}
+
+/// Append the "Cache (session): <bar> hits / input (Z%)" row — the
+/// cache-hit tokens of every LLM call in the session and the input
+/// tokens they are a share of.
+pub(super) fn push_session_cache_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_cells: usize) {
+    push_cache_rate_row(
+        spans,
+        CACHE_SESSION_LABEL,
+        t.total_cache_hit_tokens,
+        t.total_input_tokens,
+        bar_cells,
+    );
 }
 
 /// Append the "Reasoning: N" row to `spans`. Pushes nothing when the
@@ -271,7 +271,7 @@ pub(super) fn push_reasoning_span(spans: &mut Vec<Span>, t: &TopicInfo) {
         && reasoning > 0
     {
         spans.push(label_span("Reasoning: "));
-        spans.push(Span::raw(format!("{reasoning}")));
+        spans.push(Span::raw(jyc_types::format_token_count(reasoning)));
     }
 }
 
@@ -291,6 +291,16 @@ pub(super) fn push_cost_span(spans: &mut Vec<Span>, t: &TopicInfo) {
             format_amount(c.session, &c.currency),
             format_amount(c.today, &c.currency),
         )));
+    }
+}
+
+/// Append the "Today (all): $X" row to `spans` — the day's spend across
+/// every topic, per currency. Pushes nothing when the day's ledger holds
+/// no entry, so the row never shows a misleading zero.
+pub(super) fn push_today_all_span(spans: &mut Vec<Span>, t: &TopicInfo) {
+    if let Some(totals) = jyc_types::format_currency_totals(&t.today_all) {
+        spans.push(label_span("Today (all): "));
+        spans.push(Span::raw(totals));
     }
 }
 
@@ -372,6 +382,9 @@ mod tests {
             total_cache_hit_tokens: cache_hit,
             total_cache_creation_tokens: cache_creation,
             total_reasoning_tokens: None,
+            turn_cache_hit_tokens: None,
+            turn_input_tokens: None,
+            today_all: Vec::new(),
             avg_call_ms: None,
             call_count: None,
             avg_turn_call_ms: None,
@@ -438,7 +451,7 @@ mod tests {
         assert_eq!(spans[0].content, padded(TOKENS_LABEL));
         assert_eq!(spans[1].content, "─".repeat(9));
         assert_eq!(spans[2].content, "·".repeat(11));
-        assert_eq!(spans[3].content, " 4750 / 10000 (47%)");
+        assert_eq!(spans[3].content, " 4.64K / 9.77K (47%)");
     }
 
     /// A pane too narrow for an honest bar gets the figures alone — no
@@ -452,10 +465,10 @@ mod tests {
         push_tokens_span(&mut spans, &t, 0);
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content, padded(TOKENS_LABEL));
-        assert_eq!(spans[1].content, "4750 / 10000 (47%)");
+        assert_eq!(spans[1].content, "4.64K / 9.77K (47%)");
     }
 
-    /// The two percentage rows share one bar width and one label width, so
+    /// The two cache rows share one bar width and one label width, so
     /// their bars start in the same column and their shares can be compared
     /// by eye.
     #[test]
@@ -464,11 +477,11 @@ mod tests {
         let mut tokens = Vec::new();
         push_tokens_span(&mut tokens, &t, MAX_BAR_WIDTH);
         let mut cache = Vec::new();
-        push_cache_utilization_span(&mut cache, &t, MAX_BAR_WIDTH);
+        push_session_cache_span(&mut cache, &t, MAX_BAR_WIDTH);
         // The labels are the same width, and the bars follow them directly.
         assert_eq!(tokens[0].content.len(), cache[0].content.len());
-        assert_eq!(tokens[0].content.len(), CACHE_HIT_RATE_LABEL.len());
-        assert_eq!(cache[0].content, CACHE_HIT_RATE_LABEL);
+        assert_eq!(tokens[0].content.len(), CACHE_SESSION_LABEL.len());
+        assert_eq!(cache[0].content, CACHE_SESSION_LABEL);
     }
 
     /// Every label of the pane is padded to the same width, so every
@@ -478,7 +491,6 @@ mod tests {
     fn every_label_is_padded_to_the_same_width() {
         for label in [
             "Topic: ",
-            "Channel: ",
             "Pattern: ",
             "Model: ",
             "Mode: ",
@@ -486,12 +498,12 @@ mod tests {
             "Status: ",
             TOKENS_LABEL,
             "Output: ",
-            "Total input: ",
-            "Cache hits: ",
-            CACHE_HIT_RATE_LABEL,
+            CACHE_TURN_LABEL,
+            CACHE_SESSION_LABEL,
             "Cache create: ",
             "Reasoning: ",
             "Cost: ",
+            "Today (all): ",
             "Latency: ",
         ] {
             let span = label_span(label);
@@ -509,17 +521,15 @@ mod tests {
     /// honest bar gets none.
     #[test]
     fn bar_width_follows_the_pane() {
-        // The table layout: the longest label ("Cache hit rate: ", 16
+        // The table layout: the longest label ("Cache (session): ", 17
         // cells) plus the one cell the bar keeps to itself at the pane's
         // edge.
-        assert_eq!(bar_width(39, PaneLayout::Table), MAX_BAR_WIDTH);
-        assert_eq!(bar_width(37, PaneLayout::Table), MAX_BAR_WIDTH);
-        assert_eq!(bar_width(36, PaneLayout::Table), MAX_BAR_WIDTH - 1);
-        assert_eq!(bar_width(23, PaneLayout::Table), 6);
-        // The narrowest bar still worth drawing.
-        assert_eq!(bar_width(22, PaneLayout::Table), MIN_BAR_WIDTH);
+        assert_eq!(bar_width(38, PaneLayout::Table), MAX_BAR_WIDTH);
+        assert_eq!(bar_width(37, PaneLayout::Table), 19);
+        assert_eq!(bar_width(36, PaneLayout::Table), 18);
+        assert_eq!(bar_width(23, PaneLayout::Table), MIN_BAR_WIDTH);
         // Below that a cell would carry too much of the share to be honest.
-        assert_eq!(bar_width(21, PaneLayout::Table), 0);
+        assert_eq!(bar_width(22, PaneLayout::Table), 0);
         assert_eq!(bar_width(17, PaneLayout::Table), 0);
         assert_eq!(bar_width(16, PaneLayout::Table), 0);
         assert_eq!(bar_width(0, PaneLayout::Table), 0);
@@ -552,8 +562,8 @@ mod tests {
     fn the_layout_switches_at_the_table_threshold() {
         assert_eq!(layout_for(TABLE_MIN_INNER_WIDTH), PaneLayout::Table);
         assert_eq!(layout_for(TABLE_MIN_INNER_WIDTH - 1), PaneLayout::Stacked);
-        assert_eq!(layout_for(34), PaneLayout::Table);
-        assert_eq!(layout_for(33), PaneLayout::Stacked);
+        assert_eq!(layout_for(35), PaneLayout::Table);
+        assert_eq!(layout_for(34), PaneLayout::Stacked);
         // A pane of any width at all still gets a layout.
         assert_eq!(layout_for(0), PaneLayout::Stacked);
     }
@@ -624,43 +634,55 @@ mod tests {
         assert_eq!(spans[1].content, "420");
     }
 
+    /// The session's cache row: the cache-hit tokens, the input tokens
+    /// they are a share of, and that share — with the share as a bar.
     #[test]
-    fn push_total_input_span_omits_when_missing() {
-        let t = info_with(Some(100), Some(10000), Some(50), None, None, None);
+    fn push_session_cache_span_writes_label_bar_and_value() {
+        let t = info_with(None, None, None, Some(720), Some(640), None);
         let mut spans = Vec::new();
-        push_total_input_span(&mut spans, &t);
+        push_session_cache_span(&mut spans, &t, MAX_BAR_WIDTH);
+        assert_eq!(spans.len(), 4);
+        assert_eq!(spans[0].content, padded(CACHE_SESSION_LABEL));
+        assert_eq!(spans[1].content, "─".repeat(18));
+        assert_eq!(spans[2].content, "·".repeat(2));
+        assert_eq!(spans[3].content, " 640 / 720 (88%)");
+    }
+
+    /// A session without input tokens has nothing to be a share of: no
+    /// row, rather than a misleading 0%.
+    #[test]
+    fn push_session_cache_span_omits_when_missing() {
+        let t = info_with(None, None, None, None, None, None);
+        let mut spans = Vec::new();
+        push_session_cache_span(&mut spans, &t, MAX_BAR_WIDTH);
         assert!(spans.is_empty());
     }
 
+    /// The turn's cache row carries the turn's own figures, so a long
+    /// turn's rate stands next to the session's.
     #[test]
-    fn push_total_input_span_writes_label_and_value() {
-        let t = info_with(Some(100), Some(10000), Some(50), Some(720), None, None);
+    fn push_turn_cache_span_writes_the_turns_figures() {
+        let mut t = info_with(None, None, None, Some(720), Some(640), None);
+        t.turn_cache_hit_tokens = Some(300);
+        t.turn_input_tokens = Some(1000);
         let mut spans = Vec::new();
-        push_total_input_span(&mut spans, &t);
-        assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].content, padded("Total input: "));
-        assert_eq!(spans[1].content, "720");
+        push_turn_cache_span(&mut spans, &t, MAX_BAR_WIDTH);
+        assert_eq!(spans.len(), 4);
+        assert_eq!(spans[0].content, padded(CACHE_TURN_LABEL));
+        assert_eq!(spans[3].content, " 300 / 1000 (30%)");
     }
 
+    /// A turn that has made no call yet has no row — the pair is zeroed
+    /// at every turn start.
     #[test]
-    fn push_cache_hit_span_omits_when_missing() {
-        let t = info_with(Some(100), Some(10000), Some(50), Some(720), None, None);
+    fn push_turn_cache_span_omits_before_the_first_call() {
+        let t = info_with(None, None, None, Some(720), Some(640), None);
         let mut spans = Vec::new();
-        push_cache_hit_span(&mut spans, &t);
+        push_turn_cache_span(&mut spans, &t, MAX_BAR_WIDTH);
         assert!(spans.is_empty());
     }
 
-    #[test]
-    fn push_cache_hit_span_writes_label_and_value() {
-        let t = info_with(Some(100), Some(10000), Some(50), Some(720), Some(640), None);
-        let mut spans = Vec::new();
-        push_cache_hit_span(&mut spans, &t);
-        assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].content, padded("Cache hits: "));
-        assert_eq!(spans[1].content, "640");
-    }
-
-    /// No cost data (unpriced model) → no row, rather than `$0.0000`.
+    /// No cost data (unpriced model) → no row, rather than `$0.00`.
     #[test]
     fn push_cost_span_omits_when_no_cost() {
         let t = info_with(Some(100), Some(10000), Some(50), Some(720), Some(640), None);
@@ -682,7 +704,7 @@ mod tests {
         push_cost_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content, padded("Cost: "));
-        assert_eq!(spans[1].content, "$0.0521 session · $1.3057 today");
+        assert_eq!(spans[1].content, "$0.05 session · $1.31 today");
     }
 
     /// CNY renders with `¥`, not a dollar sign.
@@ -696,7 +718,7 @@ mod tests {
         });
         let mut spans = Vec::new();
         push_cost_span(&mut spans, &t);
-        assert_eq!(spans[1].content, "¥2.5000 session · ¥10.0000 today");
+        assert_eq!(spans[1].content, "¥2.50 session · ¥10.00 today");
     }
 
     /// An unrecognised currency is suffixed rather than given the wrong
@@ -711,25 +733,34 @@ mod tests {
         });
         let mut spans = Vec::new();
         push_cost_span(&mut spans, &t);
-        assert_eq!(
-            spans[1].content,
-            "1.0000 mixed session · 2.0000 mixed today"
-        );
+        assert_eq!(spans[1].content, "1.00 mixed session · 2.00 mixed today");
     }
 
-    /// Sub-cent costs must not round away to zero — the reason for four
-    /// decimal places.
+    /// The day's spend across every topic, per currency: one figure for a
+    /// single-currency day, one per currency when the day spans two.
     #[test]
-    fn push_cost_span_keeps_sub_cent_precision() {
+    fn push_today_all_span_writes_the_days_totals() {
         let mut t = info_with(None, None, None, None, None, None);
-        t.cost = Some(jyc_types::TopicCost {
-            session: 0.0003,
-            today: 0.0007,
-            currency: "USD".into(),
-        });
+        t.today_all = vec![("USD".to_string(), 12.34)];
         let mut spans = Vec::new();
-        push_cost_span(&mut spans, &t);
-        assert_eq!(spans[1].content, "$0.0003 session · $0.0007 today");
+        push_today_all_span(&mut spans, &t);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].content, padded("Today (all): "));
+        assert_eq!(spans[1].content, "$12.34");
+
+        t.today_all = vec![("USD".to_string(), 12.34), ("CNY".to_string(), 3.2)];
+        let mut spans = Vec::new();
+        push_today_all_span(&mut spans, &t);
+        assert_eq!(spans[1].content, "$12.34 · ¥3.20");
+    }
+
+    /// A day with no ledger entry shows no row, rather than a zero.
+    #[test]
+    fn push_today_all_span_omits_when_the_day_is_empty() {
+        let t = info_with(None, None, None, None, None, None);
+        let mut spans = Vec::new();
+        push_today_all_span(&mut spans, &t);
+        assert!(spans.is_empty());
     }
 
     /// `push_cache_creation_span` emits nothing when the field is
@@ -744,9 +775,9 @@ mod tests {
     }
 
     /// Anthropic sessions render the cache-create row alongside the
-    /// existing cache-hit row. The label matches Anthropic's wire
-    /// field (`cache_creation_input_tokens`) so users can map what
-    /// they see back to the API.
+    /// cache rows. The label matches Anthropic's wire field
+    /// (`cache_creation_input_tokens`) so users can map what they see
+    /// back to the API.
     #[test]
     fn push_cache_creation_span_writes_label_and_value() {
         let t = info_with(
@@ -761,45 +792,7 @@ mod tests {
         push_cache_creation_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content, padded("Cache create: "));
-        assert_eq!(spans[1].content, "1280");
-    }
-
-    #[test]
-    fn cache_util_pct_basic() {
-        let t = info_with(None, None, None, Some(720), Some(640), None);
-        assert_eq!(cache_util_pct(&t), Some(88));
-    }
-
-    #[test]
-    fn cache_util_pct_zero_total_returns_none() {
-        let t = info_with(None, None, None, Some(0), Some(0), None);
-        assert_eq!(cache_util_pct(&t), None);
-    }
-
-    #[test]
-    fn cache_util_pct_missing_hit_returns_none() {
-        let t = info_with(None, None, None, Some(720), None, None);
-        assert_eq!(cache_util_pct(&t), None);
-    }
-
-    #[test]
-    fn push_cache_utilization_span_omits_when_missing() {
-        let t = info_with(None, None, None, None, None, None);
-        let mut spans = Vec::new();
-        push_cache_utilization_span(&mut spans, &t, MAX_BAR_WIDTH);
-        assert!(spans.is_empty());
-    }
-
-    #[test]
-    fn push_cache_utilization_span_writes_label_bar_and_value() {
-        let t = info_with(None, None, None, Some(720), Some(640), None);
-        let mut spans = Vec::new();
-        push_cache_utilization_span(&mut spans, &t, MAX_BAR_WIDTH);
-        assert_eq!(spans.len(), 4);
-        assert_eq!(spans[0].content, padded(CACHE_HIT_RATE_LABEL));
-        assert_eq!(spans[1].content, "─".repeat(18));
-        assert_eq!(spans[2].content, "·".repeat(2));
-        assert_eq!(spans[3].content, " 88%");
+        assert_eq!(spans[1].content, "1.25K");
     }
 
     /// No measured call → no row at all, rather than a misleading `0ms`.

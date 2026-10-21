@@ -1561,14 +1561,19 @@ fn render_topics(frame: &mut Frame, area: Rect, app: &mut App) {
             };
 
             // The context size: the last call's input plus its output,
-            // against the context window.
+            // against the context window. The counts are formatted the
+            // same way the info pane and `/info` format them.
             let tokens = match (t.context_input_tokens, t.max_tokens) {
                 (Some(cur), Some(max)) => {
                     let used = jyc_types::context_tokens(Some(cur), t.context_output_tokens)
                         .unwrap_or(cur);
-                    format!("{}K/{}K", used / 1000, max / 1000)
+                    format!(
+                        "{}/{}",
+                        jyc_types::format_token_count(used),
+                        jyc_types::format_token_count(max)
+                    )
                 }
-                (Some(cur), None) => format!("{}K", cur / 1000),
+                (Some(cur), None) => jyc_types::format_token_count(cur),
                 _ => "-".to_string(),
             };
 

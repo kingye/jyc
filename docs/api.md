@@ -709,6 +709,8 @@ for each.
 | `total_cache_hit_tokens`     | u64?                  | ✓               | —                  |
 | `total_cache_creation_tokens`| u64?                  | ✓               | —                  |
 | `total_reasoning_tokens`     | u64?                  | ✓               | —                  |
+| `turn_cache_hit_tokens`      | u64?                  | ✓               | —                  |
+| `turn_input_tokens`          | u64?                  | ✓               | —                  |
 | `avg_call_ms`                | u64?                  | ✓               | —                  |
 | `call_count`                 | u64?                  | ✓               | —                  |
 | `avg_turn_call_ms`           | u64?                  | ✓               | —                  |
@@ -719,6 +721,7 @@ for each.
 | `changed_files`              | `Vec<{path, uncommitted, change, lines?}?>` | ✓          | —                  |
 | `tasks`                      | `TaskList`            | ✓               | —                  |
 | `cost`                       | `TopicCost?`         | ✓               | —                  |
+| `today_all`                  | `Vec<(string, f64)>` | ✓               | —                  |
 | `activity`                   | `Vec<ActivityEntry>`  | ✓               | —                  |
 | `recent_messages`            | `Vec<ChatMessageEntry>`| ✓              | —                  |
 | `thinking_text`              | string?               | ✓               | —                  |
@@ -739,6 +742,18 @@ breadcrumbs once and answers with the parents and the tree alike, so the
 list's `parent` and the detail's `subagents` cannot disagree. `TopicSummary`
 has no `subagents` field to carry the tree; in the detail, `subagents` is
 `Some(vec![])` when the topic has no subagents.
+
+The cache figures come in two scopes: `total_cache_hit_tokens` /
+`total_input_tokens` are the session's (every LLM call since the last
+session reset), while `turn_cache_hit_tokens` / `turn_input_tokens` are the
+latest turn's — the pair is zeroed at every turn start, so it is `None` until
+the turn makes its first call. Both scopes feed the info surfaces' cache
+rows: `Cache (turn)` and `Cache (session)`, each showing the hits, the input
+they are a share of, and that share in percent.
+
+`today_all` is the day's spend across *every* topic, per currency — the
+ledger's own day total, the same figure `/bill` reports. It is kept apart
+from `cost`, which is this topic's own spend (`cost.today`).
 
 ### 4.4 Other types
 

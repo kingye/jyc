@@ -361,6 +361,22 @@ pub struct SessionState {
     /// `0` while the current turn has not completed a measured call yet.
     #[serde(default)]
     pub turn_call_count: u64,
+    /// The prompt-cache-hit tokens of the LLM calls in the latest turn —
+    /// the turn-scoped twin of `total_cache_hit_tokens`, and the numerator
+    /// of the turn's cache rate. Each call's `cache_hit_tokens` is added
+    /// via `+=` as the call completes. Zeroed by
+    /// [`begin_turn_counters`] at every turn start, so it never carries
+    /// data across turns. `serde(default)` so session files written
+    /// before the field existed deserialize as `0`.
+    #[serde(default)]
+    pub turn_cache_hit_tokens: u64,
+    /// The input tokens of the LLM calls in the latest turn — the
+    /// turn-scoped twin of `total_input_tokens`, and the denominator of
+    /// the turn's cache rate. Zeroed by [`begin_turn_counters`] at every
+    /// turn start. `serde(default)` so session files written before the
+    /// field existed deserialize as `0`.
+    #[serde(default)]
+    pub turn_input_tokens: u64,
     /// The model's context window, in tokens — the whole budget the next
     /// call has to fit into.
     ///
@@ -693,28 +709,73 @@ pub async fn ensure_session_file(topic_name: &str, topic_path: &Path, context_wi
     );
 }
 
-/// Clear the previous turn's latency counters so the "latest turn"
-/// figures describe the turn that is starting.
+/// Clear the previous turn's counters so the "latest turn" figures
+/// describe the turn that is starting.
 ///
 /// Called once per turn, right after [`ensure_session_file`]. Skips the
-/// write when both counters are already zero (a brand-new session), so a
-/// turn pays one small file write only when there is something to clear.
+/// write when all four counters are already zero (a brand-new session),
+/// so a turn pays one small file write only when there is something to
+/// clear.
 ///
-/// The session-wide counters (`total_call_duration_ms` / `call_count`)
-/// are deliberately untouched: they answer a different question and
-/// outlive the turn. Session reset does clear the turn pair as a side
-/// effect of rebuilding the file — a reset session is a fresh slate, and
-/// the "latest turn" row reappears once the next turn makes its first
-/// call.
-pub async fn begin_turn_latency(topic_name: &str, topic_path: &Path) {
+/// Zeroes the two turn-scoped pairs — the latency one and the cache one
+/// — and nothing else. The session-wide counters (`total_call_duration_ms`
+/// / `call_count`, the session's token totals) answer a different
+/// question and outlive the turn. Session reset does clear them as a
+/// side effect of rebuilding the file — a reset session is a fresh slate,
+/// and the "latest turn" rows reappear once the next turn makes its
+/// first call.
+pub async fn begin_turn_counters(topic_name: &str, topic_path: &Path) {
     let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
-    if state.turn_call_count == 0 && state.turn_total_call_duration_ms == 0 {
+    if state.turn_call_count == 0
+        && state.turn_total_call_duration_ms == 0
+        && state.turn_cache_hit_tokens == 0
+        && state.turn_input_tokens == 0
+    {
         return;
     }
     state.turn_call_count = 0;
     state.turn_total_call_duration_ms = 0;
+    state.turn_cache_hit_tokens = 0;
+    state.turn_input_tokens = 0;
     save_session_state(&session_path, &state).await;
+}
+
+/// The session's token totals so far — the base the agent loop's running
+/// totals start from.
+///
+/// A turn continues the session's counts rather than restarting them: the
+/// totals in `agent-session.json` are the session's, and the loop adds
+/// this turn's calls on top of them.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TokenTotals {
+    /// Input tokens of every call in the session so far.
+    pub input: u64,
+    /// Output tokens of every call in the session so far.
+    pub output: u64,
+    /// Prompt-cache-hit tokens of every call in the session so far.
+    pub cache_hit: u64,
+    /// Prompt-cache-creation tokens of every call in the session so far.
+    pub cache_creation: u64,
+    /// Reasoning tokens of every call in the session so far.
+    pub reasoning: u64,
+}
+
+/// Read the session's token totals — the base the agent loop's running
+/// totals start from.
+///
+/// Reads the same file the loop writes, so the totals it returns are the
+/// ones the session has banked so far.
+pub async fn session_token_totals(topic_name: &str, topic_path: &Path) -> TokenTotals {
+    let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
+    let state = load_session_state(&session_path).await;
+    TokenTotals {
+        input: state.total_input_tokens,
+        output: state.total_output_tokens,
+        cache_hit: state.total_cache_hit_tokens,
+        cache_creation: state.total_cache_creation_tokens,
+        reasoning: state.total_reasoning_tokens,
+    }
 }
 
 /// Persist the latest input/output token counts to disk. Called from the
@@ -737,6 +798,12 @@ pub async fn begin_turn_latency(topic_name: &str, topic_path: &Path) {
 /// (each incrementing its count with it). Pass `0` when nothing was
 /// measured (the post-loop call, whose duration was already banked per
 /// call).
+///
+/// `call_cache_hit_tokens` and `call_input_tokens` are that same call's
+/// own cache-hit and input tokens, **added** to the turn-scoped cache
+/// pair — the numerator and the denominator of the turn's cache rate.
+/// Pass `0` for both when the call is not part of the main loop (the
+/// post-loop write, whose calls were banked per call).
 #[allow(clippy::too_many_arguments)]
 pub async fn persist_tokens(
     topic_name: &str,
@@ -751,6 +818,8 @@ pub async fn persist_tokens(
     context_window: Option<u64>,
     call_cost: f64,
     call_ms: u64,
+    call_cache_hit_tokens: u64,
+    call_input_tokens: u64,
 ) {
     let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
@@ -777,6 +846,13 @@ pub async fn persist_tokens(
         state.turn_total_call_duration_ms += call_ms;
         state.turn_call_count += 1;
     }
+    // The turn-scoped cache pair, accumulated in lockstep with the
+    // latency pair above: the caller passes one call's own cache-hit and
+    // input tokens, and the file keeps this turn's running sums. Zeroed
+    // by `begin_turn_counters` at every turn start, so "latest turn"
+    // always covers exactly this turn's calls.
+    state.turn_cache_hit_tokens += call_cache_hit_tokens;
+    state.turn_input_tokens += call_input_tokens;
 
     if let Some(cw) = context_window {
         state.context_window = cw;

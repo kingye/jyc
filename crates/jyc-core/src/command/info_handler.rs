@@ -62,7 +62,6 @@ impl CommandHandler for InfoCommandHandler {
 fn format_topic_info(t: &TopicInfo) -> String {
     let mut lines: Vec<String> = Vec::new();
     lines.push(format!("Topic: {}", t.name));
-    lines.push(format!("Channel: {}", t.channel));
     lines.push(format!("Pattern: {}", t.pattern.as_deref().unwrap_or("-")));
     if let Some(model) = &t.model {
         lines.push(format!("Model: {model}"));
@@ -78,29 +77,40 @@ fn format_topic_info(t: &TopicInfo) -> String {
         let used = jyc_types::context_tokens(Some(cur), t.context_output_tokens).unwrap_or(cur);
         let pct = jyc_types::context_token_pct(Some(cur), t.context_output_tokens, Some(max))
             .unwrap_or(0);
-        lines.push(format!("Tokens: {used} / {max} ({pct}%)"));
+        lines.push(format!(
+            "Tokens: {} / {} ({pct}%)",
+            jyc_types::format_token_count(used),
+            jyc_types::format_token_count(max)
+        ));
     }
     if let Some(output) = t.output_tokens {
-        lines.push(format!("Output: {output}"));
+        lines.push(format!("Output: {}", jyc_types::format_token_count(output)));
     }
-    if let Some(total) = t.total_input_tokens {
-        lines.push(format!("Total input: {total}"));
+    // The two cache rows: the latest turn's and the session's. Each carries
+    // its own hits, input and share — the same string the pane's row shows,
+    // from the same shared formatter.
+    if let Some(rate) = jyc_types::format_cache_rate(t.turn_cache_hit_tokens, t.turn_input_tokens) {
+        lines.push(format!("Cache (turn): {rate}"));
     }
-    if let Some(hits) = t.total_cache_hit_tokens {
-        lines.push(format!("Cache hits: {hits}"));
-    }
-    if let Some(pct) = jyc_types::cache_util_pct(t.total_cache_hit_tokens, t.total_input_tokens) {
-        lines.push(format!("Cache hit rate: {pct}%"));
+    if let Some(rate) = jyc_types::format_cache_rate(t.total_cache_hit_tokens, t.total_input_tokens)
+    {
+        lines.push(format!("Cache (session): {rate}"));
     }
     if let Some(creation) = t.total_cache_creation_tokens
         && creation > 0
     {
-        lines.push(format!("Cache create: {creation}"));
+        lines.push(format!(
+            "Cache create: {}",
+            jyc_types::format_token_count(creation)
+        ));
     }
     if let Some(reasoning) = t.total_reasoning_tokens
         && reasoning > 0
     {
-        lines.push(format!("Reasoning: {reasoning}"));
+        lines.push(format!(
+            "Reasoning: {}",
+            jyc_types::format_token_count(reasoning)
+        ));
     }
     if let Some(cost) = &t.cost {
         lines.push(format!(
@@ -108,6 +118,11 @@ fn format_topic_info(t: &TopicInfo) -> String {
             format_amount(cost.session, &cost.currency),
             format_amount(cost.today, &cost.currency)
         ));
+    }
+    // The day's spend across every topic, per currency — the same figure
+    // `/bill` reports.
+    if let Some(totals) = jyc_types::format_currency_totals(&t.today_all) {
+        lines.push(format!("Today (all): {totals}"));
     }
     // Wall-clock time per LLM call: the latest turn's average first, the
     // session's second — same fields, same words and the same shared
@@ -219,6 +234,9 @@ mod tests {
             total_cache_hit_tokens: Some(987_654),
             total_cache_creation_tokens: Some(111),
             total_reasoning_tokens: Some(4_096),
+            turn_cache_hit_tokens: None,
+            turn_input_tokens: None,
+            today_all: Vec::new(),
             last_active_at: None,
             skills: vec![],
             available_skills: vec![],
@@ -264,20 +282,17 @@ mod tests {
         let text = format_topic_info(&full_info());
         let expected = "\
 Topic: issue-42
-Channel: feishu
 Pattern: gh-issue
 Model: kimi/k3-256k
 Mode: plan
 Branch: fix/issue-42-timeout
 Status: Idle
-Tokens: 107480 / 256000 (41%)
-Output: 12345
-Total input: 1234567
-Cache hits: 987654
-Cache hit rate: 80%
+Tokens: 104.96K / 250.00K (41%)
+Output: 12.06K
+Cache (session): 964.51K / 1.18M (80%)
 Cache create: 111
-Reasoning: 4096
-Cost: $0.4200 session · $1.2300 today
+Reasoning: 4.00K
+Cost: $0.42 session · $1.23 today
 Latency: 1.10s/call (3) · 820ms/call (37)
 Tasks (1/3):
   [✓] 1. inspect list_topics
@@ -287,6 +302,30 @@ Files (2):
 + src/new.rs +12 -0
   src/edited.rs *";
         assert_eq!(text, expected);
+    }
+
+    /// The turn's own cache row stands next to the session's, so a long
+    /// turn's rate is visible without waiting for the session's to move.
+    #[test]
+    fn formats_the_turn_cache_row_when_the_turn_has_called() {
+        let mut t = full_info();
+        t.turn_cache_hit_tokens = Some(300);
+        t.turn_input_tokens = Some(1_000);
+        let text = format_topic_info(&t);
+        assert!(text.contains("Cache (turn): 300 / 1000 (30%)"), "{text}");
+        assert!(
+            text.contains("Cache (session): 964.51K / 1.18M (80%)"),
+            "{text}"
+        );
+    }
+
+    /// The day's spend across every topic, per currency.
+    #[test]
+    fn formats_the_days_totals_when_the_ledger_has_entries() {
+        let mut t = full_info();
+        t.today_all = vec![("USD".to_string(), 12.34), ("CNY".to_string(), 3.2)];
+        let text = format_topic_info(&t);
+        assert!(text.contains("Today (all): $12.34 · ¥3.20"), "{text}");
     }
 
     #[test]
@@ -313,7 +352,7 @@ Files (2):
         let text = format_topic_info(&t);
         assert_eq!(
             text,
-            "Topic: issue-42\nChannel: feishu\nPattern: -\nMode: build\nStatus: Idle"
+            "Topic: issue-42\nPattern: -\nMode: build\nStatus: Idle"
         );
     }
 

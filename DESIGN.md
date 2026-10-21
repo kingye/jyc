@@ -3190,25 +3190,25 @@ the ones that sit on the screen boundary open. Every border goes through
 ```
 Not connected: connection refused
 
-  Agent     Topic       Pattern    Status     Context        Last Active 
-─────────────────────────────────────────────────────────────────────────────
-→ jyc       jyc         pipe       idle       0/117.19K    2m ago              │ Topic:          issue-42             
-  invoice   invoice     feishu     processing 44.17K/117.19K now                 │ Pattern:        planner              
-                                                                             │ Model:          claude-opus-4-8      
-                                                                             │ Mode:           build                
-                                                                             │ Branch:         feat/issue-42        
-                                                                             │ Tokens:         ────────············ 
-                                                                             │                 44.17K / 117.19K (38%)
-                                                                             │ Cache (turn):   ──────────────────·· 
-                                                                             │                 12.00K / 15.00K (80%)
-                                                                             │ Cache (session):──────────────────·· 
-                                                                             │                 78.24K / 88.19K (88%)
-                                                                             │ Files (2):                           
-                                                                             │   crates/…/mod.rs                    
-                                                                             │ ──────────────────────────────────── 
-                                                                             │ JYC AI v0.6.0                        
-                                                                             │ 2 active / 4 thread                  
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Agent              Topic            Pattern      Status     Context           Last Active
+───────────────────────────────────────────────────────────────────────────────────────────
+→ jyc                jyc              pipe         idle       0/117.19K         2m ago     │ Topic:          issue-42             
+  invoice            invoice          feishu       processing 44.17K/117.19K    now        │ Pattern:        planner              
+                                                                                           │ Model:          claude-opus-4-8      
+                                                                                           │ Mode:           build                
+                                                                                           │ Branch:         feat/issue-42        
+                                                                                           │ Tokens:         ────────············ 
+                                                                                           │                 44.17K / 117.19K (38%)
+                                                                                           │ Cache (turn):   ──────────────────·· 
+                                                                                           │                 12.00K / 15.00K (80%)
+                                                                                           │ Cache (session):──────────────────·· 
+                                                                                           │                 78.24K / 88.19K (88%)
+                                                                                           │ Files (2):                           
+                                                                                           │   crates/…/mod.rs                    
+                                                                                           │ ──────────────────────────────────── 
+                                                                                           │ JYC AI v0.6.0                        
+                                                                                           │ 2 active / 4 thread                  
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 2m  reply sent · emf
 2m  err  ·  emf  ·  unhandled
 ```

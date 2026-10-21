@@ -1810,6 +1810,15 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         if !output_spans.is_empty() {
             rows.push(InfoRow::Field(output_spans));
         }
+        // The cache group: the turn's rate, the session's rate and the
+        // cache's write volume, under one header — the group names the
+        // subject, its rows name their own scope. A raw line, like the
+        // task list's and the subagents' headers. The turn's row is always
+        // drawn, so the header always has a row under it.
+        rows.push(InfoRow::Raw(Line::from(Span::styled(
+            "Cache:",
+            Style::default().add_modifier(Modifier::BOLD),
+        ))));
         // The two cache rows — the latest turn's and the session's — each
         // carry their own hits, input and share, with the share drawn as a
         // bar. The turn's row is always drawn, at zero before the turn's
@@ -1825,7 +1834,7 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         if !session_cache_spans.is_empty() {
             rows.push(InfoRow::Field(session_cache_spans));
         }
-        // Cache create row — cache **write** tokens billed at the
+        // Create row — cache **write** tokens billed at the
         // creation rate (Anthropic ~1.25× input; GPT-5.6 reports
         // `cache_write_tokens` too). Rendered only when the running
         // total is non-zero, so other sessions see no extra row.

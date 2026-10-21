@@ -2910,8 +2910,8 @@ fn info_pane_bar(filled: usize, width: usize) -> String {
 }
 
 /// The width every label of the info pane is padded to — the length of
-/// the longest one, "Cache (session): ".
-const INFO_PANE_LABEL_WIDTH: usize = 17;
+/// the longest one, "Today (all): ".
+const INFO_PANE_LABEL_WIDTH: usize = 13;
 
 /// The label of a pane row, padded to the width every label of the pane
 /// shares so that every value starts in the same column. Pinned on
@@ -2987,7 +2987,7 @@ fn info_pane_draws_the_percentage_bars() {
     assert!(
         pane.contains(&format!(
             "{}{} 78.24K / 88.19K (88%)",
-            info_pane_label("Cache (session): "),
+            info_pane_label("Session: "),
             info_pane_bar(18, 20)
         )),
         "the cache row must lead with its bar:\n{pane}"
@@ -3008,7 +3008,7 @@ fn info_pane_shows_the_turn_cache_row_at_zero() {
     assert!(
         pane.contains(&format!(
             "{}{} 0 / 0 (0%)",
-            info_pane_label("Cache (turn): "),
+            info_pane_label("Turn: "),
             info_pane_bar(0, 20)
         )),
         "the turn's cache row must be there, at zero:\n{pane}"
@@ -3040,7 +3040,7 @@ fn info_pane_bar_fits_a_narrow_pane() {
         "the bar must stay whole in a narrow pane:\n{pane}"
     );
     assert!(
-        info_pane_value_row(&rows, "Cache (session):").starts_with(&info_pane_bar(18, 20)),
+        info_pane_value_row(&rows, "Session:").starts_with(&info_pane_bar(18, 20)),
         "the bar must stay whole in a narrow pane:\n{pane}"
     );
 }
@@ -3243,14 +3243,14 @@ fn info_pane_stacks_the_value_under_its_label() {
 }
 
 /// The layout switches at one width, and the whole pane switches with
-/// it: 34 inner cells still stack, 35 fit the table.
+/// it: 29 inner cells still stack, 31 fit the table.
 #[test]
 fn info_pane_switches_layout_at_the_threshold() {
     let mut app = info_pane_app(Default::default());
 
-    // 34 columns wide: the pane's inner width is 33 — too narrow for the
+    // 30 columns wide: the pane's inner width is 29 — too narrow for the
     // table layout, so the label takes a row of its own.
-    let pane = info_pane_text(&mut app, 34, 40);
+    let pane = info_pane_text(&mut app, 30, 40);
     let rows = info_pane_rows(&pane);
     assert!(
         rows.iter().any(|r| r == "Topic:"),
@@ -3261,9 +3261,9 @@ fn info_pane_switches_layout_at_the_threshold() {
         "a narrow pane must not lay its rows out as a table:\n{pane}"
     );
 
-    // 36 columns wide: the inner width is 35 — the table layout, label
+    // 32 columns wide: the inner width is 31 — the table layout, label
     // and value on one row.
-    let pane = info_pane_text(&mut app, 36, 40);
+    let pane = info_pane_text(&mut app, 32, 40);
     let rows = info_pane_rows(&pane);
     assert!(
         rows.iter().any(|r| r == &info_pane_topic_row()),

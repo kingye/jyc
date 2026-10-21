@@ -8,6 +8,8 @@
 
 ### Changed
 
+- The info pane's cache rows are grouped and renamed: the turn's hit rate, the session's and the cache's write volume now sit under one `Cache:` header and name their own scope — `Turn:`, `Session:` and `Create:`, where they read `Cache (turn):`, `Cache (session):` and `Cache create:`. The pane's label column is four cells narrower for it (thirteen cells, the length of the longest label), so every value of every row starts that much further left and a narrow column gets the table layout four cells sooner. `/info` prints the same group the same way (#968)
+
 - The `jyc_spawn_subagent` tool now says how to close a subagent: send it `/close`, with `--force` for a busy queue. An agent that spawned one had no way to learn this from the tools — the rule lived only in the `dev-workflow` skill — so a subagent that had reported and was done stayed open until its parent closed it (#968)
 
 - A pipe channel now carries routing only, and config validation enforces it: every processing key is rejected on a pipe channel and on its patterns — `model`, `plan_model`, `build_model`, `small_model`, `mode`, `skills`, `disabled_skills`, `mcps`, `disabled_mcps`, `disabled_tools`, `disabled_builtin_tools`, `live_injection`, `inject_inbound_images`, `template`, `topic_path`, `access`, `context_strategy`, `reset_compression`, `auto_reset_threshold` — whatever the value, including a value equal to the default. They were dead configuration: the hub handles a piped message under the configuration of the agent that matches it, never under the forwarding channel's. The keys belong to the agent, so declare them under `[agents.<name>]`; `jyc serve`, `jyc config validate` and the dashboard's config reload all report the offending key and its path (#967)

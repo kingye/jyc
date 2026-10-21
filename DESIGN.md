@@ -1900,7 +1900,7 @@ When a user sends a follow-up message while the AI is still processing the first
 4. Each folded message is appended to the topic's chat log, so the transcript shows what the user said.
 5. A message the turn never picks up — the turn ended before its next drain point — is drained by the worker and re-queued, so it becomes a turn of its own instead of being lost.
 
-**Injection format:** The body only — no framing, no instructions. This matches how the agent TUI handles messages sent during AI processing. The AI treats it as a natural follow-up in the conversation. The body the model reads is cleaned the way the turn's own body is cleaned (the email channel strips the quoted history of a reply), so a follow-up email does not feed the model the whole quoted thread; the transcript keeps the raw words.
+**Injection format:** The body only — no framing, no instructions. This matches how the agent TUI handles messages sent during AI processing. The AI treats it as a natural follow-up in the conversation. The body the model reads is cleaned the way the turn's own body is cleaned (the email channel strips the quoted history of a reply), so a follow-up email does not feed the model the whole quoted thread; the transcript keeps the raw words. A body that cleans to nothing keeps its raw words, so the model is never blind to a message the transcript shows.
 
 ```
 Please also add a chart to the PPT.

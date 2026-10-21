@@ -1812,7 +1812,9 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         }
         // The two cache rows — the latest turn's and the session's — each
         // carry their own hits, input and share, with the share drawn as a
-        // bar. Omitted when the scope has no input tokens yet.
+        // bar. The turn's row is always drawn, at zero before the turn's
+        // first call; the session's waits for the session's first input
+        // tokens.
         let mut turn_cache_spans = Vec::with_capacity(4);
         push_turn_cache_span(&mut turn_cache_spans, t, bar_cells);
         if !turn_cache_spans.is_empty() {

@@ -2994,6 +2994,27 @@ fn info_pane_draws_the_percentage_bars() {
     );
 }
 
+/// The turn's cache row is drawn before the turn's first call, at zero:
+/// the turn's counters are zeroed at every turn boundary, so a row that
+/// vanished until the first call landed would read as missing data
+/// rather than as a zero.
+#[test]
+fn info_pane_shows_the_turn_cache_row_at_zero() {
+    let mut app = info_pane_app(Default::default());
+
+    // Wide enough that the row does not wrap.
+    let pane = info_pane_text(&mut app, 70, 30);
+
+    assert!(
+        pane.contains(&format!(
+            "{}{} 0 / 0 (0%)",
+            info_pane_label("Cache (turn): "),
+            info_pane_bar(0, 20)
+        )),
+        "the turn's cache row must be there, at zero:\n{pane}"
+    );
+}
+
 /// The bar is as wide as the pane allows, and it stays whole: in the
 /// stacked layout the bar has a row of its own, so it can use the
 /// pane's full width, and the wrapping moves the figures below it

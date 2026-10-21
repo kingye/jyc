@@ -1244,8 +1244,7 @@ mode = "agent"
     /// The pinned directory is *not* where the breadcrumb lives — a pin
     /// adopts its state dir under the agents dir, and the registry is keyed
     /// by topic name — so the lineage is read by name, and the path is what
-    /// the topic works in. Both are pinned here, because a lineage read from
-    /// the wrong directory would leave the topic looking like a root.
+    /// the topic works in. Both are pinned here.
     #[tokio::test]
     async fn a_pinned_topic_keeps_its_lineage() {
         let tmp = tempdir().unwrap();
@@ -1264,6 +1263,13 @@ mode = "agent"
             .unwrap();
 
         let listed = tm.list_topics_without_git().await;
+
+        // The global state-dir registration outlives the TempDir otherwise: a
+        // later test reusing this name would resolve into a deleted
+        // directory. Unregistering before the asserts, so a failing one
+        // cannot leak the registration into the process-wide registry.
+        jyc_types::state_dir::unregister("pinned-lineage-child");
+
         let child = listed
             .iter()
             .find(|t| t.name == "pinned-lineage-child")
@@ -1278,10 +1284,6 @@ mode = "agent"
             Some(pinned.as_path()),
             "the topic works in the directory it was pinned to"
         );
-
-        // The global state-dir registration outlives the TempDir otherwise: a
-        // later test reusing this name would resolve into a deleted directory.
-        jyc_types::state_dir::unregister("pinned-lineage-child");
     }
 
     /// #615: a topic whose mode comes from pattern config (no

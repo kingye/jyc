@@ -2,9 +2,10 @@
 //! WebSocket topic chat (all channel types via `/ws/<channel>/<topic>`).
 
 use super::token_render::{
-    PaneLayout, bar_width, context_pct, label_span, layout_for, push_cache_creation_span,
-    push_cost_span, push_latency_span, push_output_span, push_reasoning_span,
-    push_session_cache_span, push_today_all_span, push_tokens_span, push_turn_cache_span,
+    LABEL_WIDTH, PaneLayout, bar_width, context_pct, label_span, layout_for,
+    push_cache_creation_span, push_cost_span, push_latency_span, push_output_span,
+    push_reasoning_span, push_session_cache_span, push_today_all_span, push_tokens_span,
+    push_turn_cache_span,
 };
 use super::*;
 use jyc_core::duration::{DurationStyle, format_duration_ms, format_duration_secs};
@@ -1585,18 +1586,24 @@ fn selected_topic_detail(app: &App) -> Option<&jyc_types::TopicInfo> {
     (detail.channel == channel && detail.name == name).then_some(detail)
 }
 
-/// One row of the info pane: a `label: value` field, or a line of a
-/// section that keeps its own shape (the task list, the changed files).
+/// One row of the info pane: a `label: value` field, a value that belongs
+/// to the row above it, or a line of a section that keeps its own shape
+/// (the task list, the changed files).
 enum InfoRow<'a> {
     /// A `label: value` row: the first span is the label, the rest is
     /// the value.
     Field(Vec<Span<'a>>),
+    /// A value that belongs to the row above it — the figures of a bar
+    /// row, which have a row of their own under the bar, in the column
+    /// the bar starts in.
+    Value(Span<'a>),
     /// A line that is not a `label: value` row and keeps its own shape.
     Raw(Line<'a>),
 }
 
 /// Lay the info pane's rows out. A field is laid out by the pane's
-/// layout; a section line keeps its own shape.
+/// layout; a value that belongs to the row above it joins that row's
+/// column; a section line keeps its own shape.
 ///
 /// In the table layout the label and the value share one row: the label is
 /// padded, so every value of the pane starts in the same column and the
@@ -1621,6 +1628,27 @@ fn layout_info_rows(rows: Vec<InfoRow>, layout: PaneLayout, inner_width: u16) ->
         let mut spans = match row {
             InfoRow::Raw(line) => {
                 out.push(line);
+                continue;
+            }
+            InfoRow::Value(value) => {
+                // A value that belongs to the row above it — the figures
+                // of a bar row. They sit in the pane's value column, under
+                // the bar they belong to, so the two line up.
+                match layout {
+                    PaneLayout::Table => {
+                        let value_col = (inner_width as usize).saturating_sub(LABEL_WIDTH).max(1);
+                        let indent = " ".repeat(LABEL_WIDTH);
+                        for chunk in wrap_styled_lines(vec![Line::from(value)], value_col) {
+                            let mut line = Vec::with_capacity(chunk.spans.len() + 1);
+                            line.push(Span::raw(indent.clone()));
+                            line.extend(chunk.spans);
+                            out.push(Line::from(line));
+                        }
+                    }
+                    PaneLayout::Stacked => {
+                        out.push(Line::from(value));
+                    }
+                }
                 continue;
             }
             InfoRow::Field(spans) => spans,
@@ -1797,12 +1825,16 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         // never narrower than a bar can carry the share honestly: a pane
         // too narrow for that gets the figures alone.
         let bar_cells = bar_width(topic_inner.width, layout);
-        // Tokens row — push tokens span into a fresh Vec, wrap in a Line.
-        // The row is label + bar + figures, hence the four spans.
-        let mut token_spans = Vec::with_capacity(4);
-        push_tokens_span(&mut token_spans, t, bar_cells);
+        // Tokens row — the label and the bar, with the figures on the row
+        // under them: the bar has the row to itself, so it can reach for
+        // the pane's edge, and the figures line up with it.
+        let mut token_spans = Vec::with_capacity(3);
+        let token_figures = push_tokens_span(&mut token_spans, t, bar_cells);
         if !token_spans.is_empty() {
             rows.push(InfoRow::Field(token_spans));
+        }
+        if let Some(figures) = token_figures {
+            rows.push(InfoRow::Value(figures));
         }
         // Output row — same pattern.
         let mut output_spans = Vec::with_capacity(2);
@@ -1821,18 +1853,24 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         ))));
         // The two cache rows — the latest turn's and the session's — each
         // carry their own hits, input and share, with the share drawn as a
-        // bar. The turn's row is always drawn, at zero before the turn's
-        // first call; the session's waits for the session's first input
-        // tokens.
-        let mut turn_cache_spans = Vec::with_capacity(4);
-        push_turn_cache_span(&mut turn_cache_spans, t, bar_cells);
+        // bar and the figures on the row under it. The turn's row is
+        // always drawn, at zero before the turn's first call; the
+        // session's waits for the session's first input tokens.
+        let mut turn_cache_spans = Vec::with_capacity(3);
+        let turn_figures = push_turn_cache_span(&mut turn_cache_spans, t, bar_cells);
         if !turn_cache_spans.is_empty() {
             rows.push(InfoRow::Field(turn_cache_spans));
         }
-        let mut session_cache_spans = Vec::with_capacity(4);
-        push_session_cache_span(&mut session_cache_spans, t, bar_cells);
+        if let Some(figures) = turn_figures {
+            rows.push(InfoRow::Value(figures));
+        }
+        let mut session_cache_spans = Vec::with_capacity(3);
+        let session_figures = push_session_cache_span(&mut session_cache_spans, t, bar_cells);
         if !session_cache_spans.is_empty() {
             rows.push(InfoRow::Field(session_cache_spans));
+        }
+        if let Some(figures) = session_figures {
+            rows.push(InfoRow::Value(figures));
         }
         // Create row — cache **write** tokens billed at the
         // creation rate (Anthropic ~1.25× input; GPT-5.6 reports

@@ -1319,6 +1319,11 @@ mod tool_failures;
 #[cfg(test)]
 mod tool_failures_tests;
 
+/// The loop's own wiring of the session's token totals: a turn continues
+/// the session's counts instead of restarting them.
+#[cfg(test)]
+mod session_totals_tests;
+
 mod context;
 mod embedded_ask;
 mod response;

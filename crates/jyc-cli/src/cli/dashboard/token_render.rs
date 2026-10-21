@@ -195,14 +195,16 @@ pub(super) fn push_output_span(spans: &mut Vec<Span>, t: &TopicInfo) {
 }
 
 /// Append the "Cache create: N" row to `spans`. Pushes nothing when
-/// `total_cache_creation_tokens` is missing. Only Anthropic and GPT-5.6
-/// (`cache_write_tokens`) report writes separately from reads; for every
-/// other vendor this stays `None` and the row never renders. Sits next to
+/// `total_cache_creation_tokens` is missing or zero. Only Anthropic and
+/// GPT-5.6 (`cache_write_tokens`) report writes separately from reads; for
+/// every other vendor this stays `None` and the row never renders. Sits next to
 /// the cache rows in the chat info pane and dashboard topic info area so
 /// users with cache-heavy Anthropic workflows can see the write volume
 /// that the cache-creation premium rate applies to.
 pub(super) fn push_cache_creation_span(spans: &mut Vec<Span>, t: &TopicInfo) {
-    if let Some(cache_creation) = t.total_cache_creation_tokens {
+    if let Some(cache_creation) = t.total_cache_creation_tokens
+        && cache_creation > 0
+    {
         spans.push(label_span("Cache create: "));
         spans.push(Span::raw(jyc_types::format_token_count(cache_creation)));
     }

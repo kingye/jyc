@@ -351,7 +351,7 @@ pub struct SessionState {
     pub call_count: u64,
     /// Accumulated wall-clock time of the LLM calls in the latest turn,
     /// in milliseconds — the turn-scoped twin of
-    /// `total_call_duration_ms`. Zeroed by [`begin_turn_latency`] at every
+    /// `total_call_duration_ms`. Zeroed by [`begin_turn_counters`] at every
     /// turn start, so it never carries data across turns.
     /// `serde(default)` so session files written before the field existed
     /// deserialize as `0`.
@@ -838,19 +838,20 @@ pub async fn persist_tokens(
     // one call's duration and the file keeps the running sum, so the
     // mid-loop persist and the post-loop write (which passes 0) both leave
     // the average intact. The turn-scoped pair (reset by
-    // `begin_turn_latency` at each turn start) accumulates in lockstep, so
-    // "latest turn" always covers exactly this turn's measured calls.
+    // `begin_turn_counters` at each turn start) covers exactly this turn's
+    // measured calls.
     if call_ms > 0 {
         state.total_call_duration_ms += call_ms;
         state.call_count += 1;
         state.turn_total_call_duration_ms += call_ms;
         state.turn_call_count += 1;
     }
-    // The turn-scoped cache pair, accumulated in lockstep with the
-    // latency pair above: the caller passes one call's own cache-hit and
-    // input tokens, and the file keeps this turn's running sums. Zeroed
-    // by `begin_turn_counters` at every turn start, so "latest turn"
-    // always covers exactly this turn's calls.
+    // The turn-scoped cache pair: the caller passes one call's own
+    // cache-hit and input tokens, and the file keeps this turn's running
+    // sums. Zeroed by `begin_turn_counters` at every turn start, so
+    // "latest turn" always covers exactly this turn's calls. Unlike the
+    // latency pair above it counts every call, measured or not — a call
+    // that completed spent tokens even when no duration was recorded.
     state.turn_cache_hit_tokens += call_cache_hit_tokens;
     state.turn_input_tokens += call_input_tokens;
 

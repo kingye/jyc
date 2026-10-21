@@ -632,6 +632,11 @@ impl TopicManager {
         // totals feed each topic's cost row, the per-currency totals the
         // day's total. Reading it per topic would parse the same file
         // once per topic on every poll.
+        //
+        // The snapshot freezes at the start of the list, so a ledger entry
+        // appended while the list is being built shows up on the next poll
+        // rather than in this one. One answer per list is worth that: the
+        // rows of a list then describe the same moment.
         let today_totals = billing_dir
             .as_deref()
             .map(crate::billing_log_store::BillingLogStore::today_totals);

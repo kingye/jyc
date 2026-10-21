@@ -91,16 +91,6 @@ pipe = { agent = "jin" }
 # `[agents.<name>]` (see the Agents section below). Config validation
 # rejects those keys here.
 
-# Per-pattern filesystem access whitelist.
-# Extends the agent's read/write boundary beyond the topic working directory.
-# Paths in `write` are also readable automatically.
-# Tilde (~) expands to $HOME. Relative paths resolve against the topic
-# working directory and are ignored (already accessible).
-#
-# [channels.jiny283.patterns.access]
-# read = ["~/.cargo/registry/src"]
-# write = ["/tmp/jyc-builds"]
-
 [channels.jiny283.patterns.rules.sender]
 exact = ["kingye@petalmail.com"]
 

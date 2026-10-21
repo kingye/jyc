@@ -223,11 +223,15 @@ Add a new `chat_id` rule to `PatternRules` that matches `message.metadata["chati
 ```toml
 [[channels.bot.patterns]]
 name = "ops_group"
-template = "ops_agent"
+pipe = { agent = "ops_agent" }
 
 [channels.bot.patterns.rules]
 chat_id = ["wrj7DwDgAA-xxxxxxxxxx"]
 ```
+
+The pattern carries routing only — the template and the rest of the topic
+config live on the agent (`[agents.ops_agent]`), since a pipe channel's
+pattern may not carry processing keys.
 
 - **Pros**: Simple, no external API calls, deterministic
 - **Cons**: `chatid` is opaque; users must extract it from logs first

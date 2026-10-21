@@ -8,9 +8,9 @@
 //! and the pattern-identification fields (`name`, `channel`,
 //! `enabled`, `pipe`, `topic_prefix`).
 //!
-//! Backward compat: `[channels.<name>] type = "websocket"` with
-//! patterns is still accepted (deprecated, see
-//! `serve::synthesize_agents_channel`).
+//! The legacy `[channels.<name>] type = "websocket"` form is gone:
+//! config validation rejects it — this file is the only way to declare
+//! an agent now.
 
 use serde::Deserialize;
 

@@ -381,13 +381,12 @@ This enables completely isolated conversation contexts, skills, and file systems
 
 ## Pattern Matching
 
-WebSocket input bypasses complex pattern rules. The matcher always selects the **first enabled pattern** from the channel's pattern list. Patterns serve as entry points for the chat pane — the user explicitly selects which pattern (and thus which configuration) to use.
+WebSocket input bypasses complex pattern rules. The matcher always selects the **first enabled pattern** from the channel's pattern list — with agents, that is the first agent. Patterns serve as entry points for the chat pane — the user explicitly selects which pattern (and thus which configuration) to use.
 
 ```toml
-# First enabled pattern is the default in the chat pane
-[[channels.my_ws.patterns]]
-name = "general"
-enabled = true
+# One entry per agent — the chat pane lists them all, the first one is
+# the default
+[agents.general]
 ```
 
 ## Model Override Resolution

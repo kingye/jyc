@@ -178,8 +178,9 @@ cost, latency, tasks, branch, changed files) is the topic's *detail* and
 lives on §2.4.11 only.
 
 The list carries no tree either: the lineage behind it is the one-hop
-`parent`, and the tree a topic spawned lives in the detail (§2.4.11) — a
-poll would pay a walk per topic for it.
+`parent`, and the tree a topic spawned lives in the detail (§2.4.11) — the
+tree is built for the one topic on screen, not for every topic of every
+poll.
 
 The dashboard's polling loop uses this endpoint for the table, and fetches
 §2.4.11 for the one topic it shows.
@@ -470,7 +471,8 @@ for t in overview["topics"]:
 
 One topic's full `TopicInfo` — the topic's *detail*: its model and mode, its
 token and cost figures, its task list, its branch and changed files, its
-`status`, and the tree of subagents it spawned (`subagents`). `branch` comes
+`status`, the topic it was spawned by (`parent`), and the tree of subagents
+it spawned (`subagents`). `branch` comes
 from the checkout's `.git/HEAD`; `changed_files` runs `git diff` against the
 repo's default branch (up to four invocations) — which is why the list
 (§2.4.2) carries neither.
@@ -682,8 +684,9 @@ The two types are the two views of a topic, and their *figures* do not
 overlap: the list has what the table needs, the detail has what the topic's
 own figures are, so a client can never read the same figure from two places
 that could disagree. The fields both carry — name, channel, pattern, the
-context bounds, `last_active_at`, `topic_path`, `commands` — identify the
-topic rather than measure it, and both carry the same value for each.
+context bounds, `last_active_at`, `topic_path`, `parent`, `commands` —
+identify the topic rather than measure it, and both carry the same value
+for each.
 
 | Field                        | Type                  | In `TopicInfo` | In `TopicSummary` |
 |------------------------------|-----------------------|:---------------:|:------------------:|
@@ -697,7 +700,7 @@ topic rather than measure it, and both carry the same value for each.
 | `max_tokens`                 | u64?                  | ✓               | ✓                  |
 | `last_active_at`             | string? (RFC 3339)    | ✓               | ✓                  |
 | `topic_path`                | `PathBuf?`            | ✓               | ✓                  |
-| `parent`                     | string?               | —               | ✓                  |
+| `parent`                     | string?               | ✓               | ✓                  |
 | `commands`                   | `Vec<CommandInfo>`    | ✓               | ✓                  |
 | `model`                      | string?               | ✓               | —                  |
 | `mode`                       | string?               | ✓               | —                  |
@@ -731,9 +734,11 @@ The lineage is split the same way: the list carries only the one-hop
 `parent` (a topic's own parent, read from the `spawned-from` breadcrumb the
 subagent wrote into its state dir), while the detail carries the whole tree
 in `subagents` — the topic's descendants, each node holding the subagents it
-spawned in turn. The list shape does not resolve the lineage at all, and
-`TopicSummary` has no `subagents` field to carry it; in the detail,
-`subagents` is `Some(vec![])` when the topic has no subagents.
+spawned in turn. Both come from one resolution: the topic manager reads the
+breadcrumbs once and answers with the parents and the tree alike, so the
+list's `parent` and the detail's `subagents` cannot disagree. `TopicSummary`
+has no `subagents` field to carry the tree; in the detail, `subagents` is
+`Some(vec![])` when the topic has no subagents.
 
 ### 4.4 Other types
 

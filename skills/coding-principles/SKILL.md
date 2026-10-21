@@ -2,8 +2,9 @@
 name: coding-principles
 description: |
   Andrej Karpathy's 4 coding principles for LLM agents: Think Before Coding, Simplicity First,
-  Surgical Changes, Goal-Driven Execution. Use when writing code, planning, or reviewing code
-  to reduce common LLM coding mistakes.
+  Surgical Changes, Goal-Driven Execution — plus three house rules that apply to all coding:
+  Single Point of Responsibility, Reuse Before Adding, No Overdesign. Use when writing code,
+  planning, or reviewing code to reduce common LLM coding mistakes.
 ---
 
 ## Coding Principles
@@ -73,6 +74,44 @@ For multi-step tasks, state a brief plan:
 
 **Strong success criteria** let you loop independently. **Weak criteria** ("make it work") require constant clarification.
 
+### 5. Single Point of Responsibility
+
+One responsibility, one owner — for everything, not just reads.
+
+Every responsibility has exactly one owner: the one place that knows how it is done. Resolving a fact, applying a rule, maintaining a state, deciding an outcome — each is owned once, and every other place asks the owner instead of doing it a second way.
+
+- The owner holds the knowledge: the function that knows how, the type that holds the state, the module that owns the rule.
+- Two owners of one responsibility means the outcome is decided twice, and the two decisions drift.
+- Two paths to one result are a bug waiting: whoever changes it must keep both paths honest.
+- It covers writes too — whoever may change a thing owns *how* it changes (one writer, one invariant), not only who may read it.
+- When a second place needs the same responsibility, call the owner — don't copy it, don't re-derive it, don't add a parallel path.
+
+**The test:** name the owner of every responsibility your change touches. A name you cannot give is a responsibility nobody owns yet.
+
+### 6. Reuse Before Adding
+
+Reach for what exists before you write something new.
+
+- Search the tree for the behavior before implementing it — a function, a type, an endpoint, a rule.
+- Lift a rule to the layer that owns it and call it from every caller: one implementation, many callers.
+- The CLI, the server and the in-process command go through the same internal function for the same fact.
+- Prefer extending what exists over adding a parallel path beside it.
+- Two surfaces showing the same thing show it from the same source.
+
+**The test:** every new function either calls something that already existed, or is called — directly or transitively — by something that already existed.
+
+### 7. No Overdesign
+
+The smallest design that solves the problem. Every abstraction must earn itself.
+
+- A trait with one implementor, a struct that mirrors another struct, a wrapper that adds nothing, a parameter nobody sets — overdesign, not flexibility.
+- Don't build for a caller that does not exist yet; when it arrives, move the shared part into the owner rather than copying it.
+- A seam added only for tests is a cost — it must buy a behavior you cannot pin any other way.
+- Prefer the smallest shape that carries the fact (four fields, not twelve).
+- When a change grows, say where the lines went: moved, reused, new — and whether the new ones earn their place.
+
+**The test:** name the abstraction's second caller. If you cannot, delete it and write the direct code.
+
 ---
 
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, no responsibility owned twice, new code that reuses what already exists, and clarifying questions come before implementation rather than after mistakes.

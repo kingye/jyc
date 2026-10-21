@@ -361,6 +361,7 @@ mod tests {
             channel: "c".into(),
             pattern: None,
             status: jyc_types::TopicStatus::Idle,
+            parent: None,
             model: None,
             mode: None,
             context_input_tokens: input,

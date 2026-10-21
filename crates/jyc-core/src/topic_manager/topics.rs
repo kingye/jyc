@@ -629,19 +629,13 @@ impl TopicManager {
         // Resolved once: the central billing dir does not change per topic.
         let billing_dir = self.billing_dir();
 
-        // The channel's lineage, resolved for the detail shape only: who
-        // spawned whom, so a topic's own `subagents` tree is filled here
-        // rather than fetched per surface. The list shape leaves it out —
-        // resolving it for every topic of every poll would cost a walk per
-        // topic.
-        let resolve_lineage = only.is_some();
-        let lineage = if resolve_lineage {
-            self.topic_lineage(&topic_names).await
-        } else {
-            Vec::new()
-        };
+        // The channel's lineage, resolved once: who spawned whom, read from
+        // the `spawned-from` breadcrumb in each topic's state dir. It fills
+        // the list's `parent` and — for the detail shape — the topic's own
+        // `subagents` tree, so both come from one answer.
+        let lineage = self.lineage(&topic_names).await;
 
-        for name in topic_names {
+        for (name, entry) in topic_names.into_iter().zip(lineage.iter()) {
             if let Some(only) = only
                 && name != only
             {
@@ -761,6 +755,9 @@ impl TopicManager {
                 channel: self.channel_name.clone(),
                 pattern,
                 status,
+                // The topic that spawned this one, from the channel's
+                // lineage — the one answer the list and the detail share.
+                parent: entry.parent.clone(),
                 model,
                 mode,
                 context_input_tokens: input_tokens,
@@ -803,11 +800,11 @@ impl TopicManager {
                 // Filled by InspectServer from build_overview_state /
                 // build_state using the topic's pattern → per-agent commands.
                 commands: vec![],
-                // The subagents this topic spawned, as a tree. Resolved from
-                // the channel's lineage — the same `spawned-from` breadcrumbs
-                // the overview's `parent` comes from — so the pane and
-                // `/info` draw the tree this detail carries.
-                subagents: if resolve_lineage {
+                // The subagents this topic spawned, as a tree. Built from the
+                // channel's lineage — the same answer the list's `parent`
+                // comes from — so the pane and `/info` draw the tree this
+                // detail carries, and the explorer's tree agrees with it.
+                subagents: if only.is_some() {
                     Some(topic_tree::subagent_tree(
                         &lineage,
                         &name,
@@ -823,10 +820,12 @@ impl TopicManager {
     }
 
     /// The channel's topics with the topic that spawned each of them, read
-    /// from the `spawned-from` breadcrumb in its state dir — the same file
-    /// the inspect server reads to fill `TopicSummary::parent`, so a topic's
-    /// own tree and the overview's tree are the same data.
-    async fn topic_lineage(&self, names: &[String]) -> Vec<topic_tree::LineageEntry> {
+    /// from the `spawned-from` breadcrumb in its state dir.
+    ///
+    /// The one owner of a topic's lineage: the list's `parent` and the
+    /// detail's `subagents` tree are both built from this, so the overview
+    /// and a topic's own tree cannot drift apart.
+    async fn lineage(&self, names: &[String]) -> Vec<topic_tree::Lineage> {
         // The paths are resolved under the lock and the lock is dropped
         // before the breadcrumbs are read: reading them is the slow part and
         // it must not hold the map other callers wait for.
@@ -844,7 +843,7 @@ impl TopicManager {
         };
         let mut lineage = Vec::with_capacity(names.len());
         for (name, topic_path) in names.iter().zip(paths) {
-            lineage.push(topic_tree::LineageEntry {
+            lineage.push(topic_tree::Lineage {
                 name: name.clone(),
                 channel: self.channel_name.clone(),
                 parent: crate::command::spawn_handler::spawned_from(name, &topic_path),
@@ -1143,7 +1142,7 @@ mode = "agent"
 
     /// A topic's detail carries the subagents it spawned, as a tree. The
     /// lineage comes from the `spawned-from` breadcrumbs of the channel's
-    /// topics — the same file the overview's `parent` comes from — so the
+    /// topics — the same lineage the list's `parent` comes from — so the
     /// pane and `/info` read one shape.
     #[tokio::test]
     async fn topic_info_carries_the_subagent_tree() {
@@ -1193,12 +1192,30 @@ mode = "agent"
             .expect("the topic");
         assert_eq!(leaf.subagents, Some(vec![]));
 
-        // The list shape does not resolve the lineage: it would pay a walk
-        // per topic on every poll.
+        // The list shape carries the parent — the same lineage the tree came
+        // from — but leaves the tree unresolved: the tree belongs to one
+        // topic's detail.
         let listed = tm.list_topics_without_git().await;
         assert!(
             listed.iter().all(|t| t.subagents.is_none()),
             "the list shape leaves the tree unresolved"
+        );
+        let child = listed
+            .iter()
+            .find(|t| t.name == "tree-child")
+            .expect("the child is listed");
+        assert_eq!(
+            child.parent.as_deref(),
+            Some("tree-parent"),
+            "the list names the topic that spawned it"
+        );
+        let parent = listed
+            .iter()
+            .find(|t| t.name == "tree-parent")
+            .expect("the parent is listed");
+        assert_eq!(
+            parent.parent, None,
+            "a topic the user started has no parent"
         );
 
         // The global state-dir registration outlives the TempDir otherwise: a

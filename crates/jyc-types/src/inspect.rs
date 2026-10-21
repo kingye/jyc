@@ -230,6 +230,14 @@ pub struct TopicInfo {
     pub pattern: Option<String>,
     /// Current processing status
     pub status: TopicStatus,
+    /// Name of the topic that spawned this one — read from the
+    /// `spawned-from` breadcrumb in the topic's state dir. See
+    /// `TopicSummary::parent` for the full semantics.
+    ///
+    /// The topic manager resolves it: one owner for the lineage, so the
+    /// list and the detail cannot disagree about who spawned whom.
+    #[serde(default)]
+    pub parent: Option<String>,
     /// AI model in use (from model-override or default)
     pub model: Option<String>,
     /// Current mode (plan/build)
@@ -609,6 +617,7 @@ mod tests {
                 channel: "emf".to_string(),
                 pattern: Some("planner".to_string()),
                 status: TopicStatus::Processing,
+                parent: None,
                 model: Some("anthropic/claude-opus-4-6".to_string()),
                 mode: Some("build".to_string()),
                 context_input_tokens: Some(45000),

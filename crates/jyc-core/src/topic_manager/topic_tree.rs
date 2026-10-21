@@ -4,39 +4,23 @@
 //! the `subagents` a topic's detail carries are all built by these
 //! functions, so the three surfaces cannot drift apart.
 //!
-//! The lineage itself comes from the `spawned-from` breadcrumb each
-//! subagent wrote into its own state dir — the same file the inspect server
-//! reads to fill `TopicSummary::parent`, so a topic's own tree and the
-//! overview's tree are the same data.
+//! The lineage itself is the topic manager's: it reads the `spawned-from`
+//! breadcrumb each subagent wrote into its own state dir and hands the tree
+//! its input — the same parents the overview's list carries, so the two
+//! trees are built from one answer.
 
 use std::collections::{HashMap, HashSet};
 
 use jyc_types::{TopicNode, TopicRef, TopicStatus};
 
-/// A topic that can be placed in a lineage tree: its identity, the topic
-/// that spawned it, and its status.
-pub trait TopicLineage: TopicRef {
-    /// The topic that spawned this one — the name in its `spawned-from`
-    /// breadcrumb — or `None` for a topic the user started.
-    fn lineage_parent(&self) -> Option<&str>;
-    /// The topic's live status.
-    fn lineage_status(&self) -> TopicStatus;
-}
-
-impl TopicLineage for jyc_types::TopicSummary {
-    fn lineage_parent(&self) -> Option<&str> {
-        self.parent.as_deref()
-    }
-
-    fn lineage_status(&self) -> TopicStatus {
-        self.status.clone()
-    }
-}
-
-/// A topic of a channel, with the topic that spawned it — the lineage a
-/// tree is built from.
+/// A topic of a channel, with the topic that spawned it — the input a
+/// lineage tree is built from.
+///
+/// The topic manager fills it from the `spawned-from` breadcrumb in the
+/// topic's state dir; the dashboard's list fills it from the manager's
+/// answer. One shape, so one tree builds every surface's tree.
 #[derive(Debug, Clone)]
-pub struct LineageEntry {
+pub struct Lineage {
     /// Topic name
     pub name: String,
     /// Channel the topic belongs to
@@ -47,7 +31,7 @@ pub struct LineageEntry {
     pub status: TopicStatus,
 }
 
-impl TopicRef for LineageEntry {
+impl TopicRef for Lineage {
     fn topic_channel(&self) -> &str {
         &self.channel
     }
@@ -57,13 +41,16 @@ impl TopicRef for LineageEntry {
     }
 }
 
-impl TopicLineage for LineageEntry {
-    fn lineage_parent(&self) -> Option<&str> {
-        self.parent.as_deref()
-    }
-
-    fn lineage_status(&self) -> TopicStatus {
-        self.status.clone()
+impl From<&jyc_types::TopicSummary> for Lineage {
+    /// The overview's list entry as a tree input: the same topics, in the
+    /// shape the tree walks.
+    fn from(summary: &jyc_types::TopicSummary) -> Self {
+        Lineage {
+            name: summary.name.clone(),
+            channel: summary.channel.clone(),
+            parent: summary.parent.clone(),
+            status: summary.status.clone(),
+        }
     }
 }
 
@@ -71,10 +58,10 @@ impl TopicLineage for LineageEntry {
 /// `parent`, in name order. The channel is part of the key because a spawn
 /// creates its child in the parent's own channel, so a name alone would
 /// confuse two same-named parents on different channels.
-fn children_index<T: TopicLineage>(topics: &[T]) -> HashMap<(&str, &str), Vec<usize>> {
+fn children_index(topics: &[Lineage]) -> HashMap<(&str, &str), Vec<usize>> {
     let mut index: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
     for (i, t) in topics.iter().enumerate() {
-        if let Some(parent) = t.lineage_parent() {
+        if let Some(parent) = t.parent.as_deref() {
             index
                 .entry((parent, t.topic_channel()))
                 .or_default()
@@ -90,9 +77,9 @@ fn children_index<T: TopicLineage>(topics: &[T]) -> HashMap<(&str, &str), Vec<us
 /// Append the descendants of the topic `name` to `nodes`, depth-first, each
 /// nested under its parent. `seen` stops a breadcrumb cycle — only
 /// hand-edited state can produce one — from recursing forever.
-fn push_subtree<T: TopicLineage>(
+fn push_subtree(
     nodes: &mut Vec<TopicNode>,
-    topics: &[T],
+    topics: &[Lineage],
     index: &HashMap<(&str, &str), Vec<usize>>,
     name: &str,
     channel: &str,
@@ -123,7 +110,7 @@ fn push_subtree<T: TopicLineage>(
         nodes.push(TopicNode {
             name: topic.topic_name().to_string(),
             channel: topic.topic_channel().to_string(),
-            status: topic.lineage_status(),
+            status: topic.status.clone(),
             children,
         });
     }
@@ -140,7 +127,7 @@ fn push_subtree<T: TopicLineage>(
 /// cycle's back-edge instead of following it, and the leftover walk at the end
 /// picks up whatever the first walk could not reach. So the forest holds as
 /// many nodes as the list has topics.
-pub fn topic_forest<T: TopicLineage>(topics: &[T]) -> Vec<TopicNode> {
+pub fn topic_forest(topics: &[Lineage]) -> Vec<TopicNode> {
     let index = children_index(topics);
     let listed: HashSet<(&str, &str)> = topics
         .iter()
@@ -153,7 +140,8 @@ pub fn topic_forest<T: TopicLineage>(topics: &[T]) -> Vec<TopicNode> {
         // which holds a topic the moment it names a parent, so asking about it
         // would read as "has a parent" and hide every orphan instead of
         // promoting it to a root.
-        if t.lineage_parent()
+        if t.parent
+            .as_deref()
             .is_some_and(|p| listed.contains(&(p, t.topic_channel())))
         {
             continue;
@@ -172,9 +160,9 @@ pub fn topic_forest<T: TopicLineage>(topics: &[T]) -> Vec<TopicNode> {
 
 /// Push topic `i` as a root, then its subtree. A topic the walk has already
 /// reached is left alone, so a second call is a no-op.
-fn push_root<T: TopicLineage>(
+fn push_root(
     roots: &mut Vec<TopicNode>,
-    topics: &[T],
+    topics: &[Lineage],
     index: &HashMap<(&str, &str), Vec<usize>>,
     i: usize,
     seen: &mut HashSet<usize>,
@@ -195,7 +183,7 @@ fn push_root<T: TopicLineage>(
     roots.push(TopicNode {
         name: topic.topic_name().to_string(),
         channel: topic.topic_channel().to_string(),
-        status: topic.lineage_status(),
+        status: topic.status.clone(),
         children,
     });
 }
@@ -206,11 +194,7 @@ fn push_root<T: TopicLineage>(
 /// The root need not be in `topics` — its children are found by name — but
 /// when it is, a breadcrumb cycle leading back to it stops there rather
 /// than listing the root as its own descendant.
-pub fn subagent_tree<T: TopicLineage>(
-    topics: &[T],
-    root_name: &str,
-    root_channel: &str,
-) -> Vec<TopicNode> {
+pub fn subagent_tree(topics: &[Lineage], root_name: &str, root_channel: &str) -> Vec<TopicNode> {
     let index = children_index(topics);
     let mut nodes = Vec::new();
     let mut seen = HashSet::new();
@@ -240,8 +224,8 @@ mod tests {
     use super::*;
 
     /// A topic of the list, with the topic that spawned it.
-    fn topic(name: &str, parent: Option<&str>) -> LineageEntry {
-        LineageEntry {
+    fn topic(name: &str, parent: Option<&str>) -> Lineage {
+        Lineage {
             name: name.to_string(),
             channel: "test".to_string(),
             parent: parent.map(str::to_string),

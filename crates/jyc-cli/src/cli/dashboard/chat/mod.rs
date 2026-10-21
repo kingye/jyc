@@ -8,7 +8,7 @@ use super::token_render::{
 };
 use super::*;
 use jyc_core::duration::{DurationStyle, format_duration_ms, format_duration_secs};
-use jyc_core::topic_manager::topic_tree::{node_count, topic_forest};
+use jyc_core::topic_manager::topic_tree::{Lineage, node_count, topic_forest};
 
 pub(super) mod clipboard;
 mod render;
@@ -27,6 +27,15 @@ const LINE_DRAWING: Style = Style::new().fg(Color::Rgb(0x39, 0x35, 0x52));
 /// need this number: the renderer reserves it as its last chunk, and
 /// `page_size` subtracts it from the scrollable message rows.
 pub(super) const STATUS_LINE_ROWS: u16 = 1;
+
+/// The overview's list as the tree's input: the same topics, in the shape
+/// the tree walks.
+///
+/// The list already carries each topic's parent — the topic manager resolved
+/// it — so this is a shape change, not a second resolution.
+fn lineage_of(topics: &[jyc_types::TopicSummary]) -> Vec<Lineage> {
+    topics.iter().map(Lineage::from).collect()
+}
 
 /// An `ask_user` question pushed by the daemon, awaiting the user's answer.
 pub(super) struct PendingQuestion {
@@ -774,7 +783,7 @@ fn explorer_move(app: &mut App, delta: i64) {
 /// types use the unified `/ws/<channel>/<topic>` endpoint.
 fn explorer_open_selected(app: &mut App) {
     let info = app.state.as_ref().and_then(|s| {
-        let forest = topic_forest(&s.topics);
+        let forest = topic_forest(&lineage_of(&s.topics));
         let rows = explorer_rows(&forest);
         let node = rows.get(app.chat.explorer_selected)?.node;
         Some((node.name.clone(), node.channel.clone()))
@@ -882,7 +891,7 @@ fn toggle_explorer_snapped(app: &mut App) {
     let idx = app.state.as_ref().and_then(|s| {
         let topic = app.chat.topic.as_deref()?;
         let channel = app.chat.channel.as_deref()?;
-        let forest = topic_forest(&s.topics);
+        let forest = topic_forest(&lineage_of(&s.topics));
         row_of(&explorer_rows(&forest), topic, channel)
     });
     if let Some(idx) = idx {
@@ -1390,7 +1399,7 @@ fn sync_explorer_selection(app: &mut App) {
         app.chat.explorer_selected = 0;
         return;
     };
-    let forest = topic_forest(&s.topics);
+    let forest = topic_forest(&lineage_of(&s.topics));
     let rows = explorer_rows(&forest);
     let len = rows.len();
     if len == 0 {
@@ -1514,7 +1523,7 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
 
     // Tree rows: a subagent sits under the topic that spawned it.
     // Scroll window: keep the selected row visible.
-    let forest = topic_forest(&s.topics);
+    let forest = topic_forest(&lineage_of(&s.topics));
     let rows = explorer_rows(&forest);
     let height = inner.height as usize;
     let offset = window_offset(rows.len(), selected, height);

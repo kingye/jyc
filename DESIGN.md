@@ -1912,7 +1912,7 @@ Please also add a chart to the PPT.
 
 **The moderation gate still applies:** a `message_received` hook that blocks the message keeps it out of the running turn — it waits for a turn of its own, where the same hook blocks it again and the chat log records it. An injected message reaches the model just as much as a message that starts a turn, so it passes the same gate.
 
-**Ordering:** an injected message overtakes the messages already waiting. A message that cannot be injected (an attachment, a template, a topic-path override) and arrived earlier is re-queued and processed *after* the injected content was folded into the running turn and answered: the absorbed turn comes first, the queued one follows.
+**Ordering:** an injected message overtakes the messages already waiting. A message that cannot be injected (an attachment, a template, a topic path pointing elsewhere than the running turn's) and arrived earlier is re-queued and processed *after* the injected content was folded into the running turn and answered: the absorbed turn comes first, the queued one follows.
 
 ## Worker (Agent Service)
 

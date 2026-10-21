@@ -193,8 +193,8 @@ impl AgentConfig {
         pattern.attachments = self.attachments.clone();
         pattern.template = self.template.clone();
         pattern.role = self.role.clone();
-        pattern.live_injection = self.live_injection;
-        pattern.inject_inbound_images = self.inject_inbound_images;
+        pattern.live_injection = Some(self.live_injection);
+        pattern.inject_inbound_images = Some(self.inject_inbound_images);
         pattern.model = self.model.clone();
         pattern.plan_model = self.plan_model.clone();
         pattern.build_model = self.build_model.clone();

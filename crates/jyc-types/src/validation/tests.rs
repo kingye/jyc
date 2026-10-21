@@ -1406,3 +1406,122 @@ shell = []
         "got: {errors:?}"
     );
 }
+
+/// An explicit `[channels.<name>]` with type="websocket" is gone: the
+/// synthesized "agents" channel is the only websocket channel in the hub.
+#[test]
+fn test_explicit_websocket_channel_fails() {
+    let toml = r#"
+[channels.local_dev]
+type = "websocket"
+
+[ai]
+mode = "agent"
+"#;
+    let config = load_config_from_str(toml).unwrap();
+    let errors = validate_config(&config, NO_BUILTINS);
+    assert!(
+        errors.iter().any(|e| e.path == "channels.local_dev.type"),
+        "expected channels.local_dev.type error, got: {errors:?}"
+    );
+}
+
+/// A pipe channel carries routing only — every processing attribute on
+/// its patterns is dead configuration and is rejected, whatever its
+/// value (including a value equal to the default).
+#[test]
+fn test_pipe_channel_pattern_processing_attrs_fail() {
+    for (field, value) in [
+        ("live_injection", "true"),
+        ("live_injection", "false"),
+        ("inject_inbound_images", "true"),
+        ("inject_inbound_images", "false"),
+        ("model", "\"anthropic/claude-opus-4-6\""),
+        ("plan_model", "\"anthropic/claude-opus-4-6\""),
+        ("mode", "\"plan\""),
+        ("skills", "[\"coding-principles\"]"),
+        ("disabled_skills", "[\"coding-principles\"]"),
+        ("mcps", "[]"),
+        ("disabled_tools", "[\"bash\"]"),
+        ("disabled_mcps", "[\"invoice\"]"),
+        ("template", "\"general\""),
+        ("topic_path", "\"/tmp/topic\""),
+    ] {
+        let toml = format!(
+            r#"
+[channels.work]
+type = "email"
+
+[[channels.work.patterns]]
+name = "p"
+{field} = {value}
+
+[ai]
+mode = "agent"
+"#
+        );
+        let config = load_config_from_str(&toml).unwrap();
+        let errors = validate_config(&config, NO_BUILTINS);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.path == format!("channels.work.patterns[0].{field}")),
+            "expected {field} = {value} to be rejected, got: {errors:?}"
+        );
+    }
+}
+
+/// The same at channel level: a pipe channel's own processing settings
+/// are dead configuration.
+#[test]
+fn test_pipe_channel_level_processing_attrs_fail() {
+    for (field, value) in [
+        ("model", "\"anthropic/claude-opus-4-6\""),
+        ("small_model", "\"anthropic/claude-opus-4-6\""),
+        ("skills", "[\"coding-principles\"]"),
+        ("disabled_skills", "[\"coding-principles\"]"),
+        ("disabled_tools", "[\"bash\"]"),
+        ("disabled_mcps", "[\"invoice\"]"),
+        ("mcps", "[]"),
+    ] {
+        let toml = format!(
+            r#"
+[channels.work]
+type = "email"
+{field} = {value}
+
+[ai]
+mode = "agent"
+"#
+        );
+        let config = load_config_from_str(&toml).unwrap();
+        let errors = validate_config(&config, NO_BUILTINS);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.path == format!("channels.work.{field}")),
+            "expected {field} = {value} to be rejected, got: {errors:?}"
+        );
+    }
+}
+
+/// The agent channel is where processing configuration lives — the same
+/// keys are fine there.
+#[test]
+fn test_agent_pattern_processing_attrs_pass() {
+    let toml = r#"
+[agents.jyc]
+model = "anthropic/claude-opus-4-6"
+live_injection = false
+inject_inbound_images = true
+skills = ["coding-principles"]
+template = "general"
+topic_path = "/tmp/topic"
+
+[ai]
+mode = "agent"
+"#;
+    let config = load_config_from_str(toml).unwrap();
+    let errors = validate_config(&config, NO_BUILTINS);
+    assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
+}

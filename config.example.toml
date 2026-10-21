@@ -62,17 +62,11 @@ folder = "INBOX"
 # [channels.jiny283.footer]
 # enabled = true
 
-# Per-channel model override: takes priority over global [ai].model,
-# but below per-pattern model override.
-# model = "anthropic/claude-opus-4-6"
-# small_model = "deepseek/deepseek-v4-flash"
-
-# Channel-level skills whitelist: when set, only these skills are loaded
-# for all topics in this channel. Pattern-level `skills` takes priority.
-# skills = ["internal-comms", "coding-principles"]
-
-# Channel-level skills to disable: merged with pattern-level `disabled_skills`.
-# disabled_skills = ["ui-ux-frontend"]
+# Processing configuration (model, small_model, skills, mcps,
+# live_injection, ...) does not belong on a pipe channel: it only forwards.
+# The hub handles the message under the target agent's configuration —
+# declare those keys under `[agents.<name>]`. Config validation rejects
+# them here.
 
 [[channels.jiny283.patterns]]
 name = "xxx"
@@ -90,87 +84,12 @@ enabled = true
 #   pipe = { agent = "jin", topic = "${msg.from}" }        # one topic per sender
 pipe = { agent = "jin" }
 
-# Initial agent mode for topics matching this pattern. Valid values: "plan", "build".
-# When set, topics matching this pattern start in the specified mode, unless the
-# runtime `.jyc/mode-override` file takes priority. Default: "build".
-# mode = "plan"
-
-# Per-pattern model override: takes priority over channel-level and global
-# [ai].model, but below the runtime .jyc/model-override file.
-# model = "anthropic/claude-opus-4-6"
-# small_model = "deepseek/deepseek-v4-flash"
-
-# Live message injection: when true (default), follow-up messages arriving
-# while AI is processing are injected into the active session immediately.
-# When false, messages queue and are processed sequentially (one at a time).
-# live_injection = false
-
-# Auto-inject inbound `image/*` attachments into the first user turn of the
-# agent loop as multimodal content blocks. Default: false. Only takes effect
-# when the active model has `supports_images = true`. When false, image
-# attachments stay on disk and the agent must use the `read_image` built-in
-# tool to load them on demand.
-# inject_inbound_images = true
-
-# `reset_compression` and `auto_reset_threshold` are deprecated and ignored:
-# the auto-reset mechanism was removed — the sliding-window context
-# strategy keeps the context inside the model's window, so there is
-# nothing to reset for. The keys are still accepted so configs written
-# before the removal keep loading.
-# reset_compression = { mode = "llm", keep_pairs = 3 }
-# auto_reset_threshold = 0.9
-
-# Per-pattern context management strategy. Controls how prior conversation
-# history is sent to the LLM on each request. The on-disk
-# .jyc/agent-context.json always stores the full raw context unchanged;
-# this field only shapes the wire payload.
-# mode: "full" | "sliding_window" (alias "sliding"). Default: "sliding_window".
-# window: user+assistant turns to keep in sliding_window mode. Default: 10.
-# In sliding_window mode the send context carries the last N text pairs
-# plus the current turn verbatim (tool calls / results intact).
-# Note: window counts TURNS, not tokens — a turn's folded tool-call
-# annotations make tool-heavy turns larger than chatty ones, so the
-# windowed part's token size is bounded per annotation but not per turn.
-# note_window: in sliding_window mode, only the most recent M windowed
-# turns carry tool-call history notes; older turns are text-only.
-# Default: 5. 0 = no notes at all.
-# tool_result_cap: in sliding_window mode, cap each tool result in the
-# verbatim prior region (region ②; the current turn is governed by
-# turn_tool_result_cap instead)
-# at N bytes. Truncated
-# results are suffixed with '… [truncated N bytes]'. Only meaningful
-# when note_window > 0 (otherwise nothing is verbatim). Default: 2048.
-# turn_tool_result_cap: in sliding_window mode, cap each tool result in
-# the CURRENT turn (region ③) at N bytes, the marker included. An
-# oversized result keeps its head and tail with the middle replaced by
-# '… [N bytes dropped from the middle — re-read with offset/limit to
-# see the gap] …', because a result is usually read for what sits at
-# its ends (the error at the bottom of a command, the totals of a grep).
-# Below ~128 bytes there is no room for both ends, so the head-only cut
-# takes over and its own marker sits on top of N.
-# Unset by default: the model is still reasoning over these results
-# mid-loop, so nothing is cut until you ask for it. Worth setting where
-# one verbose result (a big file read, a chatty command) would otherwise
-# ride every remaining call of the turn.
-# context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048 }
-# context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048, turn_tool_result_cap = 32768 }
-
-# Custom filesystem path for the topic directory.
-# When set, the topic's working directory is this path instead of the
-# default <workspace>/<topic_name>/. Supports ~ expansion to $HOME.
-# Absolute paths are used as-is. The topic_name (or topic_prefix) still
-# controls the logical routing key — this field only changes where files
-# are stored on disk.
-# topic_path = "~/my-project"
-
-# Per-pattern skills whitelist: overrides channel-level `skills`.
-# When both are unset, all discovered skills are loaded. Every skill that
-# survives these filters also becomes a `/skill:<name>` command, for use on a
-# single message without changing the topic's `/skill` toggles.
-# skills = ["invoice-processing"]
-
-# Per-pattern skills to disable: merged with channel-level `disabled_skills`.
-# disabled_skills = ["coding-principles"]
+# A pipe channel's pattern carries routing only: `rules` (matching) and
+# `pipe` (target). Processing configuration — mode, model, live_injection,
+# inject_inbound_images, context_strategy, topic_path, skills, mcps, access
+# — belongs to the agent that handles the message; declare it under
+# `[agents.<name>]` (see the Agents section below). Config validation
+# rejects those keys here.
 
 # Per-pattern filesystem access whitelist.
 # Extends the agent's read/write boundary beyond the topic working directory.
@@ -281,25 +200,24 @@ heartbeat_interval_secs = 30
 [[channels.feishu_bot.patterns]]
 name = "feishu_bot"
 enabled = true
-# Required: pipe messages matching this pattern into an agent's websocket channel. The message is re-targeted and routed through the agent channel's
-# own router (identical to a chat-pane message), so the agent pattern's
-# topic_path/template/skills apply. A matched pattern without `pipe` drops
-# the message with a warning.
+# Required: pipe messages matching this pattern into an agent. The message is
+# re-targeted and routed through the agents channel's own router (identical to
+# a chat-pane message), so the agent's configuration — topic_path, template,
+# skills, model — applies. A matched pattern without `pipe` drops the message
+# with a warning.
 #
-# Three forms:
-#   pipe = { channel = "local_dev", topic = "jyc" }
-#     Legacy: the topic name doubles as the target pattern name.
-#   pipe = { channel = "local_dev", pattern = "jyc" }
-#     Shorthand for pattern = "jyc", topic = "jyc".
-#   pipe = { channel = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
-#     `group_chat` supplies the pattern config; the topic name is derived per
-#     chat via the runtime placeholder `${msg.chat_name}` (resolved from the
-#     message's chat name, sanitized for filesystem use) — e.g. one `mentions`
-#     pattern serving many group chats. Distinct from load-time `${ENV_VAR}`
-#     expansion: the `msg.` namespace is resolved per message at runtime.
-#     Messages without a chat name (e.g. P2P chats) are dropped with a
-#     warning when the placeholder is used.
-pipe = { channel = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
+# Forms:
+#   pipe = { agent = "jin" }
+#     The agent named `jin`; without `topic`, the pattern's own topic name
+#     (or the subject-derived one) is used.
+#   pipe = { agent = "jin", topic = "${msg.chat_name}" }
+#     The topic name is derived per chat via the runtime placeholder
+#     `${msg.chat_name}` (resolved from the message's chat name, sanitized for
+#     filesystem use) — e.g. one `mentions` pattern serving many group chats.
+#     Distinct from load-time `${ENV_VAR}` expansion: the `msg.` namespace is
+#     resolved per message at runtime. Messages without a chat name (e.g. P2P
+#     chats) are dropped with a warning when the placeholder is used.
+pipe = { agent = "jin", topic = "${msg.chat_name}" }
 
 # Feishu-specific pattern matching
 [channels.feishu_bot.patterns.rules]
@@ -993,47 +911,20 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # agent = "jyc_git"
 # topic = "dev-${msg.pr_number}"
 #
-# # --- Per-Pattern MCP Examples ---
-# # Each pattern can declare its own `mcps` list to use different MCP tools,
-# # different credentials, or different remote endpoints. When set, only these
-# # MCP servers are loaded for topics matching this pattern.
-#
-# # Pattern: Invoice processing with dedicated local MCP
-# # [[channels.my_repo.patterns]]
-# # name = "invoice-processor"
-# # enabled = true
-# # role = "Developer"
+# # --- MCP Examples ---
+# # MCPs belong to the agent that handles the message: declare them under
+# # [agents.<name>], or per topic in that topic's `.jyc/config.toml`. A pipe
+# # channel's pattern cannot carry them.
 # #
-# # [channels.my_repo.patterns.rules]
-# # github_type = ["issue"]
-# # labels = ["invoice"]
-# #
-# # [channels.my_repo.patterns.pipe]
-# # agent = "jyc_git"
-# # topic = "dev-${msg.issue_number}"
-# #
-# # # Per-pattern MCP: only the invoice MCP is available for this pattern
-# # [[channels.my_repo.patterns.mcps]]
+# # [agents.jyc_git]
+# # # Local MCP
+# # [[agents.jyc_git.mcps]]
 # # name = "invoice"
 # # type = "local"
 # # command = ["invoice", "mcp"]
-#
-# # Pattern: Code review with remote MCP service + auth
-# # [[channels.my_repo.patterns]]
-# # name = "ai-reviewer"
-# # enabled = true
-# # role = "Planner"
-# #
-# # [channels.my_repo.patterns.rules]
-# # github_type = ["pull_request"]
-# # labels = ["ai-review"]
-# #
-# # [channels.my_repo.patterns.pipe]
-# # agent = "jyc_git"
-# # topic = "review-${msg.pr_number}"
 # #
 # # # Remote MCP with Bearer token authentication
-# # [[channels.my_repo.patterns.mcps]]
+# # [[agents.jyc_git.mcps]]
 # # name = "code-review-mcp"
 # # type = "remote"
 # # url = "https://review.example.com/mcp"
@@ -1041,76 +932,32 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # auth_header = "sk-xxx-review-token"
 # #
 # # # Remote MCP with custom headers
-# # [channels.my_repo.patterns.mcps.custom_headers]
+# # [agents.jyc_git.mcps.custom_headers]
 # # "X-API-Key" = "abc123"
 # # "X-Organization" = "my-org"
-#
-# # --- Channel-Level MCP Example ---
-# # NOTE: agent-runtime fields (mcps, disabled_tools, skills, template,
-# # role, topic_name) take effect on the HUB side only — the websocket /
-# # [agents.<name>] channel that owns the topic. Pipe-only channels
-# # (wecomkf, wecom, wecom_bot, feishu, email, github, gitee) ignore them;
-# # their patterns only use `rules` (matching) and `pipe` (target).
 # #
-# # Channel-level MCPs are loaded for all topics in the channel.
-# # Pattern-level mcps overrides channel-level.
-# #
-# [channels.my_hub]
-# type = "websocket"
-# #
-# # Channel-level MCP: all topics in this channel share these tools
-# # [[channels.my_hub.mcps]]
+# # Agent-level MCPs are loaded for all topics of the agent.
+# # [[agents.my_hub.mcps]]
 # # name = "kf_helper"
 # # type = "local"
 # # command = ["kf-helper", "mcp"]
 # #
-# # [[channels.my_hub.patterns]]
-# # name = "kf_bot"
-# # enabled = true
-# # # Pattern-level MCP overrides channel-level for this pattern
-# # # [[channels.my_hub.patterns.mcps]]
-# # # name = "special_tool"
-# # # type = "local"
-# # # command = ["special", "mcp"]
+# # No MCP tools at all (empty mcps list)
+# # [agents.simple_reply]
+# # mcps = []
 # #
-# # [channels.my_hub.patterns.rules]
-# # keywords = ["help", "support", "问题"]
-
 # # --- Tool Exclusion Examples ---
-# # Disable specific tools or entire MCP servers at channel or pattern level.
+# # Disable specific tools or entire MCP servers at agent level.
 # #
-# # [channels.my_hub]
-# # type = "websocket"
-# #
-# # # Channel-level: disable proactive messaging for all patterns in this channel
+# # [agents.my_hub]
+# # # Disable proactive messaging for all topics of this agent
 # # disabled_tools = ["jyc_send_message"]
 # #
-# # # Channel-level: disable entire MCP servers
-# # disabled_mcps = ["invoice"]
-# #
-# # [[channels.my_hub.patterns]]
-# # name = "safe_mode"
-# # enabled = true
-# #
-# # # Pattern-level: additional tools disabled (merged with channel-level)
-# # disabled_tools = ["bash", "write"]
+# # # Disable entire MCP servers
 # # disabled_mcps = ["invoice"]
 # #
 # # # Backward-compatible alias (merged with disabled_tools)
 # # disabled_builtin_tools = ["bash"]
-# #
-# # [channels.my_hub.patterns.rules]
-# # keywords = ["help"]
-
-# # Pattern: No MCP tools at all (empty mcps list)
-# # [[channels.my_repo.patterns]]
-# # name = "simple-reply"
-# # enabled = true
-# # template = "github-developer"
-# # mcps = []  # Disable all MCP tools for this pattern
-# #
-# # [channels.my_repo.patterns.rules]
-# # github_type = ["issue"]
 #
 # # --- Channel: my_wecom_bot ---
 # # WeCom (企业微信) channel using the external contact API for outbound messaging.
@@ -1342,22 +1189,12 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # command directly (no LLM, no tokens). In any other topic, `/lint`
 # is unknown unless defined globally or under that other agent.
 
-# --- Channel: WebSocket (LEGACY — deprecated) ---
+# --- Channel: WebSocket (REMOVED) ---
 #
-# Pre-agents form. Still works in this release; new configs should use
-# [agents.<name>] above. The CLI emits a deprecation warning at startup
-# when a websocket channel has no matching [agents.<name>].
-#
-# [channels.my_ws]
-# type = "websocket"
-#
-# # Define patterns for the chat pane (first enabled pattern is the default)
-# [[channels.my_ws.patterns]]
-# name = "general"
-# enabled = true
-# template = "general"
-# topic_path = "~/projects/general"
-# skills = []
+# The pre-agents form — an explicit `[channels.<name>]` with
+# type = "websocket" — is gone: channels are forwarders owned by the pipe
+# process, and the only hub-side websocket channel is the "agents" channel
+# synthesized from `[agents.<name>]`. Config validation rejects it.
 
 # --- Per-Topic MCP Overrides (L3) ---
 #

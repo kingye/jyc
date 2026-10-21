@@ -27,6 +27,13 @@ JYC is a channel-agnostic AI agent that operates through messaging channels. Use
 > the legacy architecture and apply to the websocket channel synthesized by
 > an agent only.
 >
+> **Config surface:** an explicit `[channels.<name>]` with `type = "websocket"`
+> is rejected — the synthesized "agents" channel is the only websocket channel
+> in the hub. A pipe channel carries routing only (`rules` to match, `pipe` to
+> target); the processing configuration (model, mode, skills, mcps,
+> live_injection, topic_path, template, …) belongs to the agent that handles
+> the message, and config validation rejects those keys on a pipe channel.
+>
 > **Processes:** every pipe-only channel runs in a separate process,
 > `jyc-pipe`, which connects to the hub's websocket endpoint and owns no
 > topics, agents, or core state; the hub (`jyc` serve) claims only the
@@ -928,9 +935,9 @@ base_url = "https://open.feishu.cn"
 [[channels.feishu_bot.patterns]]
 name = "mention_bot"
 enabled = true
-# Required: pipe into an agent's websocket channel. A matched pattern
-# without `pipe` drops the message with a warning.
-pipe = { channel = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
+# Required: pipe into an agent. A matched pattern without `pipe` drops the
+# message with a warning.
+pipe = { agent = "jin", topic = "${msg.chat_name}" }
 
 [channels.feishu_bot.patterns.rules]
 mentions = ["jyc"]

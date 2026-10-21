@@ -107,28 +107,6 @@ pub async fn run(
     let config_snapshot = config.load();
     let agent_config = Arc::new(config_snapshot.ai.clone());
 
-    // Emit a one-shot deprecation warning for legacy
-    // `[channels.<name>] type = "websocket"` configs (those without a
-    // matching `[agents.<name>]`).
-    let snap_for_warning = config.load();
-    let legacy_ws: Vec<&str> = snap_for_warning
-        .channels
-        .iter()
-        .filter(|(name, c)| {
-            c.channel_type == "websocket"
-                && !snap_for_warning.agents.contains_key(*name)
-                && *name != "agents"
-        })
-        .map(|(name, _)| name.as_str())
-        .collect();
-    if !legacy_ws.is_empty() {
-        tracing::warn!(
-            channels = ?legacy_ws,
-            "[channels.<name>] type=\"websocket\" is deprecated; \
-             rename to [agents.<name>] (legacy form still works in this release)"
-        );
-    }
-
     // Resolve and persist the inspect auth token BEFORE spawning channels:
     // piped-channel reply forwarders (e.g. feishu) read this file at startup
     // to build their inspect client — writing it later would race them and

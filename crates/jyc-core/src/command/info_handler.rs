@@ -58,7 +58,7 @@ impl CommandHandler for InfoCommandHandler {
 
 /// Render the pane's rows as plain text, one per line, with the same
 /// omission rules as the TUI: missing data skips the row entirely (no
-/// `Model:` line on the default model, no `Cache create:` line at zero).
+/// `Model:` line on the default model, no `Create:` line at zero).
 fn format_topic_info(t: &TopicInfo) -> String {
     let mut lines: Vec<String> = Vec::new();
     lines.push(format!("Topic: {}", t.name));
@@ -86,23 +86,30 @@ fn format_topic_info(t: &TopicInfo) -> String {
     if let Some(output) = t.output_tokens {
         lines.push(format!("Output: {}", jyc_types::format_token_count(output)));
     }
-    // The two cache rows: the latest turn's and the session's. Each carries
-    // its own hits, input and share — the same string the pane's row shows,
-    // from the same shared formatter.
+    // The cache group: the turn's rate, the session's rate and the cache's
+    // write volume, under one header — the same grouping the pane draws.
+    // Each rate carries its own hits, input and share — the same string
+    // the pane's row shows, from the same shared formatter. The header
+    // appears only when a row does.
+    let mut cache_lines: Vec<String> = Vec::new();
     if let Some(rate) = jyc_types::format_cache_rate(t.turn_cache_hit_tokens, t.turn_input_tokens) {
-        lines.push(format!("Cache (turn): {rate}"));
+        cache_lines.push(format!("  Turn: {rate}"));
     }
     if let Some(rate) = jyc_types::format_cache_rate(t.total_cache_hit_tokens, t.total_input_tokens)
     {
-        lines.push(format!("Cache (session): {rate}"));
+        cache_lines.push(format!("  Session: {rate}"));
     }
     if let Some(creation) = t.total_cache_creation_tokens
         && creation > 0
     {
-        lines.push(format!(
-            "Cache create: {}",
+        cache_lines.push(format!(
+            "  Create: {}",
             jyc_types::format_token_count(creation)
         ));
+    }
+    if !cache_lines.is_empty() {
+        lines.push("Cache:".to_string());
+        lines.extend(cache_lines);
     }
     if let Some(reasoning) = t.total_reasoning_tokens
         && reasoning > 0
@@ -289,8 +296,9 @@ Branch: fix/issue-42-timeout
 Status: Idle
 Tokens: 104.96K / 250.00K (41%)
 Output: 12.06K
-Cache (session): 964.51K / 1.18M (80%)
-Cache create: 111
+Cache:
+  Session: 964.51K / 1.18M (80%)
+  Create: 111
 Reasoning: 4.00K
 Cost: $0.42 session · $1.23 today
 Latency: 1.10s/call (3) · 820ms/call (37)
@@ -312,11 +320,8 @@ Files (2):
         t.turn_cache_hit_tokens = Some(300);
         t.turn_input_tokens = Some(1_000);
         let text = format_topic_info(&t);
-        assert!(text.contains("Cache (turn): 300 / 1000 (30%)"), "{text}");
-        assert!(
-            text.contains("Cache (session): 964.51K / 1.18M (80%)"),
-            "{text}"
-        );
+        assert!(text.contains("  Turn: 300 / 1000 (30%)"), "{text}");
+        assert!(text.contains("  Session: 964.51K / 1.18M (80%)"), "{text}");
     }
 
     /// The day's spend across every topic, per currency.
@@ -372,7 +377,7 @@ Files (2):
     fn cache_create_row_hidden_at_zero() {
         let mut t = full_info();
         t.total_cache_creation_tokens = Some(0);
-        assert!(!format_topic_info(&t).contains("Cache create"));
+        assert!(!format_topic_info(&t).contains("Create:"));
     }
 
     #[test]

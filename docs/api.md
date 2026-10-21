@@ -748,8 +748,8 @@ The cache figures come in two scopes: `total_cache_hit_tokens` /
 session reset), while `turn_cache_hit_tokens` / `turn_input_tokens` are the
 latest turn's — the pair is zeroed at every turn start, so it is `None` until
 the turn makes its first call. Both scopes feed the info surfaces' cache
-rows: `Cache (turn)` and `Cache (session)`, each showing the hits, the input
-they are a share of, and that share in percent.
+rows: `Turn` and `Session` under the info surfaces' `Cache:` header, each
+showing the hits, the input they are a share of, and that share in percent.
 
 `today_all` is the day's spend across *every* topic, per currency — the
 ledger's own day total, the same figure `/bill` reports. It is kept apart

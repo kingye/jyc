@@ -113,8 +113,14 @@ impl Provider for InjectingProvider {
             ];
             return Ok(Box::pin(stream::iter(events)));
         }
-        let events: Vec<anyhow::Result<StreamEvent>> =
-            vec![Ok(StreamEvent::TextDelta("done".to_string()))];
+        // The second call ends the turn with a text reply. It carries the
+        // `Done` marker like every provider stream does: a stream that
+        // ends without it is a truncated one, and the loop fails the turn
+        // instead of shipping half an answer.
+        let events: Vec<anyhow::Result<StreamEvent>> = vec![
+            Ok(StreamEvent::TextDelta("done".to_string())),
+            Ok(StreamEvent::Done),
+        ];
         Ok(Box::pin(stream::iter(events)))
     }
 

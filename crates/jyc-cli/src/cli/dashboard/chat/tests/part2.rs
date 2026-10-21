@@ -3105,11 +3105,14 @@ fn info_pane_indents_the_bar_rows_figures_to_the_value_column() {
     let rows = info_pane_rows(&pane);
     let row = rows
         .iter()
-        .find(|r| r.contains("100000 (47%)"))
+        .find(|r| r.contains("97.66K (47%)"))
         .unwrap_or_else(|| panic!("no row carries the tokens figures:\n{pane}"));
+    // The row that continues the bar row starts in the value's column: the
+    // figures that did not fit beside the bar are indented to it, so the
+    // column keeps them.
     assert_eq!(
-        row.find("100000 (47%)"),
-        Some(INFO_PANE_LABEL_WIDTH),
+        row.len() - row.trim_start().len(),
+        INFO_PANE_LABEL_WIDTH,
         "the figures that continue the bar row must stay in the value's column:\n{pane}"
     );
 }

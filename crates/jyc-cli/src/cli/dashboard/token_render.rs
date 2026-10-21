@@ -543,11 +543,11 @@ mod tests {
         assert_eq!(bar_width(39, PaneLayout::Stacked), MAX_BAR_WIDTH);
         assert_eq!(bar_width(23, PaneLayout::Stacked), MAX_BAR_WIDTH);
         // The pane's whole width, up to the widest bar: the label takes
-        // no cell of it, where the table layout's bar gets six cells at
-        // the same width.
+        // no cell of it, where the table layout's bar gets the narrowest
+        // bar still worth drawing at the same width.
         assert_eq!(bar_width(21, PaneLayout::Stacked), MAX_BAR_WIDTH);
         assert_eq!(bar_width(20, PaneLayout::Stacked), MAX_BAR_WIDTH);
-        assert_eq!(bar_width(23, PaneLayout::Table), 6);
+        assert_eq!(bar_width(23, PaneLayout::Table), MIN_BAR_WIDTH);
         // The narrowest bar still worth drawing.
         assert_eq!(bar_width(5, PaneLayout::Stacked), MIN_BAR_WIDTH);
         // Below that a cell would carry too much of the share to be honest.

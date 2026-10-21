@@ -387,6 +387,7 @@ mod tests {
             tasks: Default::default(),
             cost: None,
             commands: vec![],
+            subagents: None,
         }
     }
 

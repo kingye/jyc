@@ -1713,6 +1713,7 @@ fn app_with_topic_summary() -> App {
         tasks: Default::default(),
         cost: None,
         commands: vec![],
+        subagents: None,
     });
     app
 }

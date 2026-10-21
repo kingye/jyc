@@ -179,6 +179,10 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             .and_then(|managers| managers.by_channel(channel))
     });
 
+    // Where this turn's outcome goes. One binding for the whole loop, so
+    // every path that settles the turn writes it the same way.
+    let status = status_topic.as_deref().map(ManagerStatus);
+
     let max_iter = max_iterations.unwrap_or(DEFAULT_MAX_ITERATIONS);
 
     // Build internal history: prior context + current message
@@ -271,6 +275,12 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     // had empty arguments; abort after the threshold to avoid wasting tokens.
     const MAX_EMPTY_TOOL_CALL_ITERATIONS: u32 = 3;
     let mut consecutive_empty_tool_iterations: u32 = 0;
+
+    // The tool calls of this turn that failed and were not retried
+    // successfully. They decide the turn's outcome: a failure the model
+    // recovered from leaves the topic as it was, a failure that stands
+    // leaves it in error.
+    let mut tool_failures = ToolFailures::default();
 
     // Publish ProcessingStarted
     // The topic's live status follows the events this loop publishes (see
@@ -422,7 +432,12 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 tracing::info!(total_iterations, error = %e, "Agent loop cancelled during LLM call");
                 break;
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                // The turn dies here, so the failures that stand are
+                // reported now — the turn's end is this path's to write.
+                report_standing_failures(status.as_ref(), topic_name, &tool_failures);
+                return Err(e);
+            }
         };
         let call_ms = call_started.elapsed().as_millis() as u64;
 
@@ -575,6 +590,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                         ToolOutput::error(format!("Tool error: {e}"))
                     }
                 };
+                // The embedded ask_user is a tool call like any other: it
+                // stands in error until the model asks again and it works.
+                tool_failures.record("ask_user", &output);
                 history.push(Message::tool_result(
                     "embedded-ask-user",
                     &output.content,
@@ -628,17 +646,26 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             }
 
             let duration = start_time.elapsed();
-            if let Some(tm) = status_topic.as_ref() {
-                tm.set_topic_turn_ended(topic_name, true);
-            }
-            publish_event(
-                event_bus,
-                TopicEvent::ProcessingCompleted {
-                    topic_name: topic_name.to_string(),
-                    message_id: "agent-loop".to_string(),
-                    success: true,
-                    duration_secs: duration.as_secs(),
-                    timestamp: Utc::now(),
+            // The turn's outcome: the tool failures that stand put the topic
+            // in error, the ones the model recovered from say nothing. The
+            // status is settled before the turn's end is announced.
+            finish_turn(
+                status.as_ref(),
+                topic_name,
+                &tool_failures,
+                true,
+                move || async move {
+                    publish_event(
+                        event_bus,
+                        TopicEvent::ProcessingCompleted {
+                            topic_name: topic_name.to_string(),
+                            message_id: "agent-loop".to_string(),
+                            success: true,
+                            duration_secs: duration.as_secs(),
+                            timestamp: Utc::now(),
+                        },
+                    )
+                    .await
                 },
             )
             .await;
@@ -671,6 +698,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                     consecutive = consecutive_empty_tool_iterations,
                     "Model repeatedly generated tool calls with empty arguments, aborting loop"
                 );
+                // The turn is over: report the failures that stand before
+                // it ends, so the topic's status says what happened.
+                report_standing_failures(status.as_ref(), topic_name, &tool_failures);
                 anyhow::bail!(
                     "model generated tool calls with empty arguments for {} consecutive \
                      iterations — this usually indicates the provider does not support \
@@ -788,14 +818,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             let tool_duration = tool_start.elapsed();
 
             // Publish ToolCompleted
-            // A failed tool leaves the topic in error: the turn may still
-            // succeed, but the topic reports what went wrong until the next
-            // turn starts.
-            if output.is_error
-                && let Some(tm) = status_topic.as_ref()
-            {
-                tm.set_topic_tool_error(topic_name);
-            }
+            // A failed tool leaves the turn in doubt until the model retries
+            // it: the failure counts only when the tool never works again.
+            tool_failures.record(&tool_call.name, &output);
             publish_event(
                 event_bus,
                 TopicEvent::ToolCompleted {
@@ -957,17 +982,23 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     // it managed to deliver first, including a question that ended the turn.
     let duration = start_time.elapsed();
     let turn_succeeded = handed_over && !cancel.is_cancelled();
-    if let Some(tm) = status_topic.as_ref() {
-        tm.set_topic_turn_ended(topic_name, turn_succeeded);
-    }
-    publish_event(
-        event_bus,
-        TopicEvent::ProcessingCompleted {
-            topic_name: topic_name.to_string(),
-            message_id: "agent-loop".to_string(),
-            success: turn_succeeded,
-            duration_secs: duration.as_secs(),
-            timestamp: Utc::now(),
+    finish_turn(
+        status.as_ref(),
+        topic_name,
+        &tool_failures,
+        turn_succeeded,
+        move || async move {
+            publish_event(
+                event_bus,
+                TopicEvent::ProcessingCompleted {
+                    topic_name: topic_name.to_string(),
+                    message_id: "agent-loop".to_string(),
+                    success: turn_succeeded,
+                    duration_secs: duration.as_secs(),
+                    timestamp: Utc::now(),
+                },
+            )
+            .await
         },
     )
     .await;
@@ -1271,9 +1302,19 @@ mod embedded_ask_tests;
 #[cfg(test)]
 mod ticker_tests;
 
+/// The tool failures of a turn, and the ones the model recovered from.
+mod tool_failures;
+
+/// Regression tests for the tool-failure bookkeeping: a failure the model
+/// recovers from must not leave the turn's status in error.
+#[cfg(test)]
+mod tool_failures_tests;
+
 mod context;
 mod embedded_ask;
 mod response;
 mod retry;
+
+use tool_failures::{ManagerStatus, ToolFailures, finish_turn, report_standing_failures};
 
 use retry::{SSE_RETRY_BACKOFF_MS, complete_with_retry};

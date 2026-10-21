@@ -11,6 +11,7 @@ use jyc_types::{TopicCost, TopicInfo};
 use super::TopicManager;
 /// Per-topic queue stats.
 use super::git::{branch_for_topic_path, changed_files_for_topic_path};
+use super::topic_tree;
 use super::worker::read_skills;
 
 /// Display-relevant state for one topic (mode, model, context usage).
@@ -628,6 +629,18 @@ impl TopicManager {
         // Resolved once: the central billing dir does not change per topic.
         let billing_dir = self.billing_dir();
 
+        // The channel's lineage, resolved for the detail shape only: who
+        // spawned whom, so a topic's own `subagents` tree is filled here
+        // rather than fetched per surface. The list shape leaves it out —
+        // resolving it for every topic of every poll would cost a walk per
+        // topic.
+        let resolve_lineage = only.is_some();
+        let lineage = if resolve_lineage {
+            self.topic_lineage(&topic_names).await
+        } else {
+            Vec::new()
+        };
+
         for name in topic_names {
             if let Some(only) = only
                 && name != only
@@ -790,10 +803,55 @@ impl TopicManager {
                 // Filled by InspectServer from build_overview_state /
                 // build_state using the topic's pattern → per-agent commands.
                 commands: vec![],
+                // The subagents this topic spawned, as a tree. Resolved from
+                // the channel's lineage — the same `spawned-from` breadcrumbs
+                // the overview's `parent` comes from — so the pane and
+                // `/info` draw the tree this detail carries.
+                subagents: if resolve_lineage {
+                    Some(topic_tree::subagent_tree(
+                        &lineage,
+                        &name,
+                        &self.channel_name,
+                    ))
+                } else {
+                    None
+                },
             });
         }
 
         topics
+    }
+
+    /// The channel's topics with the topic that spawned each of them, read
+    /// from the `spawned-from` breadcrumb in its state dir — the same file
+    /// the inspect server reads to fill `TopicSummary::parent`, so a topic's
+    /// own tree and the overview's tree are the same data.
+    async fn topic_lineage(&self, names: &[String]) -> Vec<topic_tree::LineageEntry> {
+        // The paths are resolved under the lock and the lock is dropped
+        // before the breadcrumbs are read: reading them is the slow part and
+        // it must not hold the map other callers wait for.
+        let paths: Vec<PathBuf> = {
+            let guard = self.topic_paths.lock().await;
+            names
+                .iter()
+                .map(|name| {
+                    guard
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| self.workspace_dir.join(name))
+                })
+                .collect()
+        };
+        let mut lineage = Vec::with_capacity(names.len());
+        for (name, topic_path) in names.iter().zip(paths) {
+            lineage.push(topic_tree::LineageEntry {
+                name: name.clone(),
+                channel: self.channel_name.clone(),
+                parent: crate::command::spawn_handler::spawned_from(name, &topic_path),
+                status: self.topic_status(name),
+            });
+        }
+        lineage
     }
 }
 
@@ -1081,6 +1139,73 @@ mode = "agent"
             tm.list_topic_names_and_paths().await,
             vec![("bare".to_string(), workspace.join("bare"))]
         );
+    }
+
+    /// A topic's detail carries the subagents it spawned, as a tree. The
+    /// lineage comes from the `spawned-from` breadcrumbs of the channel's
+    /// topics — the same file the overview's `parent` comes from — so the
+    /// pane and `/info` read one shape.
+    #[tokio::test]
+    async fn topic_info_carries_the_subagent_tree() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        for name in ["tree-parent", "tree-child", "tree-grandchild"] {
+            tokio::fs::create_dir_all(workspace.join(name).join(".jyc"))
+                .await
+                .unwrap();
+        }
+        tokio::fs::write(
+            workspace
+                .join("tree-child")
+                .join(".jyc")
+                .join("spawned-from"),
+            "tree-parent\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            workspace
+                .join("tree-grandchild")
+                .join(".jyc")
+                .join("spawned-from"),
+            "tree-child\n",
+        )
+        .await
+        .unwrap();
+        let tm = make_tm(&workspace);
+
+        let info = tm
+            .topic_info("tree-parent", false)
+            .await
+            .expect("the topic");
+        let subagents = info.subagents.expect("the detail carries the tree");
+        assert_eq!(subagents.len(), 1, "one direct child");
+        assert_eq!(subagents[0].name, "tree-child");
+        assert_eq!(subagents[0].children.len(), 1, "the child's own child");
+        assert_eq!(subagents[0].children[0].name, "tree-grandchild");
+
+        // A leaf's detail carries an empty tree, not a missing one: the
+        // difference is "no subagents" against "the lineage was not
+        // resolved".
+        let leaf = tm
+            .topic_info("tree-grandchild", false)
+            .await
+            .expect("the topic");
+        assert_eq!(leaf.subagents, Some(vec![]));
+
+        // The list shape does not resolve the lineage: it would pay a walk
+        // per topic on every poll.
+        let listed = tm.list_topics_without_git().await;
+        assert!(
+            listed.iter().all(|t| t.subagents.is_none()),
+            "the list shape leaves the tree unresolved"
+        );
+
+        // The global state-dir registration outlives the TempDir otherwise: a
+        // later test reusing this name would resolve into a deleted directory.
+        for name in ["tree-parent", "tree-child", "tree-grandchild"] {
+            jyc_types::state_dir::unregister(name);
+        }
     }
 
     /// #615: a topic whose mode comes from pattern config (no

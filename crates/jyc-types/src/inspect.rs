@@ -337,6 +337,34 @@ pub struct TopicInfo {
     /// for the full semantics.
     #[serde(default)]
     pub commands: Vec<CommandInfo>,
+    /// The subagents this topic spawned, as a tree: every node's
+    /// `children` are the subagents it spawned in turn.
+    ///
+    /// `None` when the lineage was not resolved — the manager resolves it
+    /// for a topic's detail and leaves it out for the list shape, which has
+    /// no field to carry a tree — and `Some(vec![])` when the topic has no
+    /// subagents at all.
+    #[serde(default)]
+    pub subagents: Option<Vec<TopicNode>>,
+}
+
+/// A topic in a lineage tree: a subagent of the topic above it, with the
+/// subagents it spawned under it.
+///
+/// The tree is the same data whichever way it is read — the info pane draws
+/// it, `/info` prints it — so it travels inside [`TopicInfo`] rather than
+/// being fetched per surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopicNode {
+    /// Topic name (e.g. "ci-watch-pr-961")
+    pub name: String,
+    /// Channel this topic belongs to
+    pub channel: String,
+    /// Current processing status
+    pub status: TopicStatus,
+    /// The subagents this topic spawned, nested
+    #[serde(default)]
+    pub children: Vec<TopicNode>,
 }
 
 /// Severity level for an activity entry.
@@ -612,6 +640,7 @@ mod tests {
                 changed_files: None,
                 cost: None,
                 commands: vec![],
+                subagents: None,
             }],
             stats: GlobalStats {
                 active_workers: 2,

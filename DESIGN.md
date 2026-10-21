@@ -3115,8 +3115,8 @@ two never carry the same figure:
 
 | Shape | Endpoint | In-process API | Carries | Read by |
 |-------|----------|----------------|---------|----------|
-| **List** | `GET /api/state/overview` | `TopicManager::list_topics_without_git` | identity (name, channel, agent, pattern), `status`, context usage, `last_active_at`, `parent`, `commands` | the overview table |
-| **Detail** | `GET /api/topics/{channel}/{topic}/info` | `TopicManager::topic_info` | model, mode, token and cost figures, latency, task list, branch, changed files, `status`, `last_active_at` | the topic info pane, `/info` |
+| **List** | `GET /api/state/overview` | `TopicManager::list_topics_without_git` | identity (name, channel, agent, pattern), `status`, context usage, `last_active_at`, `parent`, `commands` | the overview table, the topic explorer |
+| **Detail** | `GET /api/topics/{channel}/{topic}/info` | `TopicManager::topic_info` | model, mode, token and cost figures, latency, task list, branch, changed files, `status`, `last_active_at`, the **subagent tree** | the topic info pane, `/info` |
 | **Progress** | `WS /ws/<channel>/<topic>` | per-topic `TopicEventBus` | activity entries, chat messages, thinking text, the processing frame | the chat pane, the progress indicators (TUI, feishu), pipe processes |
 
 The rule behind the table: **one figure, one source**. A figure is either in
@@ -3126,6 +3126,22 @@ detail — the pane over HTTP, the command in-process through the same
 `TopicManager::topic_info` call — so they cannot report different numbers
 for one topic.
 
+The subagent tree is part of the **detail**, not of the list: it says who
+*this* topic spawned, so it travels with the topic's own shape and both
+readers of it — the info pane and `/info` — draw the same tree out of the
+same call. The list carries only `parent`, the one field the explorer needs
+to nest every topic of every channel under the one that spawned it; the
+list shape does not resolve a tree of its own, because a poll would then pay
+a walk per topic.
+
+The lineage behind both is the `spawned-from` breadcrumb each subagent wrote
+into its own state dir (`jyc_core::command::spawn_handler::spawned_from`) —
+the same file the inspect server reads to fill `parent`, so the tree a topic
+carries and the tree the explorer draws are the same data. The rules that
+turn a lineage into a tree live in one place,
+`jyc_core::topic_manager::topic_tree`: who is under whom, in what order,
+and how a hand-edited breadcrumb cycle is kept from looping.
+
 `status` is the one field both the list and the detail carry, and they carry
 the same one: the runtime's **live status**
 (`jyc_core::topic_manager::live_status`). The runtime writes it as turns
@@ -3134,6 +3150,23 @@ start and end — the agent loop when it publishes `ProcessingStarted` /
 (`/info`, the overview table, the info pane, the progress frame) reports
 that value. No consumer computes a status of its own, so "the topic is
 working" cannot be true in one view and false in another.
+
+A tool that fails mid-turn counts only when the model does not recover from
+it. The agent loop keeps the tools whose last call failed
+(`jyc_agent::agent_loop::tool_failures`) and reports them to the manager
+once, at the end of the turn: a tool that works again leaves no mark, so a
+turn that stumbled and carried on ends as a turn that worked. The recovery
+is counted per tool, not per call — another call of the same tool that
+works counts too, because the model may have given up on the call that
+failed — and a failure that stands still leaves the topic in error until
+the next turn starts.
+
+Both writes — the report and the turn's end — follow the "if known" rule: a
+topic closed mid-turn has no status entry any more, and re-creating one
+would report a topic that is gone as failed, and a name reused later would
+inherit that failure. The guard that closes a turn's "processing" flag does
+so only when the turn left it open, so a turn that died without saying so
+cannot leave the topic "Processing" forever.
 
 `last_active_at` is the other field both carry, and they carry the same one:
 the event stream's stamp for the topic. The state dir's mtime is only the
@@ -3233,7 +3266,10 @@ Not connected: connection refused
   table layout needs a column of 34 cells, and the column is 20% of the
   terminal, so it is a terminal of roughly 175 columns that gets the table;
   a narrower terminal gets the stacked layout, where every value starts in
-  the column's first cell.
+  the column's first cell. The pane's subagent section — the topics this one
+  spawned, as a tree, each with its own subagents under it — comes out of
+  the topic's detail, the same shape `/info` prints, so the pane and the
+  command show the same tree.
 - **Activity pane** (bottom 20%) — top border only, because the other edges are
   the screen edge or sit against the pane above. Internal entries and thinking
   heartbeats are filtered out: they are dozens of identical markers that would

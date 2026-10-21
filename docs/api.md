@@ -177,6 +177,10 @@ the `commands` available in it. Every other figure (model, mode, tokens,
 cost, latency, tasks, branch, changed files) is the topic's *detail* and
 lives on §2.4.11 only.
 
+The list carries no tree either: the lineage behind it is the one-hop
+`parent`, and the tree a topic spawned lives in the detail (§2.4.11) — a
+poll would pay a walk per topic for it.
+
 The dashboard's polling loop uses this endpoint for the table, and fetches
 §2.4.11 for the one topic it shows.
 
@@ -465,14 +469,17 @@ for t in overview["topics"]:
 #### 2.4.11 `GET /api/topics/{channel}/{topic}/info`
 
 One topic's full `TopicInfo` — the topic's *detail*: its model and mode, its
-token and cost figures, its task list, its branch and changed files, and its
-`status`. `branch` comes from the checkout's `.git/HEAD`; `changed_files` runs
-`git diff` against the repo's default branch (up to four invocations) — which
-is why the list (§2.4.2) carries neither.
+token and cost figures, its task list, its branch and changed files, its
+`status`, and the tree of subagents it spawned (`subagents`). `branch` comes
+from the checkout's `.git/HEAD`; `changed_files` runs `git diff` against the
+repo's default branch (up to four invocations) — which is why the list
+(§2.4.2) carries neither.
 
 This is the one source for the topic's figures: the dashboard's topic info
 pane reads it, and so does the `/info` command (in-process, through the same
-`TopicManager::topic_info` call).
+`TopicManager::topic_info` call). The subagent tree rides along for the same
+reason: the pane draws it and `/info` prints it, and both read this one
+payload.
 
 `last_active_at` is the event stream's stamp for the topic — the same value
 the list (§2.4.2) carries, so the two shapes cannot report different times
@@ -712,12 +719,21 @@ topic rather than measure it, and both carry the same value for each.
 | `activity`                   | `Vec<ActivityEntry>`  | ✓               | —                  |
 | `recent_messages`            | `Vec<ChatMessageEntry>`| ✓              | —                  |
 | `thinking_text`              | string?               | ✓               | —                  |
+| `subagents`                  | `Vec<TopicNode>?`     | ✓               | —                  |
 
 `status` is the one figure both carry, and both carry the same one: the
 runtime's live status, written as turns start and end (see §2.4.11).
 `last_active_at` is the other field both carry, and both carry the same one:
 the event stream's stamp for the topic, with the state dir's mtime as the
 fallback for a topic the tracker has not seen yet.
+
+The lineage is split the same way: the list carries only the one-hop
+`parent` (a topic's own parent, read from the `spawned-from` breadcrumb the
+subagent wrote into its state dir), while the detail carries the whole tree
+in `subagents` — the topic's descendants, each node holding the subagents it
+spawned in turn. The list shape does not resolve the lineage at all, and
+`TopicSummary` has no `subagents` field to carry it; in the detail,
+`subagents` is `Some(vec![])` when the topic has no subagents.
 
 ### 4.4 Other types
 
@@ -729,6 +745,7 @@ fallback for a topic the tracker has not seen yet.
 - `ChangedFileEntry` — `{path: string, uncommitted: bool, change: ChangeKind, lines: LineStats?}`. `uncommitted` is `true` when the working tree has changes vs HEAD (i.e. the file is currently dirty — staged or unstaged). A path present in both `main...HEAD` and the working-tree diff appears once with `uncommitted: true` (the more-noisy state wins) and the branch-side `change` / `lines`. `change` carries the status (`added` / `modified` / `deleted`); the chat info pane renders a one-column prefix glyph per row (`+`, `-`, two spaces). `lines` is `{insertions: u32, deletions: u32}` for that same diff, absent for a binary file. Resolved server-side from `git diff` invocations on the topic's working directory (`--name-status main...HEAD` ∪ `--name-status HEAD`, each joined with its `--numstat`); `None` when the path isn't a git repo or both invocations fail.
 - `ChangeKind` — `added` / `modified` / `deleted`. `Modified` is the default — old payloads missing the field deserialize as `Modified`. Renames, copies, type changes from `git diff --name-status` are normalized to `Modified` server-side (no separate variant for those).
 - `TaskList` — `{items: Vec<TaskItem>}`: the agent's own plan for the topic, persisted in `.jyc/tasks.json` and replaced wholesale by the next `task_create`. `TaskItem` is `{id: u32, text: string, status: TaskStatus}`; `id` is assigned by `task_create` and stable until a new list replaces it. `TaskStatus` — `pending` / `in_progress` / `completed`.
+- `TopicNode` — `{name: string, channel: string, status: TopicStatus, children: Vec<TopicNode>}`: one topic in the lineage tree, with the subagents it spawned nested under it. `children` is the same shape, recursively, and is `[]` for a leaf. A cycle in the breadcrumbs (hand-edited state) is cut, not followed: every topic appears once, and the edge that would close the cycle is the one dropped.
 - `TopicCost` — `session: f64` (current agent session, zeroes on reset), `today: f64` (UTC day total from billing ledger), `currency: string` (`"USD"` or `"mixed"` when today's entries span multiple currencies)
 - `GlobalStats` — `active_workers`, `total_topics`, `max_concurrent`, `available_workers`, `messages_received`, `messages_processed`, `errors`
 - `CommandInfo` — `name` (e.g. `"/model"`), `description`, `continues_to_agent`,

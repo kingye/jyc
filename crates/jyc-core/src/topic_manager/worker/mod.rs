@@ -29,6 +29,29 @@ use jyc_utils::hooks::{HookCtx, HookOutcome, HookSet};
 
 use super::TopicManager;
 
+/// How many messages may wait to be folded into a running turn. The
+/// channel is drained in full at every drain point, so this only has to
+/// cover the messages that arrive between two drain points.
+const INJECTION_CHANNEL_CAPACITY: usize = 32;
+
+/// Whether a queued message can join the running turn as it is.
+///
+/// Only plain text: an attachment, a topic override or a template needs
+/// the full turn pipeline (its own storage, hooks and reply target), and
+/// a scheduled job is not a message at all.
+fn is_injectable(item: &QueueItem) -> bool {
+    item.template.is_none()
+        && item.topic_path_override.is_none()
+        && item.message.attachments.is_empty()
+        && !item.message.is_scheduled_job()
+        && item
+            .message
+            .content
+            .text
+            .as_deref()
+            .is_some_and(|t| !t.trim().is_empty())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn process_message(
     item: &mut QueueItem,
@@ -385,14 +408,15 @@ pub(crate) async fn process_message(
         .await;
     });
 
-    // The in-process agent does not consume `pending_rx`. We monitor it
-    // ourselves for incoming messages during AI processing. Slash commands
+    // We monitor the queue ourselves during AI processing. Slash commands
     // (e.g. /cancel, /model) are executed immediately via the command
-    // registry so the user gets instant feedback even during a 429 retry.
-    // Non-command messages are re-enqueued so they are processed after the
-    // current AI call completes (same as before).
-    let (_dummy_tx, mut dummy_rx) = mpsc::channel::<QueueItem>(1);
-    drop(_dummy_tx);
+    // registry so the user expects instant feedback even during a 429
+    // retry. A plain message joins the running turn when the pattern's
+    // `live_injection` is on: it is handed to the agent through the
+    // injection channel below, and the agent folds it into the
+    // conversation at its next drain point. Otherwise it is re-enqueued
+    // and processed after the current AI call completes.
+    let (inject_tx, mut inject_rx) = mpsc::channel::<QueueItem>(INJECTION_CHANNEL_CAPACITY);
 
     let t_dispatch = std::time::Instant::now();
     tracing::info!(
@@ -413,128 +437,160 @@ pub(crate) async fn process_message(
         "Message dispatch path"
     );
 
-    let agent_fut = agent.process(
-        &message,
-        topic_name,
-        &store_result.topic_path,
-        &store_result.message_dir,
-        &mut dummy_rx,
-        topic_cancel.clone(),
-    );
-    tokio::pin!(agent_fut);
-
-    // Buffer non-command messages that arrive during AI processing.
-    // They are re-enqueued after the agent finishes, preserving FIFO order.
+    // Buffer messages that arrive during AI processing and do not join the
+    // running turn. They are re-enqueued after the agent finishes,
+    // preserving FIFO order.
     let mut buffered: Vec<QueueItem> = Vec::new();
 
-    let result = loop {
-        tokio::select! {
-            r = &mut agent_fut => {
-                // Do NOT use `break r?` here — an early `?` return would
-                // skip the background-task cleanup below and leak the
-                // progress updater (see the `let result = result?;`
-                // after the cleanup section).
-                break r;
-            }
-            msg = pending_rx.recv() => match msg {
-                Some(qi) => {
-                    let text = qi.message.content.text.as_deref().unwrap_or("");
-                    let trimmed = text.trim();
-                    if trimmed.starts_with('/') {
-                        // Execute slash command immediately via the command
-                        // registry instead of buffering — the user expects
-                        // instant feedback even during AI processing.
-                        tracing::info!(
-                            topic = %topic_name,
-                            command = %trimmed,
-                            "Executing slash command during AI processing"
-                        );
-                        let cmd_ctx = CommandContext {
-                            args: vec![],
-                            topic_name: topic_name.to_string(),
-                            topic_path: store_result.topic_path.clone(),
-                            config: config.load_full(),
-                            channel: qi.message.channel.clone(),
-                            channel_type: topic_manager.channel_type.clone(),
-                            agent: Some(agent.clone()),
-                            template_dirs: template_dirs.clone(),
-                            config_path: topic_manager.config_path.clone(),
-                            per_agent_commands: per_agent_commands.clone(),
+    let result = {
+        let agent_fut = agent.process(
+            &message,
+            topic_name,
+            &store_result.topic_path,
+            &store_result.message_dir,
+            &mut inject_rx,
+            topic_cancel.clone(),
+        );
+        tokio::pin!(agent_fut);
 
-                            hooks: Default::default(),};
-                        match command_registry.process_commands(trimmed, &cmd_ctx).await {
-                            Ok(output) => {
-                                if !output.results.is_empty() {
-                                    let summary = output.results_summary();
-                                    if let Err(e) = outbound
-                                        .send_reply(
-                                            &qi.message,
-                                            &summary,
-                                            &store_result.topic_path,
-                                            &store_result.message_dir,
-                                            None,
-                                        )
-                                        .await
-                                    {
-                                        tracing::warn!(
-                                            error = %e,
-                                            "Failed to send command result during AI processing"
-                                        );
+        loop {
+            tokio::select! {
+                    r = &mut agent_fut => {
+                        // Do NOT use `break r?` here — an early `?` return would
+                        // skip the background-task cleanup below and leak the
+                        // progress updater (see the `let result = result?;`
+                        // after the cleanup section).
+                        break r;
+                    }
+                    msg = pending_rx.recv() => match msg {
+                    Some(qi) => {
+                        let text = qi.message.content.text.as_deref().unwrap_or("");
+                        let trimmed = text.trim();
+                        if trimmed.starts_with('/') {
+                            // Execute slash command immediately via the command
+                            // registry instead of buffering — the user expects
+                            // instant feedback even during AI processing.
+                            tracing::info!(
+                                topic = %topic_name,
+                                command = %trimmed,
+                                "Executing slash command during AI processing"
+                            );
+                            let cmd_ctx = CommandContext {
+                                args: vec![],
+                                topic_name: topic_name.to_string(),
+                                topic_path: store_result.topic_path.clone(),
+                                config: config.load_full(),
+                                channel: qi.message.channel.clone(),
+                                channel_type: topic_manager.channel_type.clone(),
+                                agent: Some(agent.clone()),
+                                template_dirs: template_dirs.clone(),
+                                config_path: topic_manager.config_path.clone(),
+                                per_agent_commands: per_agent_commands.clone(),
+
+                                hooks: Default::default(),};
+                            match command_registry.process_commands(trimmed, &cmd_ctx).await {
+                                Ok(output) => {
+                                    if !output.results.is_empty() {
+                                        let summary = output.results_summary();
+                                        if let Err(e) = outbound
+                                            .send_reply(
+                                                &qi.message,
+                                                &summary,
+                                                &store_result.topic_path,
+                                                &store_result.message_dir,
+                                                None,
+                                            )
+                                            .await
+                                        {
+                                            tracing::warn!(
+                                                error = %e,
+                                                "Failed to send command result during AI processing"
+                                            );
+                                        }
+                                        // Publish ReplySent so the dashboard
+                                        // sees the command result live (same as
+                                        // the main command-result path above).
+                                        topic_manager
+                                            .publish_reply_sent(topic_name, &summary)
+                                            .await;
                                     }
-                                    // Publish ReplySent so the dashboard
-                                    // sees the command result live (same as
-                                    // the main command-result path above).
-                                    topic_manager
-                                        .publish_reply_sent(topic_name, &summary)
-                                        .await;
-                                }
 
-                                // A command may inject prompt text for the
-                                // agent (user-defined `[[commands]]` append
-                                // their `user_prompt`). The current agent call
-                                // is already running, so re-enqueue the
-                                // injected body to be processed after it
-                                // finishes — dropping it here would silently
-                                // lose the instruction while still reporting
-                                // success.
-                                //
-                                // The command line itself was stripped, so the
-                                // re-enqueued body no longer starts with `/`
-                                // and will not re-enter this branch.
-                                if !output.cleaned_body.trim().is_empty() {
-                                    let mut requeued = qi;
-                                    requeued.message.content.text =
-                                        Some(output.cleaned_body.clone());
-                                    requeued.message.content.markdown = None;
+                                    // A command may inject prompt text for the
+                                    // agent (user-defined `[[commands]]` append
+                                    // their `user_prompt`). The current agent call
+                                    // is already running, so re-enqueue the
+                                    // injected body to be processed after it
+                                    // finishes — dropping it here would silently
+                                    // lose the instruction while still reporting
+                                    // success.
+                                    //
+                                    // The command line itself was stripped, so the
+                                    // re-enqueued body no longer starts with `/`
+                                    // and will not re-enter this branch.
+                                    if !output.cleaned_body.trim().is_empty() {
+                                        let mut requeued = qi;
+                                        requeued.message.content.text =
+                                            Some(output.cleaned_body.clone());
+                                        requeued.message.content.markdown = None;
+                                        tracing::info!(
+                                            topic = %topic_name,
+                                            "Re-enqueueing command-injected body for post-AI processing"
+                                        );
+                                        buffered.push(requeued);
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        command = %trimmed,
+                                        "Command execution failed during AI processing"
+                                    );
+                                }
+                            }
+                        } else if item.live_injection && is_injectable(&qi) {
+                            // Live injection: the message joins the running turn
+                            // instead of waiting for it to end. The agent folds
+                            // it into the conversation at its next drain point,
+                            // where the model sees it as a user message.
+                            match inject_tx.try_send(qi) {
+                                Ok(()) => {
                                     tracing::info!(
                                         topic = %topic_name,
-                                        "Re-enqueueing command-injected body for post-AI processing"
+                                        "Injecting a message into the running turn"
                                     );
-                                    buffered.push(requeued);
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        topic = %topic_name,
+                                        error = %e,
+                                        "Live injection failed; re-queueing the message"
+                                    );
+                                    buffered.push(e.into_inner());
                                 }
                             }
-                            Err(e) => {
-                                tracing::warn!(
-                                    error = %e,
-                                    command = %trimmed,
-                                    "Command execution failed during AI processing"
-                                );
-                            }
+                        } else {
+                            // Buffer non-command message for re-enqueue after AI finishes
+                            buffered.push(qi);
                         }
-                    } else {
-                        // Buffer non-command message for re-enqueue after AI finishes
-                        buffered.push(qi);
                     }
-                }
-                None => {
-                    // Channel closed; just wait for agent to finish.
-                    // Same as above: no `?` here, errors are propagated
-                    // after the background-task cleanup.
-                    break agent_fut.await;
-                }
-            },
+                    None => {
+                        // Channel closed; just wait for agent to finish.
+                        // Same as above: no `?` here, errors are propagated
+                        // after the background-task cleanup.
+                        break agent_fut.await;
+                    }
+                },
+            }
         }
     };
+
+    // The agent is done. Messages still queued in the injection channel
+    // were never folded into the conversation — the turn ended before its
+    // next drain point. Re-enqueue them so they are processed as turns of
+    // their own instead of being lost.
+    while let Ok(qi) = inject_rx.try_recv() {
+        buffered.push(qi);
+    }
 
     // Re-enqueue buffered messages so they are processed after the current AI call.
     // Uses direct try_send to the original mpsc channel rather than going
@@ -800,3 +856,8 @@ pub(crate) fn register_custom_commands(
 }
 #[cfg(test)]
 mod has_active_queue;
+
+/// Live injection at the worker: a message that arrives while a turn is
+/// running joins that turn when `live_injection` is on.
+#[cfg(test)]
+mod live_injection_tests;

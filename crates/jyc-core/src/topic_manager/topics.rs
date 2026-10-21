@@ -3,7 +3,9 @@
 //! Extracted from the monolithic `topic_manager.rs`.
 
 use jyc_types::state_dir::resolve_state_dir;
+use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::path::{Path, PathBuf};
 
 use jyc_types::{TopicCost, TopicInfo};
@@ -566,10 +568,7 @@ impl TopicManager {
         let mut out = Vec::with_capacity(topic_names.len());
         let paths = self.topic_paths.lock().await;
         for name in topic_names {
-            let path = paths
-                .get(&name)
-                .cloned()
-                .unwrap_or_else(|| self.workspace_dir.join(&name));
+            let path = self.path_of(&paths, &name);
             out.push((name, path));
         }
         out
@@ -851,9 +850,15 @@ impl TopicManager {
     }
 
     /// Where a topic works: the path registered for it, or the workspace
-    /// default. One place, so the lineage and the topic's own state cannot
-    /// disagree about where the topic lives.
-    fn path_of(&self, paths: &HashMap<&str, PathBuf>, name: &str) -> PathBuf {
+    /// default. One place, so the lineage, the topic's own state and the
+    /// activity tracker's poll cannot disagree about where a topic lives.
+    ///
+    /// The key type is generic so the same rule serves the borrowed-key
+    /// snapshot the list takes and the manager's own map.
+    fn path_of<K>(&self, paths: &HashMap<K, PathBuf>, name: &str) -> PathBuf
+    where
+        K: Borrow<str> + Eq + Hash,
+    {
         paths
             .get(name)
             .cloned()
@@ -1230,6 +1235,53 @@ mode = "agent"
         for name in ["tree-parent", "tree-child", "tree-grandchild"] {
             jyc_types::state_dir::unregister(name);
         }
+    }
+
+    /// A topic with a pinned directory keeps its lineage: the list names the
+    /// topic that spawned it, and the topic still works in the pinned
+    /// directory.
+    ///
+    /// The pinned directory is *not* where the breadcrumb lives — a pin
+    /// adopts its state dir under the agents dir, and the registry is keyed
+    /// by topic name — so the lineage is read by name, and the path is what
+    /// the topic works in. Both are pinned here, because a lineage read from
+    /// the wrong directory would leave the topic looking like a root.
+    #[tokio::test]
+    async fn a_pinned_topic_keeps_its_lineage() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+        let pinned = tmp.path().join("pinned-lineage-child");
+        let tm = make_tm(&workspace);
+        tm.set_topic_path("pinned-lineage-child", pinned.clone())
+            .await
+            .unwrap();
+
+        // The breadcrumb goes into the state dir the pin adopted.
+        let state_dir = resolve_state_dir("pinned-lineage-child", &pinned);
+        tokio::fs::write(state_dir.join("spawned-from"), "pinned-lineage-parent\n")
+            .await
+            .unwrap();
+
+        let listed = tm.list_topics_without_git().await;
+        let child = listed
+            .iter()
+            .find(|t| t.name == "pinned-lineage-child")
+            .expect("the pinned topic is listed");
+        assert_eq!(
+            child.parent.as_deref(),
+            Some("pinned-lineage-parent"),
+            "the list names the topic that spawned it"
+        );
+        assert_eq!(
+            child.topic_path.as_deref(),
+            Some(pinned.as_path()),
+            "the topic works in the directory it was pinned to"
+        );
+
+        // The global state-dir registration outlives the TempDir otherwise: a
+        // later test reusing this name would resolve into a deleted directory.
+        jyc_types::state_dir::unregister("pinned-lineage-child");
     }
 
     /// #615: a topic whose mode comes from pattern config (no

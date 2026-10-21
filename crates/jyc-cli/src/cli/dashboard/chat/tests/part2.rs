@@ -566,6 +566,7 @@ fn topic_detail_for(name: &str, channel: &str) -> jyc_types::TopicInfo {
         channel: channel.to_string(),
         pattern: None,
         status: jyc_types::TopicStatus::Idle,
+        parent: None,
         model: None,
         mode: None,
         context_input_tokens: None,
@@ -668,6 +669,7 @@ fn files_section_colors_uncommitted_paths_yellow() {
         channel: "local_dev".to_string(),
         pattern: Some("jyc".to_string()),
         status: jyc_types::TopicStatus::Idle,
+        parent: None,
         model: None,
         mode: None,
         context_input_tokens: None,
@@ -921,6 +923,7 @@ fn info_scroll_is_clamped_after_render() {
         channel: "local_dev".to_string(),
         pattern: Some("jyc".to_string()),
         status: jyc_types::TopicStatus::Idle,
+        parent: None,
         model: None,
         mode: None,
         context_input_tokens: None,
@@ -1805,6 +1808,7 @@ fn info_pane_app(tasks: jyc_types::task::TaskList) -> App {
         channel: "local_dev".to_string(),
         pattern: Some("jyc".to_string()),
         status: jyc_types::TopicStatus::Idle,
+        parent: None,
         model: None,
         mode: None,
         context_input_tokens: None,
@@ -2297,6 +2301,7 @@ fn info_pane_end_reaches_the_last_wrapped_row() {
         channel: "test".to_string(),
         pattern: None,
         status: jyc_types::TopicStatus::Idle,
+        parent: None,
         model: None,
         mode: None,
         context_input_tokens: None,
@@ -2610,7 +2615,7 @@ fn explorer_rows_nest_subagents_under_their_parent() {
         ..Default::default()
     };
 
-    let forest = topic_forest(&s.topics);
+    let forest = topic_forest(&lineage_of(&s.topics));
     let rows = explorer_rows(&forest);
     let names: Vec<&str> = rows.iter().map(|r| r.node.name.as_str()).collect();
     assert_eq!(names, ["a", "b", "c", "d"], "tree order");
@@ -2644,7 +2649,7 @@ fn explorer_rows_keep_a_breadcrumb_cycle_visible() {
         ..Default::default()
     };
 
-    let forest = topic_forest(&s.topics);
+    let forest = topic_forest(&lineage_of(&s.topics));
     let rows = explorer_rows(&forest);
     let names: Vec<&str> = rows.iter().map(|r| r.node.name.as_str()).collect();
     assert_eq!(names, ["a", "b"], "both members stay listed, once each");
@@ -2668,7 +2673,7 @@ async fn explorer_selection_follows_the_tree_row_not_the_flat_index() {
         ..Default::default()
     };
 
-    let forest = topic_forest(&s.topics);
+    let forest = topic_forest(&lineage_of(&s.topics));
     let rows = explorer_rows(&forest);
     let names: Vec<&str> = rows.iter().map(|r| r.node.name.as_str()).collect();
     assert_eq!(names, ["z", "b"], "the parent comes first in the tree");
@@ -2758,7 +2763,7 @@ fn deep_nesting_freezes_the_indent() {
         ..Default::default()
     };
 
-    let forest = topic_forest(&s.topics);
+    let forest = topic_forest(&lineage_of(&s.topics));
     let rows = explorer_rows(&forest);
     let prefixes: Vec<&str> = rows.iter().map(|r| r.prefix.as_str()).collect();
     assert_eq!(
@@ -2786,7 +2791,7 @@ fn a_cycle_back_edge_leaves_no_dangling_branch_mark() {
         ..Default::default()
     };
 
-    let forest = topic_forest(&s.topics);
+    let forest = topic_forest(&lineage_of(&s.topics));
     let rows = explorer_rows(&forest);
     let drawn: Vec<(&str, &str)> = rows
         .iter()

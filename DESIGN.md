@@ -3131,14 +3131,17 @@ The subagent tree is part of the **detail**, not of the list: it says who
 readers of it — the info pane and `/info` — draw the same tree out of the
 same call. The list carries only `parent`, the one field the explorer needs
 to nest every topic of every channel under the one that spawned it; the
-list shape does not resolve a tree of its own, because a poll would then pay
-a walk per topic.
+list shape does not build a tree of its own, because a poll would then pay
+a tree per topic.
 
 The lineage behind both is the `spawned-from` breadcrumb each subagent wrote
-into its own state dir (`jyc_core::command::spawn_handler::spawned_from`) —
-the same file the inspect server reads to fill `parent`, so the tree a topic
-carries and the tree the explorer draws are the same data. The rules that
-turn a lineage into a tree live in one place,
+into its own state dir (`jyc_core::command::spawn_handler::spawned_from`),
+and the **topic manager owns it**: it reads the breadcrumbs once per list and
+answers with the parents *and* the tree alike (`TopicManager::lineage`), so
+the list's `parent`, the detail's `subagents` and the tree the explorer
+draws are the same data — the inspect server takes the parent from the
+manager's answer instead of reading the breadcrumb a second time. The rules
+that turn a lineage into a tree live in one place,
 `jyc_core::topic_manager::topic_tree`: who is under whom, in what order,
 and how a hand-edited breadcrumb cycle is kept from looping.
 

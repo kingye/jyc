@@ -3,7 +3,9 @@
 //! Extracted from the monolithic `topic_manager.rs`.
 
 use jyc_types::state_dir::resolve_state_dir;
+use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::path::{Path, PathBuf};
 
 use jyc_types::{TopicCost, TopicInfo};
@@ -566,10 +568,7 @@ impl TopicManager {
         let mut out = Vec::with_capacity(topic_names.len());
         let paths = self.topic_paths.lock().await;
         for name in topic_names {
-            let path = paths
-                .get(&name)
-                .cloned()
-                .unwrap_or_else(|| self.workspace_dir.join(&name));
+            let path = self.path_of(&paths, &name);
             out.push((name, path));
         }
         out
@@ -629,38 +628,39 @@ impl TopicManager {
         // Resolved once: the central billing dir does not change per topic.
         let billing_dir = self.billing_dir();
 
-        // The channel's lineage, resolved for the detail shape only: who
-        // spawned whom, so a topic's own `subagents` tree is filled here
-        // rather than fetched per surface. The list shape leaves it out —
-        // resolving it for every topic of every poll would cost a walk per
-        // topic.
-        let resolve_lineage = only.is_some();
-        let lineage = if resolve_lineage {
-            self.topic_lineage(&topic_names).await
-        } else {
-            Vec::new()
+        // Each topic's registered path, read under the lock once. The
+        // lineage reads the breadcrumbs under it and the topic's own state
+        // lives there too, so both need the same directory.
+        let paths: HashMap<&str, PathBuf> = {
+            let guard = self.topic_paths.lock().await;
+            topic_names
+                .iter()
+                .filter_map(|name| guard.get(name).map(|path| (name.as_str(), path.clone())))
+                .collect()
         };
 
-        for name in topic_names {
+        // The channel's lineage, resolved once: who spawned whom, read from
+        // the `spawned-from` breadcrumb in each topic's state dir. It fills
+        // the list's `parent` and — for the detail shape — the topic's own
+        // `subagents` tree, so both come from one answer.
+        let lineage = self.lineage(&topic_names, &paths).await;
+
+        for entry in &lineage {
+            let name = entry.name.as_str();
             if let Some(only) = only
                 && name != only
             {
                 continue;
             }
 
-            // Check for custom topic_path from pattern override first
-            let paths = self.topic_paths.lock().await;
-            let topic_path = paths
-                .get(&name)
-                .cloned()
-                .unwrap_or_else(|| self.workspace_dir.join(&name));
-            drop(paths);
+            // The topic's own directory — the one the lineage read under.
+            let topic_path = self.path_of(&paths, name);
 
             // Resolve display state (pattern, mode, model, token usage) —
             // shared with `topic_display_state()` so consumers can never
             // drift apart.
             let (pattern, token_state, mode, model) =
-                self.resolve_display_state(&name, &topic_path).await;
+                self.resolve_display_state(name, &topic_path).await;
             let input_tokens = token_state.context_input_tokens;
             let context_output_tokens = token_state.context_output_tokens;
             let max_tokens = token_state.context_window;
@@ -670,24 +670,24 @@ impl TopicManager {
             let total_cache_creation_tokens = token_state.total_cache_creation_tokens;
 
             // Read skills from .jyc/skills.json
-            let skills = read_skills(&name, &topic_path).await;
+            let skills = read_skills(name, &topic_path).await;
 
             // What the topic *could* use, live-resolved through the agent's
             // discovery (config filters, toggle ignored) — this is what turns
             // into `/skill:<name>` rows in the command popup.
             let available_skills =
                 self.agent
-                    .available_skills(&name, &topic_path, pattern.as_deref());
+                    .available_skills(name, &topic_path, pattern.as_deref());
 
             // The topic's live status — the one source of truth for
             // `TopicStatus` (see `live_status.rs`). The runtime writes it
             // as turns start and end, so `/info`, the dashboard's topic
             // table and the info pane all report the same value.
-            let status = self.topic_status(&name);
+            let status = self.topic_status(name);
 
             // Fallback: read .jyc directory mtime if no activity tracker data
             let last_active_at =
-                match tokio::fs::metadata(resolve_state_dir(&name, &topic_path)).await {
+                match tokio::fs::metadata(resolve_state_dir(name, &topic_path)).await {
                     Ok(meta) => match meta.modified() {
                         Ok(mtime) => {
                             let dt: chrono::DateTime<chrono::Utc> = mtime.into();
@@ -704,11 +704,11 @@ impl TopicManager {
             // pricing, in which case `cost` stays `None` and the
             // dashboard omits the row.
             let cost = {
-                let session = read_session_cost(&name, &topic_path).await;
+                let session = read_session_cost(name, &topic_path).await;
                 let today = billing_dir.as_deref().and_then(|dir| {
                     crate::billing_log_store::BillingLogStore::today_total(
                         dir,
-                        &crate::billing_log_store::BillingLogStore::label_for(&name, &topic_path),
+                        &crate::billing_log_store::BillingLogStore::label_for(name, &topic_path),
                     )
                 });
                 match (session, today) {
@@ -754,13 +754,16 @@ impl TopicManager {
             // read from the same file the token counters above come from.
             // `None` until a call is measured, and the panes then omit the
             // row rather than claim `0 ms`.
-            let call_latency = crate::session_state::read_call_latency(&name, &topic_path).await;
+            let call_latency = crate::session_state::read_call_latency(name, &topic_path).await;
 
             topics.push(TopicInfo {
-                name: name.clone(),
+                name: entry.name.clone(),
                 channel: self.channel_name.clone(),
                 pattern,
                 status,
+                // The topic that spawned this one, from the channel's
+                // lineage — the one answer the list and the detail share.
+                parent: entry.parent.clone(),
                 model,
                 mode,
                 context_input_tokens: input_tokens,
@@ -771,11 +774,11 @@ impl TopicManager {
                 total_cache_hit_tokens,
                 total_cache_creation_tokens,
                 total_reasoning_tokens: crate::session_state::read_total_reasoning_tokens(
-                    &name,
+                    name,
                     &topic_path,
                 )
                 .await,
-                tasks: crate::session_state::read_tasks_at(&resolve_state_dir(&name, &topic_path))
+                tasks: crate::session_state::read_tasks_at(&resolve_state_dir(name, &topic_path))
                     .await
                     .unwrap_or_default(),
                 activity: vec![], // Filled by InspectServer from event bus
@@ -803,14 +806,14 @@ impl TopicManager {
                 // Filled by InspectServer from build_overview_state /
                 // build_state using the topic's pattern → per-agent commands.
                 commands: vec![],
-                // The subagents this topic spawned, as a tree. Resolved from
-                // the channel's lineage — the same `spawned-from` breadcrumbs
-                // the overview's `parent` comes from — so the pane and
-                // `/info` draw the tree this detail carries.
-                subagents: if resolve_lineage {
+                // The subagents this topic spawned, as a tree. Built from the
+                // channel's lineage — the same answer the list's `parent`
+                // comes from — so the pane and `/info` draw the tree this
+                // detail carries, and the explorer's tree agrees with it.
+                subagents: if only.is_some() {
                     Some(topic_tree::subagent_tree(
                         &lineage,
-                        &name,
+                        name,
                         &self.channel_name,
                     ))
                 } else {
@@ -823,28 +826,20 @@ impl TopicManager {
     }
 
     /// The channel's topics with the topic that spawned each of them, read
-    /// from the `spawned-from` breadcrumb in its state dir — the same file
-    /// the inspect server reads to fill `TopicSummary::parent`, so a topic's
-    /// own tree and the overview's tree are the same data.
-    async fn topic_lineage(&self, names: &[String]) -> Vec<topic_tree::LineageEntry> {
-        // The paths are resolved under the lock and the lock is dropped
-        // before the breadcrumbs are read: reading them is the slow part and
-        // it must not hold the map other callers wait for.
-        let paths: Vec<PathBuf> = {
-            let guard = self.topic_paths.lock().await;
-            names
-                .iter()
-                .map(|name| {
-                    guard
-                        .get(name)
-                        .cloned()
-                        .unwrap_or_else(|| self.workspace_dir.join(name))
-                })
-                .collect()
-        };
+    /// from the `spawned-from` breadcrumb in its state dir.
+    ///
+    /// The one owner of a topic's lineage: the list's `parent` and the
+    /// detail's `subagents` tree are both built from this, so the overview
+    /// and a topic's own tree cannot drift apart.
+    async fn lineage<'a>(
+        &self,
+        names: &'a [String],
+        paths: &HashMap<&'a str, PathBuf>,
+    ) -> Vec<topic_tree::Lineage> {
         let mut lineage = Vec::with_capacity(names.len());
-        for (name, topic_path) in names.iter().zip(paths) {
-            lineage.push(topic_tree::LineageEntry {
+        for name in names {
+            let topic_path = self.path_of(paths, name);
+            lineage.push(topic_tree::Lineage {
                 name: name.clone(),
                 channel: self.channel_name.clone(),
                 parent: crate::command::spawn_handler::spawned_from(name, &topic_path),
@@ -852,6 +847,22 @@ impl TopicManager {
             });
         }
         lineage
+    }
+
+    /// Where a topic works: the path registered for it, or the workspace
+    /// default. One place, so the lineage, the topic's own state and the
+    /// activity tracker's poll cannot disagree about where a topic lives.
+    ///
+    /// The key type is generic so the same rule serves the borrowed-key
+    /// snapshot the list takes and the manager's own map.
+    fn path_of<K>(&self, paths: &HashMap<K, PathBuf>, name: &str) -> PathBuf
+    where
+        K: Borrow<str> + Eq + Hash,
+    {
+        paths
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| self.workspace_dir.join(name))
     }
 }
 
@@ -1143,7 +1154,7 @@ mode = "agent"
 
     /// A topic's detail carries the subagents it spawned, as a tree. The
     /// lineage comes from the `spawned-from` breadcrumbs of the channel's
-    /// topics — the same file the overview's `parent` comes from — so the
+    /// topics — the same lineage the list's `parent` comes from — so the
     /// pane and `/info` read one shape.
     #[tokio::test]
     async fn topic_info_carries_the_subagent_tree() {
@@ -1193,12 +1204,30 @@ mode = "agent"
             .expect("the topic");
         assert_eq!(leaf.subagents, Some(vec![]));
 
-        // The list shape does not resolve the lineage: it would pay a walk
-        // per topic on every poll.
+        // The list shape carries the parent — the same lineage the tree came
+        // from — but leaves the tree unresolved: the tree belongs to one
+        // topic's detail.
         let listed = tm.list_topics_without_git().await;
         assert!(
             listed.iter().all(|t| t.subagents.is_none()),
             "the list shape leaves the tree unresolved"
+        );
+        let child = listed
+            .iter()
+            .find(|t| t.name == "tree-child")
+            .expect("the child is listed");
+        assert_eq!(
+            child.parent.as_deref(),
+            Some("tree-parent"),
+            "the list names the topic that spawned it"
+        );
+        let parent = listed
+            .iter()
+            .find(|t| t.name == "tree-parent")
+            .expect("the parent is listed");
+        assert_eq!(
+            parent.parent, None,
+            "a topic the user started has no parent"
         );
 
         // The global state-dir registration outlives the TempDir otherwise: a
@@ -1206,6 +1235,55 @@ mode = "agent"
         for name in ["tree-parent", "tree-child", "tree-grandchild"] {
             jyc_types::state_dir::unregister(name);
         }
+    }
+
+    /// A topic with a pinned directory keeps its lineage: the list names the
+    /// topic that spawned it, and the topic still works in the pinned
+    /// directory.
+    ///
+    /// The pinned directory is *not* where the breadcrumb lives — a pin
+    /// adopts its state dir under the agents dir, and the registry is keyed
+    /// by topic name — so the lineage is read by name, and the path is what
+    /// the topic works in. Both are pinned here.
+    #[tokio::test]
+    async fn a_pinned_topic_keeps_its_lineage() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+        let pinned = tmp.path().join("pinned-lineage-child");
+        let tm = make_tm(&workspace);
+        tm.set_topic_path("pinned-lineage-child", pinned.clone())
+            .await
+            .unwrap();
+
+        // The breadcrumb goes into the state dir the pin adopted.
+        let state_dir = resolve_state_dir("pinned-lineage-child", &pinned);
+        tokio::fs::write(state_dir.join("spawned-from"), "pinned-lineage-parent\n")
+            .await
+            .unwrap();
+
+        let listed = tm.list_topics_without_git().await;
+
+        // The global state-dir registration outlives the TempDir otherwise: a
+        // later test reusing this name would resolve into a deleted
+        // directory. Unregistering before the asserts, so a failing one
+        // cannot leak the registration into the process-wide registry.
+        jyc_types::state_dir::unregister("pinned-lineage-child");
+
+        let child = listed
+            .iter()
+            .find(|t| t.name == "pinned-lineage-child")
+            .expect("the pinned topic is listed");
+        assert_eq!(
+            child.parent.as_deref(),
+            Some("pinned-lineage-parent"),
+            "the list names the topic that spawned it"
+        );
+        assert_eq!(
+            child.topic_path.as_deref(),
+            Some(pinned.as_path()),
+            "the topic works in the directory it was pinned to"
+        );
     }
 
     /// #615: a topic whose mode comes from pattern config (no

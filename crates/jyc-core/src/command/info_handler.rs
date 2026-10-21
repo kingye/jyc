@@ -208,6 +208,7 @@ mod tests {
             channel: "feishu".into(),
             pattern: Some("gh-issue".into()),
             status: TopicStatus::Idle,
+            parent: None,
             model: Some("kimi/k3-256k".into()),
             mode: Some("plan".into()),
             context_input_tokens: Some(105_432),

@@ -185,6 +185,12 @@ pub struct TokenState {
     pub total_cache_hit_tokens: Option<u64>,
     /// Accumulated prompt-cache-creation tokens across the session.
     pub total_cache_creation_tokens: Option<u64>,
+    /// The prompt-cache-hit tokens of the LLM calls in the latest turn —
+    /// the turn-scoped twin of `total_cache_hit_tokens`.
+    pub turn_cache_hit_tokens: Option<u64>,
+    /// The input tokens of the LLM calls in the latest turn — the
+    /// turn-scoped twin of `total_input_tokens`.
+    pub turn_input_tokens: Option<u64>,
 }
 
 /// Read every token field of a session in a single file read.
@@ -212,6 +218,9 @@ pub async fn read_token_state(topic_name: &str, topic_path: &Path) -> TokenState
             .then_some(state.total_cache_hit_tokens),
         total_cache_creation_tokens: (state.total_cache_creation_tokens > 0)
             .then_some(state.total_cache_creation_tokens),
+        turn_cache_hit_tokens: (state.turn_cache_hit_tokens > 0)
+            .then_some(state.turn_cache_hit_tokens),
+        turn_input_tokens: (state.turn_input_tokens > 0).then_some(state.turn_input_tokens),
     }
 }
 
@@ -244,6 +253,10 @@ struct AgentSessionState {
     turn_total_call_duration_ms: u64,
     #[serde(default)]
     turn_call_count: u64,
+    #[serde(default)]
+    turn_cache_hit_tokens: u64,
+    #[serde(default)]
+    turn_input_tokens: u64,
 }
 
 /// Read the mode override file if it exists.

@@ -628,6 +628,19 @@ impl TopicManager {
         // Resolved once: the central billing dir does not change per topic.
         let billing_dir = self.billing_dir();
 
+        // Today's ledger, read once for the whole list: the per-topic
+        // totals feed each topic's cost row, the per-currency totals the
+        // day's total. Reading it per topic would parse the same file
+        // once per topic on every poll.
+        //
+        // The snapshot freezes at the start of the list, so a ledger entry
+        // appended while the list is being built shows up on the next poll
+        // rather than in this one. One answer per list is worth that: the
+        // rows of a list then describe the same moment.
+        let today_totals = billing_dir
+            .as_deref()
+            .map(crate::billing_log_store::BillingLogStore::today_totals);
+
         // Each topic's registered path, read under the lock once. The
         // lineage reads the breadcrumbs under it and the topic's own state
         // lives there too, so both need the same directory.
@@ -705,11 +718,10 @@ impl TopicManager {
             // dashboard omits the row.
             let cost = {
                 let session = read_session_cost(name, &topic_path).await;
-                let today = billing_dir.as_deref().and_then(|dir| {
-                    crate::billing_log_store::BillingLogStore::today_total(
-                        dir,
-                        &crate::billing_log_store::BillingLogStore::label_for(name, &topic_path),
-                    )
+                let today = today_totals.as_ref().and_then(|totals| {
+                    let label =
+                        crate::billing_log_store::BillingLogStore::label_for(name, &topic_path);
+                    totals.by_topic.get(&label).cloned()
                 });
                 match (session, today) {
                     (None, None) => None,
@@ -778,6 +790,22 @@ impl TopicManager {
                     &topic_path,
                 )
                 .await,
+                // The turn's own cache figures, from the same session file
+                // the totals above come from.
+                turn_cache_hit_tokens: token_state.turn_cache_hit_tokens,
+                turn_input_tokens: token_state.turn_input_tokens,
+                // The day's spend across every topic, per currency — the
+                // same ledger the per-topic cost came from.
+                today_all: today_totals
+                    .as_ref()
+                    .map(|totals| {
+                        totals
+                            .by_currency
+                            .iter()
+                            .map(|(currency, amount)| (currency.clone(), *amount))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
                 tasks: crate::session_state::read_tasks_at(&resolve_state_dir(name, &topic_path))
                     .await
                     .unwrap_or_default(),

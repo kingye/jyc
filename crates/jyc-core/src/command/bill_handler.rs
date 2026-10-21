@@ -474,7 +474,7 @@ mod tests {
 
         assert!(report.contains("## Bill — 2026-09"), "{report}");
         assert!(
-            report.contains("| claude-opus-4 | agents/jyc | 2 | 200 | 20 | 100 | 50% | $3.0000 |"),
+            report.contains("| claude-opus-4 | agents/jyc | 2 | 200 | 20 | 100 | 50% | $3.00 |"),
             "{report}"
         );
         assert!(
@@ -486,20 +486,20 @@ mod tests {
             "{report}"
         );
         assert!(
-            report.contains("**anthropic subtotal: 3 calls, $3.2500**"),
+            report.contains("**anthropic subtotal: 3 calls, $3.25**"),
             "{report}"
         );
         assert!(
-            report.contains("**deepseek subtotal: 1 calls, ¥0.5000**"),
+            report.contains("**deepseek subtotal: 1 calls, ¥0.50**"),
             "{report}"
         );
         // Currencies iterate in BTreeMap (alphabetical) order: CNY < USD.
         assert!(
-            report.contains("**Total: 4 calls, ¥0.5000 + $3.2500**"),
+            report.contains("**Total: 4 calls, ¥0.50 + $3.25**"),
             "{report}"
         );
         assert!(
-            !report.contains("9.0000"),
+            !report.contains("9.00"),
             "August entry must be excluded: {report}"
         );
     }
@@ -510,9 +510,9 @@ mod tests {
         let dir = tmp.path();
         write_ledger(dir, "2026-01-05", &[metered("t", "p/m", 1.0, "USD")]);
         write_ledger(dir, "2026-09-10", &[metered("t", "p/m", 2.0, "USD")]);
-        assert!(render_report(Some(dir), &Scope::All, &BTreeMap::new()).contains("$3.0000"));
+        assert!(render_report(Some(dir), &Scope::All, &BTreeMap::new()).contains("$3.00"));
         assert!(
-            render_report(Some(dir), &Scope::Month(2026, 9), &BTreeMap::new()).contains("$2.0000")
+            render_report(Some(dir), &Scope::Month(2026, 9), &BTreeMap::new()).contains("$2.00")
         );
     }
 
@@ -536,7 +536,7 @@ mod tests {
             &[unlabelled, metered("t", "p/m", 1.0, "USD")],
         );
         let report = render_report(Some(dir), &Scope::All, &BTreeMap::new());
-        assert!(report.contains("**Total: 1 calls, $1.0000**"), "{report}");
+        assert!(report.contains("**Total: 1 calls, $1.00**"), "{report}");
     }
 
     #[test]
@@ -563,16 +563,16 @@ mod tests {
         );
         assert!(report.contains("| glm-4.6 | agents/jyc | 1 |"), "{report}");
         assert!(
-            report.contains("**Metered total: 1 calls, ¥0.5000**"),
+            report.contains("**Metered total: 1 calls, ¥0.50**"),
             "{report}"
         );
         assert!(
-            report.contains("**Subscription notional total: 1 calls, ¥30.0000**"),
+            report.contains("**Subscription notional total: 1 calls, ¥30.00**"),
             "{report}"
         );
         // 30 / 49 ≈ 61% utilization against the full-month fee.
         assert!(
-            report.contains("glm: 月费 ¥49.0000 · 本期摊 ¥49.0000 · 利用率 61%"),
+            report.contains("glm: 月费 ¥49.00 · 本期摊 ¥49.00 · 利用率 61%"),
             "{report}"
         );
         // With sections, there is no combined grand total mixing real
@@ -594,7 +594,7 @@ mod tests {
         let report = render_report(Some(dir), &Scope::Today, &fees);
         // 4.9 / (49/30 × 1) = 300%.
         assert!(
-            report.contains("glm: 月费 ¥49.0000 · 本期摊 ¥1.6333 · 利用率 300%"),
+            report.contains("glm: 月费 ¥49.00 · 本期摊 ¥1.63 · 利用率 300%"),
             "{report}"
         );
     }
@@ -618,7 +618,7 @@ mod tests {
         let report = render_report(Some(dir), &Scope::Month(2026, 9), &fees);
         // (20 + 10) / 30 = 100% utilization on one shared fee line.
         assert!(
-            report.contains("kimi: 月费 ¥30.0000 · 本期摊 ¥30.0000 · 利用率 100%"),
+            report.contains("kimi: 月费 ¥30.00 · 本期摊 ¥30.00 · 利用率 100%"),
             "{report}"
         );
         assert!(!report.contains("kimi/k2: 月费"), "{report}");
@@ -673,7 +673,7 @@ mod tests {
         write_ledger(dir, "2026-09-10", &[metered("t", "p/m", 1.0, "USD")]);
         let report = render_report(Some(dir), &Scope::Month(2026, 9), &BTreeMap::new());
         assert!(!report.contains("### Metered"), "{report}");
-        assert!(report.contains("**Total: 1 calls, $1.0000**"), "{report}");
+        assert!(report.contains("**Total: 1 calls, $1.00**"), "{report}");
     }
 
     /// The cache-util column divides by total input; a zero-input row

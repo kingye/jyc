@@ -194,14 +194,33 @@ pub struct TopicCost {
 /// unrecognised currency still reads correctly rather than being
 /// mislabelled with the wrong symbol.
 ///
-/// Four decimals: a single cheap call can cost well under a cent, and
-/// rounding to 2 places would display it as `0.00`.
+/// Two decimals: a cent is the smallest unit that reads as money, so
+/// the figures are the ones a bill would show. An amount below half a
+/// cent rounds to `0.00`.
 pub fn format_amount(amount: f64, currency: &str) -> String {
     match currency {
-        "USD" => format!("${amount:.4}"),
-        "CNY" => format!("¥{amount:.4}"),
-        other => format!("{amount:.4} {other}"),
+        "USD" => format!("${amount:.2}"),
+        "CNY" => format!("¥{amount:.2}"),
+        other => format!("{amount:.2} {other}"),
     }
+}
+
+/// Format the day's per-currency totals as one display string: `"$12.34"`,
+/// or `"$12.34 · ¥3.20"` when the day spans two currencies — the sums
+/// cannot be added, so they stay apart.
+///
+/// `None` when there is nothing to show.
+pub fn format_currency_totals(totals: &[(String, f64)]) -> Option<String> {
+    if totals.is_empty() {
+        return None;
+    }
+    Some(
+        totals
+            .iter()
+            .map(|(currency, amount)| format_amount(*amount, currency))
+            .collect::<Vec<_>>()
+            .join(" · "),
+    )
 }
 
 /// Information about a configured channel.
@@ -279,6 +298,17 @@ pub struct TopicInfo {
     /// when zero or reported by no provider.
     #[serde(default)]
     pub total_reasoning_tokens: Option<u64>,
+    /// The prompt-cache-hit tokens of the LLM calls in the latest turn.
+    /// The turn-scoped twin of `total_cache_hit_tokens` — the numerator
+    /// of the turn's cache rate. `None` when the turn has made no call
+    /// yet.
+    #[serde(default)]
+    pub turn_cache_hit_tokens: Option<u64>,
+    /// The input tokens of the LLM calls in the latest turn — the
+    /// turn-scoped twin of `total_input_tokens`, the denominator of the
+    /// turn's cache rate. `None` when the turn has made no call yet.
+    #[serde(default)]
+    pub turn_input_tokens: Option<u64>,
     /// Average wall-clock time of one LLM call in this session, in
     /// milliseconds. See `TopicSummary::avg_call_ms` for the full
     /// description.
@@ -341,6 +371,11 @@ pub struct TopicInfo {
     /// rather than showing a misleading zero.
     #[serde(default)]
     pub cost: Option<TopicCost>,
+    /// The day's spend across every topic, per currency — the same
+    /// figure `/bill` reports. Kept apart from `cost`, which is this
+    /// topic's own spend. Empty when the day's ledger holds no entry.
+    #[serde(default)]
+    pub today_all: Vec<(String, f64)>,
     /// Commands available in this topic. See `TopicSummary::commands`
     /// for the full semantics.
     #[serde(default)]
@@ -632,6 +667,9 @@ mod tests {
                 avg_turn_call_ms: None,
                 turn_call_count: None,
                 total_reasoning_tokens: None,
+                turn_cache_hit_tokens: None,
+                turn_input_tokens: None,
+                today_all: Vec::new(),
                 activity: vec![],
                 last_active_at: None,
                 skills: vec!["coding-principles".to_string(), "dev-workflow".to_string()],

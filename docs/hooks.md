@@ -59,6 +59,13 @@ running turn fire `session_end`/`session_start` normally.
 `session_end` fires **before** the destructive action, so a hook can
 still read or archive the topic directory while it exists.
 
+A message that arrives while a turn is running (the pattern's
+`live_injection`) fires `message_received` at the injection gate too, on
+the body the model would read. A hook that blocks it there keeps it out
+of the running turn; the message then waits for a turn of its own, where
+the same hook runs again — so a hook with side effects (counting, rate
+limit state) sees such a message twice.
+
 ## Protocol
 
 The hook process is spawned with the topic directory as its working

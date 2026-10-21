@@ -179,6 +179,7 @@ fn base_config<'a>(
         event_bus: Some(bus),
         prior_history: vec![],
         prior_raw_context: std::sync::Arc::new(vec![]),
+        injection_rx: None,
         max_iterations: Some(5),
         sse_read_timeout: std::time::Duration::from_secs(60),
         additional_read_roots: vec![],

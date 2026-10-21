@@ -199,7 +199,7 @@ impl AgentService for JycAgentService {
         topic_name: &str,
         topic_path: &Path,
         message_dir: &str,
-        _pending_rx: &mut mpsc::Receiver<QueueItem>,
+        pending_rx: &mut mpsc::Receiver<QueueItem>,
         topic_cancel: CancellationToken,
     ) -> Result<AgentResult> {
         tracing::info!(
@@ -533,6 +533,9 @@ impl AgentService for JycAgentService {
             event_bus: event_bus.as_ref(),
             prior_history,
             prior_raw_context,
+            // The queue the worker hands live messages to: the loop folds
+            // them into the running turn (see `live_injection`).
+            injection_rx: Some(&mut *pending_rx),
             max_iterations: Some(agent_cfg.max_iterations),
             sse_read_timeout: std::time::Duration::from_secs(agent_cfg.sse_read_timeout_secs),
             additional_read_roots,

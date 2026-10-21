@@ -2959,8 +2959,9 @@ fn info_pane_value_row<'a>(rows: &'a [String], label: &str) -> &'a str {
 }
 
 /// The pane's two percentage rows lead with a bar: the context share and
-/// the cache hit rate, each in front of its figures. The pane is what
-/// renders them, so this looks at the pane rather than at the helper.
+/// the cache hit rate, each in front of its figures. The figures have a
+/// row of their own, under the bar. The pane is what renders them, so
+/// this looks at the pane rather than at the helper.
 #[test]
 fn info_pane_draws_the_percentage_bars() {
     let mut app = info_pane_app(Default::default());
@@ -2974,24 +2975,31 @@ fn info_pane_draws_the_percentage_bars() {
 
     // Wide enough that neither row wraps.
     let pane = info_pane_text(&mut app, 70, 30);
+    let rows = info_pane_rows(&pane);
 
+    // The pane's inner width is 69: the bar takes what the label's room
+    // leaves, less the two cells it keeps to the pane's edge — 54 cells.
     // 47% of the window, 88% of the input served from the cache.
     assert!(
-        pane.contains(&format!(
-            "{}{} 46.39K / 97.66K (47%)",
-            info_pane_label("Tokens: "),
-            info_pane_bar(9, 20)
-        )),
+        rows.iter()
+            .any(|r| { r == &format!("{}{}", info_pane_label("Tokens: "), info_pane_bar(25, 54)) }),
         "the tokens row must lead with its bar:\n{pane}"
     );
     assert!(
-        pane.contains(&format!(
-            "{}{} 78.24K / 88.19K (88%)",
-            info_pane_label("Session: "),
-            info_pane_bar(18, 20)
-        )),
+        rows.iter().any(|r| {
+            r == &format!("{}{}", info_pane_label("Session: "), info_pane_bar(48, 54))
+        }),
         "the cache row must lead with its bar:\n{pane}"
     );
+    // The figures have a row of their own, in the value's column, under
+    // the bar they belong to.
+    for figures in ["46.39K / 97.66K (47%)", "78.24K / 88.19K (88%)"] {
+        assert!(
+            rows.iter()
+                .any(|r| r == &format!("{}{figures}", " ".repeat(INFO_PANE_LABEL_WIDTH))),
+            "the figures must have a row of their own:\n{pane}"
+        );
+    }
 }
 
 /// The turn's cache row is drawn before the turn's first call, at zero:
@@ -3004,14 +3012,18 @@ fn info_pane_shows_the_turn_cache_row_at_zero() {
 
     // Wide enough that the row does not wrap.
     let pane = info_pane_text(&mut app, 70, 30);
+    let rows = info_pane_rows(&pane);
 
     assert!(
-        pane.contains(&format!(
-            "{}{} 0 / 0 (0%)",
-            info_pane_label("Turn: "),
-            info_pane_bar(0, 20)
-        )),
+        rows.iter()
+            .any(|r| { r == &format!("{}{}", info_pane_label("Turn: "), info_pane_bar(0, 54)) }),
         "the turn's cache row must be there, at zero:\n{pane}"
+    );
+    // Its figures have a row of their own, under the bar.
+    assert!(
+        rows.iter()
+            .any(|r| r == &format!("{}0 / 0 (0%)", " ".repeat(INFO_PANE_LABEL_WIDTH))),
+        "the turn's cache row must carry its figures:\n{pane}"
     );
 }
 
@@ -3072,8 +3084,8 @@ fn info_pane_groups_the_cache_rows_under_a_header() {
 
 /// The bar is as wide as the pane allows, and it stays whole: in the
 /// stacked layout the bar has a row of its own, so it can use the
-/// pane's full width, and the wrapping moves the figures below it
-/// rather than cutting the bar in half.
+/// pane's full width less the two cells it keeps to the edge, and the
+/// figures move to the row under it rather than cutting the bar in half.
 #[test]
 fn info_pane_bar_fits_a_narrow_pane() {
     let mut app = info_pane_app(Default::default());
@@ -3086,16 +3098,16 @@ fn info_pane_bar_fits_a_narrow_pane() {
     }
 
     // 30 columns wide: the pane's inner width is 29, too narrow for the
-    // table layout, so the bar gets a row of its own — twenty cells, the
-    // most a bar may be.
+    // table layout, so the bar gets a row of its own — twenty-seven
+    // cells, all but the two it keeps to the pane's edge.
     let pane = info_pane_text(&mut app, 30, 30);
     let rows = info_pane_rows(&pane);
     assert!(
-        info_pane_value_row(&rows, "Tokens:").starts_with(&info_pane_bar(9, 20)),
+        info_pane_value_row(&rows, "Tokens:").starts_with(&info_pane_bar(13, 27)),
         "the bar must stay whole in a narrow pane:\n{pane}"
     );
     assert!(
-        info_pane_value_row(&rows, "Session:").starts_with(&info_pane_bar(18, 20)),
+        info_pane_value_row(&rows, "Session:").starts_with(&info_pane_bar(24, 27)),
         "the bar must stay whole in a narrow pane:\n{pane}"
     );
 }
@@ -3188,11 +3200,11 @@ fn info_pane_indents_a_continued_value_to_its_column() {
     assert_eq!(shown, branch, "the value must not lose a word:\n{pane}");
 }
 
-/// The figures of a bar row stay in the pane's value column: the row that
-/// continues the `Tokens:` row — the figures that did not fit beside the
-/// bar — starts in the same column every other value starts in.
+/// The figures of a bar row have a row of their own, in the pane's value
+/// column: they line up with the bar above them, so a reader can follow
+/// the bar down to the figures it stands for.
 #[test]
-fn info_pane_indents_the_bar_rows_figures_to_the_value_column() {
+fn info_pane_puts_the_bar_rows_figures_in_the_value_column() {
     let mut app = info_pane_app(Default::default());
     {
         let detail = app.topic_detail.as_mut().expect("the topic's detail");
@@ -3201,21 +3213,54 @@ fn info_pane_indents_the_bar_rows_figures_to_the_value_column() {
     }
 
     // 46 columns wide: the pane's inner width is 45, wide enough for the
-    // table layout and too narrow for the bar and the figures to share one
-    // row.
+    // table layout.
     let pane = info_pane_text(&mut app, 46, 40);
     let rows = info_pane_rows(&pane);
     let row = rows
         .iter()
         .find(|r| r.contains("97.66K (47%)"))
         .unwrap_or_else(|| panic!("no row carries the tokens figures:\n{pane}"));
-    // The row that continues the bar row starts in the value's column: the
-    // figures that did not fit beside the bar are indented to it, so the
-    // column keeps them.
+    // The figures' row starts in the value's column: the same column the
+    // bar starts in, so the two line up.
     assert_eq!(
         row.len() - row.trim_start().len(),
         INFO_PANE_LABEL_WIDTH,
-        "the figures that continue the bar row must stay in the value's column:\n{pane}"
+        "the figures must stay in the value's column:\n{pane}"
+    );
+    // The bar has its row to itself: the figures are not beside it.
+    let bar_row = rows
+        .iter()
+        .find(|r| r.starts_with(&info_pane_label("Tokens: ")))
+        .unwrap_or_else(|| panic!("no row for the tokens:\n{pane}"));
+    assert!(
+        !bar_row.contains("97.66K"),
+        "the figures must have a row of their own:\n{pane}"
+    );
+}
+
+/// A value that belongs to the row above it — the figures of a bar row —
+/// joins that row's column: in the table layout the value's column, in
+/// the stacked one the pane's first column.
+#[test]
+fn info_pane_puts_a_bars_figures_in_the_value_column() {
+    let figures = || InfoRow::Value(Span::raw("46.39K / 97.66K (47%)"));
+
+    // The table layout: the value's column, the one the bar starts in.
+    let lines = layout_info_rows(vec![figures()], PaneLayout::Table, 45);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(
+        info_pane_line_text(&lines[0]),
+        format!("{}46.39K / 97.66K (47%)", " ".repeat(INFO_PANE_LABEL_WIDTH)),
+        "the figures must sit in the value's column"
+    );
+
+    // The stacked layout: flush left, where the bar's own row starts.
+    let lines = layout_info_rows(vec![figures()], PaneLayout::Stacked, 29);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(
+        info_pane_line_text(&lines[0]),
+        "46.39K / 97.66K (47%)",
+        "the figures must sit flush left"
     );
 }
 

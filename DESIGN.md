@@ -1900,13 +1900,19 @@ When a user sends a follow-up message while the AI is still processing the first
 4. Each folded message is appended to the topic's chat log, so the transcript shows what the user said.
 5. A message the turn never picks up — the turn ended before its next drain point — is drained by the worker and re-queued, so it becomes a turn of its own instead of being lost.
 
-**Injection format:** Raw body only — no framing, no instructions. This matches how the agent TUI handles messages sent during AI processing. The AI treats it as a natural follow-up in the conversation.
+**Injection format:** The body only — no framing, no instructions. This matches how the agent TUI handles messages sent during AI processing. The AI treats it as a natural follow-up in the conversation. The body the model reads is cleaned the way the turn's own body is cleaned (the email channel strips the quoted history of a reply), so a follow-up email does not feed the model the whole quoted thread; the transcript keeps the raw words.
 
 ```
 Please also add a chart to the PPT.
 ```
 
 **Only plain text is injected:** a message carrying attachments, a topic-path override or a template needs the full turn pipeline — its own storage, hooks and reply target — so it keeps a turn of its own.
+
+**On the wire:** the Anthropic protocol carries a tool result as a `user` message, so an injected message would put two `user` turns back to back. The Anthropic provider merges consecutive `user` turns into one before sending — what the Messages API does anyway, and what the strict routes built on it (Bedrock, Vertex, and the gateways that re-implement the validation) require: `messages: roles must alternate between "user" and "assistant"`. The same shape arises from an image a tool loaded, so the merge covers both.
+
+**The moderation gate still applies:** a `message_received` hook that blocks the message keeps it out of the running turn — it waits for a turn of its own, where the same hook blocks it again and the chat log records it. An injected message reaches the model just as much as a message that starts a turn, so it passes the same gate.
+
+**Ordering:** an injected message overtakes the messages already waiting. A message that cannot be injected (an attachment, a template, a topic-path override) and arrived earlier is re-queued and processed *after* the injected content was folded into the running turn and answered: the absorbed turn comes first, the queued one follows.
 
 ## Worker (Agent Service)
 

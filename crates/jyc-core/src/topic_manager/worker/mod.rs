@@ -344,26 +344,34 @@ pub(crate) async fn process_message(
     // that file, so keying only on `topic_is_new` would re-fire startup on
     // every dashboard message. A startup is "the first real-channel message".
     let t_before_hooks = std::time::Instant::now();
+    // The hook context of a message: what a hook sees about it. The
+    // queued message that joins the running turn gets one too — the
+    // hook gates what reaches the model, and an injected message
+    // reaches the model just as much.
+    let hook_ctx = |msg: &jyc_types::InboundMessage| HookCtx {
+        topic: topic_name.to_string(),
+        cwd: store_result.topic_path.display().to_string(),
+        channel: Some(msg.channel.clone()),
+        message_content: msg.content.text.clone(),
+        sender: Some(msg.sender.clone()),
+        sender_address: Some(msg.sender_address.clone()),
+        metadata: json_metadata(&msg.metadata),
+        ..Default::default()
+    };
     if !hooks.is_empty() {
-        let base_ctx = || HookCtx {
-            topic: topic_name.to_string(),
-            cwd: store_result.topic_path.display().to_string(),
-            channel: Some(message.channel.clone()),
-            message_content: message.content.text.clone(),
-            sender: Some(message.sender.clone()),
-            sender_address: Some(message.sender_address.clone()),
-            metadata: json_metadata(&message.metadata),
-            ..Default::default()
-        };
         if topic_is_new && message.channel_uid != "dashboard" {
-            let mut sc = base_ctx();
+            let mut sc = hook_ctx(&message);
             sc.source = Some("startup".into());
             hooks
                 .run(HookEvent::SessionStart, Some("startup"), &sc)
                 .await;
         }
         if let HookOutcome::Block(reason) = hooks
-            .run(HookEvent::MessageReceived, Some(topic_name), &base_ctx())
+            .run(
+                HookEvent::MessageReceived,
+                Some(topic_name),
+                &hook_ctx(&message),
+            )
             .await
         {
             tracing::info!(
@@ -552,20 +560,49 @@ pub(crate) async fn process_message(
                             // instead of waiting for it to end. The agent folds
                             // it into the conversation at its next drain point,
                             // where the model sees it as a user message.
-                            match inject_tx.try_send(qi) {
-                                Ok(()) => {
-                                    tracing::info!(
-                                        topic = %topic_name,
-                                        "Injecting a message into the running turn"
-                                    );
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        topic = %topic_name,
-                                        error = %e,
-                                        "Live injection failed; re-queueing the message"
-                                    );
-                                    buffered.push(e.into_inner());
+                            //
+                            // The `message_received` hook gates what reaches the
+                            // model, and an injected message reaches it just as
+                            // much as a message that starts a turn: the hook
+                            // runs here too, on the same body the model will
+                            // read. A hook that blocks the message keeps it
+                            // out of the running turn — it waits for a turn of
+                            // its own, where the same hook blocks it again and
+                            // the chat log records it.
+                            let mut injected_ctx = hook_ctx(&qi.message);
+                            injected_ctx.message_content =
+                                Some(outbound.clean_body(qi.message.content.text.as_deref().unwrap_or("")));
+                            let blocked = matches!(
+                                hooks.run(
+                                    HookEvent::MessageReceived,
+                                    Some(topic_name),
+                                    &injected_ctx
+                                ).await,
+                                HookOutcome::Block(_)
+                            );
+                            if blocked {
+                                tracing::info!(
+                                    topic = %topic_name,
+                                    "message_received hook blocked an injected message; \
+                                     it waits for a turn of its own"
+                                );
+                                buffered.push(qi);
+                            } else {
+                                match inject_tx.try_send(qi) {
+                                    Ok(()) => {
+                                        tracing::info!(
+                                            topic = %topic_name,
+                                            "Injecting a message into the running turn"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            topic = %topic_name,
+                                            error = %e,
+                                            "Live injection failed; re-queueing the message"
+                                        );
+                                        buffered.push(e.into_inner());
+                                    }
                                 }
                             }
                         } else {

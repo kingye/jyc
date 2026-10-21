@@ -87,10 +87,12 @@ impl Provider for AnthropicProvider {
         let url = format!("{}/messages", self.base_url);
 
         // Convert messages to Anthropic format
-        let api_messages = messages
-            .iter()
-            .map(to_anthropic_message)
-            .collect::<Vec<_>>();
+        let api_messages = merge_consecutive_user_messages(
+            messages
+                .iter()
+                .map(to_anthropic_message)
+                .collect::<Vec<_>>(),
+        );
 
         // Build tools array
         let api_tools: Vec<AnthropicTool> = tools
@@ -283,7 +285,8 @@ impl Provider for AnthropicProvider {
             })
             .collect();
 
-        let filtered_messages = super::filter_valid_messages(raw_messages);
+        let filtered_messages =
+            merge_consecutive_user_messages(super::filter_valid_messages(raw_messages));
 
         let mut body = serde_json::json!({
             "model": &self.model,
@@ -562,6 +565,61 @@ fn to_anthropic_message(msg: &Message) -> serde_json::Value {
     })
 }
 
+/// Merge consecutive `user` messages into one.
+///
+/// The Anthropic protocol carries a tool result as a `user` message, so
+/// whatever the turn adds between two calls — a live injection, an image
+/// a tool loaded — puts two `user` turns back to back on the wire. The
+/// Messages API combines same-role turns itself, but the strict routes
+/// built on it (Bedrock, Vertex, and the gateways that re-implement the
+/// validation) reject the pair outright:
+/// `messages: roles must alternate between "user" and "assistant"`.
+///
+/// Combining them here is what the API does anyway, and it keeps the
+/// request valid on every route. The blocks keep their order, so a
+/// `tool_result` stays ahead of the text that follows it.
+fn merge_consecutive_user_messages(messages: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    let mut merged: Vec<serde_json::Value> = Vec::with_capacity(messages.len());
+
+    for message in messages {
+        let is_user = message.get("role").and_then(|r| r.as_str()) == Some("user");
+        let previous_is_user = merged
+            .last()
+            .and_then(|m| m.get("role"))
+            .and_then(|r| r.as_str())
+            == Some("user");
+
+        if !(is_user && previous_is_user) {
+            merged.push(message);
+            continue;
+        }
+
+        let blocks = content_blocks(&message);
+        let last = merged.last_mut().expect("the previous user message");
+        match last.get_mut("content").and_then(|c| c.as_array_mut()) {
+            Some(existing) => existing.extend(blocks),
+            None => last["content"] = serde_json::Value::Array(blocks),
+        }
+    }
+
+    merged
+}
+
+/// The content blocks of a message.
+///
+/// Anthropic carries them as an array. A message whose content is a
+/// plain string becomes a text block, so a merged message keeps one
+/// shape.
+fn content_blocks(message: &serde_json::Value) -> Vec<serde_json::Value> {
+    match message.get("content") {
+        Some(serde_json::Value::Array(blocks)) => blocks.clone(),
+        Some(serde_json::Value::String(text)) => {
+            vec![serde_json::json!({"type": "text", "text": text})]
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// Build an Anthropic `image` content block from an `ImageSource`.
 ///
 /// Anthropic uses different shapes for inline base64 vs remote URL:
@@ -733,6 +791,108 @@ mod tests {
     use serde_json::json;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Two `user` turns in a row are one turn on the wire: the tool
+    /// result and the text that follows it share a message.
+    #[test]
+    fn consecutive_user_messages_merge_into_one() {
+        let merged = merge_consecutive_user_messages(vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "hello"}]}),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "working"}]}),
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}),
+            json!({"role": "user", "content": [{"type": "text", "text": "extra info"}]}),
+        ]);
+
+        assert_eq!(merged.len(), 3, "the two user turns became one");
+        assert_eq!(merged[2]["role"], "user");
+        let blocks = merged[2]["content"].as_array().expect("content blocks");
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(
+            blocks[0]["type"], "tool_result",
+            "the tool result stays first"
+        );
+        assert_eq!(blocks[1]["text"], "extra info");
+    }
+
+    /// An assistant turn between two user turns keeps them apart.
+    #[test]
+    fn user_messages_around_an_assistant_turn_stay_apart() {
+        let merged = merge_consecutive_user_messages(vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "a"}]}),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "b"}]}),
+            json!({"role": "user", "content": [{"type": "text", "text": "c"}]}),
+        ]);
+
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[2]["content"][0]["text"], "c");
+    }
+
+    /// Three user turns in a row collapse into one.
+    #[test]
+    fn three_consecutive_user_messages_merge_into_one() {
+        let merged = merge_consecutive_user_messages(vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "a"}]}),
+            json!({"role": "user", "content": [{"type": "text", "text": "b"}]}),
+            json!({"role": "user", "content": [{"type": "text", "text": "c"}]}),
+        ]);
+
+        assert_eq!(merged.len(), 1);
+        let blocks = merged[0]["content"].as_array().expect("content blocks");
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[2]["text"], "c");
+    }
+
+    /// The wire body carries one user turn where the conversation had two:
+    /// a tool result followed by the message that arrived mid-turn.
+    #[tokio::test]
+    async fn complete_raw_sends_one_user_turn_for_a_tool_result_and_an_injection() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
+            )
+            .mount(&server)
+            .await;
+
+        let raw = vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "do the thing"}]}),
+            json!({"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "bash", "input": {}}]}),
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}),
+            json!({"role": "user", "content": [{"type": "text", "text": "extra info"}]}),
+        ];
+
+        let provider = AnthropicProvider::new(
+            &server.uri(),
+            "claude-test",
+            Some("k"),
+            None,
+            false,
+            None,
+            false,
+        )
+        .unwrap();
+        let stream = provider.complete_raw(&raw, &[], "").await.expect("stream");
+        tokio::pin!(stream);
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        let messages = sent["messages"].as_array().expect("messages array");
+
+        assert_eq!(messages.len(), 3, "one user turn, not two: {sent:#}");
+        assert_eq!(messages[2]["role"], "user");
+        let blocks = messages[2]["content"].as_array().expect("content blocks");
+        assert_eq!(
+            blocks.len(),
+            2,
+            "the tool result and the text share the turn"
+        );
+        assert_eq!(blocks[0]["type"], "tool_result");
+        assert_eq!(blocks[1]["text"], "extra info");
+    }
 
     #[test]
     fn sanitize_input_schema_removes_one_of() {

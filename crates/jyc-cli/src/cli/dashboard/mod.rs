@@ -1591,13 +1591,19 @@ fn render_topics(frame: &mut Frame, area: Rect, app: &mut App) {
     // Agent and Topic share the space the Channel column gave up: names are
     // what the table is read for, and the two are the same value for an
     // agent-keyed topic. The rest keep their fixed widths.
+    //
+    // The Context column is wide enough for the longest figure the shared
+    // formatter can print — `999.99K/999.99K`, fifteen cells — so a context
+    // is never cut off mid-number. Status needs only its longest value
+    // (`Processing`) and Last Active only its header, so the three cells
+    // come from there and the table keeps the width it had.
     let widths = [
         Constraint::Min(20),
         Constraint::Length(16),
         Constraint::Length(12),
-        Constraint::Length(12),
-        Constraint::Length(12),
-        Constraint::Length(12),
+        Constraint::Length(10),
+        Constraint::Length(15),
+        Constraint::Length(11),
     ];
 
     let table = Table::new(rows, widths)
@@ -2327,6 +2333,37 @@ mod tests {
         assert!(first.contains("invoice"), "got: {first:?}");
         assert!(first.contains("issue-42"), "got: {first:?}");
         assert!(first.contains("planner"), "got: {first:?}");
+    }
+
+    /// The context column is wide enough for the whole figure: the shared
+    /// formatter prints two decimals in K and M, so a context is never cut
+    /// off mid-number.
+    #[test]
+    fn topics_table_shows_the_whole_context_figure() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = make_test_app();
+        let mut overview = make_overview_with_topics(&["issue-42"]);
+        overview.topics[0].context_input_tokens = Some(45_231);
+        overview.topics[0].max_tokens = Some(120_000);
+        app.state = Some(overview);
+
+        let area = Rect::new(0, 0, 120, 4);
+        let backend = TestBackend::new(area.width, area.height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_topics(frame, area, &mut app))
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer().clone();
+        let first: String = (0..area.width)
+            .map(|x| buffer[(x, 2)].symbol().to_string())
+            .collect();
+        assert!(
+            first.contains("44.17K/117.19K"),
+            "the context figure should not be cut off, got: {first:?}"
+        );
     }
 
     /// A topic whose agent could not be resolved shows a dash rather than an

@@ -83,7 +83,7 @@ pub fn format_token_count(count: u64) -> String {
 /// The cache figures of one scope — a turn or a session — as the pane and
 /// `/info` print them: the cache-hit tokens, the total input tokens they
 /// are a share of, and that share in percent, e.g. `"964.51K / 1.18M
-/// (93%)"`.
+/// (80%)"`.
 ///
 /// `None` when the scope has no input tokens yet — there is nothing for
 /// the hits to be a share of — so the caller omits the row rather than

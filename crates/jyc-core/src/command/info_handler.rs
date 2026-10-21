@@ -10,8 +10,8 @@ use crate::topic_manager::TopicManager;
 use crate::topic_manager::topic_tree;
 
 /// /info command — show this topic's info, mirroring the dashboard chat
-/// screen's Topic Info pane (name, channel, pattern, model, mode, branch,
-/// status, token usage, call latency, cost, changed files).
+/// screen's Topic Info pane (name, pattern, model, mode, branch, status,
+/// token usage, call latency, cost, changed files).
 ///
 /// Data comes from `TopicManager::topic_info` — the same call the
 /// dashboard's per-topic endpoint serves

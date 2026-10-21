@@ -217,6 +217,10 @@ pub(super) fn push_cache_creation_span(spans: &mut Vec<Span>, t: &TopicInfo) {
 /// nothing when the scope has no input tokens yet (e.g. a turn that has
 /// made no call), so such topics show no row rather than a misleading 0%.
 ///
+/// A scope that has input tokens but no recorded hits still shows its
+/// row, at 0%: the hits are a share of the input tokens, and a provider
+/// without prompt caching simply has no hits to report.
+///
 /// The figures come from the shared helper, so `/info` prints the same
 /// string.
 fn push_cache_rate_row(

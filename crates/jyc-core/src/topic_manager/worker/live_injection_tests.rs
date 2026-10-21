@@ -69,6 +69,9 @@ struct FakeAgent {
     drains: bool,
     /// Set by the test to let the turn end.
     finish: AtomicBool,
+    /// Why the turn ended: the test released it, or the topic was
+    /// cancelled under it.
+    exit: Mutex<Option<&'static str>>,
     /// How many turns ended.
     finished: AtomicUsize,
     /// One signal per turn, so the test knows a turn is running.
@@ -82,6 +85,7 @@ impl FakeAgent {
             injected_log: Mutex::new(Vec::new()),
             drains,
             finish: AtomicBool::new(false),
+            exit: Mutex::new(None),
             finished: AtomicUsize::new(0),
             started_tx,
         }
@@ -100,6 +104,12 @@ impl FakeAgent {
     /// How many turns ended.
     fn finished(&self) -> usize {
         self.finished.load(Ordering::SeqCst)
+    }
+
+    /// Why the last turn ended: the test released it ("finished") or the
+    /// topic was cancelled under it ("cancelled").
+    fn exit(&self) -> Option<&'static str> {
+        *self.exit.lock().expect("exit lock")
     }
 
     /// Let the turn end.
@@ -131,6 +141,7 @@ impl AgentService for FakeAgent {
 
         loop {
             if self.finish.load(Ordering::SeqCst) {
+                *self.exit.lock().expect("exit lock") = Some("finished");
                 break;
             }
             if self.drains {
@@ -142,7 +153,10 @@ impl AgentService for FakeAgent {
                 }
             }
             tokio::select! {
-                _ = topic_cancel.cancelled() => break,
+                _ = topic_cancel.cancelled() => {
+                    *self.exit.lock().expect("exit lock") = Some("cancelled");
+                    break;
+                }
                 _ = tokio::time::sleep(Duration::from_millis(2)) => {}
             }
         }
@@ -159,20 +173,52 @@ impl AgentService for FakeAgent {
     }
 }
 
-/// Wait until `check` holds. The tests wait for what they assert instead
-/// of sleeping past a guess.
-async fn wait_until(what: &str, mut check: impl FnMut() -> bool) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+/// Wait for `check` to hold, up to `timeout`. Says whether it held.
+async fn wait_for(mut check: impl FnMut() -> bool, timeout: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
     loop {
         if check() {
-            return;
+            return true;
         }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "timed out waiting for {what}"
-        );
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
+}
+
+/// Wait until `check` holds. The tests wait for what they assert instead
+/// of sleeping past a guess.
+async fn wait_until(what: &str, check: impl FnMut() -> bool) {
+    assert!(
+        wait_for(check, Duration::from_secs(10)).await,
+        "timed out waiting for {what}"
+    );
+}
+
+/// The `message_received` hook payloads a recording hook wrote, in order.
+///
+/// The hook sees every message that reaches the model — the one that
+/// starts a turn and the one that joins a running turn — so the list
+/// says which path a message took.
+fn hook_payloads(workspace: &Path, topic: &str) -> Vec<String> {
+    let text = std::fs::read_to_string(workspace.join(topic).join("hook-payloads.log"))
+        .unwrap_or_default();
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.to_string())
+        .collect()
+}
+
+/// A config that records every `message_received` payload in the topic
+/// directory, so a test can see which path a message took.
+fn config_with_recording_hook() -> String {
+    format!(
+        "{BASE_CONFIG}\n\
+         [[hooks]]\n\
+         event = \"message_received\"\n\
+         shell = [\"sh\", \"-c\", \"cat >> hook-payloads.log; echo >> hook-payloads.log; exit 0\"]\n"
+    )
 }
 
 /// The bodies the chat log holds for a topic, in the order they landed.
@@ -310,7 +356,7 @@ async fn a_follow_up_joins_the_running_turn() {
     let (started_tx, mut started_rx) = mpsc::unbounded_channel();
     let agent = Arc::new(FakeAgent::new(true, started_tx));
     let agent_service: Arc<dyn AgentService> = agent.clone();
-    let tm = make_test_tm(&workspace, agent_service);
+    let tm = make_test_tm_with_config(&workspace, agent_service, &config_with_recording_hook());
 
     tm.enqueue(
         message("first", "do the thing", tname),
@@ -324,6 +370,14 @@ async fn a_follow_up_joins_the_running_turn() {
 
     // The first turn is running now — the follow-up arrives during it.
     started_rx.recv().await.expect("the first turn started");
+    // The worker registers the topic's directory the first time it stores
+    // a message, so from here on every message carries a topic path. The
+    // follow-up must still join the running turn: a path that names the
+    // topic's own directory is not a reason to wait.
+    assert!(
+        tm.custom_topic_paths().await.contains_key(tname),
+        "the topic's directory is registered by now"
+    );
     tm.enqueue(
         message("second", "extra info", tname),
         tname.to_string(),
@@ -334,15 +388,32 @@ async fn a_follow_up_joins_the_running_turn() {
     )
     .await;
 
-    wait_until("the follow-up to reach the running turn", || {
-        !agent.injected().is_empty()
-    })
-    .await;
-
+    let injected = wait_for(|| !agent.injected().is_empty(), Duration::from_secs(10)).await;
     agent.finish();
-    wait_until("the turn to end", || agent.finished() >= 1).await;
+    // The turn has to end for the evidence below to be complete: a
+    // follow-up that did not join it waits for a turn of its own, and
+    // that turn is where the hook sees it a second time.
+    let ended = wait_for(|| agent.finished() >= 1, Duration::from_secs(10)).await;
+    let _ = wait_for(|| agent.turns().len() >= 2, Duration::from_secs(2)).await;
+
+    let turns = agent.turns();
+    let payloads = hook_payloads(&workspace, tname);
+    let log = chat_log_bodies(&workspace, tname);
+    let exit = agent.exit();
     tm.shutdown().await;
 
+    assert!(
+        injected && ended,
+        "the follow-up never reached the running turn: \
+         injected={:?} turn_ended={} turns={:?} turn_exit={:?} chat_log={:?} \
+         message_received payloads={:?}",
+        agent.injected(),
+        ended,
+        turns,
+        exit,
+        log,
+        payloads
+    );
     assert_eq!(
         agent.injected(),
         vec!["extra info".to_string()],
@@ -352,6 +423,12 @@ async fn a_follow_up_joins_the_running_turn() {
         agent.turns(),
         vec!["do the thing".to_string()],
         "the follow-up did not become a turn of its own"
+    );
+    assert!(
+        payloads
+            .iter()
+            .any(|payload| payload.contains("extra info")),
+        "the injected message passed the message_received hook: {payloads:?}"
     );
 }
 

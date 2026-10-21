@@ -1906,7 +1906,7 @@ When a user sends a follow-up message while the AI is still processing the first
 Please also add a chart to the PPT.
 ```
 
-**Only plain text is injected:** a message carrying attachments, a topic-path override or a template needs the full turn pipeline — its own storage, hooks and reply target — so it keeps a turn of its own.
+**Only plain text is injected:** a message carrying attachments or a template needs the full turn pipeline — its own storage, hooks and reply target — so it keeps a turn of its own. A message headed for another directory (its topic path points elsewhere than the running turn's) keeps its own turn too. A topic path that merely names the topic's own directory is not a reason to wait: the worker registers that directory the first time it stores a message, so every message after the topic's first carries one.
 
 **On the wire:** the Anthropic protocol carries a tool result as a `user` message, so an injected message would put two `user` turns back to back. The Anthropic provider merges consecutive `user` turns into one before sending — what the Messages API does anyway, and what the strict routes built on it (Bedrock, Vertex, and the gateways that re-implement the validation) require: `messages: roles must alternate between "user" and "assistant"`. The same shape arises from an image a tool loaded, so the merge covers both.
 

@@ -36,12 +36,21 @@ const INJECTION_CHANNEL_CAPACITY: usize = 32;
 
 /// Whether a queued message can join the running turn as it is.
 ///
-/// Only plain text: an attachment, a topic override or a template needs
-/// the full turn pipeline (its own storage, hooks and reply target), and
-/// a scheduled job is not a message at all.
-fn is_injectable(item: &QueueItem) -> bool {
-    item.template.is_none()
-        && item.topic_path_override.is_none()
+/// Only plain text: an attachment, a template or a scheduled job needs
+/// the full turn pipeline (its own storage, hooks and reply target).
+///
+/// A topic path is not a reason on its own: the worker registers the
+/// topic's directory the first time it stores a message, so every
+/// message after that carries one. What matters is where the message
+/// would land — a message headed for a directory other than the running
+/// turn's keeps a turn of its own.
+fn is_injectable(item: &QueueItem, topic_path: &Path, workspace: &Path) -> bool {
+    let effective_path = item
+        .topic_path_override
+        .clone()
+        .unwrap_or_else(|| workspace.join(&item.topic_name));
+    effective_path == topic_path
+        && item.template.is_none()
         && item.message.attachments.is_empty()
         && !item.message.is_scheduled_job()
         && item
@@ -555,7 +564,9 @@ pub(crate) async fn process_message(
                                     );
                                 }
                             }
-                        } else if item.live_injection && is_injectable(&qi) {
+                        } else if item.live_injection
+                            && is_injectable(&qi, &store_result.topic_path, storage.workspace())
+                        {
                             // Live injection: the message joins the running turn
                             // instead of waiting for it to end. The agent folds
                             // it into the conversation at its next drain point,

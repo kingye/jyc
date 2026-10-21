@@ -17,12 +17,19 @@ use ratatui::text::Span;
 /// The label of the token-usage row.
 const TOKENS_LABEL: &str = "Tokens: ";
 
-/// The label of the latest turn's cache row.
-const CACHE_TURN_LABEL: &str = "Cache (turn): ";
+/// The label of the latest turn's cache row — it names the scope; the
+/// group the cache rows belong to carries its own header.
+const CACHE_TURN_LABEL: &str = "Turn: ";
 
-/// The label of the session's cache row — the longest label of the pane,
-/// so it sets the width every other label is padded to.
-const CACHE_SESSION_LABEL: &str = "Cache (session): ";
+/// The label of the session's cache row.
+const CACHE_SESSION_LABEL: &str = "Session: ";
+
+/// The label of the cache-creation row — the cache's write volume.
+const CACHE_CREATE_LABEL: &str = "Create: ";
+
+/// The label of the day's spend row — the longest label of the pane, so
+/// it sets the width every other label is padded to.
+const TODAY_ALL_LABEL: &str = "Today (all): ";
 
 /// The width every label of the info pane is padded to, so that every
 /// value in the pane starts in the same column and the pane reads as one
@@ -32,7 +39,7 @@ const CACHE_SESSION_LABEL: &str = "Cache (session): ";
 ///
 /// A label longer than this pushes its own value out of the column —
 /// raise it when a longer label arrives.
-const LABEL_WIDTH: usize = CACHE_SESSION_LABEL.len();
+const LABEL_WIDTH: usize = TODAY_ALL_LABEL.len();
 
 /// The room a bar leaves for its row: the padded label, plus one cell so
 /// the bar never touches the pane's edge. The space between the bar and
@@ -52,7 +59,7 @@ const MAX_BAR_WIDTH: usize = 20;
 /// narrow pane gets its figures alone.
 ///
 /// Only a column of fewer than five cells can reach it: the table layout
-/// leaves the label's room (at least seventeen cells) to the bar, and the
+/// leaves the label's room (at least thirteen cells) to the bar, and the
 /// stacked one gives the bar the whole column.
 const MIN_BAR_WIDTH: usize = 5;
 
@@ -194,7 +201,7 @@ pub(super) fn push_output_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     }
 }
 
-/// Append the "Cache create: N" row to `spans`. Pushes nothing when
+/// Append the "Create: N" row to `spans`. Pushes nothing when
 /// `total_cache_creation_tokens` is missing or zero. Only Anthropic and
 /// GPT-5.6 (`cache_write_tokens`) report writes separately from reads; for
 /// every other vendor this stays `None` and the row never renders. Sits next to
@@ -205,7 +212,7 @@ pub(super) fn push_cache_creation_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     if let Some(cache_creation) = t.total_cache_creation_tokens
         && cache_creation > 0
     {
-        spans.push(label_span("Cache create: "));
+        spans.push(label_span(CACHE_CREATE_LABEL));
         spans.push(Span::raw(jyc_types::format_token_count(cache_creation)));
     }
 }
@@ -260,7 +267,7 @@ fn push_cache_rate_row(
     }));
 }
 
-/// Append the "Cache (turn): <bar> hits / input (Z%)" row — the cache
+/// Append the "Turn: <bar> hits / input (Z%)" row — the cache
 /// figures of the latest turn, so a long turn's own cache rate is
 /// visible next to the session's.
 ///
@@ -279,7 +286,7 @@ pub(super) fn push_turn_cache_span(spans: &mut Vec<Span>, t: &TopicInfo, bar_cel
     );
 }
 
-/// Append the "Cache (session): <bar> hits / input (Z%)" row — the
+/// Append the "Session: <bar> hits / input (Z%)" row — the
 /// cache-hit tokens of every LLM call in the session and the input
 /// tokens they are a share of. Omitted while the session has no input
 /// tokens: a session that has made no call has no rate to report, and
@@ -331,7 +338,7 @@ pub(super) fn push_cost_span(spans: &mut Vec<Span>, t: &TopicInfo) {
 /// no entry, so the row never shows a misleading zero.
 pub(super) fn push_today_all_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     if let Some(totals) = jyc_types::format_currency_totals(&t.today_all) {
-        spans.push(label_span("Today (all): "));
+        spans.push(label_span(TODAY_ALL_LABEL));
         spans.push(Span::raw(totals));
     }
 }
@@ -512,8 +519,8 @@ mod tests {
         push_session_cache_span(&mut cache, &t, MAX_BAR_WIDTH);
         // The labels are the same width, and the bars follow them directly.
         assert_eq!(tokens[0].content.len(), cache[0].content.len());
-        assert_eq!(tokens[0].content.len(), CACHE_SESSION_LABEL.len());
-        assert_eq!(cache[0].content, CACHE_SESSION_LABEL);
+        assert_eq!(tokens[0].content.len(), LABEL_WIDTH);
+        assert_eq!(cache[0].content, padded(CACHE_SESSION_LABEL));
     }
 
     /// Every label of the pane is padded to the same width, so every
@@ -532,10 +539,10 @@ mod tests {
             "Output: ",
             CACHE_TURN_LABEL,
             CACHE_SESSION_LABEL,
-            "Cache create: ",
+            CACHE_CREATE_LABEL,
             "Reasoning: ",
             "Cost: ",
-            "Today (all): ",
+            TODAY_ALL_LABEL,
             "Latency: ",
         ] {
             let span = label_span(label);
@@ -553,17 +560,15 @@ mod tests {
     /// honest bar gets none.
     #[test]
     fn bar_width_follows_the_pane() {
-        // The table layout: the longest label ("Cache (session): ", 17
-        // cells) plus the one cell the bar keeps to itself at the pane's
-        // edge.
+        // The table layout: the longest label ("Today (all): ", 13 cells)
+        // plus the one cell the bar keeps to itself at the pane's edge.
         assert_eq!(bar_width(38, PaneLayout::Table), MAX_BAR_WIDTH);
-        assert_eq!(bar_width(37, PaneLayout::Table), 19);
-        assert_eq!(bar_width(36, PaneLayout::Table), 18);
-        assert_eq!(bar_width(23, PaneLayout::Table), MIN_BAR_WIDTH);
+        assert_eq!(bar_width(33, PaneLayout::Table), 19);
+        assert_eq!(bar_width(32, PaneLayout::Table), 18);
+        assert_eq!(bar_width(19, PaneLayout::Table), MIN_BAR_WIDTH);
         // Below that a cell would carry too much of the share to be honest.
-        assert_eq!(bar_width(22, PaneLayout::Table), 0);
-        assert_eq!(bar_width(17, PaneLayout::Table), 0);
-        assert_eq!(bar_width(16, PaneLayout::Table), 0);
+        assert_eq!(bar_width(18, PaneLayout::Table), 0);
+        assert_eq!(bar_width(14, PaneLayout::Table), 0);
         assert_eq!(bar_width(0, PaneLayout::Table), 0);
     }
 
@@ -575,11 +580,11 @@ mod tests {
         assert_eq!(bar_width(39, PaneLayout::Stacked), MAX_BAR_WIDTH);
         assert_eq!(bar_width(23, PaneLayout::Stacked), MAX_BAR_WIDTH);
         // The pane's whole width, up to the widest bar: the label takes
-        // no cell of it, where the table layout's bar gets the narrowest
-        // bar still worth drawing at the same width.
+        // no cell of it, where the table layout's bar gets what the
+        // label's room leaves.
         assert_eq!(bar_width(21, PaneLayout::Stacked), MAX_BAR_WIDTH);
         assert_eq!(bar_width(20, PaneLayout::Stacked), MAX_BAR_WIDTH);
-        assert_eq!(bar_width(23, PaneLayout::Table), MIN_BAR_WIDTH);
+        assert_eq!(bar_width(23, PaneLayout::Table), 9);
         // The narrowest bar still worth drawing.
         assert_eq!(bar_width(5, PaneLayout::Stacked), MIN_BAR_WIDTH);
         // Below that a cell would carry too much of the share to be honest.
@@ -594,8 +599,8 @@ mod tests {
     fn the_layout_switches_at_the_table_threshold() {
         assert_eq!(layout_for(TABLE_MIN_INNER_WIDTH), PaneLayout::Table);
         assert_eq!(layout_for(TABLE_MIN_INNER_WIDTH - 1), PaneLayout::Stacked);
-        assert_eq!(layout_for(35), PaneLayout::Table);
-        assert_eq!(layout_for(34), PaneLayout::Stacked);
+        assert_eq!(layout_for(31), PaneLayout::Table);
+        assert_eq!(layout_for(30), PaneLayout::Stacked);
         // A pane of any width at all still gets a layout.
         assert_eq!(layout_for(0), PaneLayout::Stacked);
     }
@@ -846,7 +851,7 @@ mod tests {
         let mut spans = Vec::new();
         push_cache_creation_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].content, padded("Cache create: "));
+        assert_eq!(spans[0].content, padded(CACHE_CREATE_LABEL));
         assert_eq!(spans[1].content, "1.25K");
     }
 

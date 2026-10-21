@@ -442,7 +442,7 @@ these names loosely, so they are fixed here.
 | **state dir** | A topic's `.jyc`: transcript, `agent-context.jsonl` (append-only raw context journal; legacy `agent-context.json` migrates once), `tasks`, `pattern`, `mode-override`, the lineage `spawned-from`, … — always under the agents dir, located by **topic name**, and always the home's `.jyc`: never inside a `topic_path` (which is the home's `.data`, a sibling) and never inside a pinned dir | see the table below | `jyc_types::state_dir::resolve_state_dir(name, topic_dir)` |
 | **inbound dir** | Where the hub stages inbound attachment bytes between their upload and the message announcing them, deliberately outside every topic and channel dir | `<data dir>/.inbound` | `topic_path::inbound_dir()` |
 | **L1 / L2 / L3** | Override layers only, not ownership | L1 = config dir; L2 = data dir; L3 = one topic (`topic_path` + state dir) | — |
-| **cache hit rate** | The share of a topic's input tokens served from the provider's prompt cache — cache-hit tokens ÷ total input tokens. "Cache util" is the older name for the same figure | the info pane's "Cache (turn)" / "Cache (session)" rows, `/info`, `/bill` | `jyc_types::cache_util_pct` |
+| **cache hit rate** | The share of a topic's input tokens served from the provider's prompt cache — cache-hit tokens ÷ total input tokens. "Cache util" is the older name for the same figure | the info pane's "Turn" / "Session" rows under its "Cache:" header, `/info`, `/bill` | `jyc_types::cache_util_pct` |
 
 Readings this table exists to rule out:
 
@@ -465,8 +465,9 @@ Readings this table exists to rule out:
    the call site as `agents_dir(&self.data_dir)`. With an explicit
    `--data-dir` the two differ.
 5. "Cache util" and **cache hit rate** are the same number — the cache-hit
-   tokens as a share of the total input tokens. The UI says "Cache (turn)"
-   and "Cache (session)"; the code keeps the older name (`cache_util_pct`).
+   tokens as a share of the total input tokens. The UI says "Turn" and
+   "Session" under the info pane's "Cache:" header; the code keeps the
+   older name (`cache_util_pct`).
 
 ## Topic State Directory (.jyc)
 
@@ -3214,17 +3215,18 @@ Not connected: connection refused
 
   Agent              Topic            Pattern      Status     Context           Last Active
 ───────────────────────────────────────────────────────────────────────────────────────────
-→ jyc                jyc              pipe         idle       0/117.19K         2m ago     │ Topic:          issue-42             
-  invoice            invoice          feishu       processing 44.17K/117.19K    now        │ Pattern:        planner              
-                                                                                           │ Model:          claude-opus-4-8      
-                                                                                           │ Mode:           build                
-                                                                                           │ Branch:         feat/issue-42        
-                                                                                           │ Tokens:         ────────············ 
-                                                                                           │                 44.17K / 117.19K (38%)
-                                                                                           │ Cache (turn):   ──────────────────·· 
-                                                                                           │                 12.00K / 15.00K (80%)
-                                                                                           │ Cache (session):──────────────────·· 
-                                                                                           │                 78.24K / 88.19K (88%)
+→ jyc                jyc              pipe         idle       0/117.19K         2m ago     │ Topic:       issue-42                
+  invoice            invoice          feishu       processing 44.17K/117.19K    now        │ Pattern:     planner                 
+                                                                                           │ Model:       claude-opus-4-8         
+                                                                                           │ Mode:        build                   
+                                                                                           │ Branch:      feat/issue-42           
+                                                                                           │ Tokens:      ────────············    
+                                                                                           │             44.17K / 117.19K (38%)   
+                                                                                           │ Cache:                               
+                                                                                           │ Turn:        ──────────────────··    
+                                                                                           │             12.00K / 15.00K (80%)    
+                                                                                           │ Session:     ──────────────────··    
+                                                                                           │             78.24K / 88.19K (88%)    
                                                                                            │ Files (2):                           
                                                                                            │   crates/…/mod.rs                    
                                                                                            │ ──────────────────────────────────── 
@@ -3255,15 +3257,15 @@ Not connected: connection refused
   files) scrolls; the status sub-pane is pinned to the bottom behind a
   gray top edge, carrying `JYC AI v<version>` plus the server stats in gray. A
   transient message replaces that block with one yellow line for a few seconds.
-  Every label of the pane is padded to one width — seventeen cells, the
-  length of the longest label — so, in the table layout, every value starts
-  in the same column and the pane reads as one table rather than a ragged
-  list. The percentage rows draw their share as a bar in front of the
-  numbers — `─` for the filled part (bold yellow), `·` for the rest (dim
-  gray): the bar shares the label's row and the figures follow on the next
-  one, indented to the same column —
-  `Tokens:         ────────············` with `44.17K / 117.19K (38%)` under
-  it, and `Cache (session): ──────────────────··` with
+  Every label of the pane is padded to one width — thirteen cells, the
+  length of the longest label (`Today (all): `) — so, in the table layout,
+  every value starts in the same column and the pane reads as one table
+  rather than a ragged list. The percentage rows draw their share as a bar
+  in front of the numbers — `─` for the filled part (bold yellow), `·` for
+  the rest (dim gray): the bar shares the label's row and the figures
+  follow on the next one, indented to the same column —
+  `Tokens:      ────────············` with `44.17K / 117.19K (38%)` under
+  it, and `Session:   ──────────────────··` with
   `78.24K / 88.19K (88%)` under it; the bars start in that column too, so the
   shares can be compared by eye. The
   bar is as wide as the column allows — up to twenty cells — and the
@@ -3280,7 +3282,7 @@ Not connected: connection refused
   terminal that narrow would give. The second row used to read "Cache
   util"; cache util and cache hit rate are the same number. The pane lays
   its rows out one way, decided by its inner width: while the column can
-  hold the label column and a value column (34 cells or more), every row
+  hold the label column and a value column (31 cells or more), every row
   keeps its label and its value on one line — the table layout; a narrower
   column stacks them instead, the label on a row of its own and the value
   flush left under it, so a narrow column cuts no value short — each field
@@ -3293,8 +3295,8 @@ Not connected: connection refused
   own shape. A value too long for its column wraps *inside* it: the lines
   that continue it are indented to the column, so the column keeps the
   values it holds instead of dropping them back to the column's edge. The
-  table layout needs a column of 34 cells, and the column is 20% of the
-  terminal, so it is a terminal of roughly 175 columns that gets the table;
+  table layout needs a column of 31 cells, and the column is 20% of the
+  terminal, so it is a terminal of roughly 160 columns that gets the table;
   a narrower terminal gets the stacked layout, where every value starts in
   the column's first cell. The pane's subagent section — the topics this one
   spawned, as a tree, each with its own subagents under it — comes out of

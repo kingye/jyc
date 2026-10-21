@@ -582,10 +582,9 @@ instead of 1.25× — pair it with `cache_creation_per_million` set to the 1h
 write rate to keep the cost rows accurate.
 
 For Anthropic and GPT-5.6 sessions the chat info pane and dashboard
-topic info area show two cache rows: `Cache hits: N` (reads only)
-followed by `Cache create: N` (writes). Other providers show a single
-`Cache hits: N` row as before. The two rows map directly to
-`cache_read_tokens * cache_hit_per_million` and
+topic info area also show the cache write volume — the `Create` row under
+the pane's `Cache:` header, beside the hit rates. The two figures map
+directly to `cache_read_tokens * cache_hit_per_million` and
 `cache_creation_tokens * cache_creation_per_million` in the cost formula.
 
 The dashboard and chat **Topic Info** panes then show

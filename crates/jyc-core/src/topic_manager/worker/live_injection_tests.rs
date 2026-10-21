@@ -211,6 +211,7 @@ fn chat_log_bodies(workspace: &Path, topic: &str) -> Vec<String> {
 
 const BASE_CONFIG: &str = r#"
 [ai]
+enabled = true
 mode = "agent"
 
 [general]
@@ -226,9 +227,6 @@ host = "h"
 port = 465
 username = "u"
 password = "p"
-[agent]
-enabled = true
-mode = "agent"
 "#;
 
 fn make_test_tm(workspace: &std::path::Path, agent: Arc<dyn AgentService>) -> Arc<TopicManager> {
@@ -491,7 +489,7 @@ async fn a_blocked_hook_keeps_the_follow_up_out_of_the_running_turn() {
         "{BASE_CONFIG}\n\
          [[hooks]]\n\
          event = \"message_received\"\n\
-         shell = [\"sh\", \"-c\", \"grep extra info >/dev/null && exit 2; exit 0\"]\n"
+         shell = [\"sh\", \"-c\", \"grep -q 'extra info' >/dev/null && exit 2; exit 0\"]\n"
     );
 
     let (started_tx, mut started_rx) = mpsc::unbounded_channel();

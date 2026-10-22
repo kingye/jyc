@@ -438,7 +438,7 @@ impl JycAgentService {
             prompt.push_str("Even if you previously ran write/edit commands in this conversation, you are now in PLAN MODE and must not change the project.\n");
             prompt.push_str("You MUST NOT: edit, write, or delete any project file; run build, test, or deployment commands; commit, push, or branch changes; install or modify dependencies.\n");
             prompt.push_str("You MAY ONLY: read files, search code, analyze patterns; manage your own task list (task_create, task_update, task_list) and record lessons (lesson_add); present implementation plans and ask clarifying questions; wait for user approval before any implementation.\n");
-            prompt.push_str("The task list and the lessons are the plan-mode exceptions: they are this turn's own record — the plan of record and what was learned — kept in your topic state, not in the project; a scheduled job is an action for later, so it stays out.\n");
+            prompt.push_str("The task list and the lessons are the plan-mode exceptions: they are your own record — the plan of record and what was learned — kept in your topic state, not in the project; a scheduled job is an action for later, so it stays out.\n");
             prompt.push_str("Before starting, read the SKILL.md of any available skill whose description matches your task.\n");
             prompt.push_str("</mode>\n");
         } else {

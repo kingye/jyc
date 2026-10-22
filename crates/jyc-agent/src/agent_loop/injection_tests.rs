@@ -702,7 +702,7 @@ async fn a_reply_request_that_arrives_mid_turn_is_owed_an_answer() {
     assert_eq!(result.pending_replies[0].source.channel, "agents");
     assert_eq!(
         result.pending_replies[0].sent_before, 0,
-        "the turn's own request carries the mark of zero: nothing had been sent when the turn started"
+        "the arrived request carries the mark of zero: nothing had been sent before it was folded in"
     );
 
     // And the model was told, in the call that carried the message.

@@ -1593,6 +1593,9 @@ mod tests {
         assert_eq!(strategy.window, 0);
         assert_eq!(strategy.note_window, Some(0));
         assert_eq!(strategy.tool_result_cap, Some(512));
+        // The comment above rests on this: the turn in flight is uncapped
+        // only for as long as no turn cap is set.
+        assert_eq!(strategy.turn_tool_result_cap, None);
     }
 
     /// The role this repository ships — `subagents/review/config.toml`, the type

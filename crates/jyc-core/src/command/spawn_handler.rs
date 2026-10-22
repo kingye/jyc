@@ -1452,6 +1452,15 @@ mod tests {
         let watch = resolve_subagent_type("ci-watch", Some(&config), Some(&repo)).unwrap();
 
         assert_eq!(watch.name, "ci-watch");
+        // The line the spawn tool lists the type by: a description that goes
+        // stale is still spawnable, so nothing else would notice.
+        assert!(
+            watch
+                .description
+                .as_deref()
+                .is_some_and(|d| d.contains("CI") && d.contains("pass")),
+            "the description says what the role waits for"
+        );
         assert_eq!(watch.config.mode.as_deref(), Some("plan"));
         assert_eq!(
             watch.config.ai.as_ref().and_then(|ai| ai.model.as_deref()),
@@ -1466,9 +1475,9 @@ mod tests {
             "provider/small",
             "the model reference still resolves to the channel's small model"
         );
-        // `bash` stays: `gh` is what watching is — a timed call, and a filtered
-        // fetch of one failure's log. Nothing published to a link either — the
-        // report is the only thing it sends back.
+        // `bash` stays: `gh` is what watching is — a timed call. Nothing
+        // published to a link either — the report is the only thing it sends
+        // back.
         assert_eq!(
             watch.config.disabled_tools.as_deref(),
             Some(

@@ -11,7 +11,8 @@
 //! name, and the manager that serves it is looked up
 //! ([`TopicManagers::serving`]) rather than named by the caller. An agent's own
 //! topic lives in the agents channel, which is where `/spawn` and the dashboard
-//! put agents.
+//! put agents. A name no topic owns is refused rather than created: a send
+//! reaches topics that exist, it does not make them.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -46,8 +47,9 @@ pub struct SendSource<'a> {
 
 /// What to send, once the addressee is named.
 pub struct SendRequest<'a> {
-    /// The agent to send to: the default topic name, and the agent a new topic
-    /// is created for.
+    /// The agent to send to: the name of the topic to deliver to — that agent's
+    /// own topic, unless `topic` names another. The name must already exist:
+    /// a send never creates a topic.
     pub agent: &'a str,
     /// One of that agent's topics, when it has more than one.
     pub topic: Option<&'a str>,
@@ -260,16 +262,18 @@ pub async fn send_to_topic(
 /// 2. otherwise the channel the topic's own state records, which is what keeps
 ///    a topic idle since the last restart reachable instead of it having to
 ///    wait for its next inbound message;
-/// 3. otherwise a name no topic anywhere owns: an agent's own topic is created
-///    in the agents channel, which is where `/spawn` and the dashboard keep
-///    agents, while a *named* topic is refused — re-creating it under the same
-///    name elsewhere would collide, since state dirs are keyed by topic name
-///    process-wide.
+/// 3. otherwise the name is refused: no topic owns it.
+///
+/// A send never creates the topic it addresses. A topic is made by the thing
+/// that routes to it — `/spawn` for an agent, a channel rule for a channel
+/// topic — and one created here would be a name no rule owns, under a home
+/// that collides with the names that do (state dirs are keyed by topic name
+/// process-wide).
 ///
 /// A `topic` equal to the `agent` names that agent's own topic: an agent's
 /// own topic is named after it (`AGENTS_CHANNEL`), so `agent` and `topic`
-/// carrying the same name is the default topic, not a named one — it is
-/// created on demand like the `topic`-less form, and lands in the same place.
+/// carrying the same name is the default topic, not a named one — and it is
+/// refused like any other name nobody owns.
 async fn resolve(
     managers: &TopicManagers,
     agent: &str,
@@ -284,22 +288,14 @@ async fn resolve(
             anyhow!("Topic '{topic_name}' belongs to channel '{channel}', which is not running")
         });
     }
-    // A `topic` equal to the `agent` names the agent's own topic, which is
-    // created on demand — same as leaving `topic` out. Any other name is a
-    // named topic, and a named topic nobody owns is refused rather than
-    // re-created under a name that would collide process-wide.
-    if topic.is_some_and(|name| name != agent) {
-        bail!(
-            "No channel owns topic '{topic_name}': no topic by that name is running or registered \
-             in a state dir, or the directory it names is gone. A topic is created by the channel \
-             rule that routes to it."
-        );
-    }
-    managers.by_channel(AGENTS_CHANNEL).ok_or_else(|| {
-        anyhow!(
-            "The '{AGENTS_CHANNEL}' channel is not running, so agent '{agent}' has no topic to reach"
-        )
-    })
+    // No topic owns this name — refuse it. Creating one here would hand out a
+    // name no rule owns: the agent's own topic is made by `/spawn`, a channel
+    // topic by the rule that routes to it.
+    bail!(
+        "No topic named '{topic_name}' exists: no topic by that name is running or registered in \
+         a state dir, or the directory it names is gone. Create it first — `/spawn` or \
+         `jyc_spawn_subagent` for an agent, or the channel rule that routes to it — then send."
+    );
 }
 
 /// Refuse a name that is path syntax: the topic's home is built by joining
@@ -745,12 +741,17 @@ mod tests {
     }
 
     /// An agent's own topic is served by the agents channel, whether or not it
-    /// has been active before.
+    /// has been active before — as long as it exists: a send reaches topics
+    /// that exist, it does not make them.
     #[tokio::test]
-    async fn sends_to_the_agents_channel_by_default() {
+    async fn sends_to_an_agents_channel_topic_that_exists() {
         let tmp = tempdir().unwrap();
+        let agents = make_tm(&tmp.path().join("agents-ws"), AGENTS_CHANNEL);
         let managers = TopicManagers::new();
-        managers.set(vec![make_tm(tmp.path(), AGENTS_CHANNEL)]);
+        managers.set(vec![agents.clone()]);
+        let _cleanup = RegisteredState("probe-agent-default".to_string());
+
+        seed_topic(&agents, AGENTS_CHANNEL, "probe-agent-default").await;
 
         let sent = send_to_topic(
             &managers,
@@ -761,20 +762,41 @@ mod tests {
         .unwrap();
 
         assert!(sent.contains("agent 'probe-agent-default'"), "{sent}");
-        let agents = managers.by_channel(AGENTS_CHANNEL).unwrap();
         assert!(agents.serves_topic("probe-agent-default").await);
     }
 
-    /// An agent's own topic is named after the agent, so a `topic` equal to
-    /// the `agent` names that same default topic — created on demand, just
-    /// like the `topic`-less form.
+    /// A name no topic owns is refused, and nothing is created for it: the
+    /// send says the topic is missing and names the way to make it.
     #[tokio::test]
-    async fn sends_to_the_agents_channel_when_the_topic_names_the_agent() {
+    async fn refuses_an_agent_no_topic_owns() {
         let tmp = tempdir().unwrap();
         let managers = TopicManagers::new();
         managers.set(vec![make_tm(tmp.path(), AGENTS_CHANNEL)]);
 
-        let sent = send_to_topic(
+        let err = send_to_topic(
+            &managers,
+            source(tmp.path()),
+            request("probe-agent-missing", None, "hello"),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("probe-agent-missing"), "{err}");
+        assert!(err.to_string().contains("Create it first"), "{err}");
+        let agents = managers.by_channel(AGENTS_CHANNEL).unwrap();
+        assert!(!agents.serves_topic("probe-agent-missing").await);
+    }
+
+    /// An agent's own topic is named after the agent, so a `topic` equal to
+    /// the `agent` names that same default topic — and it is refused like any
+    /// other name nobody owns.
+    #[tokio::test]
+    async fn refuses_the_agent_own_topic_when_nobody_owns_it() {
+        let tmp = tempdir().unwrap();
+        let managers = TopicManagers::new();
+        managers.set(vec![make_tm(tmp.path(), AGENTS_CHANNEL)]);
+
+        let err = send_to_topic(
             &managers,
             source(tmp.path()),
             request(
@@ -784,14 +806,12 @@ mod tests {
             ),
         )
         .await
-        .unwrap();
+        .unwrap_err();
 
-        assert!(
-            sent.contains("agent 'probe-agent-same-name' (its own topic)"),
-            "{sent}"
-        );
+        assert!(err.to_string().contains("probe-agent-same-name"), "{err}");
+        assert!(err.to_string().contains("Create it first"), "{err}");
         let agents = managers.by_channel(AGENTS_CHANNEL).unwrap();
-        assert!(agents.serves_topic("probe-agent-same-name").await);
+        assert!(!agents.serves_topic("probe-agent-same-name").await);
     }
 
     /// An agent's own topic is named after the agent — but a topic by that
@@ -906,7 +926,7 @@ mod tests {
     /// A name no topic anywhere owns, and a named topic at that: refused rather
     /// than re-created under a name that would collide process-wide. A `topic`
     /// equal to the `agent` is not a named topic — that is the agent's own
-    /// topic, created on demand.
+    /// topic, and it is refused the same way.
     #[tokio::test]
     async fn refuses_a_named_topic_nobody_owns() {
         let tmp = tempdir().unwrap();

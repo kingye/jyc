@@ -297,9 +297,16 @@ async fn a_failed_delivery_is_not_recorded() {
             json!({"agent": "guard-nowhere", "message": "nobody is there"}),
             &ctx,
         )
-        .await;
+        .await
+        .expect("the call itself succeeds: a refused delivery is an error output");
 
-    assert!(failed.is_err(), "no topic owns that name");
+    // A refused delivery is reported the way every tool reports a failure:
+    // as an output the model reads, not as a raised error.
+    assert!(
+        failed.is_error,
+        "no topic owns that name, so the delivery failed: {:?}",
+        failed.content
+    );
     assert!(
         ctx.outbound_targets.lock().unwrap().is_empty(),
         "a delivery that did not happen is not a delivery"

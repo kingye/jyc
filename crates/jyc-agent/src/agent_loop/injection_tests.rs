@@ -55,6 +55,61 @@ fn queue_item(text: &str) -> QueueItem {
     }
 }
 
+/// A queue item that came from another topic, without asking for an answer.
+fn sourced_item(text: &str, channel: &str, topic: &str) -> QueueItem {
+    let mut item = queue_item(text);
+    item.message
+        .metadata
+        .insert("source_channel".to_string(), serde_json::json!(channel));
+    item.message
+        .metadata
+        .insert("source_topic".to_string(), serde_json::json!(topic));
+    item
+}
+
+/// A queue item that came from another topic and asked for an answer.
+fn reply_request_item(text: &str, channel: &str, topic: &str) -> QueueItem {
+    let mut item = sourced_item(text, channel, topic);
+    item.message
+        .metadata
+        .insert("require_reply".to_string(), serde_json::json!(true));
+    item
+}
+
+/// A tool that records where the turn sent, the way `jyc_send_to_topic`
+/// does — the record the guard reads to tell an answered request from an
+/// unanswered one.
+struct RecordingSendTool {
+    target: (String, String),
+}
+
+#[async_trait]
+impl crate::tools::Tool for RecordingSendTool {
+    fn name(&self) -> &str {
+        "record_send"
+    }
+
+    fn description(&self) -> &str {
+        "records a send to a topic"
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object", "properties": {}})
+    }
+
+    async fn execute(
+        &self,
+        _input: serde_json::Value,
+        ctx: &crate::tools::ToolContext<'_>,
+    ) -> anyhow::Result<crate::tools::ToolOutput> {
+        ctx.outbound_targets
+            .lock()
+            .expect("outbound_targets poisoned")
+            .push(self.target.clone());
+        Ok(crate::tools::ToolOutput::success("sent"))
+    }
+}
+
 /// Provider that records the raw messages of every call and, on the
 /// first call, hands a message to the injection queue — standing in for
 /// a user writing while the model is still working.
@@ -62,6 +117,12 @@ struct InjectingProvider {
     calls: AtomicUsize,
     seen_raw: Mutex<Vec<Vec<serde_json::Value>>>,
     inject: Mutex<Option<mpsc::Sender<QueueItem>>>,
+    /// The item to hand over, when it is not the plain default one.
+    inject_item: Mutex<Option<QueueItem>>,
+    /// The tool the first call asks for.
+    tool_name: Mutex<Option<String>>,
+    /// The call that fails, when one should.
+    fail_on_call: Mutex<Option<usize>>,
 }
 
 #[async_trait]
@@ -93,11 +154,20 @@ impl Provider for InjectingProvider {
             .lock()
             .expect("seen_raw lock")
             .push(raw_messages.to_vec());
+        if *self.fail_on_call.lock().expect("fail_on_call lock") == Some(call) {
+            anyhow::bail!("the provider failed on call {call}");
+        }
         if call == 0 {
             // The user writes while the first call is in flight.
             let sender = self.inject.lock().expect("inject lock").take();
             if let Some(tx) = sender {
-                let _ = tx.send(queue_item("extra info")).await;
+                let item = self
+                    .inject_item
+                    .lock()
+                    .expect("inject item lock")
+                    .take()
+                    .unwrap_or_else(|| queue_item("extra info"));
+                let _ = tx.send(item).await;
             }
             // A tool call keeps the loop going for another iteration. The
             // tool does not exist — the failure is the point: it moves the
@@ -105,7 +175,12 @@ impl Provider for InjectingProvider {
             let events: Vec<anyhow::Result<StreamEvent>> = vec![
                 Ok(StreamEvent::ToolUseStart {
                     id: "call-1".to_string(),
-                    name: "no_such_tool".to_string(),
+                    name: self
+                        .tool_name
+                        .lock()
+                        .expect("tool name lock")
+                        .clone()
+                        .unwrap_or_else(|| "no_such_tool".to_string()),
                 }),
                 Ok(StreamEvent::ToolInputDelta("{}".to_string())),
                 Ok(StreamEvent::ToolUseEnd),
@@ -177,11 +252,14 @@ async fn drain_folds_the_whole_batch_in_order() {
         calls: AtomicUsize::new(0),
         seen_raw: Mutex::new(Vec::new()),
         inject: Mutex::new(None),
+        inject_item: Mutex::new(None),
+        tool_name: Mutex::new(None),
+        fail_on_call: Mutex::new(None),
     };
     let mut history: Vec<Message> = Vec::new();
     let mut raw_context: Vec<serde_json::Value> = Vec::new();
 
-    let count = super::drain_injections(
+    let (count, requests) = super::drain_injections(
         &mut rx,
         &mut history,
         &mut raw_context,
@@ -189,6 +267,10 @@ async fn drain_folds_the_whole_batch_in_order() {
         None,
         topic,
         &topic_path,
+    );
+    assert!(
+        requests.is_empty(),
+        "none of these messages asked for a reply"
     );
 
     assert_eq!(count, 2, "the blank body is not a message");
@@ -238,11 +320,14 @@ async fn drain_of_an_empty_queue_is_a_no_op() {
         calls: AtomicUsize::new(0),
         seen_raw: Mutex::new(Vec::new()),
         inject: Mutex::new(None),
+        inject_item: Mutex::new(None),
+        tool_name: Mutex::new(None),
+        fail_on_call: Mutex::new(None),
     };
     let mut history: Vec<Message> = Vec::new();
     let mut raw_context: Vec<serde_json::Value> = Vec::new();
 
-    let count = super::drain_injections(
+    let (count, requests) = super::drain_injections(
         &mut rx,
         &mut history,
         &mut raw_context,
@@ -250,6 +335,10 @@ async fn drain_of_an_empty_queue_is_a_no_op() {
         None,
         topic,
         &topic_path,
+    );
+    assert!(
+        requests.is_empty(),
+        "none of these messages asked for a reply"
     );
 
     assert_eq!(count, 0);
@@ -322,11 +411,14 @@ async fn the_model_reads_the_cleaned_body_and_the_log_the_raw_one() {
         calls: AtomicUsize::new(0),
         seen_raw: Mutex::new(Vec::new()),
         inject: Mutex::new(None),
+        inject_item: Mutex::new(None),
+        tool_name: Mutex::new(None),
+        fail_on_call: Mutex::new(None),
     };
     let mut history: Vec<Message> = Vec::new();
     let mut raw_context: Vec<serde_json::Value> = Vec::new();
 
-    let count = super::drain_injections(
+    let (count, requests) = super::drain_injections(
         &mut rx,
         &mut history,
         &mut raw_context,
@@ -334,6 +426,10 @@ async fn the_model_reads_the_cleaned_body_and_the_log_the_raw_one() {
         Some(&QuoteStrippingOutbound),
         topic,
         &topic_path,
+    );
+    assert!(
+        requests.is_empty(),
+        "none of these messages asked for a reply"
     );
 
     assert_eq!(count, 1);
@@ -368,6 +464,9 @@ async fn an_injected_message_is_in_the_next_call() {
         calls: AtomicUsize::new(0),
         seen_raw: Mutex::new(Vec::new()),
         inject: Mutex::new(Some(tx)),
+        inject_item: Mutex::new(None),
+        tool_name: Mutex::new(None),
+        fail_on_call: Mutex::new(None),
     };
     let tools = crate::tools::builtin::create_builtin_registry();
 
@@ -425,4 +524,365 @@ async fn an_injected_message_is_in_the_next_call() {
         texts.iter().any(|t| t.contains("extra info")),
         "the injected message is in the second call: {texts:?}"
     );
+}
+
+/// A message that asked for a reply says so where the model reads it, and
+/// the request is collected: the turn owes that topic an answer.
+#[tokio::test]
+async fn a_drained_reply_request_is_announced_and_collected() {
+    let tmp = TempDir::new().unwrap();
+    let topic_path = tmp.path().to_path_buf();
+    let topic = "inject-drain-reply-request";
+    jyc_types::state_dir::register(topic, &topic_path.join(".jyc"));
+
+    let (tx, mut rx) = mpsc::channel::<QueueItem>(8);
+    tx.send(reply_request_item("please answer", "agents", "jyc"))
+        .await
+        .unwrap();
+
+    let provider = InjectingProvider {
+        calls: AtomicUsize::new(0),
+        seen_raw: Mutex::new(Vec::new()),
+        inject: Mutex::new(None),
+        inject_item: Mutex::new(None),
+        tool_name: Mutex::new(None),
+        fail_on_call: Mutex::new(None),
+    };
+    let mut history: Vec<Message> = Vec::new();
+    let mut raw_context: Vec<serde_json::Value> = Vec::new();
+
+    let (count, requests) = super::drain_injections(
+        &mut rx,
+        &mut history,
+        &mut raw_context,
+        &provider,
+        None,
+        topic,
+        &topic_path,
+    );
+
+    assert_eq!(count, 1);
+    assert_eq!(
+        requests.len(),
+        1,
+        "the turn owes an answer to the requester"
+    );
+    assert_eq!(requests[0].topic, "jyc");
+    assert_eq!(requests[0].channel, "agents");
+
+    let text = match &history[0].content[0] {
+        ContentBlock::Text { text } => text.clone(),
+        _ => String::new(),
+    };
+    assert!(
+        text.contains("Reply requested"),
+        "the model is told the message wants an answer: {text}"
+    );
+    assert!(
+        text.contains("please answer"),
+        "the body still comes through: {text}"
+    );
+}
+
+/// A message from another topic that asked for nothing names its source
+/// and owes no answer.
+#[tokio::test]
+async fn a_drained_message_names_its_source_without_owing_an_answer() {
+    let tmp = TempDir::new().unwrap();
+    let topic_path = tmp.path().to_path_buf();
+    let topic = "inject-drain-sourced";
+    jyc_types::state_dir::register(topic, &topic_path.join(".jyc"));
+
+    let (tx, mut rx) = mpsc::channel::<QueueItem>(8);
+    tx.send(sourced_item("fyi", "agents", "jyc")).await.unwrap();
+
+    let provider = InjectingProvider {
+        calls: AtomicUsize::new(0),
+        seen_raw: Mutex::new(Vec::new()),
+        inject: Mutex::new(None),
+        inject_item: Mutex::new(None),
+        tool_name: Mutex::new(None),
+        fail_on_call: Mutex::new(None),
+    };
+    let mut history: Vec<Message> = Vec::new();
+    let mut raw_context: Vec<serde_json::Value> = Vec::new();
+
+    let (count, requests) = super::drain_injections(
+        &mut rx,
+        &mut history,
+        &mut raw_context,
+        &provider,
+        None,
+        topic,
+        &topic_path,
+    );
+
+    assert_eq!(count, 1);
+    assert!(
+        requests.is_empty(),
+        "nobody asked for an answer, so none is owed"
+    );
+
+    let text = match &history[0].content[0] {
+        ContentBlock::Text { text } => text.clone(),
+        _ => String::new(),
+    };
+    assert!(
+        text.contains("**Source:**"),
+        "the model is told where the message came from: {text}"
+    );
+    assert!(text.contains("fyi"), "the body still comes through: {text}");
+}
+
+/// A reply request that arrives while the turn is running is owed an
+/// answer: the turn hands it to the guard, which forwards one if the turn
+/// forgets to answer.
+#[tokio::test]
+async fn a_reply_request_that_arrives_mid_turn_is_owed_an_answer() {
+    let tmp = TempDir::new().unwrap();
+    let working_dir = tmp.path().to_path_buf();
+    jyc_types::state_dir::register("inject-loop-reply", &working_dir.join(".jyc"));
+
+    let (tx, mut rx) = mpsc::channel::<QueueItem>(8);
+    let provider = InjectingProvider {
+        calls: AtomicUsize::new(0),
+        seen_raw: Mutex::new(Vec::new()),
+        inject: Mutex::new(Some(tx)),
+        inject_item: Mutex::new(Some(reply_request_item("please answer", "agents", "jyc"))),
+        tool_name: Mutex::new(None),
+        fail_on_call: Mutex::new(None),
+    };
+    let tools = crate::tools::builtin::create_builtin_registry();
+
+    let config = AgentLoopConfig {
+        provider: &provider,
+        small_provider: None,
+        tools: &tools,
+        system_prompt: "test",
+        user_blocks: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+        }],
+        working_dir: &working_dir,
+        topic_path: &working_dir,
+        cancel: CancellationToken::new(),
+        topic_name: "inject-loop-reply",
+        event_bus: None,
+        prior_history: vec![],
+        prior_raw_context: std::sync::Arc::new(vec![]),
+        injection_rx: Some(&mut rx),
+        max_iterations: Some(5),
+        sse_read_timeout: std::time::Duration::from_secs(60),
+        additional_read_roots: vec![],
+        additional_write_roots: vec![],
+        pattern_inject_images: false,
+        outbound: None,
+        topic_managers: None,
+        current_channel: None,
+        outbounds: None,
+        context_window: None,
+        thinking_enabled: false,
+        pricing: None,
+        billing_mode: Default::default(),
+        billing_dir: None,
+        model_label: "inject-test",
+        context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
+        reply_target: None,
+    };
+
+    let result = run(config)
+        .await
+        .expect("agent loop should run to completion");
+
+    assert_eq!(
+        result.pending_replies.len(),
+        1,
+        "the turn owes the requester an answer"
+    );
+    assert_eq!(result.pending_replies[0].source.topic, "jyc");
+    assert_eq!(result.pending_replies[0].source.channel, "agents");
+    assert_eq!(
+        result.pending_replies[0].sent_before, 0,
+        "the arrived request carries the mark of zero: nothing had been sent before it was folded in"
+    );
+
+    // And the model was told, in the call that carried the message.
+    let seen = provider.seen_raw.lock().expect("seen_raw lock").clone();
+    let second_call = &seen[1];
+    let texts: Vec<String> = second_call
+        .iter()
+        .filter_map(|m| m.get("content").and_then(|c| c.as_str()).map(String::from))
+        .collect();
+    assert!(
+        texts.iter().any(|t| t.contains("Reply requested")),
+        "the injected request says it wants an answer: {texts:?}"
+    );
+}
+
+/// A turn that dies hands back the requests it still owed.
+///
+/// The request arrived mid-turn; the turn died before it could answer it.
+/// The loop has to hand it back with the error — the caller cannot see it
+/// any other way, and the requester waits forever if nobody does.
+#[tokio::test]
+async fn a_turn_that_dies_hands_back_the_requests_it_owed() {
+    let tmp = TempDir::new().unwrap();
+    let working_dir = tmp.path().to_path_buf();
+    jyc_types::state_dir::register("inject-loop-dies", &working_dir.join(".jyc"));
+
+    let (tx, mut rx) = mpsc::channel::<QueueItem>(8);
+    let provider = InjectingProvider {
+        calls: AtomicUsize::new(0),
+        seen_raw: Mutex::new(Vec::new()),
+        inject: Mutex::new(Some(tx)),
+        inject_item: Mutex::new(Some(reply_request_item("please answer", "agents", "jyc"))),
+        tool_name: Mutex::new(None),
+        fail_on_call: Mutex::new(Some(1)),
+    };
+    let tools = crate::tools::builtin::create_builtin_registry();
+
+    let config = AgentLoopConfig {
+        provider: &provider,
+        small_provider: None,
+        tools: &tools,
+        system_prompt: "test",
+        user_blocks: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+        }],
+        working_dir: &working_dir,
+        topic_path: &working_dir,
+        cancel: CancellationToken::new(),
+        topic_name: "inject-loop-dies",
+        event_bus: None,
+        prior_history: vec![],
+        prior_raw_context: std::sync::Arc::new(vec![]),
+        injection_rx: Some(&mut rx),
+        max_iterations: Some(5),
+        sse_read_timeout: std::time::Duration::from_secs(60),
+        additional_read_roots: vec![],
+        additional_write_roots: vec![],
+        pattern_inject_images: false,
+        outbound: None,
+        topic_managers: None,
+        current_channel: None,
+        outbounds: None,
+        context_window: None,
+        thinking_enabled: false,
+        pricing: None,
+        billing_mode: Default::default(),
+        billing_dir: None,
+        model_label: "inject-test",
+        context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
+        reply_target: None,
+    };
+
+    let error = run(config).await.expect_err("the turn should die");
+
+    assert_eq!(
+        error.pending_replies.len(),
+        1,
+        "the request that arrived mid-turn is handed back with the error"
+    );
+    assert_eq!(error.pending_replies[0].source.topic, "jyc");
+    assert_eq!(error.pending_replies[0].source.channel, "agents");
+    assert!(
+        error.error.to_string().contains("the provider failed"),
+        "the error says why the turn died: {error}"
+    );
+}
+
+/// A send the turn made *before* the request was folded in is no answer
+/// to it.
+///
+/// The request arrived while the turn was running, and the turn sent to
+/// the asking topic before the request was folded into the conversation:
+/// the model had not been shown it yet, so that send was no answer to it.
+/// The turn's record of where it sent is cumulative, so without a mark the
+/// request would look answered and the requester would hear nothing.
+#[tokio::test]
+async fn a_send_from_before_the_request_was_folded_in_is_not_its_answer() {
+    let tmp = TempDir::new().unwrap();
+    let working_dir = tmp.path().to_path_buf();
+    jyc_types::state_dir::register("inject-loop-mark", &working_dir.join(".jyc"));
+
+    let (tx, mut rx) = mpsc::channel::<QueueItem>(8);
+    let provider = InjectingProvider {
+        calls: AtomicUsize::new(0),
+        seen_raw: Mutex::new(Vec::new()),
+        inject: Mutex::new(Some(tx)),
+        inject_item: Mutex::new(Some(reply_request_item("please answer", "agents", "jyc"))),
+        tool_name: Mutex::new(Some("record_send".to_string())),
+        fail_on_call: Mutex::new(None),
+    };
+    let mut tools = crate::tools::builtin::create_builtin_registry();
+    tools.register(Box::new(RecordingSendTool {
+        target: ("agents".to_string(), "jyc".to_string()),
+    }));
+
+    let config = AgentLoopConfig {
+        provider: &provider,
+        small_provider: None,
+        tools: &tools,
+        system_prompt: "test",
+        user_blocks: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+        }],
+        working_dir: &working_dir,
+        topic_path: &working_dir,
+        cancel: CancellationToken::new(),
+        topic_name: "inject-loop-mark",
+        event_bus: None,
+        prior_history: vec![],
+        prior_raw_context: std::sync::Arc::new(vec![]),
+        injection_rx: Some(&mut rx),
+        max_iterations: Some(5),
+        sse_read_timeout: std::time::Duration::from_secs(60),
+        additional_read_roots: vec![],
+        additional_write_roots: vec![],
+        pattern_inject_images: false,
+        outbound: None,
+        topic_managers: None,
+        current_channel: None,
+        outbounds: None,
+        context_window: None,
+        thinking_enabled: false,
+        pricing: None,
+        billing_mode: Default::default(),
+        billing_dir: None,
+        model_label: "inject-test",
+        context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
+        reply_target: None,
+    };
+
+    let result = run(config)
+        .await
+        .expect("agent loop should run to completion");
+
+    // The turn did send to the asking topic — before the request was
+    // folded in, so before the model was shown it.
+    assert_eq!(
+        result.outbound_targets,
+        [("agents".to_string(), "jyc".to_string())],
+        "the turn sent to the asking topic before the request was folded in"
+    );
+    assert_eq!(
+        result.pending_replies.len(),
+        1,
+        "the turn owes the requester an answer"
+    );
+    assert_eq!(
+        result.pending_replies[0].sent_before, 1,
+        "the request carries the mark of the send that came before it"
+    );
+
+    // And the guard still owes the answer: that send is not the answer.
+    let owed = crate::service::reply_guard::unanswered_requests(
+        &result.pending_replies,
+        &result.outbound_targets,
+    );
+    assert_eq!(
+        owed.len(),
+        1,
+        "a send from before the request was folded in is not its answer"
+    );
+    assert_eq!(owed[0].topic, "jyc");
 }

@@ -3,7 +3,6 @@
 //! Sends messages to the LLM, detects tool calls, executes them,
 //! and loops until the LLM responds with only text (no tool calls).
 
-use anyhow::Result;
 use chrono::Utc;
 use std::path::Path;
 use std::sync::Arc;
@@ -140,7 +139,13 @@ pub struct AgentLoopConfig<'a> {
 /// Run the agent loop to completion.
 ///
 /// Returns the final text response and metadata about tool usage.
-pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
+///
+/// A turn that dies hands back the reply requests it still owed: they are
+/// the only thing the caller cannot see any more, and whoever asked for
+/// them has to hear that the turn failed.
+pub async fn run(
+    config: AgentLoopConfig<'_>,
+) -> std::result::Result<AgentLoopResult, crate::types::AgentLoopError> {
     let AgentLoopConfig {
         provider,
         small_provider: _,
@@ -327,6 +332,10 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     )
     .await;
 
+    // The reply requests that arrived while this turn was running. The
+    // guard forwards an answer for each one the turn did not send.
+    let mut pending_replies: Vec<crate::service::reply_guard::ReplyRequest> = Vec::new();
+
     loop {
         if cancel.is_cancelled() {
             tracing::info!(total_iterations, "Agent loop cancelled");
@@ -337,7 +346,16 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // (`live_injection`). They join the conversation here, before
         // this iteration's call is built, so the model sees them in it.
         if let Some(rx) = injection_rx.as_deref_mut() {
-            drain_injections(
+            // The sends this turn has made so far. A request folded in
+            // now can only be answered by a send that comes after it: the
+            // ones before it went to that topic before the model was shown
+            // the request, so they were no answer to it.
+            let sent_before = ctx
+                .outbound_targets
+                .lock()
+                .expect("outbound_targets poisoned")
+                .len();
+            let (_, arrived) = drain_injections(
                 rx,
                 &mut history,
                 &mut raw_context,
@@ -346,6 +364,15 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 topic_name,
                 topic_path,
             );
+            // The requests carry the mark: it is what tells a send the
+            // turn made afterwards from one it made before the request was
+            // folded in.
+            pending_replies.extend(arrived.into_iter().map(|source| {
+                crate::service::reply_guard::ReplyRequest {
+                    source,
+                    sent_before,
+                }
+            }));
         }
 
         // Check for cycle boundary: send a heartbeat reply and reset the
@@ -493,7 +520,13 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 // The turn dies here, so the failures that stand are
                 // reported now — the turn's end is this path's to write.
                 report_standing_failures(status.as_ref(), topic_name, &tool_failures);
-                return Err(e);
+                // The reply requests that arrived mid-turn die with the
+                // turn: they go back with the error, so the caller can tell
+                // whoever asked that the turn failed.
+                return Err(crate::types::AgentLoopError {
+                    error: e,
+                    pending_replies: std::mem::take(&mut pending_replies),
+                });
             }
         };
         let call_ms = call_started.elapsed().as_millis() as u64;
@@ -755,6 +788,12 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 history,
                 raw_context,
                 persisted_len: prior_len,
+                outbound_targets: ctx
+                    .outbound_targets
+                    .lock()
+                    .expect("outbound_targets poisoned")
+                    .clone(),
+                pending_replies: std::mem::take(&mut pending_replies),
             });
         }
 
@@ -773,12 +812,18 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 // The turn is over: report the failures that stand before
                 // it ends, so the topic's status says what happened.
                 report_standing_failures(status.as_ref(), topic_name, &tool_failures);
-                anyhow::bail!(
-                    "model generated tool calls with empty arguments for {} consecutive \
-                     iterations — this usually indicates the provider does not support \
-                     function calling correctly",
-                    consecutive_empty_tool_iterations
-                );
+                // The reply requests that arrived mid-turn die with the
+                // turn: they go back with the error, so the caller can tell
+                // whoever asked that the turn failed.
+                return Err(crate::types::AgentLoopError {
+                    error: anyhow::anyhow!(
+                        "model generated tool calls with empty arguments for {} consecutive \
+                         iterations — this usually indicates the provider does not support \
+                         function calling correctly",
+                        consecutive_empty_tool_iterations
+                    ),
+                    pending_replies: std::mem::take(&mut pending_replies),
+                });
             }
         } else {
             consecutive_empty_tool_iterations = 0;
@@ -1110,6 +1155,12 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         history,
         raw_context,
         persisted_len: prior_len,
+        outbound_targets: ctx
+            .outbound_targets
+            .lock()
+            .expect("outbound_targets poisoned")
+            .clone(),
+        pending_replies: std::mem::take(&mut pending_replies),
     })
 }
 
@@ -1188,7 +1239,12 @@ async fn drain_pending_texts(
 /// that message stores it then — so every message lands in the log
 /// exactly once.
 ///
-/// Returns how many messages were folded in.
+/// Returns how many messages were folded in, and the sources that asked for
+/// a reply.
+///
+/// The sources come back unmarked: how many sends the turn had made is the
+/// turn's own bookkeeping, and the caller stamps the requests it gets here
+/// with it.
 fn drain_injections(
     rx: &mut tokio::sync::mpsc::Receiver<QueueItem>,
     history: &mut Vec<Message>,
@@ -1197,8 +1253,9 @@ fn drain_injections(
     outbound: Option<&dyn jyc_types::channel::OutboundAdapter>,
     topic_name: &str,
     topic_path: &Path,
-) -> usize {
+) -> (usize, Vec<crate::service::reply_guard::ReplySource>) {
     let mut count = 0usize;
+    let mut requests: Vec<crate::service::reply_guard::ReplySource> = Vec::new();
     while let Ok(item) = rx.try_recv() {
         let Some(raw) = item.message.content.text.as_deref().map(str::trim) else {
             continue;
@@ -1210,14 +1267,33 @@ fn drain_injections(
         // nothing — keep the raw words then: the message still says
         // something the user wants the model to see.
         let cleaned = outbound.map(|o| o.clean_body(raw)).unwrap_or_default();
-        let text = if cleaned.trim().is_empty() {
+        let body = if cleaned.trim().is_empty() {
             raw
         } else {
             cleaned.trim()
         };
-        let blocks = vec![ContentBlock::Text {
-            text: text.to_string(),
-        }];
+        // A message that names where it came from says so in the
+        // conversation: the model has to know it came from another topic.
+        // One that asked for a reply says that too — it is waiting for an
+        // answer — and the request is collected as well, so the guard can
+        // forward an answer the turn forgot to send.
+        let source = crate::service::reply_guard::source_of(&item.message.metadata);
+        let asks = crate::service::reply_guard::asks_for_reply(&item.message.metadata);
+        let text = match (source, asks) {
+            (Some(source), true) => {
+                requests.push(source.clone());
+                format!(
+                    "{}{}",
+                    crate::service::prompt::reply_request_notice(&source),
+                    body
+                )
+            }
+            (Some(source), false) => {
+                format!("{}\n{}", crate::service::prompt::source_line(&source), body)
+            }
+            (None, _) => body.to_string(),
+        };
+        let blocks = vec![ContentBlock::Text { text }];
         history.push(Message::user_with_blocks(blocks.clone()));
         raw_context.push(provider.format_user_message(&blocks));
 
@@ -1235,7 +1311,7 @@ fn drain_injections(
             "Injected live messages into the running turn"
         );
     }
-    count
+    (count, requests)
 }
 
 /// Compute and record the cost of one LLM call, returning the amount so

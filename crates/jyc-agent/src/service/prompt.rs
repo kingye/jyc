@@ -214,7 +214,11 @@ impl JycAgentService {
                  When you receive a message with a **Source:** header, it came from another topic. \
                  Process the content normally — your final message displays the results in the \
                  current topic. If it includes \"⚠️ Reply requested\", you MUST ALSO use \
-                 `jyc_send_to_topic` to send your results back to the source channel/topic.\n",
+                 `jyc_send_to_topic` to send your results back to the source channel/topic.\n\
+                 Should your turn end without that reply, the framework forwards your last message \
+                 to the source in your place — so the requester hears the answer, or the fact that \
+                 there was none. An explicit reply is still better: it carries the whole result, \
+                 while the forward carries only your last message.\n",
             );
 
             // Note about direct outbound messaging via jyc_send_message
@@ -355,40 +359,15 @@ impl JycAgentService {
         prompt.push_str(&format!("**Subject:** {}\n", message.topic));
         prompt.push_str(&format!("**Date:** {}\n", message.timestamp.to_rfc3339()));
 
-        // Display cross-topic source info if present
-        if let Some(src_ch) = message
-            .metadata
-            .get("source_channel")
-            .and_then(|v| v.as_str())
-            && let Some(src_th) = message
-                .metadata
-                .get("source_topic")
-                .and_then(|v| v.as_str())
-        {
-            let require_reply = message
-                .metadata
-                .get("require_reply")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            if require_reply {
-                prompt.push_str(&format!(
-                    "**Source:** channel \"{}\", topic \"{}\" \
-                     (⚠️ Reply requested)\n\n\
-                     ⚠️ ACTION REQUIRED — DO THIS FIRST:\n\
-                     1. Call `jyc_send_to_topic` with agent=\"{}\" \
-                     to send your results back to the source topic (its topic name \
-                     is its address; add `topic` only if that name is not the agent's own).\n\
-                     2. Then finish your turn with a final message displaying \
-                     the results in this topic.\n\
-                     CRITICAL: Do NOT miss step 1. The source topic is waiting for \
-                     your reply.\n",
-                    src_ch, src_th, src_th
-                ));
+        // Display cross-topic source info if present. The guard owns the
+        // reading of this metadata — the header rendered here and the answer
+        // the guard forwards to that address cannot drift apart.
+        if let Some(source) = crate::service::reply_guard::source_of(&message.metadata) {
+            if crate::service::reply_guard::asks_for_reply(&message.metadata) {
+                prompt.push_str(&reply_request_header(&source));
             } else {
-                prompt.push_str(&format!(
-                    "**Source:** channel \"{}\", topic \"{}\"\n",
-                    src_ch, src_th
-                ));
+                prompt.push_str(&source_line(&source));
+                prompt.push('\n');
             }
         }
 
@@ -790,6 +769,52 @@ impl JycAgentService {
         }
         blocks
     }
+}
+
+/// The `**Source:**` line: where a message came from.
+///
+/// One place renders it, so the header a turn starts on and the notice a
+/// running turn gets cannot drift apart.
+pub(crate) fn source_line(source: &crate::service::reply_guard::ReplySource) -> String {
+    format!(
+        "**Source:** channel \"{}\", topic \"{}\"",
+        source.channel, source.topic
+    )
+}
+
+/// The header for a message that asked for a reply: where it came from, and
+/// what the target has to do about it.
+///
+/// The turn that starts on this message owes the source topic an answer.
+pub(crate) fn reply_request_header(source: &crate::service::reply_guard::ReplySource) -> String {
+    format!(
+        "{} (⚠️ Reply requested)\n\n\
+         ⚠️ ACTION REQUIRED — DO THIS FIRST:\n\
+         1. Call `jyc_send_to_topic` with agent=\"{}\" \
+         to send your results back to the source topic (its topic name \
+         is its address; add `topic` only if that name is not the agent's own).\n\
+         2. Then finish your turn with a final message displaying \
+         the results in this topic.\n\
+         CRITICAL: Do NOT miss step 1. The source topic is waiting for \
+         your reply.\n",
+        source_line(source),
+        source.topic
+    )
+}
+
+/// The header for a message that asked for a reply and arrived while the
+/// turn was already running.
+///
+/// The turn is mid-task here, so it is told to answer — not to wrap up.
+pub(crate) fn reply_request_notice(source: &crate::service::reply_guard::ReplySource) -> String {
+    format!(
+        "{} (⚠️ Reply requested)\n\
+         ⚠️ This message asked for a reply: call `jyc_send_to_topic` with agent=\"{}\" \
+         to send your results back to the source topic (its topic name is its address). \
+         The source topic is waiting for your reply.\n",
+        source_line(source),
+        source.topic
+    )
 }
 
 /// Read the thinking-display state from `.jyc/thinking-state` in the topic directory.

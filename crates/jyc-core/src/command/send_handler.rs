@@ -64,6 +64,21 @@ pub struct SendRequest<'a> {
     pub require_reply: bool,
 }
 
+/// Where a message landed, and what the sender is told about it.
+///
+/// The channel and topic are the delivery's ground truth: a requester that
+/// asked for a reply needs to know whether the answer it got came from the
+/// topic it asked.
+#[derive(Debug, Clone)]
+pub struct SendOutcome {
+    /// The user-facing confirmation for the sender.
+    pub message: String,
+    /// The channel that owns the target topic.
+    pub channel: String,
+    /// The topic the message was enqueued into.
+    pub topic: String,
+}
+
 /// Send `req.message` to the agent named in `req`, through the one manager that
 /// serves it.
 ///
@@ -74,6 +89,21 @@ pub async fn send_to_topic(
     source: SendSource<'_>,
     req: SendRequest<'_>,
 ) -> Result<String> {
+    let outcome = send_to_topic_with_target(managers, source, req).await?;
+    Ok(outcome.message)
+}
+
+/// Send `req.message` to the agent named in `req`, through the one manager that
+/// serves it, and report where it landed.
+///
+/// The same send as [`send_to_topic`], with the resolved channel and topic
+/// handed back: the caller needs to know which topic took the message, to tell
+/// a delivery to the requester from one to somewhere else.
+pub async fn send_to_topic_with_target(
+    managers: &TopicManagers,
+    source: SendSource<'_>,
+    req: SendRequest<'_>,
+) -> Result<SendOutcome> {
     if req.agent.trim().is_empty() {
         bail!("Agent cannot be empty");
     }
@@ -247,9 +277,13 @@ pub async fn send_to_topic(
         ""
     };
 
-    Ok(format!(
-        "Message sent to {sent_to}{attachment_info}{reply_info}. The target topic will process it."
-    ))
+    Ok(SendOutcome {
+        message: format!(
+            "Message sent to {sent_to}{attachment_info}{reply_info}. The target topic will process it."
+        ),
+        channel: target_tm.channel_name().to_string(),
+        topic: topic_name.to_string(),
+    })
 }
 
 /// Find the manager that serves the addressee.
@@ -837,6 +871,36 @@ mod tests {
 
         assert!(sent.contains("agent 'probe-agent-default'"), "{sent}");
         assert!(agents.serves_topic("probe-agent-default").await);
+    }
+
+    /// The outcome names the topic that took the message: a requester that
+    /// asked for a reply needs to know whether the answer it got came from
+    /// the topic it asked.
+    #[tokio::test]
+    async fn the_outcome_names_the_topic_that_took_the_message() {
+        let tmp = tempdir().unwrap();
+        let agents = make_tm(&tmp.path().join("agents-ws"), AGENTS_CHANNEL);
+        let managers = TopicManagers::new();
+        managers.set(vec![agents.clone()]);
+        let _cleanup = RegisteredState("probe-outcome".to_string());
+
+        seed_topic(&agents, AGENTS_CHANNEL, "probe-outcome").await;
+
+        let outcome = send_to_topic_with_target(
+            &managers,
+            source(tmp.path()),
+            request("probe-outcome", None, "hello"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.channel, AGENTS_CHANNEL);
+        assert_eq!(outcome.topic, "probe-outcome");
+        assert!(
+            outcome.message.contains("probe-outcome"),
+            "{}",
+            outcome.message
+        );
     }
 
     /// A topic `/spawn` just made: its state is registered and its home is an

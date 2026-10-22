@@ -19,6 +19,7 @@ use super::event_test_helpers::scripted::ScriptedProvider;
 use super::event_test_helpers::test_config;
 use super::*;
 use crate::types::StreamEvent;
+use anyhow::Result;
 use jyc_types::channel::{
     InboundMessage, OutboundAdapter, OutboundAttachment, QuestionRequest, SendResult,
 };

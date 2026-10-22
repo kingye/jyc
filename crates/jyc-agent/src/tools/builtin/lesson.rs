@@ -30,6 +30,10 @@ pub(crate) const LESSONS_FILE: &str = "lessons.md";
 /// rest is the archive, reachable with `lesson_read`. Small on purpose: this
 /// is paid on every turn of every topic, and a lesson is a rule, not a
 /// transcript.
+///
+/// This is the *target*, not a hard ceiling: the cut backs up to a line
+/// boundary so that no lesson rides along half shown, so what actually
+/// rides along can be up to twice this.
 pub(crate) const INJECT_BYTES: usize = 2048;
 
 /// One lesson is a rule, not an essay.
@@ -85,8 +89,11 @@ fn tail_start_at_line(body: &str, bytes: usize) -> usize {
     if start > 0 && !body[..start].ends_with('\n') {
         // Move *back* to the start of the line the cut landed in, so the
         // lesson is whole in one of the two ends and the other end never
-        // carries half a rule. Only a line longer than twice the cap keeps
-        // the byte cut — there the fragment is marked where it is shown.
+        // carries half a rule. What rides along is the remainder from that
+        // line's start to the end of the file, and it may be up to twice
+        // the cap. Only when that remainder is longer than twice the cap
+        // does the byte cut stand — there the fragment is marked where it
+        // is shown.
         let line_start = body[..start].rfind('\n').map(|pos| pos + 1).unwrap_or(0);
         if body.len() - line_start <= 2 * bytes {
             start = line_start;
@@ -110,7 +117,11 @@ fn lesson_count(slice: &str) -> usize {
 /// The note that says what the prompt carries and what `lesson_read` holds.
 fn split_note(body: &str, at: usize, mid_line: bool) -> String {
     if mid_line {
-        return "_The last lesson was too long for this prompt and is cut in two: \
+        // Not necessarily the *last* lesson: the cut can land inside any
+        // line whose remainder is too long to ride along whole. Say "one
+        // lesson" — telling the model that the *last* one was cut when it
+        // was an earlier one sends it to the wrong line.
+        return "_One lesson was too long for this prompt and is cut in two: \
                  what is here is its tail — call `lesson_read` for the rest._\n\n"
             .to_string();
     }
@@ -295,7 +306,7 @@ impl Tool for LessonReadTool {
 
     fn description(&self) -> &str {
         "Read this topic's recorded lessons (`lessons.md`) — the ones the prompt \
-         could not carry."
+         could not carry, or all of them."
     }
 
     fn input_schema(&self) -> Value {
@@ -353,9 +364,19 @@ impl Tool for LessonReadTool {
             out.push_str(archive);
         } else {
             // More lessons than one read should carry: take them in file
-            // order and say how much was left out. Pruning is the user's
+            // order, on a line boundary — half a rule reads as a whole
+            // rule — and say how much was left out. Pruning is the user's
             // call — this tool only reads.
             let cut = floor_char_boundary(archive, READ_CAP_BYTES);
+            let cut = match archive[..cut].rfind('\n') {
+                Some(pos) => pos + 1,
+                // The first lesson alone is longer than the cap: there is no
+                // line boundary to back up to, so the fragment is marked.
+                None => {
+                    out.push('…');
+                    cut
+                }
+            };
             out.push_str(&archive[..cut]);
             out.push_str(&format!(
                 "\n\n_[{} bytes of earlier lessons were left out; the file is {} bytes \
@@ -790,7 +811,11 @@ mod tests {
     #[tokio::test]
     async fn the_prompt_and_the_read_agree_on_the_split() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join(LESSONS_FILE);
+        // In the state dir, where `lesson_read` looks: a file anywhere else
+        // would make the read answer "nothing recorded yet", and the
+        // assertion below would pass for the wrong reason.
+        let path = tmp.path().join(".jyc").join(LESSONS_FILE);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let body: String = (0..200)
             .map(|i| format!("- lesson number {i} with some padding text\n"))
             .collect();

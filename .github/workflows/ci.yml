@@ -61,9 +61,11 @@ jobs:
       # when the tests failed. The report is therefore there to read on a red
       # run, which the old step — it aborted at the first failure — never was.
       - name: Coverage
-        # Runs on a red test run; skipped only when an earlier step (fmt,
-        # clippy) failed, where there is nothing to report.
-        if: success() || steps.tests.outcome == 'failure'
+        # Runs on a red test run: `continue-on-error` leaves the test step's
+        # conclusion at success, so `success()` is still true. Skipped only
+        # when an earlier step (fmt, clippy) failed, where there is nothing
+        # to report.
+        if: success()
         run: |
           echo '## 📊 Coverage Report' > coverage.txt
           echo '' >> coverage.txt
@@ -73,7 +75,7 @@ jobs:
           echo '```' >> coverage.txt
 
       - name: Check coverage threshold
-        if: success() || steps.tests.outcome == 'failure'
+        if: success()
         run: |
           threshold=60
           pct=$(awk '/^TOTAL/ {gsub(/%/,"",$10); printf "%.0f", $10}' coverage.txt)
@@ -107,7 +109,10 @@ jobs:
       # where that failure is paid back: the job ends red, with every failure
       # listed in the log of the step that found them.
       - name: Fail if tests failed
-        if: always() && steps.tests.outcome == 'failure'
+        # `!cancelled()` and not `always()`: a run this workflow cancelled
+        # (concurrency: cancel-in-progress) must not report a test failure it
+        # never saw.
+        if: !cancelled() && steps.tests.outcome == 'failure'
         run: |
           echo "::error::Tests failed — every failure is listed in the 'Run tests' step above"
           exit 1

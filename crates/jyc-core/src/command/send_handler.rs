@@ -265,7 +265,10 @@ pub async fn send_to_topic(
 /// 3. otherwise the topic's own home, for one that exists but has never been
 ///    routed to ([`agent_topic`]) — `/spawn` makes a topic, and the task that
 ///    follows has to be able to reach it;
-/// 4. otherwise the name is refused: no topic owns it.
+/// 4. otherwise the topic exists while no channel serves it (the agents
+///    channel is not running), which is reported as what it is — the name is
+///    taken, the channel is missing;
+/// 5. otherwise the name is refused: no topic owns it.
 ///
 /// A send never creates the topic it addresses. A topic is made by the thing
 /// that routes to it — `/spawn` for an agent, a channel rule for a channel
@@ -295,8 +298,19 @@ async fn resolve(
     // moment ago, and nothing has sent it a message yet, so it has neither a
     // queue nor a routing record. It is an agent's own topic, so the agents
     // channel serves it.
-    if let Some(tm) = agent_topic(managers, topic_name) {
+    if let Some(tm) = agent_topic(managers, topic_name).await {
         return Ok(tm);
+    }
+    // The name may still be taken by a topic that exists while nothing serves
+    // it — the agents channel is not running, say. Saying "no topic by that
+    // name exists" would be wrong there: the topic is there, and it is the
+    // channel that is missing.
+    if exists_without_a_channel(topic_name).await {
+        bail!(
+            "Topic '{topic_name}' exists, but no channel is serving it: it has no queue and no \
+             routing record. The 'agents' channel serves agents' own topics — check that it is \
+             running, then send again."
+        );
     }
     // No topic owns this name — refuse it. Creating one here would hand out a
     // name no rule owns: the agent's own topic is made by `/spawn`, a channel
@@ -307,6 +321,21 @@ async fn resolve(
          `jyc_spawn_subagent` for an agent, the channel rule that routes to it for a channel \
          topic, or the dashboard's create-topic call — then send."
     );
+}
+
+/// Whether the topic is still there — its state dir is registered and on disk
+/// — while nothing serves it.
+///
+/// The state dir is the topic's own record of existence, so this is what tells
+/// "the name is taken" from "no topic owns this name".
+async fn exists_without_a_channel(topic_name: &str) -> bool {
+    let Some(state_dir) = jyc_types::state_dir::registered_state(topic_name) else {
+        return false;
+    };
+    tokio::fs::metadata(&state_dir)
+        .await
+        .map(|meta| meta.is_dir())
+        .unwrap_or(false)
 }
 
 /// The agents channel's manager, when `topic_name` is an agent's own topic
@@ -326,14 +355,18 @@ async fn resolve(
 ///
 /// A closed topic keeps its registration but loses its directory, so the
 /// directory is what says the topic is still there.
-fn agent_topic(managers: &TopicManagers, topic_name: &str) -> Option<Arc<TopicManager>> {
+async fn agent_topic(managers: &TopicManagers, topic_name: &str) -> Option<Arc<TopicManager>> {
     let agents = managers.by_channel(AGENTS_CHANNEL)?;
     let state_dir = jyc_types::state_dir::registered_state(topic_name)?;
-    if !state_dir.is_dir() {
+    if !tokio::fs::metadata(&state_dir)
+        .await
+        .map(|meta| meta.is_dir())
+        .unwrap_or(false)
+    {
         return None;
     }
     // The state dir of an agent-keyed topic: `<agents dir>/<name>/.jyc`.
-    if state_dir != agents.workspace_dir().join(topic_name).join(".jyc") {
+    if state_dir != crate::topic_path::agent_keyed_state_dir(agents.workspace_dir(), topic_name) {
         return None;
     }
     Some(agents)
@@ -832,6 +865,44 @@ mod tests {
         .unwrap();
 
         assert!(sent.contains("agent 'probe-spawned-child'"), "{sent}");
+        assert!(
+            agents.serves_topic("probe-spawned-child").await,
+            "the message must land in the agents channel's queue, not merely be accepted"
+        );
+    }
+
+    /// A topic that exists while no channel serves it — the agents channel is
+    /// not running — is not a name nobody owns. The refusal says which of the
+    /// two it is, so the reader does not go looking for a topic that is there.
+    #[tokio::test]
+    async fn refuses_with_the_truth_when_the_topic_exists_but_nothing_serves_it() {
+        let tmp = tempdir().unwrap();
+        let managers = TopicManagers::new();
+        managers.set(vec![make_tm(tmp.path(), "mail-bot")]);
+
+        // The topic is there — its state is registered and its home is on disk —
+        // but the agents channel, the one that would serve it, is not running.
+        let home = tmp.path().join("probe-unserved-child");
+        std::fs::create_dir_all(home.join(".jyc")).unwrap();
+        let _cleanup = register_state("probe-unserved-child", &home.join(".jyc"));
+
+        let err = send_to_topic(
+            &managers,
+            source(tmp.path()),
+            request("probe-unserved-child", None, "hello"),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("Topic 'probe-unserved-child' exists, but no channel is serving it"),
+            "{err}"
+        );
+        assert!(
+            !err.to_string().contains("No topic named"),
+            "the topic exists: the refusal must not say it does not"
+        );
     }
 
     /// A closed child keeps its registration but loses its directory, so it is

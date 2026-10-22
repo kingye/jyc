@@ -261,6 +261,16 @@ pub fn state_dir_for(agents_dir: &Path, topic_dir: &Path, agent_key: Option<&str
         Some(key) => key.to_string(),
         None => jyc_types::state_dir::derive_state_name(topic_dir),
     };
+    agent_keyed_state_dir(agents_dir, &name)
+}
+
+/// The state dir of an agent-keyed topic: `<agents dir>/<name>/.jyc`.
+///
+/// One owner for that shape. `/spawn` creates it, [`state_dir_for`] derives
+/// it, and a send compares against it to tell an agent's own topic from a
+/// pipe-routed one — three copies of the same expression are three chances to
+/// disagree about where an agent's state lives.
+pub fn agent_keyed_state_dir(agents_dir: &Path, name: &str) -> PathBuf {
     agents_dir.join(name).join(".jyc")
 }
 

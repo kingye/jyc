@@ -219,7 +219,10 @@ mod tests {
             sent_before: 2,
         };
 
-        let requests = reply_requests(&metadata(true, "agents", "jyc"), &[arrived.clone()]);
+        let requests = reply_requests(
+            &metadata(true, "agents", "jyc"),
+            std::slice::from_ref(&arrived),
+        );
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].source, own);
         assert_eq!(

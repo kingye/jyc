@@ -859,7 +859,7 @@ async fn a_send_from_before_the_request_arrived_is_not_its_answer() {
     // The turn did send to the asking topic — before the request arrived.
     assert_eq!(
         result.outbound_targets,
-        vec![("agents".to_string(), "jyc".to_string())],
+        [("agents".to_string(), "jyc".to_string())],
         "the turn sent to the asking topic before the request arrived"
     );
     assert_eq!(

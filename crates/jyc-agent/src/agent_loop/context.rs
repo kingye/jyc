@@ -32,6 +32,43 @@ fn format_cleaned_message(
     )
 }
 
+/// Cold build — [`build_send_context_cached`] with a throwaway cache.
+///
+/// Test-only: the loop passes its own [`SendContextCache`], so a turn's calls
+/// reuse the history regions instead of rebuilding them.
+#[cfg(test)]
+pub(crate) fn build_send_context_with_regions<'a>(
+    provider: &dyn Provider,
+    raw_context: &'a [serde_json::Value],
+    prior_len: usize,
+    strategy: &ContextStrategyConfig,
+) -> (Cow<'a, [serde_json::Value]>, Vec<u8>) {
+    build_send_context_cached(
+        provider,
+        raw_context,
+        prior_len,
+        strategy,
+        &mut SendContextCache::default(),
+    )
+}
+
+/// Cross-iteration memo for the sliding-window history regions (①+②).
+///
+/// The regions depend only on the persisted prefix (`raw_context[..prior_len]`)
+/// and the strategy, yet the loop rebuilt them for every LLM call — a scan of
+/// the whole history that deep-cloned every user/assistant message
+/// (`extract_pairs`) only to keep the tail. Within a turn the prefix is
+/// fixed: live injections append past `prior_len`, and the only shrink (the
+/// cancellation truncation) ends the turn. The first call of a turn builds
+/// the regions; the rest reuse them.
+#[derive(Default)]
+pub(crate) struct SendContextCache {
+    /// `prior_len` the cached regions were built from; `None` = cold.
+    prior_len: Option<usize>,
+    region1: Vec<serde_json::Value>,
+    region2: Vec<serde_json::Value>,
+}
+
 /// Build the context to send to the LLM for the next request.
 ///
 /// The full `raw_context` is always persisted to `.jyc/agent-context.jsonl` (append-only journal)
@@ -73,11 +110,15 @@ fn format_cleaned_message(
 /// turns they hold. When the estimate is over budget the oldest history
 /// goes first (see [`fit_history_to_budget`]). Region ③ is never part of
 /// it. `Some(0)` or `None` sends the windowed history untouched.
-pub(crate) fn build_send_context_with_regions<'a>(
+///
+/// `cache` lets a turn's calls reuse the history regions instead of
+/// rebuilding them per call (see [`SendContextCache`]).
+pub(crate) fn build_send_context_cached<'a>(
     provider: &dyn Provider,
     raw_context: &'a [serde_json::Value],
     prior_len: usize,
     strategy: &ContextStrategyConfig,
+    cache: &mut SendContextCache,
 ) -> (Cow<'a, [serde_json::Value]>, Vec<u8>) {
     match strategy.mode {
         ContextStrategy::Full => (Cow::Borrowed(raw_context), vec![1; raw_context.len()]),
@@ -85,75 +126,25 @@ pub(crate) fn build_send_context_with_regions<'a>(
             // Mid-loop compression can shorten `raw_context` below `prior_len`;
             // clamp so the slice math never underflows.
             let boundary = prior_len.min(raw_context.len());
-            let prior = &raw_context[..boundary];
             let current = &raw_context[boundary..];
-            // `tool_result_cap`: Some(0) and None both mean "off" — let the
-            // helper short-circuit on cap == 0.
-            let cap = strategy.tool_result_cap.unwrap_or(0);
 
-            let mut out = Vec::new();
-            let mut regions = Vec::new();
-
-            // The most recent `note_window` prior turns are sent VERBATIM
-            // (structured tool_calls + results) instead of being folded into
-            // user-role text notes. Text notes taught thinking models
-            // (MiniMax, DeepSeek) to write their process — tool calls and
-            // action announcements — as content instead of using the
-            // structured channel, which leaked "thinking" into delivered
-            // replies. Keeping the structured wire format in the recent
-            // window restores the format the model should mimic.
-            let note_window = strategy.note_window.unwrap_or(usize::MAX);
-            let verbatim_start = crate::session::verbatim_start_index(prior, note_window);
-            let (compact_prior, verbatim_prior) = prior.split_at(verbatim_start);
-
-            // Older pairs compact to text-only user/assistant. No history
-            // notes here — the recent pairs are already verbatim, so notes
-            // would be redundant (and are the leak trigger).
-            let verbatim_pairs = crate::session::extract_pairs(verbatim_prior).len();
-            let compact_keep = strategy.window.saturating_sub(verbatim_pairs);
-            let compacted =
-                crate::session::extract_user_assistant_pairs(compact_prior, compact_keep, Some(0));
-
-            // Built region by region so `max_history_tokens` can weigh and
-            // trim them as blocks before anything reaches the payload.
-            // Region ① leads with the history marker and keeps it: it
-            // explains the text-only block the compacted pairs form.
-            let mut region1: Vec<serde_json::Value> = Vec::new();
-            if !compacted.is_empty() {
-                region1.push(provider.format_user_message(&[ContentBlock::Text {
-                    text: crate::session::HISTORY_MARKER_TEXT.into(),
-                }]));
-            }
-            for msg in &compacted {
-                // Defensive: skip messages with no extractable text so the
-                // wire payload never contains empty text blocks (which
-                // Anthropic rejects, especially under cache_control).
-                if let Some(formatted) = format_cleaned_message(provider, msg) {
-                    region1.push(formatted);
-                }
+            if cache.prior_len != Some(boundary) {
+                let (region1, region2) =
+                    build_history_regions(provider, &raw_context[..boundary], strategy);
+                cache.region1 = region1;
+                cache.region2 = region2;
+                cache.prior_len = Some(boundary);
             }
 
-            // Region ② — recent turns verbatim, minus round-tripped
-            // history notes (metadata, not conversation; re-sending them as
-            // user text is the pattern that triggered the leak). Apply the
-            // tool-result byte cap to each message (non-tool messages are
-            // pass-through, so the cap is cheap).
-            let mut region2: Vec<serde_json::Value> = Vec::new();
-            for msg in verbatim_prior {
-                if crate::session::is_history_note(msg) {
-                    continue;
-                }
-                region2.push(cap_tool_result_content(msg, cap));
-            }
+            let region1_len = cache.region1.len();
+            let region2_len = cache.region2.len();
+            let mut out = Vec::with_capacity(region1_len + region2_len + current.len());
+            let mut regions = Vec::with_capacity(out.capacity());
 
-            fit_history_to_budget(&mut region1, &mut region2, strategy.max_history_tokens);
-
-            let region1_len = region1.len();
-            let region2_len = region2.len();
-            out.append(&mut region1);
-            regions.resize(regions.len() + region1_len, 1);
-            out.append(&mut region2);
-            regions.resize(regions.len() + region2_len, 2);
+            out.extend_from_slice(&cache.region1);
+            regions.resize(region1_len, 1);
+            out.extend_from_slice(&cache.region2);
+            regions.resize(region1_len + region2_len, 2);
 
             // Current turn. Verbatim by default (`turn_tool_result_cap`
             // unset, so `0` short-circuits): the model is reasoning over
@@ -175,6 +166,74 @@ pub(crate) fn build_send_context_with_regions<'a>(
             (Cow::Owned(out), regions)
         }
     }
+}
+
+/// Build regions ① (compacted older pairs) and ② (recent turns verbatim) from
+/// the persisted prefix, fitted to `max_history_tokens`.
+fn build_history_regions(
+    provider: &dyn Provider,
+    prior: &[serde_json::Value],
+    strategy: &ContextStrategyConfig,
+) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    // `tool_result_cap`: Some(0) and None both mean "off" — let the
+    // helper short-circuit on cap == 0.
+    let cap = strategy.tool_result_cap.unwrap_or(0);
+
+    // The most recent `note_window` prior turns are sent VERBATIM
+    // (structured tool_calls + results) instead of being folded into
+    // user-role text notes. Text notes taught thinking models
+    // (MiniMax, DeepSeek) to write their process — tool calls and
+    // action announcements — as content instead of using the
+    // structured channel, which leaked "thinking" into delivered
+    // replies. Keeping the structured wire format in the recent
+    // window restores the format the model should mimic.
+    let note_window = strategy.note_window.unwrap_or(usize::MAX);
+    let verbatim_start = crate::session::verbatim_start_index(prior, note_window);
+    let (compact_prior, verbatim_prior) = prior.split_at(verbatim_start);
+
+    // Older pairs compact to text-only user/assistant. No history
+    // notes here — the recent pairs are already verbatim, so notes
+    // would be redundant (and are the leak trigger).
+    let verbatim_pairs = crate::session::extract_pairs(verbatim_prior).len();
+    let compact_keep = strategy.window.saturating_sub(verbatim_pairs);
+    let compacted =
+        crate::session::extract_user_assistant_pairs(compact_prior, compact_keep, Some(0));
+
+    // Built region by region so `max_history_tokens` can weigh and
+    // trim them as blocks before anything reaches the payload.
+    // Region ① leads with the history marker and keeps it: it
+    // explains the text-only block the compacted pairs form.
+    let mut region1: Vec<serde_json::Value> = Vec::new();
+    if !compacted.is_empty() {
+        region1.push(provider.format_user_message(&[ContentBlock::Text {
+            text: crate::session::HISTORY_MARKER_TEXT.into(),
+        }]));
+    }
+    for msg in &compacted {
+        // Defensive: skip messages with no extractable text so the
+        // wire payload never contains empty text blocks (which
+        // Anthropic rejects, especially under cache_control).
+        if let Some(formatted) = format_cleaned_message(provider, msg) {
+            region1.push(formatted);
+        }
+    }
+
+    // Region ② — recent turns verbatim, minus round-tripped
+    // history notes (metadata, not conversation; re-sending them as
+    // user text is the pattern that triggered the leak). Apply the
+    // tool-result byte cap to each message (non-tool messages are
+    // pass-through, so the cap is cheap).
+    let mut region2: Vec<serde_json::Value> = Vec::new();
+    for msg in verbatim_prior {
+        if crate::session::is_history_note(msg) {
+            continue;
+        }
+        region2.push(cap_tool_result_content(msg, cap));
+    }
+
+    fit_history_to_budget(&mut region1, &mut region2, strategy.max_history_tokens);
+
+    (region1, region2)
 }
 
 /// Per-message constant added to every wire message's estimate — the role,
@@ -1062,6 +1121,58 @@ mod render_raw_context_tests {
             dump.contains("--- wire payload ---"),
             "missing payload section: {dump}"
         );
+    }
+
+    /// The cached history regions must be indistinguishable from a cold
+    /// build: same payload and labels on every iteration of a turn (the
+    /// current turn grows, the cached prefix does not), and a rebuild once
+    /// the prefix itself changes at the next turn.
+    #[test]
+    fn cached_build_matches_cold_build_across_calls() {
+        let prior = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2"}),
+        ];
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 2,
+            note_window: Some(1),
+            tool_result_cap: None,
+            turn_tool_result_cap: None,
+            max_history_tokens: None,
+        };
+        let prior_len = prior.len();
+        let mut ctx = prior.clone();
+        ctx.push(json!({"role": "user", "content": "u3"}));
+
+        let mut cache = SendContextCache::default();
+        let (first, first_regions) =
+            build_send_context_cached(&prov(), &ctx, prior_len, &cfg, &mut cache);
+        let (cold, cold_regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
+        assert_eq!(first.as_ref(), cold.as_ref());
+        assert_eq!(first_regions, cold_regions);
+
+        // Another iteration of the same turn: the current turn grew, the
+        // cached prefix did not — the history regions are reused as-is.
+        ctx.push(json!({"role": "assistant", "content": "a3"}));
+        let (second, second_regions) =
+            build_send_context_cached(&prov(), &ctx, prior_len, &cfg, &mut cache);
+        let (cold2, cold2_regions) =
+            build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
+        assert_eq!(second.as_ref(), cold2.as_ref());
+        assert_eq!(second_regions, cold2_regions);
+
+        // Next turn: the prefix grew, so the cached regions must be rebuilt.
+        let next_prior_len = ctx.len();
+        ctx.push(json!({"role": "user", "content": "u4"}));
+        let (third, third_regions) =
+            build_send_context_cached(&prov(), &ctx, next_prior_len, &cfg, &mut cache);
+        let (cold3, cold3_regions) =
+            build_send_context_with_regions(&prov(), &ctx, next_prior_len, &cfg);
+        assert_eq!(third.as_ref(), cold3.as_ref());
+        assert_eq!(third_regions, cold3_regions);
     }
 
     #[test]

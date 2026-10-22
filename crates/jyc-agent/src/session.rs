@@ -1450,9 +1450,51 @@ pub(crate) fn extract_pairs(raw_context: &[serde_json::Value]) -> Vec<TurnPair> 
     pairs
 }
 
+/// Index where the last `keep_pairs` pair-producing turns begin.
+///
+/// A turn counts only when it has an assistant message: a text-bearing user
+/// message with no reply produces no pair (see [`flush_turn`]), so counting
+/// openers alone would start too late and lose a pair to an unanswered
+/// message. Scanning backward costs one pass over the message roles and the
+/// text of user messages, instead of the deep clone [`extract_pairs`] spends
+/// on everything before the tail.
+fn pairs_tail_start(raw_context: &[serde_json::Value], keep_pairs: usize) -> usize {
+    if keep_pairs == 0 {
+        return raw_context.len();
+    }
+    let mut turns = 0usize;
+    let mut seen_assistant = false;
+    for (idx, msg) in raw_context.iter().enumerate().rev() {
+        match msg.get("role").and_then(|r| r.as_str()) {
+            Some("assistant") => seen_assistant = true,
+            Some("user") => {
+                let text = extract_message_text(msg);
+                // Tool-result wrappers and round-tripped history notes carry
+                // no user text: neither opens a turn.
+                if text.is_empty() || text.starts_with(HISTORY_NOTE_PREFIX) {
+                    continue;
+                }
+                if seen_assistant {
+                    turns += 1;
+                    if turns == keep_pairs {
+                        return idx;
+                    }
+                    seen_assistant = false;
+                }
+            }
+            _ => {}
+        }
+    }
+    0
+}
+
 /// Extract user+assistant text pairs from raw context and keep only the
 /// last `keep_pairs` of them, flattened into a single Vec. Pair extraction
 /// semantics are defined in [`extract_pairs`].
+///
+/// Only the kept tail is extracted (see [`pairs_tail_start`]): the result is
+/// the same as extracting the whole history and keeping the last
+/// `keep_pairs`, at a fraction of the cloning.
 ///
 /// `note_window` limits tool-call history notes to the most recent M kept
 /// pairs (`None` = notes on every kept pair); older pairs are text-only.
@@ -1468,8 +1510,11 @@ pub(crate) fn extract_user_assistant_pairs(
 ) -> Vec<serde_json::Value> {
     // Keep only the last N pairs, flattened as user → note → assistant
     // (the note summarizes the tool calls, which happened before the
-    // assistant's final text).
-    let pairs: Vec<_> = extract_pairs(raw_context)
+    // assistant's final text). Start the extraction where the kept turns
+    // begin: `extract_pairs` deep-clones every message it visits, and on a
+    // long history the discarded prefix is the bulk of that work.
+    let tail_start = pairs_tail_start(raw_context, keep_pairs);
+    let pairs: Vec<_> = extract_pairs(&raw_context[tail_start..])
         .into_iter()
         .rev()
         .take(keep_pairs)
@@ -2025,6 +2070,24 @@ mod tests {
         assert_eq!(pairs[0].user["content"], "u2");
         assert_eq!(pairs[0].assistant.as_ref().unwrap()["content"], "a2");
         assert!(pairs[0].note.is_none());
+    }
+
+    /// The tail scan must not be fooled by an unanswered user message at the
+    /// end: it produces no pair, so the kept tail starts at the last turn
+    /// that has an assistant reply.
+    #[test]
+    fn extract_user_assistant_pairs_skips_trailing_orphan_turn() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2"}),
+            json!({"role": "user", "content": "never answered"}),
+        ];
+        let pairs = super::extract_user_assistant_pairs(&ctx, 1, Some(0));
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0]["content"], "u2");
+        assert_eq!(pairs[1]["content"], "a2");
     }
 
     /// A history note round-tripped through compaction is metadata, not a

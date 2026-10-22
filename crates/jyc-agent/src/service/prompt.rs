@@ -240,11 +240,13 @@ impl JycAgentService {
 
         // The agent's own lessons — what it learned and kept for itself. The
         // newest ones ride along with every turn, so a lesson is in view
-        // without a tool call. This is the one section of the prompt that
-        // moves by design, so it goes last: a change to it invalidates only
-        // its own segment of the cached prefix, and it sits closest to the
-        // user's message. The owner's instructions come first, the agent's
-        // own experience after.
+        // without a tool call. They live in the *system* prompt, which is
+        // cached by prefix: adding a lesson moves the system breakpoint, so
+        // the next request re-sends this topic's history uncached — once
+        // per lesson, not once per turn. Carrying them in the turn
+        // reference instead would keep the history cache but pay for these
+        // bytes on every turn, uncached. The owner's instructions come
+        // first, the agent's own experience after.
         if let Some(section) = lesson::prompt_section(&state_dir.join(lesson::LESSONS_FILE)) {
             prompt.push_str(&section);
         }

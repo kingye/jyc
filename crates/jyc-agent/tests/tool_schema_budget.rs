@@ -90,10 +90,14 @@ const BUDGETS: &[(&str, usize, usize)] = &[
 
 /// The whole in-process set, in characters. It was 8,349 when the budgets
 /// above were set; other tools have grown it since, and the two lesson
-/// tools (#971) brought it to 9,495. The ceiling is the standing per-call
+/// tools (#971) brought it to 9,511. The ceiling is the standing per-call
 /// cost of every request's prefix, so raising it is a deliberate act — this
 /// one was raised for #971, where the alternative was to cut a tool's
 /// description until the model stopped understanding what the tool was for.
+///
+/// Only 89 characters of slack are left. The next tool will have to raise
+/// it again, and before it does, look for an older description that can
+/// retire: a budget that only ever grows is not a budget.
 const TOTAL_BUDGET: usize = 9_600;
 
 /// `jyc_spawn_subagent`'s `type` description ends with the catalog of roles

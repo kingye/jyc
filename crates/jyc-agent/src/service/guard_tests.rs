@@ -221,7 +221,7 @@ async fn the_guard_answers_the_request_the_message_carried_and_the_one_that_arri
         metadata,
         matched_pattern: None,
     };
-    let arrived = vec![ReplyRequest {
+    let arrived = [ReplyRequest {
         source: ReplySource {
             channel: "agents".to_string(),
             topic: "guard-source-2".to_string(),

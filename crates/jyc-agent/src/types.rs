@@ -239,6 +239,11 @@ pub struct AgentLoopResult {
     /// session — the caller passes it to `save_raw_context` so the journal
     /// write can append only the new tail instead of rewriting everything.
     pub persisted_len: usize,
+    /// The topics this turn sent messages to, as `(channel, topic)` pairs.
+    ///
+    /// The service reads it to tell a turn that already answered a
+    /// `require_reply` request from one that did not.
+    pub outbound_targets: Vec<(String, String)>,
 }
 
 #[cfg(test)]

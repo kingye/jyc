@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use crate::tools::{Tool, ToolContext, ToolOutput};
-use jyc_core::command::send_handler::{SendRequest, SendSource, send_to_topic};
+use jyc_core::command::send_handler::{SendRequest, SendSource, send_to_topic_with_target};
 
 /// Tool for sending messages to other agents and their topics.
 pub struct SendToThreadTool;
@@ -36,7 +36,8 @@ impl Tool for SendToThreadTool {
         "Send a message to another agent: its own topic by default, or one of its \
          topics with 'topic'. The topic must already exist — a name no topic owns is \
          an error, so create the agent first with jyc_spawn_subagent. Set require_reply=true \
-         to have the target send its results back to this topic."
+         to have the target send its results back to this topic; should its turn end without \
+         that reply, the framework forwards its last message to you instead."
     }
 
     fn input_schema(&self) -> Value {
@@ -107,8 +108,18 @@ impl Tool for SendToThreadTool {
             require_reply,
         };
 
-        match send_to_topic(managers, source, req).await {
-            Ok(message) => Ok(ToolOutput::success(message)),
+        match send_to_topic_with_target(managers, source, req).await {
+            Ok(outcome) => {
+                // Record where the message landed. A turn that answers a
+                // `require_reply` request has to be recognizable as having
+                // answered it, so the service does not forward the turn's
+                // final words on top of a reply that already arrived.
+                ctx.outbound_targets
+                    .lock()
+                    .expect("outbound_targets poisoned")
+                    .push((outcome.channel, outcome.topic));
+                Ok(ToolOutput::success(outcome.message))
+            }
             Err(e) => Ok(ToolOutput::error(e.to_string())),
         }
     }

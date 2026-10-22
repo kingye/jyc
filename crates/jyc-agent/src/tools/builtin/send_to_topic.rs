@@ -9,6 +9,9 @@
 //! agent's own name addresses that same default topic — the two spellings
 //! mean one thing.
 //!
+//! The topic has to exist: a name no topic owns is an error, not a new agent.
+//! `jyc_spawn_subagent` is what makes one.
+//!
 //! `/send` parses its arguments into the same request and calls the same
 //! `send_handler::send_to_topic` — one implementation, two triggers, as
 //! `/spawn` and `jyc_spawn_subagent`.
@@ -31,9 +34,9 @@ impl Tool for SendToThreadTool {
 
     fn description(&self) -> &str {
         "Send a message to another agent: its own topic by default, or one of its \
-         topics with 'topic' — a name an existing topic holds goes there, a name no topic \
-         owns becomes that agent's own topic, created on demand. Set require_reply=true to \
-         have the target send its results back to this topic."
+         topics with 'topic'. The topic must already exist — a name no topic owns is \
+         an error, so create the agent first with jyc_spawn_subagent. Set require_reply=true \
+         to have the target send its results back to this topic."
     }
 
     fn input_schema(&self) -> Value {
@@ -42,7 +45,7 @@ impl Tool for SendToThreadTool {
             "properties": {
                 "agent": {
                     "type": "string",
-                    "description": "The agent to reach, e.g. \"invoice\". Matched against topic names first; a name no topic owns becomes that agent's own topic."
+                    "description": "The agent to reach, e.g. \"invoice\" — its own topic, or one named by 'topic'. It must already exist."
                 },
                 "topic": {
                     "type": "string",

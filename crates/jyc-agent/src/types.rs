@@ -248,7 +248,33 @@ pub struct AgentLoopResult {
     ///
     /// A request that arrives mid-turn joins the conversation and asks for
     /// an answer as well, so the guard owes it one too.
-    pub pending_replies: Vec<crate::service::reply_guard::ReplySource>,
+    pub pending_replies: Vec<crate::service::reply_guard::ReplyRequest>,
+}
+
+/// The turn died, and what it still owed.
+///
+/// The requests that arrived while the turn was running died with it: the
+/// turn is not going to answer them, so whoever asked has to hear that the
+/// turn failed — and the loop hands them back here, because they are the
+/// only ones the caller cannot see any more.
+#[derive(Debug)]
+pub struct AgentLoopError {
+    /// Why the turn died.
+    pub error: anyhow::Error,
+    /// The reply requests that arrived while the turn was running.
+    pub pending_replies: Vec<crate::service::reply_guard::ReplyRequest>,
+}
+
+impl std::fmt::Display for AgentLoopError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for AgentLoopError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.error.as_ref())
+    }
 }
 
 #[cfg(test)]

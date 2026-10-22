@@ -366,10 +366,8 @@ impl JycAgentService {
             if crate::service::reply_guard::asks_for_reply(&message.metadata) {
                 prompt.push_str(&reply_request_header(&source));
             } else {
-                prompt.push_str(&format!(
-                    "**Source:** channel \"{}\", topic \"{}\"\n",
-                    source.channel, source.topic
-                ));
+                prompt.push_str(&source_line(&source));
+                prompt.push('\n');
             }
         }
 
@@ -773,13 +771,24 @@ impl JycAgentService {
     }
 }
 
+/// The `**Source:**` line: where a message came from.
+///
+/// One place renders it, so the header a turn starts on and the notice a
+/// running turn gets cannot drift apart.
+pub(crate) fn source_line(source: &crate::service::reply_guard::ReplySource) -> String {
+    format!(
+        "**Source:** channel \"{}\", topic \"{}\"",
+        source.channel, source.topic
+    )
+}
+
 /// The header for a message that asked for a reply: where it came from, and
 /// what the target has to do about it.
 ///
 /// The turn that starts on this message owes the source topic an answer.
 pub(crate) fn reply_request_header(source: &crate::service::reply_guard::ReplySource) -> String {
     format!(
-        "**Source:** channel \"{}\", topic \"{}\" (⚠️ Reply requested)\n\n\
+        "{} (⚠️ Reply requested)\n\n\
          ⚠️ ACTION REQUIRED — DO THIS FIRST:\n\
          1. Call `jyc_send_to_topic` with agent=\"{}\" \
          to send your results back to the source topic (its topic name \
@@ -788,7 +797,8 @@ pub(crate) fn reply_request_header(source: &crate::service::reply_guard::ReplySo
          the results in this topic.\n\
          CRITICAL: Do NOT miss step 1. The source topic is waiting for \
          your reply.\n",
-        source.channel, source.topic, source.topic
+        source_line(source),
+        source.topic
     )
 }
 
@@ -798,11 +808,12 @@ pub(crate) fn reply_request_header(source: &crate::service::reply_guard::ReplySo
 /// The turn is mid-task here, so it is told to answer — not to wrap up.
 pub(crate) fn reply_request_notice(source: &crate::service::reply_guard::ReplySource) -> String {
     format!(
-        "**Source:** channel \"{}\", topic \"{}\" (⚠️ Reply requested)\n\
+        "{} (⚠️ Reply requested)\n\
          ⚠️ This message asked for a reply: call `jyc_send_to_topic` with agent=\"{}\" \
          to send your results back to the source topic (its topic name is its address). \
          The source topic is waiting for your reply.\n",
-        source.channel, source.topic, source.topic
+        source_line(source),
+        source.topic
     )
 }
 

@@ -5,7 +5,7 @@
 //! the turn's own last words, and a request the turn did answer is left
 //! alone.
 
-use super::reply_guard::{ReplySource, TurnEnding};
+use super::reply_guard::{ReplyRequest, ReplySource, TurnEnding};
 use super::tests::app_config_with_channels;
 use super::*;
 use crate::tools::{Tool, ToolContext};
@@ -148,10 +148,13 @@ async fn seed_topic(tm: &Arc<TopicManager>, channel: &str, topic: &str) {
 }
 
 /// A service that can reach the managers the guard forwards through.
-fn service_with_managers(managers: Arc<TopicManagers>) -> JycAgentService {
+///
+/// The data dir is the caller's temporary directory: a fixed path is shared
+/// state between test runs.
+fn service_with_managers(managers: Arc<TopicManagers>, data_dir: &Path) -> JycAgentService {
     let service = JycAgentService::new(
         app_config_with_channels(None, HashMap::new()),
-        PathBuf::from("/tmp/test-data_dir"),
+        data_dir.to_path_buf(),
         vec![],
         None,
         None,
@@ -164,10 +167,16 @@ fn service_with_managers(managers: Arc<TopicManagers>) -> JycAgentService {
     service
 }
 
-fn source_topic() -> ReplySource {
-    ReplySource {
-        channel: "agents".to_string(),
-        topic: "guard-source".to_string(),
+/// A reply request from the topic "guard-source" on the agents channel.
+///
+/// Nothing was sent before it arrived, so its mark is zero.
+fn source_request() -> ReplyRequest {
+    ReplyRequest {
+        source: ReplySource {
+            channel: "agents".to_string(),
+            topic: "guard-source".to_string(),
+        },
+        sent_before: 0,
     }
 }
 
@@ -180,11 +189,11 @@ async fn the_guard_answers_a_request_the_turn_left_unanswered() {
     managers.set(vec![agents.clone()]);
     seed_topic(&agents, "agents", "guard-source").await;
 
-    let service = service_with_managers(managers.clone());
+    let service = service_with_managers(managers.clone(), tmp.path());
     let forwarded = service
         .forward_unanswered_replies(
             Some(&managers),
-            &[source_topic()],
+            &[source_request()],
             "guard-target",
             tmp.path(),
             TurnEnding::Finished("all done"),
@@ -206,11 +215,11 @@ async fn the_guard_leaves_an_answered_request_alone() {
     managers.set(vec![agents.clone()]);
     seed_topic(&agents, "agents", "guard-source").await;
 
-    let service = service_with_managers(managers.clone());
+    let service = service_with_managers(managers.clone(), tmp.path());
     let forwarded = service
         .forward_unanswered_replies(
             Some(&managers),
-            &[source_topic()],
+            &[source_request()],
             "guard-target",
             tmp.path(),
             TurnEnding::Finished("all done"),
@@ -229,7 +238,7 @@ async fn the_guard_answers_nothing_when_nothing_was_asked() {
     let managers = Arc::new(TopicManagers::new());
     managers.set(vec![agents.clone()]);
 
-    let service = service_with_managers(managers.clone());
+    let service = service_with_managers(managers.clone(), tmp.path());
     let forwarded = service
         .forward_unanswered_replies(
             Some(&managers),

@@ -262,7 +262,10 @@ pub async fn send_to_topic(
 /// 2. otherwise the channel the topic's own state records, which is what keeps
 ///    a topic idle since the last restart reachable instead of it having to
 ///    wait for its next inbound message;
-/// 3. otherwise the name is refused: no topic owns it.
+/// 3. otherwise the topic's own home, for one that exists but has never been
+///    routed to ([`agent_topic`]) — `/spawn` makes a topic, and the task that
+///    follows has to be able to reach it;
+/// 4. otherwise the name is refused: no topic owns it.
 ///
 /// A send never creates the topic it addresses. A topic is made by the thing
 /// that routes to it — `/spawn` for an agent, a channel rule for a channel
@@ -288,14 +291,52 @@ async fn resolve(
             anyhow!("Topic '{topic_name}' belongs to channel '{channel}', which is not running")
         });
     }
+    // A topic that exists but has never been routed to: `/spawn` made it a
+    // moment ago, and nothing has sent it a message yet, so it has neither a
+    // queue nor a routing record. It is an agent's own topic, so the agents
+    // channel serves it.
+    if let Some(tm) = agent_topic(managers, topic_name) {
+        return Ok(tm);
+    }
     // No topic owns this name — refuse it. Creating one here would hand out a
     // name no rule owns: the agent's own topic is made by `/spawn`, a channel
     // topic by the rule that routes to it.
     bail!(
         "No topic named '{topic_name}' exists: no topic by that name is running or registered in \
          a state dir, or the directory it names is gone. Create it first — `/spawn` or \
-         `jyc_spawn_subagent` for an agent, or the channel rule that routes to it — then send."
+         `jyc_spawn_subagent` for an agent, the channel rule that routes to it for a channel \
+         topic, or the dashboard's create-topic call — then send."
     );
+}
+
+/// The agents channel's manager, when `topic_name` is an agent's own topic
+/// that exists but has never been routed to.
+///
+/// `/spawn` registers the child's state and pins its directory, but a topic
+/// only gets a queue — and with it the routing record the worker writes on the
+/// first message — once something sends to it. Between those two moments the
+/// topic is there and unreachable, which is exactly the window a delegation
+/// lives in: spawn, then send the task.
+///
+/// What tells it apart from a name nobody owns is its home. An agent-keyed
+/// topic owns `<agents dir>/<name>/` and the agents channel serves it; a
+/// pipe-routed one owns `<agents dir>/<agent>/<topic>/` and belongs to the
+/// channel that routed it, and an ad-hoc pin's home is named after the path
+/// rather than the topic — neither is ours to answer for.
+///
+/// A closed topic keeps its registration but loses its directory, so the
+/// directory is what says the topic is still there.
+fn agent_topic(managers: &TopicManagers, topic_name: &str) -> Option<Arc<TopicManager>> {
+    let agents = managers.by_channel(AGENTS_CHANNEL)?;
+    let state_dir = jyc_types::state_dir::registered_state(topic_name)?;
+    if !state_dir.is_dir() {
+        return None;
+    }
+    // The state dir of an agent-keyed topic: `<agents dir>/<name>/.jyc`.
+    if state_dir != agents.workspace_dir().join(topic_name).join(".jyc") {
+        return None;
+    }
+    Some(agents)
 }
 
 /// Refuse a name that is path syntax: the topic's home is built by joining
@@ -765,6 +806,63 @@ mod tests {
         assert!(agents.serves_topic("probe-agent-default").await);
     }
 
+    /// A topic `/spawn` just made: its state is registered and its home is an
+    /// agent's own home under the agents dir, but nothing has routed a message
+    /// to it yet — no queue, no routing record. It is a topic, so the task
+    /// that follows the spawn reaches it.
+    #[tokio::test]
+    async fn sends_to_a_spawned_topic_that_has_never_been_routed_to() {
+        let tmp = tempdir().unwrap();
+        let agents = make_tm(tmp.path(), AGENTS_CHANNEL);
+        let managers = TopicManagers::new();
+        managers.set(vec![agents.clone()]);
+
+        // What `/spawn` leaves behind: the child's state registered under its
+        // name, in the home it owns under the agents dir.
+        let home = tmp.path().join("probe-spawned-child");
+        std::fs::create_dir_all(home.join(".jyc")).unwrap();
+        let _cleanup = register_state("probe-spawned-child", &home.join(".jyc"));
+
+        let sent = send_to_topic(
+            &managers,
+            source(tmp.path()),
+            request("probe-spawned-child", None, "hello"),
+        )
+        .await
+        .unwrap();
+
+        assert!(sent.contains("agent 'probe-spawned-child'"), "{sent}");
+    }
+
+    /// A closed child keeps its registration but loses its directory, so it is
+    /// refused like a name nobody owns.
+    #[tokio::test]
+    async fn refuses_a_closed_child_whose_home_is_gone() {
+        let tmp = tempdir().unwrap();
+        let managers = TopicManagers::new();
+        managers.set(vec![make_tm(tmp.path(), AGENTS_CHANNEL)]);
+
+        let home = tmp.path().join("probe-closed-child");
+        std::fs::create_dir_all(home.join(".jyc")).unwrap();
+        let _cleanup = register_state("probe-closed-child", &home.join(".jyc"));
+        // The close took the home with it.
+        std::fs::remove_dir_all(&home).unwrap();
+
+        let err = send_to_topic(
+            &managers,
+            source(tmp.path()),
+            request("probe-closed-child", None, "hello"),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("No topic named 'probe-closed-child'"),
+            "{err}"
+        );
+    }
+
     /// A name no topic owns is refused, and nothing is created for it: the
     /// send says the topic is missing and names the way to make it.
     #[tokio::test]
@@ -1135,8 +1233,13 @@ mod tests {
     #[tokio::test]
     async fn refuses_a_missing_or_escaping_attachment() {
         let tmp = tempdir().unwrap();
+        let agents = make_tm(tmp.path(), AGENTS_CHANNEL);
         let managers = TopicManagers::new();
-        managers.set(vec![make_tm(tmp.path(), AGENTS_CHANNEL)]);
+        managers.set(vec![agents.clone()]);
+        // A send reaches topics that exist and refuses the ones that do not,
+        // so the topic has to be there for the attachment check to be what
+        // refuses this message.
+        seed_topic(&agents, AGENTS_CHANNEL, "invoice").await;
         // The topic works in a directory of its own, so `..` names a file that
         // is really there and really outside it.
         let work = tmp.path().join("work");

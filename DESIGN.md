@@ -2698,10 +2698,11 @@ An agent's own topic is named after the agent, so `topic` carrying the agent's o
 
 The command form is `/send <agent> [--topic|-t <topic>] [--reply] [--attach <file>] [--recipient <id>] <message>`. Both triggers parse their own input and call the same `jyc_core::command::send_handler::send_to_topic` — one implementation with two entries, exactly as `/spawn` and `jyc_spawn_subagent`.
 
-Which manager serves the name is then answered by looking, in three steps:
+Which manager serves the name is then answered by looking, in four steps:
 
 - **Running it** — a manager whose queue map holds the topic. A topic exists because a channel routed to it (which enqueued), so a live queue is the first answer.
 - **Its own state** — `channel` in the topic's `.jyc/topic-meta.json`, written on the message that first routed to it and backfilled on a later one when the record predates the key. This is what keeps a topic idle since the last restart addressable instead of making it wait for its next inbound message. The state dir comes from the state registry, or — a sub-topic's home being two directories down, past what the startup scan walks — from probing `<agents dir>/<agent>/<topic>/.jyc`. A recorded channel this process does not run is refused rather than guessed at.
+- **Its own home** — a topic that exists but has never been routed to. `/spawn` registers the child's state and pins its directory, but a topic only gets a queue — and with it the routing record above — once something sends to it, so between those two moments the topic is there and unreachable. The home tells it apart: an agent-keyed home (`<agents dir>/<name>/`) is an agent's own topic and the agents channel serves it, while a pipe-routed home (`<agents dir>/<agent>/<topic>/`) belongs to the channel that routed it. A closed topic keeps its registration but loses its directory, so it is refused like a name nobody owns.
 - **Nobody owns it** — the name is refused. A send never creates the topic it addresses: a topic is made by the thing that routes to it — `/spawn` for an agent, a channel rule for a channel topic — and one created here would be a name no rule owns, under a home that collides with the names that do (state dirs are keyed by topic name process-wide). A `topic` equal to the `agent` is not a named topic — it names the agent's own topic — and is refused the same way.
 
 ```

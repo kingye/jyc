@@ -116,7 +116,7 @@ and uses an in-process AI agent to generate replies.
 - **派新的子 agent 只能用 `jyc_spawn_subagent`**：`jyc_send_to_topic` 只投递给**已经存在**的 topic，给一个**没人拥有的名字**会直接报错（不再顺手把它变成一个新 agent）——它也不继承角色的 mode/技能/禁用的工具，评审也就只是提示词里的请求而非结构约束。派评审或 CI 等待一律 `jyc_spawn_subagent(name="review-<what>", type="review")` / `type="ci-watch"`
 - 子 agent 的输入由父用 `write` 放进它的 `topic_path`（父对该目录有读写权），再用 `jyc_send_to_topic` 派任务；给已存在的子 agent 追加任务同样用 `jyc_send_to_topic`
 - 改子 agent 的可配置项（模式、模型等）：把命令体（`/build`、`/plan`、`/model`）作为消息发给它；正文为空即不进模型，不消耗子 agent 的 turn
-- 子 agent 用完即关：给它发消息体 `/close --force`（裸 `/close` 只是确认提示，不会真关）；对已关闭的子再发消息会另起一个新 topic，不是唤醒它
+- 子 agent 用完即关：给它发消息体 `/close --force`（裸 `/close` 只是确认提示，不会真关）；对已关闭的子再发消息会**报错**（它的 home 已被删，这个名字不再属于任何 topic），不会另起一个新 topic
 - type 决定子的**起始**状态，不是枷锁：之后给子发的 `/plan`、`/model`、`/skill` 照旧优先于它；要改角色就按新 type 重 spawn（type 在 spawn 时展开，改 type 定义不影响已存在的子）
 - **禁止**读写子 agent 的 state dir（`.jyc`——那是它自己的状态）；只操作它的 `topic_path` 里的普通文件
 - 子 agent 可以再派子 agent，层级不限；一个 topic 能建多少子 agent 也不设上限。任务为异步：发完即结束本轮，**禁止**轮询等待结果，结果会作为新消息回到本 topic

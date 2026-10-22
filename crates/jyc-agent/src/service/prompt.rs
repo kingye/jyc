@@ -214,7 +214,11 @@ impl JycAgentService {
                  When you receive a message with a **Source:** header, it came from another topic. \
                  Process the content normally — your final message displays the results in the \
                  current topic. If it includes \"⚠️ Reply requested\", you MUST ALSO use \
-                 `jyc_send_to_topic` to send your results back to the source channel/topic.\n",
+                 `jyc_send_to_topic` to send your results back to the source channel/topic.\n\
+                 Should your turn end without that reply, the framework forwards your last message \
+                 to the source in your place — so the requester hears the answer, or the fact that \
+                 there was none. An explicit reply is still better: it carries the whole result, \
+                 while the forward carries only your last message.\n",
             );
 
             // Note about direct outbound messaging via jyc_send_message

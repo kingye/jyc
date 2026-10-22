@@ -216,6 +216,13 @@ pub struct ToolContext<'a> {
     /// together with `outbound`, the reply tool delivers through the channel
     /// adapter immediately and its result reflects the real delivery outcome.
     pub reply_target: Option<ReplyTarget>,
+    /// The topics this turn sent messages to, as `(channel, topic)` pairs.
+    ///
+    /// `jyc_send_to_topic` records each successful send here, so the service
+    /// can tell a turn that already answered a `require_reply` request from
+    /// one that did not — the difference between "the requester has its
+    /// answer" and "the requester is still waiting".
+    pub outbound_targets: Mutex<Vec<(String, String)>>,
 }
 
 /// Whether `canonical` lies inside the system temp dir `tmp`.
@@ -255,6 +262,7 @@ impl<'a> ToolContext<'a> {
             raw_context: Vec::new(),
             question_context: None,
             reply_target: None,
+            outbound_targets: Mutex::new(Vec::new()),
         }
     }
 
@@ -275,6 +283,7 @@ impl<'a> ToolContext<'a> {
             raw_context: Vec::new(),
             question_context: None,
             reply_target: None,
+            outbound_targets: Mutex::new(Vec::new()),
         }
     }
 

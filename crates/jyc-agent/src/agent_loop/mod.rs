@@ -755,6 +755,11 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 history,
                 raw_context,
                 persisted_len: prior_len,
+                outbound_targets: ctx
+                    .outbound_targets
+                    .lock()
+                    .expect("outbound_targets poisoned")
+                    .clone(),
             });
         }
 
@@ -1110,6 +1115,11 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         history,
         raw_context,
         persisted_len: prior_len,
+        outbound_targets: ctx
+            .outbound_targets
+            .lock()
+            .expect("outbound_targets poisoned")
+            .clone(),
     })
 }
 

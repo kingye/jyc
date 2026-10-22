@@ -26,6 +26,11 @@ env:
   # own process environment — a step-scoped one is invisible to it, so the
   # cache would keep restoring the pre-mold artifacts, and every run would
   # recompile all dependencies without ever storing the new ones.
+  #
+  # The first run after this change is fully cold, not just slower: the
+  # env hash is part of the restore key too, so the old cache does not
+  # match even as a fallback — the registry is re-downloaded and everything
+  # is rebuilt. Read that run's time as cold, not as the steady state.
   RUSTFLAGS: -C link-arg=-fuse-ld=mold
 
 jobs:

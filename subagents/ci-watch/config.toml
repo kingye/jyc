@@ -2,128 +2,61 @@
 #
 # A parent hands off a wait it does not want to hold its own turn for:
 #     jyc_spawn_subagent(name = "ci-watch-<what>", type = "ci-watch")
-# then sends the task (`jyc_send_to_topic`, `require_reply = true`): the repo and
-# the PR or branch, and nothing else — which run, workflow or head that PR has is
-# the caller's business. The child polls with `bash` (`gh pr checks --watch`) and
-# its report comes back as a message when the checks finish, or at the budget's
-# end when they never do.
+# then sends the task (`jyc_send_to_topic`, `require_reply = true`): the repo
+# and the PR. The child polls with `bash` and reports pass or fail.
 #
-# Install it into the config dir, once:
+# Install into the config dir, once:
 #     cp -r subagents/ci-watch ~/.config/jyc/subagents/
-# (`~/.config/jyc/subagents/<type>/config.toml` is the installed form; the same
-# keys can also be written as `[subagents.ci-watch]` in the config — except
-# `description` and `[spawn]`, which are this file's alone.)
 #
-# Shape: a topic config (`.jyc/config.toml`) plus `mode`, a `description` and a
-# `[spawn]` table. It decides where the child *starts*, not what it is stuck
-# with — the child's own `/mode`, `/model` and `/skill` still win afterwards.
-#
-# Mind the `${…}` below: every string in this file is expanded, and an unset name
-# becomes *empty text*, no error — a `${PR}` written into the instructions later
-# would silently vanish. `${ai.small_model}` is safe: the pattern only matches a
-# plain `WORD`, and a dotted name is a model reference, resolved at the end of
-# the model chain.
+# Shape: a topic config (`.jyc/config.toml`) plus `mode`, a `description`,
+# and two spawn-only keys (`context_strategy`, `[spawn]`) — a role, in the
+# terms of the docs. `bash` stays enabled: the poll is a `bash` call.
 
-# What the role is for, in the words of the agent choosing one: this is the line
-# `jyc_spawn_subagent`'s `type` argument lists beside the name, so it says *when*
-# to reach for it, not what tools it has.
-description = "Waits for a pull request's CI to finish and reports the outcome when it lands — pass or fail, with the failing check named. Use it instead of polling by hand, which would hold your own turn open for the whole wait."
+description = "Waits for a pull request's CI to finish and reports pass or fail. Use it instead of polling by hand, which would hold your own turn open for the whole wait."
 
 mode = "plan"
 
-# Watching means running `gh` — `pr checks` to watch, `run view` for one
-# failure's log — and reporting back, and nothing else:
-# no file editing, nothing published to a link, no delegation of its own.
-# `bash` stays — polling needs it, and no read-only shell exists; plan mode and
-# the instructions below are what restrain it.
-disabled_tools = ["write", "edit", "jyc_publish_file", "jyc_spawn_subagent"]
+# No file editing, nothing published, no prompts: the poll is one `bash` call
+# and the report is one `jyc_send_to_topic`. (Kept listed: reply-drafting
+# tools — the report has to reach the parent somehow — and job tools —
+# schedule-as-backstop is plausible even though the instructions lean on the
+# inner timeout instead.)
+disabled_tools = ["edit", "write", "job_create", "job_delete", "job_toggle", "jyc_publish_file", "jyc_spawn_subagent", "jyc_send_message"]
 
 instructions = """
-## Watching
+## Task
 
-You wait for one pull request's checks and report what they say. The caller
-names the repo and the PR (or branch) in the task: which run, which workflow and
-which head that PR has is theirs to know, not yours. You change no file, and you
-do not interpret what you find — the caller reads the diff.
-
-## How
-
-`gh pr checks` is the whole job — behind a pipe, so the table the watch re-prints
-every interval cannot pile up, and with the deadline *inside* the command so the
-pipe still flushes when the budget runs out (a tool-level timeout returns nothing
-at all, and `tail` prints only at end of input):
+Wait for one pull request's checks to finish and report pass or fail. The
+task message names the repo and the PR. That is the whole job — no digging
+into a failure, no advice on fixing one.
 
     timeout 1500 gh pr checks <pr> --repo <owner/name> --watch --interval 30 | tail -c 20000
 
-Set the call's own `timeout` just above that inner one (1560). Read the last table
-in the output: it is the freshest render, and gh lists failures first, so the row
-you must name is where that table starts. The pipe is also why the exit status is
-the pipe's, not gh's: a failing run reads as a successful call, so the table is
-the verdict, and gh's own words (`no checks reported on the '…' branch`) reach you
-in the stderr block.
+Set the call's timeout to 1560. The last table in the output is the verdict
+(the pipe hides gh's exit code). If gh says no checks reported, `sleep 30`
+and call again, up to about 30 minutes.
 
-The watch leaves when no check is pending. A check is final when it reads pass,
-fail or skipping, and no checks reported is not a pass — the checks may not have
-appeared yet.
+## Report
 
-Two readings are not verdicts, and are what you re-call for: a call cut off
-before it printed anything, and no checks reported. Pace a re-call — `sleep 30;`
-ahead of it. Never poll without an end: budget ~30 minutes, and at the budget
-report the table as it stands — the inner `timeout` is there to leave you one.
-
-You run in plan mode: a read-only poll is not an implementation, and a turn has
-one action — the call, or the report. The poll is yours to make.
-
-## Reporting
-
-Send the result with `jyc_send_to_topic` to the agent named in the task's
-`Source:` header — whether or not the caller asked for a reply — then end your
-turn with the same text in your own topic: a report that stays in your own topic
-reaches nobody. Say whether the PR's checks passed; for a failure give the
-failing check's name and the tail of its log. `gh run view` wants a run id in a
-non-interactive shell, so take it from the failing row's own URL
-(`…/actions/runs/<id>/job/<job>`, for an Actions check run — a legacy status
-context has no run id to give) and fetch that run:
-
-    gh run view <id> --repo <owner/name> --log-failed | grep -aE 'panicked|FAILED|error: ' | tail -n 5
-
-Every fact you state must be in a tool result from *this* turn: something you
-remember from an earlier poll, or the caller mentioned in a message, is no
-evidence at all about what ran.
-
-A turn ends when you stop calling tools, and nothing resumes one that has ended:
-its last text *is* your reply. Never announce the poll instead of making it — a
-turn that says "polling now" and issues no call has ended, and the caller is left
-holding a promise where a report belongs. Every turn carries the call, or the
-report.
-
+Send one line with `jyc_send_to_topic` to the agent named in the task's
+`Source:` header — the checks passed, or the checks failed — then end your
+turn. Your last message is the report: never announce the poll instead of
+making the call.
 """
 
-# Small on purpose — a watcher is not a thinker. Three turns covers the one
-# `--watch` call and the report that follows it, `note_window = 0` keeps no
-# tool-call history, and a 512-byte tool-result cap keeps a `gh` output from
-# piling up in the context it polls with — a *finished* turn, that is: the turn in
-# front of it is never truncated, which is why a failure log is fetched filtered
-# and tailed inside the call that fetches it. (Config
-# layer, not an override: the user's `/context` still wins.)
 [context_strategy]
-mode = "sliding_window"
-window = 0
-note_window = 0
-tool_result_cap = 512
+keep = 30_000
+# Watcher results are short (pass/fail), but several polls' retries and the
+# task message should stay in the sliding window.
 
-# Ancillary work runs on the small model: `${ai.small_model}` is a model
-# reference, resolved at the end of the model-resolution chain against the `[ai]`
-# values in effect for this topic's channel (its `small_model`, else the global
-# one). A model id can be written here instead.
 [ai]
-model = "${ai.small_model}"
+# A watcher must not carry the parent topic's runtime overrides into its own
+# config — its `[ai]` gets dropped and the parent's per-mode model snapshot
+# fills `model-override` instead.
+note_window = 50_000
+tool_result_cap = 30_000
 
-# The spawn defaults. Last, because a `[table]` header claims every key after it:
-# a `[spawn]` put higher swallows the topic keys below it — refused at load, not
-# dropped silently (`unknown key 'spawn.mode'`). The caller's directory identifies
-# what is being watched (the branch,
-# the repo), so the watcher works in it; an explicit spawn argument overrides this.
+# Must stay the LAST key of this file: the `jyc spawn` merge reads
+# `[context_strategy]` as a marker for "below this line is spawn state, do
+# not copy into the child" — a nested table after a later key would be lost.
 [spawn]
-share_topic_path = true
-

@@ -12,7 +12,9 @@ use tokio_util::sync::CancellationToken;
 use tracing;
 
 use jyc_core::agent::{AgentResult, AgentService};
-use jyc_core::command::send_handler::{SendRequest, SendSource, send_to_topic_with_target};
+use jyc_core::command::send_handler::{
+    SendOutcome, SendRequest, SendSource, send_to_topic_with_target,
+};
 use jyc_core::topic_event_bus::TopicEventBusRef;
 use jyc_core::topic_manager::TopicManagers;
 use jyc_types::{ChannelPattern, InboundMessage, QueueItem};
@@ -147,67 +149,69 @@ impl JycAgentService {
         *self.outbounds.lock().expect("outbounds poisoned") = Some(outbounds);
     }
 
-    /// Answer a `require_reply` request the turn left unanswered.
+    /// Answer the `require_reply` requests this turn left unanswered.
     ///
-    /// The request asked for an answer and the turn did not send one, so the
+    /// A request asked for an answer and the turn did not send one, so the
     /// turn's own last words go to the asking topic in its place. Without
     /// this the requester waits forever: `require_reply` is a request, not a
     /// promise, and nothing else checked that it was kept.
     ///
-    /// A turn that already sent to the asking topic has answered it, and
-    /// nothing is forwarded on top of that.
+    /// A turn that already sent to an asking topic has answered it, and
+    /// nothing is forwarded on top of that. What the turn sent is what tells
+    /// the two apart.
     ///
     /// `outbound_targets` is what this turn sent to, as `(channel, topic)`
-    /// pairs; `ending` says how the turn ended.
-    async fn forward_unanswered_reply(
+    /// pairs; `ending` says how the turn ended. Returns what was forwarded.
+    async fn forward_unanswered_replies(
         &self,
         managers: Option<&Arc<TopicManagers>>,
-        message: &InboundMessage,
+        requests: &[reply_guard::ReplySource],
         topic_name: &str,
         topic_path: &Path,
         ending: reply_guard::TurnEnding<'_>,
         outbound_targets: &[(String, String)],
-    ) {
-        let Some(source) = reply_guard::reply_source(&message.metadata) else {
-            return;
-        };
-        if reply_guard::answered(&source, outbound_targets) {
-            return;
+    ) -> Vec<SendOutcome> {
+        let mut forwarded = Vec::new();
+        for source in reply_guard::unanswered_requests(requests, outbound_targets) {
+            let Some(managers) = managers else {
+                tracing::warn!(
+                    source_topic = %source.topic,
+                    "No topic managers available to forward an unanswered reply request"
+                );
+                break;
+            };
+            let text = reply_guard::forward_message(&source, topic_name, ending);
+            let from = SendSource {
+                channel: Some(self.channel_name.as_str()),
+                topic: Some(topic_name),
+                working_dir: topic_path,
+            };
+            let req = SendRequest {
+                agent: &source.topic,
+                topic: Some(&source.topic),
+                message: &text,
+                attachments: &[],
+                recipient: None,
+                require_reply: false,
+            };
+            match send_to_topic_with_target(managers, from, req).await {
+                Ok(outcome) => {
+                    tracing::info!(
+                        source_topic = %source.topic,
+                        target_channel = %outcome.channel,
+                        target_topic = %outcome.topic,
+                        "Forwarded an unanswered reply request to the topic that asked for it"
+                    );
+                    forwarded.push(outcome);
+                }
+                Err(e) => tracing::warn!(
+                    source_topic = %source.topic,
+                    error = %e,
+                    "Could not forward an unanswered reply request to the topic that asked for it"
+                ),
+            }
         }
-        let Some(managers) = managers else {
-            tracing::warn!(
-                source_topic = %source.topic,
-                "No topic managers available to forward an unanswered reply request"
-            );
-            return;
-        };
-        let text = reply_guard::forward_message(&source, topic_name, ending);
-        let from = SendSource {
-            channel: Some(self.channel_name.as_str()),
-            topic: Some(topic_name),
-            working_dir: topic_path,
-        };
-        let req = SendRequest {
-            agent: &source.topic,
-            topic: Some(&source.topic),
-            message: &text,
-            attachments: &[],
-            recipient: None,
-            require_reply: false,
-        };
-        match send_to_topic_with_target(managers, from, req).await {
-            Ok(outcome) => tracing::info!(
-                source_topic = %source.topic,
-                target_channel = %outcome.channel,
-                target_topic = %outcome.topic,
-                "Forwarded an unanswered reply request to the topic that asked for it"
-            ),
-            Err(e) => tracing::warn!(
-                source_topic = %source.topic,
-                error = %e,
-                "Could not forward an unanswered reply request to the topic that asked for it"
-            ),
-        }
+        forwarded
     }
 }
 
@@ -627,10 +631,13 @@ impl AgentService for JycAgentService {
             Err(e) => {
                 // The turn died. Whoever asked for a reply has to hear
                 // that, or it waits forever — a turn that had already
-                // answered may still get a second, redundant notice.
-                self.forward_unanswered_reply(
+                // answered may still get a second, redundant notice. The
+                // requests that arrived mid-turn are lost with the turn:
+                // what it took in never reached the model either.
+                let requests = reply_guard::reply_requests(&message.metadata, &[]);
+                self.forward_unanswered_replies(
                     topic_managers.as_ref(),
-                    message,
+                    &requests,
                     topic_name,
                     topic_path,
                     reply_guard::TurnEnding::Failed(&e.to_string()),
@@ -641,15 +648,18 @@ impl AgentService for JycAgentService {
             }
         };
 
-        // The reply guard: the message asked for a reply, and this turn
-        // did not send one. The requester hears the turn's last words — or
-        // the fact that there were none — instead of silence.
-        self.forward_unanswered_reply(
+        // The reply guard: a message asked for a reply, and this turn did
+        // not send one. The requester hears the turn's last words — or the
+        // fact that there were none — instead of silence. A request that
+        // arrived while the turn was running counts too: the model saw it
+        // in the conversation, so the turn owes it an answer as well.
+        let requests = reply_guard::reply_requests(&message.metadata, &result.pending_replies);
+        self.forward_unanswered_replies(
             topic_managers.as_ref(),
-            message,
+            &requests,
             topic_name,
             topic_path,
-            reply_guard::TurnEnding::Finished(Some(result.text.as_str())),
+            reply_guard::TurnEnding::Finished(&result.text),
             &result.outbound_targets,
         )
         .await;
@@ -756,9 +766,11 @@ fn prompt_hash(prompt: &str) -> u64 {
 }
 
 #[cfg(test)]
+mod guard_tests;
+#[cfg(test)]
 mod mcp_load_tests;
-mod prompt;
-mod reply_guard;
+pub(crate) mod prompt;
+pub(crate) mod reply_guard;
 mod skills;
 #[cfg(test)]
 mod tests;

@@ -181,7 +181,7 @@ async fn drain_folds_the_whole_batch_in_order() {
     let mut history: Vec<Message> = Vec::new();
     let mut raw_context: Vec<serde_json::Value> = Vec::new();
 
-    let count = super::drain_injections(
+    let (count, _requests) = super::drain_injections(
         &mut rx,
         &mut history,
         &mut raw_context,
@@ -242,7 +242,7 @@ async fn drain_of_an_empty_queue_is_a_no_op() {
     let mut history: Vec<Message> = Vec::new();
     let mut raw_context: Vec<serde_json::Value> = Vec::new();
 
-    let count = super::drain_injections(
+    let (count, _requests) = super::drain_injections(
         &mut rx,
         &mut history,
         &mut raw_context,
@@ -326,7 +326,7 @@ async fn the_model_reads_the_cleaned_body_and_the_log_the_raw_one() {
     let mut history: Vec<Message> = Vec::new();
     let mut raw_context: Vec<serde_json::Value> = Vec::new();
 
-    let count = super::drain_injections(
+    let (count, _requests) = super::drain_injections(
         &mut rx,
         &mut history,
         &mut raw_context,

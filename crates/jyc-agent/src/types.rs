@@ -244,6 +244,11 @@ pub struct AgentLoopResult {
     /// The service reads it to tell a turn that already answered a
     /// `require_reply` request from one that did not.
     pub outbound_targets: Vec<(String, String)>,
+    /// The reply requests that arrived while this turn was running.
+    ///
+    /// A request that arrives mid-turn joins the conversation and asks for
+    /// an answer as well, so the guard owes it one too.
+    pub pending_replies: Vec<crate::service::reply_guard::ReplySource>,
 }
 
 #[cfg(test)]

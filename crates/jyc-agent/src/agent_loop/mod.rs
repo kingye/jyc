@@ -327,6 +327,10 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     )
     .await;
 
+    // The reply requests that arrived while this turn was running. The
+    // guard forwards an answer for each one the turn did not send.
+    let mut pending_replies: Vec<crate::service::reply_guard::ReplySource> = Vec::new();
+
     loop {
         if cancel.is_cancelled() {
             tracing::info!(total_iterations, "Agent loop cancelled");
@@ -337,7 +341,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // (`live_injection`). They join the conversation here, before
         // this iteration's call is built, so the model sees them in it.
         if let Some(rx) = injection_rx.as_deref_mut() {
-            drain_injections(
+            let (_, arrived) = drain_injections(
                 rx,
                 &mut history,
                 &mut raw_context,
@@ -346,6 +350,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 topic_name,
                 topic_path,
             );
+            pending_replies.extend(arrived);
         }
 
         // Check for cycle boundary: send a heartbeat reply and reset the
@@ -760,6 +765,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                     .lock()
                     .expect("outbound_targets poisoned")
                     .clone(),
+                pending_replies: pending_replies.clone(),
             });
         }
 
@@ -1120,6 +1126,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             .lock()
             .expect("outbound_targets poisoned")
             .clone(),
+        pending_replies: pending_replies.clone(),
     })
 }
 
@@ -1207,8 +1214,9 @@ fn drain_injections(
     outbound: Option<&dyn jyc_types::channel::OutboundAdapter>,
     topic_name: &str,
     topic_path: &Path,
-) -> usize {
+) -> (usize, Vec<crate::service::reply_guard::ReplySource>) {
     let mut count = 0usize;
+    let mut requests: Vec<crate::service::reply_guard::ReplySource> = Vec::new();
     while let Ok(item) = rx.try_recv() {
         let Some(raw) = item.message.content.text.as_deref().map(str::trim) else {
             continue;
@@ -1220,14 +1228,27 @@ fn drain_injections(
         // nothing — keep the raw words then: the message still says
         // something the user wants the model to see.
         let cleaned = outbound.map(|o| o.clean_body(raw)).unwrap_or_default();
-        let text = if cleaned.trim().is_empty() {
+        let body = if cleaned.trim().is_empty() {
             raw
         } else {
             cleaned.trim()
         };
-        let blocks = vec![ContentBlock::Text {
-            text: text.to_string(),
-        }];
+        // A message that asked for a reply says so in the conversation: the
+        // model has to know it came from another topic that is waiting for
+        // an answer. The request is collected as well, so the guard can
+        // forward an answer the turn forgot to send.
+        let text = match crate::service::reply_guard::reply_source(&item.message.metadata) {
+            Some(source) => {
+                requests.push(source.clone());
+                format!(
+                    "{}{}",
+                    crate::service::prompt::reply_request_notice(&source),
+                    body
+                )
+            }
+            None => body.to_string(),
+        };
+        let blocks = vec![ContentBlock::Text { text }];
         history.push(Message::user_with_blocks(blocks.clone()));
         raw_context.push(provider.format_user_message(&blocks));
 
@@ -1245,7 +1266,7 @@ fn drain_injections(
             "Injected live messages into the running turn"
         );
     }
-    count
+    (count, requests)
 }
 
 /// Compute and record the cost of one LLM call, returning the amount so

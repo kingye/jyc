@@ -64,26 +64,30 @@ pub fn answered(source: &ReplySource, outbound_targets: &[(String, String)]) -> 
         .any(|(channel, topic)| channel == &source.channel && topic == &source.topic)
 }
 
-/// The message to send to the requester when the turn did not answer it.
+/// How a turn ended.
 ///
-/// `final_text` is the turn's last words, when it had any; `failure` is why
-/// the turn ended badly, when it did.
-pub fn forward_message(
-    source: &ReplySource,
-    topic_name: &str,
-    final_text: Option<&str>,
-    failure: Option<&str>,
-) -> String {
+/// The two shapes are mutually exclusive — a turn either finished or died —
+/// so they are one value, not two options that could both be set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnEnding<'a> {
+    /// The turn finished; the text is its last message, when it had one.
+    Finished(Option<&'a str>),
+    /// The turn died; the text says why.
+    Failed(&'a str),
+}
+
+/// The message to send to the requester when the turn did not answer it.
+pub fn forward_message(source: &ReplySource, topic_name: &str, ending: TurnEnding<'_>) -> String {
     let mut out = format!(
         "⚠️ Automatic forward — topic '{topic_name}' was asked to reply to topic '{}' \
          and ended its turn without doing so.",
         source.topic
     );
-    if let Some(failure) = failure {
+    if let TurnEnding::Failed(failure) = ending {
         out.push_str(&format!("\n\nThe turn failed: {failure}"));
     }
-    match final_text {
-        Some(text) if !text.trim().is_empty() => {
+    match ending {
+        TurnEnding::Finished(Some(text)) if !text.trim().is_empty() => {
             out.push_str("\n\nIts last message follows.\n\n");
             out.push_str(text);
         }
@@ -156,7 +160,11 @@ mod tests {
     #[test]
     fn the_forward_carries_the_turns_last_words() {
         let source = reply_source(&metadata(true, "agents", "jyc")).unwrap();
-        let text = forward_message(&source, "ci-watch-pr977", Some("CI is green."), None);
+        let text = forward_message(
+            &source,
+            "ci-watch-pr977",
+            TurnEnding::Finished(Some("CI is green.")),
+        );
         assert!(text.contains("ci-watch-pr977"));
         assert!(text.contains("CI is green."));
         assert!(!text.contains("left no message"));
@@ -165,14 +173,18 @@ mod tests {
     #[test]
     fn the_forward_says_so_when_there_were_no_last_words() {
         let source = reply_source(&metadata(true, "agents", "jyc")).unwrap();
-        let text = forward_message(&source, "ci-watch-pr977", Some("   "), None);
+        let text = forward_message(&source, "ci-watch-pr977", TurnEnding::Finished(Some("   ")));
         assert!(text.contains("left no message"));
     }
 
     #[test]
     fn the_forward_names_the_failure() {
         let source = reply_source(&metadata(true, "agents", "jyc")).unwrap();
-        let text = forward_message(&source, "ci-watch-pr977", None, Some("provider timeout"));
+        let text = forward_message(
+            &source,
+            "ci-watch-pr977",
+            TurnEnding::Failed("provider timeout"),
+        );
         assert!(text.contains("provider timeout"));
     }
 }

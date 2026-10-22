@@ -8,9 +8,10 @@
 # Install into the config dir, once:
 #     cp -r subagents/ci-watch ~/.config/jyc/subagents/
 #
-# Shape: a topic config (`.jyc/config.toml`) plus `mode`, a `description`,
-# and two spawn-only keys (`context_strategy`, `[spawn]`) — a role, in the
-# terms of the docs. `bash` stays enabled: the poll is a `bash` call.
+# Shape: a topic config (`.jyc/config.toml`) plus `mode`, and the two keys
+# only an installed file has: `description` and `[spawn]`.
+# `context_strategy` is an ordinary topic key — a role carries one the same
+# way. `bash` stays enabled: the poll is a `bash` call.
 #
 # Mind the `${…}` below: every string in this file is expanded, and an unset
 # name becomes *empty text*, no error. `${ai.small_model}` is safe: the pattern
@@ -41,8 +42,11 @@ Set the call's own `timeout` just above that inner one (1560). Read the last
 table in the output — it is the freshest render, and the pipe hides gh's
 exit status, so the table is the verdict. The watch leaves when no check is
 pending; no checks reported is not a pass, so the checks may not have
-appeared yet: pace a re-call (`sleep 30;` ahead of it). Never poll without
-an end: budget ~30 minutes, and at the budget report the table as it stands.
+appeared yet: pace a re-call (`sleep 30;` ahead of it). A call that printed
+no table at all — an error, a timeout — is not a verdict either: re-call,
+and at the budget report the error rather than a pass or a fail. Never poll
+without an end: budget ~30 minutes, and at the budget report the table as it
+stands.
 
 You run in plan mode: a read-only poll is not an implementation, and a turn
 has one action — the call, or the report.
@@ -52,7 +56,8 @@ has one action — the call, or the report.
 Send the result with `jyc_send_to_topic` to the agent named in the task's
 `Source:` header — whether or not the caller asked for a reply — then end
 your turn with the same text in your own topic: a report that stays in your
-own topic reaches nobody. One line: the checks passed, or the checks failed.
+own topic reaches nobody. One line: the checks passed, or the checks failed —
+or that the poll itself never got a table.
 
 Every fact you state must be in a tool result from *this* turn: something
 you remember from an earlier poll, or the caller mentioned in a message, is
@@ -65,12 +70,12 @@ the caller is left holding a promise where a report belongs.
 """
 
 # Small on purpose — a watcher is not a thinker. `window = 0` keeps no prior
-# turn at all, so a second message is answered from the role text instead of
-# being continued from the report the previous one ended with; `note_window =
-# 0` keeps no tool-call history for the same reason, and a 512-byte
-# tool-result cap keeps a `gh` output from piling up in the context it polls
-# with. The turn being run is never truncated. (Config layer, not an override:
-# the user's `/context` still wins.)
+# turn's pairs (the summary fallback still anchors on the last text-bearing
+# user message, so the task survives into a second turn), `note_window = 0`
+# keeps no tool-call history, and the 512-byte tool-result cap then has
+# nothing to bound: it caps kept history, not the turn being run, and that
+# one is never truncated. (Config layer, not an override: the user's
+# `/context` still wins.)
 [context_strategy]
 mode = "sliding_window"
 window = 0

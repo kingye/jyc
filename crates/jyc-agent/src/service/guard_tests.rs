@@ -180,6 +180,71 @@ fn source_request() -> ReplyRequest {
     }
 }
 
+/// The requests a turn owes are the ones its message carried plus the ones
+/// that arrived while it ran.
+///
+/// This is the join the service does at the end of a turn: the message the
+/// turn handled asked for an answer, and a second request arrived while the
+/// turn was running. Both requesters hear something.
+#[tokio::test]
+async fn the_guard_answers_the_request_the_message_carried_and_the_one_that_arrived() {
+    let tmp = tempdir().unwrap();
+    let agents = make_tm(tmp.path(), "agents");
+    let managers = Arc::new(TopicManagers::new());
+    managers.set(vec![agents.clone()]);
+    seed_topic(&agents, "agents", "guard-source").await;
+    seed_topic(&agents, "agents", "guard-source-2").await;
+
+    let service = service_with_managers(managers.clone(), tmp.path());
+    let mut metadata = HashMap::new();
+    metadata.insert("require_reply".to_string(), json!(true));
+    metadata.insert("source_channel".to_string(), json!("agents"));
+    metadata.insert("source_topic".to_string(), json!("guard-source"));
+    let message = jyc_types::InboundMessage {
+        id: "m1".to_string(),
+        channel: "agents".to_string(),
+        channel_uid: "m1".to_string(),
+        sender: "user".to_string(),
+        sender_address: "user@example.com".to_string(),
+        recipients: vec![],
+        topic: "guard-target".to_string(),
+        content: jyc_types::MessageContent {
+            text: Some("do work".to_string()),
+            html: None,
+            markdown: None,
+        },
+        timestamp: chrono::Utc::now(),
+        references: None,
+        reply_to_id: None,
+        external_id: None,
+        attachments: vec![],
+        metadata,
+        matched_pattern: None,
+    };
+    let arrived = vec![ReplyRequest {
+        source: ReplySource {
+            channel: "agents".to_string(),
+            topic: "guard-source-2".to_string(),
+        },
+        sent_before: 0,
+    }];
+
+    let forwarded = service
+        .guard_and_forward(
+            &message,
+            "guard-target",
+            tmp.path(),
+            TurnEnding::Finished("all done"),
+            &arrived,
+            &[],
+        )
+        .await;
+
+    assert_eq!(forwarded.len(), 2, "both requesters get an answer");
+    assert_eq!(forwarded[0].topic, "guard-source");
+    assert_eq!(forwarded[1].topic, "guard-source-2");
+}
+
 /// The requester hears the turn's last words when the turn did not answer.
 #[tokio::test]
 async fn the_guard_answers_a_request_the_turn_left_unanswered() {

@@ -149,6 +149,40 @@ impl JycAgentService {
         *self.outbounds.lock().expect("outbounds poisoned") = Some(outbounds);
     }
 
+    /// Answer the `require_reply` requests this turn owes.
+    ///
+    /// The requests are the ones the message this turn handled carried,
+    /// plus the ones that arrived while the turn was running — the turn
+    /// owes an answer to both.
+    ///
+    /// `outbound_targets` is what this turn sent to, as `(channel, topic)`
+    /// pairs; `ending` says how the turn ended. Returns what was forwarded.
+    async fn guard_and_forward(
+        &self,
+        message: &InboundMessage,
+        topic_name: &str,
+        topic_path: &Path,
+        ending: reply_guard::TurnEnding<'_>,
+        arrived: &[reply_guard::ReplyRequest],
+        outbound_targets: &[(String, String)],
+    ) -> Vec<SendOutcome> {
+        let requests = reply_guard::reply_requests(&message.metadata, arrived);
+        let managers = self
+            .topic_managers
+            .lock()
+            .expect("topic_managers poisoned")
+            .clone();
+        self.forward_unanswered_replies(
+            managers.as_ref(),
+            &requests,
+            topic_name,
+            topic_path,
+            ending,
+            outbound_targets,
+        )
+        .await
+    }
+
     /// Answer the `require_reply` requests this turn left unanswered.
     ///
     /// A request asked for an answer and the turn did not send one, so the
@@ -634,14 +668,13 @@ impl AgentService for JycAgentService {
                 // answered may still get a second, redundant notice. The
                 // requests that arrived mid-turn died with the turn: the
                 // loop hands them back with the error.
-                let requests = reply_guard::reply_requests(&message.metadata, &e.pending_replies);
                 let failure = e.error.to_string();
-                self.forward_unanswered_replies(
-                    topic_managers.as_ref(),
-                    &requests,
+                self.guard_and_forward(
+                    message,
                     topic_name,
                     topic_path,
                     reply_guard::TurnEnding::Failed(&failure),
+                    &e.pending_replies,
                     &[],
                 )
                 .await;
@@ -654,13 +687,12 @@ impl AgentService for JycAgentService {
         // fact that there were none — instead of silence. A request that
         // arrived while the turn was running counts too: the model saw it
         // in the conversation, so the turn owes it an answer as well.
-        let requests = reply_guard::reply_requests(&message.metadata, &result.pending_replies);
-        self.forward_unanswered_replies(
-            topic_managers.as_ref(),
-            &requests,
+        self.guard_and_forward(
+            message,
             topic_name,
             topic_path,
             reply_guard::TurnEnding::Finished(&result.text),
+            &result.pending_replies,
             &result.outbound_targets,
         )
         .await;

@@ -362,9 +362,16 @@ pub async fn run(
                 ctx.outbound.as_deref(),
                 topic_name,
                 topic_path,
-                sent_before,
             );
-            pending_replies.extend(arrived);
+            // The requests carry the mark: it is what tells a send the
+            // turn made afterwards from one it made before the request
+            // arrived.
+            pending_replies.extend(arrived.into_iter().map(|source| {
+                crate::service::reply_guard::ReplyRequest {
+                    source,
+                    sent_before,
+                }
+            }));
         }
 
         // Check for cycle boundary: send a heartbeat reply and reset the
@@ -1231,12 +1238,12 @@ async fn drain_pending_texts(
 /// that message stores it then — so every message lands in the log
 /// exactly once.
 ///
-/// Returns how many messages were folded in, and the reply requests they
-/// carried.
+/// Returns how many messages were folded in, and the sources that asked for
+/// a reply.
 ///
-/// `sent_before` is how many outbound sends the turn had made when the
-/// batch was drained: a request in it can only be answered by a send that
-/// comes after that mark.
+/// The sources come back unmarked: how many sends the turn had made is the
+/// turn's own bookkeeping, and the caller stamps the requests it gets here
+/// with it.
 fn drain_injections(
     rx: &mut tokio::sync::mpsc::Receiver<QueueItem>,
     history: &mut Vec<Message>,
@@ -1245,10 +1252,9 @@ fn drain_injections(
     outbound: Option<&dyn jyc_types::channel::OutboundAdapter>,
     topic_name: &str,
     topic_path: &Path,
-    sent_before: usize,
-) -> (usize, Vec<crate::service::reply_guard::ReplyRequest>) {
+) -> (usize, Vec<crate::service::reply_guard::ReplySource>) {
     let mut count = 0usize;
-    let mut requests: Vec<crate::service::reply_guard::ReplyRequest> = Vec::new();
+    let mut requests: Vec<crate::service::reply_guard::ReplySource> = Vec::new();
     while let Ok(item) = rx.try_recv() {
         let Some(raw) = item.message.content.text.as_deref().map(str::trim) else {
             continue;
@@ -1274,10 +1280,7 @@ fn drain_injections(
         let asks = crate::service::reply_guard::asks_for_reply(&item.message.metadata);
         let text = match (source, asks) {
             (Some(source), true) => {
-                requests.push(crate::service::reply_guard::ReplyRequest {
-                    source: source.clone(),
-                    sent_before,
-                });
+                requests.push(source.clone());
                 format!(
                     "{}{}",
                     crate::service::prompt::reply_request_notice(&source),

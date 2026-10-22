@@ -72,12 +72,13 @@ pub fn reply_source(metadata: &HashMap<String, Value>) -> Option<ReplySource> {
 pub struct ReplyRequest {
     /// Where the answer goes.
     pub source: ReplySource,
-    /// How many outbound sends the turn had made when the request arrived.
+    /// How many outbound sends the turn had made when it folded this
+    /// request into the conversation.
     ///
     /// A send made before this mark cannot be the answer to this request:
-    /// it went to that topic before anybody asked. The turn's own request —
-    /// the one it started with — carries the mark of zero, since nothing
-    /// had been sent yet.
+    /// the model had not been shown the request yet, so it could not have
+    /// answered it. The turn's own request — the one it started with —
+    /// carries the mark of zero, since nothing had been sent yet.
     pub sent_before: usize,
 }
 
@@ -100,14 +101,14 @@ pub fn reply_requests(
 
 /// Whether this turn already answered `request`.
 ///
-/// Only the sends that came after the request arrived count: a send made
-/// before it cannot be its answer — it went to that topic before anybody
-/// asked.
+/// Only the sends that came after the request was folded in count: the
+/// model cannot have answered a request it had not been shown yet, so a
+/// send made before that is no answer to it.
 ///
-/// The channel is part of the pair as a collision guard. A topic name is
-/// unique process wide, so the pair names one topic either way; what the
-/// pair buys is that the guard compares the send's own record with the
-/// request's own record, like with like.
+/// The channel is part of the pair because the pair is what the send
+/// recorded: the guard compares the send's own record with the request's
+/// own record, like with like. A topic name is unique process wide, so the
+/// pair names one topic either way.
 pub fn answered(request: &ReplyRequest, outbound_targets: &[(String, String)]) -> bool {
     let from = request.sent_before.min(outbound_targets.len());
     outbound_targets[from..].iter().any(|(channel, topic)| {
@@ -207,6 +208,32 @@ mod tests {
             source: reply_source(&metadata(true, "agents", "jyc")).unwrap(),
             sent_before,
         }
+    }
+
+    /// The turn's own request, plus the ones that arrived while it ran.
+    #[test]
+    fn the_requests_are_the_one_the_turn_started_with_and_the_ones_that_arrived() {
+        let own = reply_source(&metadata(true, "agents", "jyc")).unwrap();
+        let arrived = ReplyRequest {
+            source: reply_source(&metadata(true, "email", "boss")).unwrap(),
+            sent_before: 2,
+        };
+
+        let requests = reply_requests(&metadata(true, "agents", "jyc"), &[arrived.clone()]);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].source, own);
+        assert_eq!(
+            requests[0].sent_before, 0,
+            "nothing was sent before the turn started"
+        );
+        assert_eq!(
+            requests[1], arrived,
+            "the request that arrived keeps the mark it came with"
+        );
+
+        // A turn that was not asked anything owes nothing.
+        let requests = reply_requests(&metadata(false, "agents", "jyc"), &[]);
+        assert!(requests.is_empty());
     }
 
     #[test]

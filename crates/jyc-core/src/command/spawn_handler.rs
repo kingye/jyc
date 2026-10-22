@@ -1452,6 +1452,15 @@ mod tests {
         let watch = resolve_subagent_type("ci-watch", Some(&config), Some(&repo)).unwrap();
 
         assert_eq!(watch.name, "ci-watch");
+        // The line the spawn tool lists the type by: a description that goes
+        // stale is still spawnable, so nothing else would notice.
+        assert!(
+            watch
+                .description
+                .as_deref()
+                .is_some_and(|d| d.contains("CI") && d.contains("pass")),
+            "the description says what the role waits for"
+        );
         assert_eq!(watch.config.mode.as_deref(), Some("plan"));
         assert_eq!(
             watch.config.ai.as_ref().and_then(|ai| ai.model.as_deref()),
@@ -1466,9 +1475,9 @@ mod tests {
             "provider/small",
             "the model reference still resolves to the channel's small model"
         );
-        // `bash` stays: `gh` is what watching is — a timed call, and a filtered
-        // fetch of one failure's log. Nothing published to a link either — the
-        // report is the only thing it sends back.
+        // `bash` stays: `gh` is what watching is — a timed call. Nothing
+        // published to a link either — the report is the only thing it sends
+        // back.
         assert_eq!(
             watch.config.disabled_tools.as_deref(),
             Some(
@@ -1534,12 +1543,22 @@ mod tests {
             orders.contains("no checks reported is not a pass"),
             "an empty reading is waited out, not reported as a verdict"
         );
-        // A failure log is fetched through a filter inside the call: the result
-        // cap bounds a finished turn, not the turn the log lands in, and a plain
-        // byte tail of this repo's own failure misses the failing lines.
+        // A call that produced no table at all — an error, a timeout — is the
+        // same shape of nothing, and a watcher that read it as "the checks
+        // failed" would report a dead poll as a red CI.
         assert!(
-            orders.contains("--log-failed | grep -aE 'panicked|FAILED|error: ' | tail -n 5"),
-            "the log comes back filtered and tailed inside the call, not whole"
+            orders.contains("printed no table at all"),
+            "a call that printed no table is not a verdict either"
+        );
+        // The role reports the outcome and stops there — no log fetching, no
+        // naming of the failing step: the caller reads the diff and the logs.
+        assert!(
+            orders.contains("no digging into a failure"),
+            "the watcher reports pass or fail, it does not dig into the failure"
+        );
+        assert!(
+            !orders.contains("--log-failed"),
+            "the role fetches no failure log: its report is pass or fail"
         );
         // The failure this rule answers: a turn that *described* the next poll and
         // issued no call — the turn ended, the watch with it, and the caller was
@@ -1558,17 +1577,13 @@ mod tests {
             "the rule rests on a turn ending, and nothing resuming it"
         );
         // Small on purpose: a watcher is not a thinker, and it is handed one
-        // errand at a time. `window = 0` keeps no prior turn at all, so a
-        // second message is answered from the role text instead of being
-        // continued from the report the previous one ended with — which is
-        // what a non-zero window invited: the watcher's own last report sat in
-        // the context as the most recent thing it had "said", and the model
-        // restated it (a run id and a duration that matched no run) instead of
-        // polling. `note_window = 0` keeps no tool-call history for the same
-        // reason. The turn being run is never truncated, so the poll and the
-        // report inside one errand still see each other; the 512-byte cap
-        // bounds a `gh` output inside the call, where it can be filtered and
-        // tailed.
+        // errand at a time. `window = 0` keeps no prior turn's pairs — the
+        // summary fallback still anchors on the last text-bearing user
+        // message, so the task survives into a second turn — and `note_window
+        // = 0` keeps no tool-call history. The 512-byte tool-result cap then
+        // has nothing to bound: it caps kept history, not the turn being run,
+        // and that one is never truncated (`turn_tool_result_cap` is unset),
+        // so the poll and the report inside one errand still see each other.
         let strategy = watch
             .config
             .context_strategy
@@ -1578,6 +1593,9 @@ mod tests {
         assert_eq!(strategy.window, 0);
         assert_eq!(strategy.note_window, Some(0));
         assert_eq!(strategy.tool_result_cap, Some(512));
+        // The comment above rests on this: the turn in flight is uncapped
+        // only for as long as no turn cap is set.
+        assert_eq!(strategy.turn_tool_result_cap, None);
     }
 
     /// The role this repository ships — `subagents/review/config.toml`, the type

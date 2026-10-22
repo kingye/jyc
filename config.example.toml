@@ -1224,7 +1224,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #   # pattern/channel/global `[ai].context_strategy`, below the runtime
 #   # `.jyc/context-strategy.json` that `/context` writes. A subagent type
 #   # carries one the same way — that is how a role starts with a small window
-#   # (see `subagents/ci-watch/config.toml`: window = 3, note_window = 0,
+#   # (see `subagents/ci-watch/config.toml`: window = 0, note_window = 0,
 #   # tool_result_cap = 512).
 #   # [context_strategy]
 #   # mode = "sliding_window"

@@ -47,19 +47,25 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      # Every test binary runs, even after one of them fails: cargo test is
-      # fail-fast by default, so a single failure used to hide every binary
-      # behind it. `continue-on-error` keeps the step from ending the job —
-      # the last step below turns a red test run back into a red workflow.
+      # The suite runs once, instrumented: the same run leaves the data the
+      # report is built from, so nothing is run twice. Two flags give the run
+      # the shape #972 asked for:
+      #   --no-fail-fast  every binary runs, even after one of them fails —
+      #                   cargo test is fail-fast by default, so a single
+      #                   failure used to hide every binary behind it
+      #   --no-report    the report is the next step, built from the data
+      #                   this run leaves behind, so a red run still has one
+      # `continue-on-error` keeps the step from ending the job — the last
+      # step below turns a red test run back into a red workflow.
       - name: Run tests (every binary, fail-late)
         id: tests
         continue-on-error: true
-        run: cargo test --workspace --all-targets --no-fail-fast
+        run: cargo llvm-cov --workspace --all-targets --no-report --no-fail-fast
 
-      # `--ignore-run-fail` is cargo-llvm-cov's own way of doing the same:
-      # it runs every test binary and *still* generates the report, exiting 0
-      # when the tests failed. The report is therefore there to read on a red
-      # run, which the old step — it aborted at the first failure — never was.
+      # The report comes from the run above, not from a second run of the
+      # suite: `cargo llvm-cov report` reads the coverage data that run left
+      # behind. It is therefore there on a red run too — the old step, it
+      # aborted at the first failure, never had one.
       - name: Coverage
         # Runs on a red test run: `continue-on-error` leaves the test step's
         # conclusion at success, so `success()` is still true. Skipped only
@@ -70,7 +76,7 @@ jobs:
           echo '## 📊 Coverage Report' > coverage.txt
           echo '' >> coverage.txt
           echo '```' >> coverage.txt
-          cargo llvm-cov --workspace --all-targets --ignore-run-fail --summary-only \
+          cargo llvm-cov report --summary-only \
             --ignore-filename-regex 'crates/jyc-cli/src/main\.rs' >> coverage.txt
           echo '```' >> coverage.txt
 

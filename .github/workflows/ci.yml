@@ -16,6 +16,17 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # mold replaces the runner's default linker (GNU ld) for the test step's
+  # link phase — the slowest part of the job. The linker is a CI-only
+  # concern: the build itself does not change.
+  #
+  # This has to stay at workflow level, not on the test step: cargo hashes
+  # RUSTFLAGS into every unit's fingerprint, so the flag invalidates the
+  # cached artifacts. rust-cache can only see RUST* env vars that are in its
+  # own process environment — a step-scoped one is invisible to it, so the
+  # cache would keep restoring the pre-mold artifacts, and every run would
+  # recompile all dependencies without ever storing the new ones.
+  RUSTFLAGS: -C link-arg=-fuse-ld=mold
 
 jobs:
   # Formatting, linting, testing, and coverage enforcement
@@ -36,23 +47,26 @@ jobs:
           components: rustfmt, clippy, llvm-tools-preview
 
       - name: Install protoc and mold
-        # mold: the test step below links 21 instrumented test binaries, and
-        # the runner's default (GNU ld) needs ~110s for exactly that — the
-        # single biggest slice of the job. mold does it in a fraction of
-        # the time. The linker is a CI-only concern: the build itself does
-        # not change.
+        # mold is the linker the test step uses (see RUSTFLAGS above); it
+        # comes from noble/universe, so this step is what fails if the
+        # archive ever drops it.
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold
 
       - name: Install cargo-llvm-cov
         # Pinned: the workflow leans on the exit code of the test run
         # (--no-report without --ignore-run-fail), so a new release must not
         # change that silently.
-        # The runner image already ships this exact version, and installing
-        # it again would compile it from source for nothing — so only install
-        # when the image's copy is missing or a different one.
+        #
+        # The binary survives between runs in rust-cache's cargo-bin cache
+        # ($CARGO_HOME/bin), so on a warm cache the version already matches
+        # and there is nothing to install. A cold cache compiles it from
+        # source — that is the price of the pin.
+        # `--force`: without it cargo refuses to overwrite a binary it does
+        # not know about (one restored without its tracking metadata), and
+        # that refusal would fail the step.
         run: |
-          if ! cargo llvm-cov --version 2>/dev/null | grep -qE '^cargo-llvm-cov 0\.9\.1\b'; then
-            cargo install cargo-llvm-cov --version 0.9.1
+          if ! cargo llvm-cov --version 2>/dev/null | grep -qE '^cargo-llvm-cov 0\.9\.1$'; then
+            cargo install --force cargo-llvm-cov --version 0.9.1
           fi
 
       - name: Check formatting
@@ -76,12 +90,12 @@ jobs:
       - name: Run tests (every binary, fail-late)
         id: tests
         continue-on-error: true
-        # mold instead of the runner's default linker: linking the 21
-        # instrumented test binaries was ~110s of this step's 3m28s.
-        # cargo-llvm-cov merges this RUSTFLAGS with its own instrumentation
-        # flags, so the linker choice survives into the inner cargo call.
-        env:
-          RUSTFLAGS: -C link-arg=-fuse-ld=mold
+        # The linker choice (mold) comes from the workflow-level RUSTFLAGS
+        # above. cargo-llvm-cov 0.9.1 runs in its rustc-wrapper mode, which
+        # leaves RUSTFLAGS alone and appends its own instrumentation flags
+        # to the rustc command line — so the linker choice survives into the
+        # inner cargo call. (With --no-rustc-wrapper it overwrites RUSTFLAGS
+        # instead, and the linker choice would silently stop applying.)
         run: cargo llvm-cov --workspace --all-targets --no-report --no-fail-fast
 
       # The report comes from the run above, not from a second run of the

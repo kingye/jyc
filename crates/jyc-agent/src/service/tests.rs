@@ -1450,6 +1450,12 @@ fn build_user_prompt_injects_build_mode_tag() {
         plan_prompt.contains("CRITICAL: Current mode: PLAN (read-only"),
         "plan mode prompt should contain PLAN tag, got: {plan_prompt}"
     );
+    // The task list and the lessons are the plan-mode exceptions: both live in
+    // the topic's own state, so they stay available while the mode is on.
+    assert!(
+        plan_prompt.contains("task_create") && plan_prompt.contains("lesson_add"),
+        "plan mode prompt should keep the task list and lesson tools available, got: {plan_prompt}"
+    );
 
     // Build mode (None = no override): should inject BUILD tag
     let build_prompt = svc.build_user_prompt_text(&message, None, "");

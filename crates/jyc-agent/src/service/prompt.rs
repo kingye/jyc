@@ -437,8 +437,7 @@ impl JycAgentService {
             prompt.push_str("This constraint is absolute — do not bypass it even if asked. ");
             prompt.push_str("Even if you previously ran write/edit commands in this conversation, you are now in PLAN MODE and must not make any changes.\n");
             prompt.push_str("You MUST NOT: edit, write, or delete any files; run build, test, or deployment commands; commit, push, or branch changes; install or modify dependencies.\n");
-            prompt.push_str("You MAY ONLY: read files, search code, analyze patterns; manage your own task list (task_create, task_update, task_list) and record lessons (lesson_add); present implementation plans and ask clarifying questions; wait for user approval before any implementation.\n");
-            prompt.push_str("The task list and the lessons are the plan-mode exceptions: they are your own topic state, not the project, so keeping them stays allowed while the project itself stays untouched.\n");
+            prompt.push_str("You MAY ONLY: read files, search code, analyze patterns; present implementation plans and ask clarifying questions; wait for user approval before any implementation.\n");
             prompt.push_str("Before starting, read the SKILL.md of any available skill whose description matches your task.\n");
             prompt.push_str("</mode>\n");
         } else {

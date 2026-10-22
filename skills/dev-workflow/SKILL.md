@@ -81,9 +81,9 @@ again in this turn, do not start a waiter that the next push will supersede.
    <owner/name> --commit <full 40-character sha>` — never abbreviated).
 4. End your turn; the report arrives as a new message in this topic. The child always reports back
    with `jyc_send_to_topic` to the agent named in the task's `Source:` header — whether or not you
-   asked for a reply. On failure it reports the check table and the verdict — the failing check's log
-   is yours to fetch now (`gh pr checks <pr> --repo <owner/name>`, then `gh run view <id>
-   --log-failed`).
+   asked for a reply. On failure it reports the verdict — pass or fail — and the failing check's log
+   is yours to fetch now (`gh pr checks <pr> --repo <owner/name>`, then `gh run view <id> --repo
+   <owner/name> --log-failed`, with `<id>` taken from the failing check's own URL).
 
 The equivalent older way, when you would rather not hold a child open: `job_create` with a one-time
 `at` at the end of the budget, whose prompt says to check that PR's checks and report. It re-enters

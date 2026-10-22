@@ -1355,34 +1355,47 @@ mod session {
 mod tool_registry {
     use jyc_agent::tools::builtin::create_builtin_registry;
 
+    /// The tools the builtin registry must have. The count is derived from
+    /// this list, so adding a tool means adding a name — not also
+    /// remembering to bump a number somewhere else.
+    const EXPECTED_BUILTIN_TOOLS: [&str; 19] = [
+        "bash",
+        "read",
+        "write",
+        "edit",
+        "glob",
+        "grep",
+        "webfetch",
+        "job_list",
+        "job_create",
+        "job_delete",
+        "job_toggle",
+        "jyc_send_to_topic",
+        "context_browse",
+        "ask_user",
+        "task_list",
+        "task_create",
+        "task_update",
+        "lesson_add",
+        "lesson_read",
+    ];
+
     #[test]
     fn builtin_registry_has_all_tools() {
         let registry = create_builtin_registry();
-        assert!(registry.has_tool("bash"));
-        assert!(registry.has_tool("read"));
-        assert!(registry.has_tool("write"));
-        assert!(registry.has_tool("edit"));
-        assert!(registry.has_tool("glob"));
-        assert!(registry.has_tool("grep"));
-        assert!(registry.has_tool("webfetch"));
-        assert!(registry.has_tool("job_list"));
-        assert!(registry.has_tool("job_create"));
-        assert!(registry.has_tool("job_delete"));
-        assert!(registry.has_tool("job_toggle"));
-        assert!(registry.has_tool("jyc_send_to_topic"));
-        assert!(registry.has_tool("context_browse"));
-        assert!(registry.has_tool("ask_user"));
-        assert!(registry.has_tool("task_list"));
-        assert!(registry.has_tool("task_create"));
-        assert!(registry.has_tool("task_update"));
-        assert_eq!(registry.len(), 17);
+        for name in EXPECTED_BUILTIN_TOOLS {
+            assert!(registry.has_tool(name), "registry is missing {name}");
+        }
+        // Nothing beyond the list: a tool nobody accounted for would go
+        // unnoticed in the schema budget and in the model's prompt.
+        assert_eq!(registry.len(), EXPECTED_BUILTIN_TOOLS.len());
     }
 
     #[test]
     fn registry_produces_definitions() {
         let registry = create_builtin_registry();
         let definitions = registry.definitions();
-        assert_eq!(definitions.len(), 17);
+        assert_eq!(definitions.len(), EXPECTED_BUILTIN_TOOLS.len());
 
         // Each definition should have name, description, and input_schema
         for def in &definitions {

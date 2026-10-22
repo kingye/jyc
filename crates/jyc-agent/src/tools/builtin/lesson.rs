@@ -27,9 +27,9 @@ use super::super::{Tool, ToolContext, ToolOutput};
 pub(crate) const LESSONS_FILE: &str = "lessons.md";
 
 /// How much of the file the system prompt carries — the *newest* end. The
-/// rest is the archive, reachable with `lesson_read`. Small on purpose: this
-/// is paid on every turn of every topic, and a lesson is a rule, not a
-/// transcript.
+/// rest is the archive, reachable with `lesson_read`. Small on purpose:
+/// these bytes ride along on every turn of every topic, and a lesson is a
+/// rule, not a transcript.
 ///
 /// This is the *target*, not a hard ceiling: the cut backs up to a line
 /// boundary so that no lesson rides along half shown, so what actually
@@ -700,6 +700,14 @@ mod tests {
         assert!(!out.is_error, "{}", out.content);
         // The read is capped, and the cap is stated.
         assert!(out.content.contains("were left out"), "{}", out.content);
+        // One lesson longer than the cap: there is no line boundary to cut
+        // on, so the fragment is marked instead of passing for a whole
+        // lesson.
+        assert!(
+            out.content.contains(&format!("{HEADER}\n\n…")),
+            "{}",
+            out.content
+        );
         // Pruning is the user's call, and the note says so in words the
         // model can act on.
         assert!(
@@ -712,6 +720,30 @@ mod tests {
             "{}",
             out.content.len()
         );
+    }
+
+    #[tokio::test]
+    async fn read_cuts_the_archive_on_a_line_boundary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(".jyc").join(LESSONS_FILE);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // 100-byte lines, so the 16 KiB cap lands 84 bytes into a line: the
+        // cut has to back up to the line before it, or the read ends with
+        // half a lesson that reads like a whole one.
+        let body: String = (0..400)
+            .map(|i| {
+                let head = format!("- lesson {i:04} ");
+                format!("{}{}\n", head, "x".repeat(99 - head.len()))
+            })
+            .collect();
+        std::fs::write(&path, format!("{HEADER}\n\n{body}")).unwrap();
+
+        let out = read("lesson-read-boundary", tmp.path()).await;
+        assert!(!out.is_error, "{}", out.content);
+        // The last lesson carried is whole ...
+        assert!(out.content.contains("- lesson 0162 "), "{}", out.content);
+        // ... and the one the cap cut through is not carried at all.
+        assert!(!out.content.contains("- lesson 0163 "), "{}", out.content);
     }
 
     #[test]

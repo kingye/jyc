@@ -215,6 +215,25 @@ Use it for anything multi-step: write the list before starting, mark an item
 `in_progress` as you pick it up and `completed` once it is genuinely done.
 Re-planning means a new `task_create` (which renumbers), not patching a stale list.
 
+### `lesson_add` / `lesson_read`
+
+The agent's own record of what it learned, kept at `.jyc/lessons.md` — one file
+per topic, beside the user's `notes.md`. A lesson is one distilled, reusable
+rule: a trap the agent fell into, a fix that worked, a convention of this repo
+or this user.
+
+| Tool | Input | Effect |
+|------|-------|--------|
+| `lesson_add` | `lesson: string` (one rule, ≤1000 chars) | Appends `- YYYY-MM-DD — <rule>`; the same rule twice is not appended twice |
+| `lesson_read` | — | Returns the file, or the part of it the system prompt could not carry |
+
+The head of the file (2 KiB) rides along in the system prompt, so a recorded
+lesson is in view on every later turn without a tool call; `lesson_read` reaches
+the rest. The file is append-only — the agent can add and read, never rewrite or
+drop — so pruning it is the user's call.
+
+---
+
 ## MCP Bridge Tools
 
 These are JYC-specific tools implemented as in-process bridges (not external MCP subprocesses). They are always registered unless excluded via `disabled_tools`.

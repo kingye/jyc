@@ -7,6 +7,7 @@ pub mod edit;
 pub mod glob_tool;
 pub mod grep;
 pub mod job_tools;
+pub mod lesson;
 pub mod publish_file;
 pub mod read;
 pub mod read_image;
@@ -42,6 +43,8 @@ pub fn create_builtin_registry() -> ToolRegistry {
     registry.register(Box::new(task_tools::TaskListTool));
     registry.register(Box::new(task_tools::TaskCreateTool));
     registry.register(Box::new(task_tools::TaskUpdateTool));
+    registry.register(Box::new(lesson::LessonAddTool));
+    registry.register(Box::new(lesson::LessonReadTool));
 
     registry
 }

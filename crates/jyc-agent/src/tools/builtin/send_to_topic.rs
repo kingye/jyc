@@ -66,7 +66,12 @@ impl Tool for SendToThreadTool {
                 },
                 "require_reply": {
                     "type": "boolean",
-                    "description": "Ask the target agent to send its results back to this topic; it then uses jyc_send_to_topic. If it does not, the framework forwards its last message to you. Default false."
+                    // The fallback — the framework forwards the turn's last
+                    // message when the target never answers — is stated in
+                    // the prompt's cross-topic section, not here: this schema
+                    // rides in every request's cached prefix, and the prompt
+                    // says it better ("an explicit reply is still better").
+                    "description": "Ask the target agent to send its results back to this topic; it then uses jyc_send_to_topic. Default false."
                 }
             },
             "required": ["agent", "message"]

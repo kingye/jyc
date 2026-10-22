@@ -304,7 +304,7 @@ impl SpawnCommandHandler {
         // the state dir is always `<agents root>/<name>/.jyc` — inside
         // `topic_path` in the default shape, beside the parent's own state when
         // the dir is shared — and never the parent's.
-        let state_dir = agents_dir.join(&name).join(".jyc");
+        let state_dir = crate::topic_path::agent_keyed_state_dir(agents_dir, &name);
         crate::topic_path::adopt_state_dir(&name, &topic_path, &state_dir)?;
         self.topic_manager
             .set_topic_path(&name, topic_path.clone())

@@ -91,7 +91,10 @@ jobs:
           echo "✅ Coverage ${pct}% meets ${threshold}% threshold"
 
       - name: Ensure coverage file exists
-        if: always()
+        # `!cancelled()` and not `always()`: a run this workflow cancelled must
+        # not write a placeholder report either — the same rule the test
+        # failure step below follows.
+        if: ${{ !cancelled() }}
         run: |
           if [ ! -f coverage.txt ]; then
             echo "⚠️ Coverage report not generated (previous step failed or was skipped)" > coverage.txt
@@ -100,7 +103,7 @@ jobs:
       - name: Post coverage comment
         uses: marocchino/sticky-pull-request-comment@v3
         # No PR context on push events — skip the comment step there
-        if: always() && github.event_name == 'pull_request'
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         with:
           path: coverage.txt
 

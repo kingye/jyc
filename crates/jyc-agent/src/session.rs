@@ -1253,25 +1253,24 @@ pub(crate) struct TurnPair {
     pub note: Option<serde_json::Value>,
 }
 
-/// Build a compact summary of an assistant message's bare tool calls, e.g.
-/// `bash(command="ls -la") → BRANCH main…`.
+/// Build a compact summary of one assistant message's bare tool calls — as
+/// [`collect_tool_calls`] returns them, so the caller's parse is reused —
+/// e.g. `bash(command="ls -la") → BRANCH main…`.
 /// When a tool result is known for a call's `id` (looked up in `results`),
 /// it is appended as `→ <truncated result>` — prefixed with `[error] `
 /// when the call failed — so the agent can see *what the tool returned*,
-/// not just that it was called. Returns `None` when the message carries
-/// no tool calls.
+/// not just that it was called. Returns `None` when there are no calls.
 fn tool_call_summary(
-    msg: &serde_json::Value,
+    calls: &[(String, String, serde_json::Value)],
     results: &std::collections::HashMap<String, WindowedResult>,
 ) -> Option<String> {
-    let calls = collect_tool_calls(msg);
     if calls.is_empty() {
         return None;
     }
     let mut parts: Vec<String> = Vec::with_capacity(calls.len());
     let mut used = 0usize;
     let mut omitted = 0usize;
-    for (id, name, args) in &calls {
+    for (id, name, args) in calls {
         // Legacy `jyc_reply_message` calls (from transcripts persisted
         // before replies became plain final text) are excluded from the
         // annotation: their `message` is the text the user already saw.
@@ -1330,29 +1329,30 @@ fn flush_turn(
 
     let mut texts: Vec<String> = Vec::with_capacity(assistants.len());
     let mut summaries: Vec<String> = Vec::new();
-    let mut had_tool_calls = false;
+    let mut has_payload = false;
     for msg in &assistants {
-        // Keep only role + content for the text; bare tool calls go into
-        // the history note so the windowed view shows which tools ran and
-        // what they returned. A tool-call-only step (empty text)
-        // contributes to the note instead of being dropped.
+        // One extraction and one call parse per message: both the keep-rule
+        // and the note need them. Keep only role + content for the text;
+        // bare tool calls go into the history note so the windowed view
+        // shows which tools ran and what they returned. A tool-call-only
+        // step (empty text) contributes to the note instead of being
+        // dropped.
         let text = extract_message_text(msg);
+        let calls = collect_tool_calls(msg);
+        has_payload |= keeps_turn_alive(&text, !calls.is_empty());
+        if let Some(summary) = tool_call_summary(&calls, results) {
+            summaries.push(summary);
+        }
         if !text.is_empty() {
             texts.push(text);
         }
-        if !collect_tool_calls(msg).is_empty() {
-            had_tool_calls = true;
-        }
-        if let Some(summary) = tool_call_summary(msg, results) {
-            summaries.push(summary);
-        }
     }
-    // Drop only when the assistant truly had nothing — no text AND no
-    // tool calls. `summaries` can be empty while `had_tool_calls` is true
-    // when every call was a filtered legacy `jyc_reply_message`; the
-    // trigger user message still matters to the prior context, so keep
-    // the pair.
-    if texts.is_empty() && summaries.is_empty() && !had_tool_calls {
+    // Drop only when the assistant truly had nothing — no text AND no tool
+    // calls (`keeps_turn_alive`, the rule the tail scan shares). `summaries`
+    // can be empty while the turn still counts: a step whose every call was
+    // a filtered legacy `jyc_reply_message` has no summary, yet it was a
+    // tool step and the trigger user message still matters.
+    if !has_payload {
         return;
     }
 
@@ -1377,6 +1377,41 @@ fn flush_turn(
         assistant,
         note,
     });
+}
+
+/// Whether a message's text opens a turn: non-empty, and not a round-tripped
+/// history note.
+///
+/// The one definition shared by pair extraction, the tail scan, the verbatim
+/// window and the wire-payload region split — a turn boundary that means
+/// different things in different places loses or duplicates turns. It takes
+/// the text so callers that already extracted it do not extract it twice.
+fn opens_turn_text(text: &str) -> bool {
+    !text.is_empty() && !text.starts_with(HISTORY_NOTE_PREFIX)
+}
+
+/// [`opens_turn_text`] for a whole message.
+pub(crate) fn opens_turn(msg: &serde_json::Value) -> bool {
+    msg.get("role").and_then(|r| r.as_str()) == Some("user")
+        && opens_turn_text(&extract_message_text(msg))
+}
+
+/// Whether one assistant message keeps its turn alive: it carries text or a
+/// tool call.
+///
+/// A turn whose assistants all fail this is dropped by [`flush_turn`] and
+/// produces no pair, so [`pairs_tail_start`] must apply the same test — the
+/// signature that decides a pair exists belongs next to the code that builds
+/// it, not re-derived from roles.
+fn keeps_turn_alive(text: &str, has_calls: bool) -> bool {
+    !text.is_empty() || has_calls
+}
+
+/// [`keeps_turn_alive`] for a whole message: the tool calls are parsed only
+/// when the text is empty (a text-bearing reply needs no second look).
+fn message_keeps_turn_alive(msg: &serde_json::Value) -> bool {
+    let text = extract_message_text(msg);
+    keeps_turn_alive(&text, false) || !collect_tool_calls(msg).is_empty()
 }
 
 /// Extract **all** user+assistant turn pairs from raw context.
@@ -1408,8 +1443,8 @@ fn flush_turn(
 /// they stream by, so a tool_call_id reused in a later turn can never
 /// misattach to an earlier turn's call.
 ///
-/// Shared by session heuristic compaction, mid-loop compression, and the
-/// `context_browse` built-in tool.
+/// Shared by session heuristic compaction and the `context_browse` built-in
+/// tool.
 pub(crate) fn extract_pairs(raw_context: &[serde_json::Value]) -> Vec<TurnPair> {
     let mut pairs: Vec<TurnPair> = Vec::new();
     let mut cur_user: Option<serde_json::Value> = None;
@@ -1431,12 +1466,12 @@ pub(crate) fn extract_pairs(raw_context: &[serde_json::Value]) -> Vec<TurnPair> 
                 // messages with no extractable text are Anthropic
                 // tool_result wrappers, which stay in the current turn and
                 // only feed the results map.
-                if text.is_empty() {
-                    collect_results_from(msg, &mut results);
-                } else {
+                if opens_turn_text(&text) {
                     flush_turn(&mut pairs, &mut cur_user, &mut cur_assistants, &results);
                     results.clear();
                     cur_user = Some(msg.clone());
+                } else {
+                    collect_results_from(msg, &mut results);
                 }
             }
             "assistant" => cur_assistants.push(msg.clone()),
@@ -1450,9 +1485,44 @@ pub(crate) fn extract_pairs(raw_context: &[serde_json::Value]) -> Vec<TurnPair> 
     pairs
 }
 
+/// Index where the last `keep_pairs` pair-producing turns begin.
+///
+/// A turn counts only when [`flush_turn`] would keep it — an assistant with
+/// text or a tool call. Counting openers alone starts too late for an
+/// unanswered user message; counting the presence of an assistant message
+/// alone starts too late for one that carried neither (it leaves no pair
+/// behind, so `take(keep_pairs)` cannot recover it). Scanning backward costs
+/// one pass over the roles and the text of user messages, instead of the
+/// deep clone [`extract_pairs`] spends on everything before the tail.
+fn pairs_tail_start(raw_context: &[serde_json::Value], keep_pairs: usize) -> usize {
+    if keep_pairs == 0 {
+        return raw_context.len();
+    }
+    let mut turns = 0usize;
+    let mut seen_payload = false;
+    for (idx, msg) in raw_context.iter().enumerate().rev() {
+        if msg.get("role").and_then(|r| r.as_str()) == Some("assistant") {
+            // Same keep-rule as `flush_turn`: an assistant with neither text
+            // nor tool calls leaves no pair behind.
+            seen_payload |= message_keeps_turn_alive(msg);
+        } else if opens_turn(msg) && seen_payload {
+            turns += 1;
+            if turns == keep_pairs {
+                return idx;
+            }
+            seen_payload = false;
+        }
+    }
+    0
+}
+
 /// Extract user+assistant text pairs from raw context and keep only the
 /// last `keep_pairs` of them, flattened into a single Vec. Pair extraction
 /// semantics are defined in [`extract_pairs`].
+///
+/// Only the kept tail is extracted (see [`pairs_tail_start`]): the result is
+/// the same as extracting the whole history and keeping the last
+/// `keep_pairs`, at a fraction of the cloning.
 ///
 /// `note_window` limits tool-call history notes to the most recent M kept
 /// pairs (`None` = notes on every kept pair); older pairs are text-only.
@@ -1468,8 +1538,11 @@ pub(crate) fn extract_user_assistant_pairs(
 ) -> Vec<serde_json::Value> {
     // Keep only the last N pairs, flattened as user → note → assistant
     // (the note summarizes the tool calls, which happened before the
-    // assistant's final text).
-    let pairs: Vec<_> = extract_pairs(raw_context)
+    // assistant's final text). Start the extraction where the kept turns
+    // begin: `extract_pairs` deep-clones every message it visits, and on a
+    // long history the discarded prefix is the bulk of that work.
+    let tail_start = pairs_tail_start(raw_context, keep_pairs);
+    let pairs: Vec<_> = extract_pairs(&raw_context[tail_start..])
         .into_iter()
         .rev()
         .take(keep_pairs)
@@ -1536,13 +1609,10 @@ pub(crate) fn verbatim_start_index(raw_context: &[serde_json::Value], note_windo
     }
     let mut turns = 0usize;
     for (idx, msg) in raw_context.iter().enumerate().rev() {
-        if msg.get("role").and_then(|r| r.as_str()) == Some("user") {
-            let text = extract_message_text(msg);
-            if !text.is_empty() && !text.starts_with(HISTORY_NOTE_PREFIX) {
-                turns += 1;
-                if turns == note_window {
-                    return idx;
-                }
+        if opens_turn(msg) {
+            turns += 1;
+            if turns == note_window {
+                return idx;
             }
         }
     }
@@ -2025,6 +2095,119 @@ mod tests {
         assert_eq!(pairs[0].user["content"], "u2");
         assert_eq!(pairs[0].assistant.as_ref().unwrap()["content"], "a2");
         assert!(pairs[0].note.is_none());
+    }
+
+    /// The literal rule the tail scan shares with `flush_turn`: an assistant
+    /// with neither text nor tool calls leaves no pair, so the turn before it
+    /// is the one kept. This is the exact shape that diverged in review — the
+    /// differential test below cannot catch a drift of the rule itself, since
+    /// both sides of it would drift together.
+    #[test]
+    fn extract_user_assistant_pairs_drops_assistant_without_text_or_calls() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": ""}),
+        ];
+        assert_eq!(
+            super::extract_user_assistant_pairs(&ctx, 1, Some(0)),
+            vec![
+                json!({"role": "user", "content": "u1"}),
+                json!({"role": "assistant", "content": "a1"}),
+            ]
+        );
+    }
+
+    /// The tail scan must return exactly what the old full extraction plus a
+    /// `take` returned, across the shapes that stress turn boundaries and the
+    /// keep counts the sliding window uses.
+    #[test]
+    fn extract_user_assistant_pairs_matches_full_extraction() {
+        // The old behaviour (`note_window = Some(0)`), kept as the oracle.
+        fn full_tail(ctx: &[serde_json::Value], keep: usize) -> Vec<serde_json::Value> {
+            let pairs = super::extract_pairs(ctx);
+            let skip = pairs.len().saturating_sub(keep);
+            pairs[skip..]
+                .iter()
+                .flat_map(|p| {
+                    let mut v = vec![p.user.clone()];
+                    if let Some(assistant) = &p.assistant {
+                        v.push(assistant.clone());
+                    }
+                    v
+                })
+                .collect()
+        }
+
+        let shapes: Vec<Vec<serde_json::Value>> = vec![
+            // Plain turns.
+            vec![
+                json!({"role": "user", "content": "u1"}),
+                json!({"role": "assistant", "content": "a1"}),
+                json!({"role": "user", "content": "u2"}),
+                json!({"role": "assistant", "content": "a2"}),
+                json!({"role": "user", "content": "u3"}),
+                json!({"role": "assistant", "content": "a3"}),
+            ],
+            // Trailing unanswered turn.
+            vec![
+                json!({"role": "user", "content": "u1"}),
+                json!({"role": "assistant", "content": "a1"}),
+                json!({"role": "user", "content": "u2"}),
+                json!({"role": "assistant", "content": "a2"}),
+                json!({"role": "user", "content": "never answered"}),
+            ],
+            // Trailing assistant with neither text nor tool calls: no pair.
+            vec![
+                json!({"role": "user", "content": "u1"}),
+                json!({"role": "assistant", "content": "a1"}),
+                json!({"role": "user", "content": "u2"}),
+                json!({"role": "assistant", "content": ""}),
+            ],
+            // Consecutive users, tool-only assistant, Anthropic tool_result
+            // wrapper, round-tripped note.
+            vec![
+                json!({"role": "user", "content": "u1"}),
+                json!({"role": "assistant", "content": "a1"}),
+                json!({"role": "user", "content": "u2"}),
+                json!({"role": "user", "content": "u2b"}),
+                json!({"role": "assistant", "content": [{"type": "text", "text": "a2"}]}),
+                json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "r1"}]}),
+                json!({"role": "assistant", "content": [{"type": "tool_use", "id": "t2", "name": "bash", "input": {}}]}),
+                json!({"role": "user", "content": "[History note] assistant tool calls: bash"}),
+                json!({"role": "user", "content": "u3"}),
+                json!({"role": "assistant", "content": "a3"}),
+            ],
+        ];
+
+        for ctx in &shapes {
+            for keep in 1..=3 {
+                assert_eq!(
+                    super::extract_user_assistant_pairs(ctx, keep, Some(0)),
+                    full_tail(ctx, keep),
+                    "keep={keep}, ctx={ctx:?}"
+                );
+            }
+        }
+    }
+
+    /// The tail scan must not be fooled by an unanswered user message at the
+    /// end: it produces no pair, so the kept tail starts at the last turn
+    /// that has an assistant reply.
+    #[test]
+    fn extract_user_assistant_pairs_skips_trailing_orphan_turn() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2"}),
+            json!({"role": "user", "content": "never answered"}),
+        ];
+        let pairs = super::extract_user_assistant_pairs(&ctx, 1, Some(0));
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0]["content"], "u2");
+        assert_eq!(pairs[1]["content"], "a2");
     }
 
     /// A history note round-tripped through compaction is metadata, not a

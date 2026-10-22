@@ -13,7 +13,7 @@ Three core principles govern the whole system:
    calls and results) exactly as recorded. Strategies never reshape this
    file — only a session reset (manual `/reset`) clears it.
 2. **Only the wire payload is shaped.** Every LLM request passes through
-   `build_send_context()` (`crates/jyc-agent/src/agent_loop/context.rs`),
+   `build_send_context_cached()` (`crates/jyc-agent/src/agent_loop/context.rs`),
    which decides what slice of the raw context to send and in what form.
 3. **The strategy keeps the request inside the window.** The sliding
    window is the mechanism that bounds what is sent; there is no
@@ -50,7 +50,7 @@ flowchart TD
         CURR["raw_context[prior_len..]<br/>current turn (this message's loop)"]
     end
     subgraph PerReq["Per LLM request"]
-        BSC["build_send_context<br/>(provider, raw_context, prior_len, strategy)"]
+        BSC["build_send_context_cached<br/>(provider, raw_context, prior_len, strategy, cache)"]
         WIRE["wire payload sent to the provider"]
     end
     F --> RC
@@ -77,7 +77,7 @@ changeable at runtime with the `/context` command.
 
 ### `full`
 
-Sends the entire raw context on every request — `build_send_context`
+Sends the entire raw context on every request — `build_send_context_cached`
 returns `Cow::Borrowed`, a zero-copy borrow. Simple, accurate, and grows
 linearly with conversation length until a token safety net fires.
 Not the default — opt in via `context_strategy = { mode = "full" }`.
@@ -87,7 +87,8 @@ Not the default — opt in via `context_strategy = { mode = "full" }`.
 Sends three parts, in order. Let `recent` = the count of completed
 prior turns placed in the verbatim region ② — `recent =
 min(note_window, pairs_in_prior)` when `note_window` is set, `recent =
-pairs_in_prior` when unset (the implementation in `build_send_context`
+pairs_in_prior` when unset (the implementation in
+`build_send_context_cached`
 computes this via `verbatim_start_index` + `extract_pairs(...).len()`):
 
 1. **Compacted history** — the last `max(0, window − recent)` older
@@ -125,6 +126,14 @@ flowchart TB
 ② shows a single turn for brevity; in practice it holds up to
 `note_window` completed prior turns (default `3`), and ① absorbs the
 remaining `max(0, window − recent)` pairs as text-only.
+
+① and ② are built **once per turn**, not once per LLM call: they depend
+only on `raw_context[..prior_len]`, which is fixed while a turn runs
+(injections append after it; the one shrink — a cancellation truncation —
+ends the turn). `SendContextCache` (keyed on that split point) holds
+them for the turn's remaining calls; the log's `history_rebuilt` says
+whether a call rebuilt them (`rebuilt`), reused them (`reused`), or built
+nothing at all (`-`, `full` mode).
 
 Why the split: the recent turns and the current turn are mid-flight tool
 activity, so their `tool_use` ↔ `tool_result` structure must stay legally
@@ -204,7 +213,7 @@ user/assistant text itself, not the notes.
 `M`, the last `min(M, pairs_in_prior)` prior turns keep their structured
 `tool_calls` / `tool_use` and tool results intact; older turns in the
 window compact to text-only. Boundary cases (matching
-`verbatim_start_index` + `build_send_context`):
+`verbatim_start_index` + `build_send_context_cached`):
 
 - **Unset** — the entire prior becomes verbatim and `window`
   is effectively ignored. The implementation substitutes
@@ -298,7 +307,9 @@ must not break the agent loop).
 For an in-process, human-readable view of a single wire payload (with
 ASCII boxes per region), call `dump_send_context` from a test or via
 the `crates/jyc-agent/src/agent_loop/context.rs` API. It uses the same
-`build_send_context_with_regions` so the labels are identical.
+`build_send_context_with_regions` (a cold build: it delegates to
+`build_send_context_cached` with a throwaway cache) so the labels are
+identical.
 
 ## Recovering dropped turns: `context_browse`
 
@@ -504,10 +515,10 @@ weight runs away.
 
 | Component | Location |
 |-----------|----------|
-| Wire payload shaping (`build_send_context_with_regions`, `dump_send_context`, `cap_tool_result_content`) | `crates/jyc-agent/src/agent_loop/context.rs` |
+| Wire payload shaping (`build_send_context_cached`, its `SendContextCache`, `dump_send_context`, `cap_tool_result_content`) | `crates/jyc-agent/src/agent_loop/context.rs` |
 | Turn pairing, history notes, truncation caps (`extract_pairs`, `flush_turn`) | `crates/jyc-agent/src/session.rs` |
 | Wire-payload dump persistence (`read_wire_payload_dump_enabled`, `append_wire_payload_dump`) | `crates/jyc-agent/src/session.rs` |
-| Agent loop iteration (calls `build_send_context_with_regions`, triggers dump) | `crates/jyc-agent/src/agent_loop/mod.rs` |
+| Agent loop iteration (calls `build_send_context_cached`, triggers dump) | `crates/jyc-agent/src/agent_loop/mod.rs` |
 | Mid-loop compression | `crates/jyc-agent/src/agent_loop/mod.rs` |
 | Strategy resolution, pre-loop pre-check | `crates/jyc-agent/src/service/mod.rs` |
 | System-prompt guidance (History Format, Chat History sections) | `crates/jyc-agent/src/service/prompt.rs` |

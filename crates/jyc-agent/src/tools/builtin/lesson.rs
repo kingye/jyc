@@ -840,6 +840,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn prompt_section_does_not_name_which_lesson_was_cut() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(LESSONS_FILE);
+        // An old long lesson and a newer shorter one. The cut lands inside
+        // the *older* one — the remainder from its start to the end of the
+        // file is longer than twice the cap — so the lesson that is cut in
+        // two is not the last one. The note must not name a position: it
+        // would send the model to the wrong line.
+        let old = format!("- {}\n", "x".repeat(2_998));
+        let new = format!("- {}\n", "y".repeat(1_198));
+        std::fs::write(&path, format!("{HEADER}\n\n{old}{new}")).unwrap();
+        let section = prompt_section(&path).unwrap();
+        assert!(section.contains("cut in two"), "{section}");
+        assert!(section.contains("One lesson"), "{section}");
+        assert!(!section.contains("The last lesson"), "{section}");
+        // The newer lesson rides along whole; the cut is in the older one.
+        assert!(section.contains(new.trim_end()), "{section}");
+    }
+
     #[tokio::test]
     async fn the_prompt_and_the_read_agree_on_the_split() {
         let tmp = tempfile::tempdir().unwrap();

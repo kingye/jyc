@@ -230,10 +230,16 @@ fell into, a fix that worked, a convention of this repo or this user.
 
 The **newest** 2 KiB of the file ride along in the system prompt, so a recent
 lesson is in view on every later turn without a tool call; `lesson_read`
-reaches the earlier ones. The tool only appends and reads — it never rewrites
-the file — so pruning it is the user's call. (That is a property of the tool,
-not a security boundary: in the unpinned layout the state dir sits inside the
-topic's working dir, where `write` and `edit` can already reach it.)
+reaches the earlier ones. The cut lands on a line boundary, so a lesson is
+whole in one end or the other — never half a rule in each. The tool only
+appends and reads — it never rewrites the file — so pruning it is the user's
+call. (That is a property of the tool, not a security boundary: in the
+unpinned layout the state dir sits inside the topic's working dir, where
+`write` and `edit` can already reach it.)
+
+The file is meant to stay small. Past roughly 18 KB (2 KiB in the prompt +
+16 KiB per read) the middle of the archive is out of reach of both tools, and
+the file wants pruning — by the user, since the tools never rewrite it.
 
 ---
 

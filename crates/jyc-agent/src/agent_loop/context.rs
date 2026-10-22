@@ -63,10 +63,29 @@ pub(crate) fn build_send_context_with_regions<'a>(
 /// the regions; the rest reuse them.
 #[derive(Default)]
 pub(crate) struct SendContextCache {
-    /// `prior_len` the cached regions were built from; `None` = cold.
-    prior_len: Option<usize>,
+    /// The split point the cached regions were built from (`prior_len`
+    /// clamped to the context length); `None` = cold.
+    ///
+    /// A length is a sound key only because the cache belongs to one
+    /// `run()`: `strategy` and `provider` are fixed for it, the persisted
+    /// prefix can only grow past this point (injections append after it),
+    /// and its one shrink — the cancellation truncation — ends the turn. A
+    /// cache that outlived a turn would need a content key.
+    boundary: Option<usize>,
     region1: Vec<serde_json::Value>,
     region2: Vec<serde_json::Value>,
+    /// Whether the last build rebuilt the regions instead of reusing them.
+    /// The log reads it to show the cache working; `false` in `Full` mode,
+    /// which builds nothing.
+    rebuilt: bool,
+}
+
+impl SendContextCache {
+    /// Whether the last [`build_send_context_cached`] rebuilt the history
+    /// regions rather than reusing them.
+    pub(crate) fn history_rebuilt(&self) -> bool {
+        self.rebuilt
+    }
 }
 
 /// Build the context to send to the LLM for the next request.
@@ -120,20 +139,26 @@ pub(crate) fn build_send_context_cached<'a>(
     strategy: &ContextStrategyConfig,
     cache: &mut SendContextCache,
 ) -> (Cow<'a, [serde_json::Value]>, Vec<u8>) {
+    // Only the sliding-window branch builds anything; `Full` borrows the
+    // context as it is.
+    cache.rebuilt = false;
     match strategy.mode {
         ContextStrategy::Full => (Cow::Borrowed(raw_context), vec![1; raw_context.len()]),
         ContextStrategy::SlidingWindow => {
-            // Mid-loop compression can shorten `raw_context` below `prior_len`;
-            // clamp so the slice math never underflows.
+            // A stale `prior_len` must not index past the context: the
+            // cancellation truncation is the only shrink, and it clamps
+            // `prior_len` itself, but the slice math should not depend on
+            // the caller having done so.
             let boundary = prior_len.min(raw_context.len());
             let current = &raw_context[boundary..];
 
-            if cache.prior_len != Some(boundary) {
+            if cache.boundary != Some(boundary) {
                 let (region1, region2) =
                     build_history_regions(provider, &raw_context[..boundary], strategy);
                 cache.region1 = region1;
                 cache.region2 = region2;
-                cache.prior_len = Some(boundary);
+                cache.boundary = Some(boundary);
+                cache.rebuilt = true;
             }
 
             let region1_len = cache.region1.len();
@@ -286,12 +311,13 @@ fn fit_history_to_budget(
 /// Number of leading region ② messages forming its oldest droppable unit:
 /// one turn, or — when the region opens with tool results whose `tool_use`
 /// fell outside the verbatim window — those orphans on their own. `None`
-/// when the region is empty.
+/// when the region is empty. Turns are delimited by the shared
+/// [`crate::session::opens_turn`], the same boundary that split ① from ②.
 fn oldest_turn_len(msgs: &[serde_json::Value]) -> Option<usize> {
     if msgs.is_empty() {
         return None;
     }
-    let Some(opener) = msgs.iter().position(opens_turn) else {
+    let Some(opener) = msgs.iter().position(crate::session::opens_turn) else {
         return Some(msgs.len());
     };
     if opener > 0 {
@@ -299,18 +325,9 @@ fn oldest_turn_len(msgs: &[serde_json::Value]) -> Option<usize> {
     }
     let end = msgs[1..]
         .iter()
-        .position(opens_turn)
+        .position(crate::session::opens_turn)
         .map_or(msgs.len(), |p| p + 1);
     Some(end)
-}
-
-/// A turn opens at a text-bearing user message — the boundary
-/// [`crate::session::verbatim_start_index`] uses when it splits regions ①
-/// and ②, so the two agree on what one turn is.
-fn opens_turn(msg: &serde_json::Value) -> bool {
-    msg.get("role").and_then(|r| r.as_str()) == Some("user")
-        && !crate::session::extract_message_text(msg).is_empty()
-        && !crate::session::is_history_note(msg)
 }
 
 /// Rough token count of one wire message.

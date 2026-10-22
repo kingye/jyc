@@ -464,6 +464,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             model = model_label,
             send_messages = send_context.len(),
             context_build_ms,
+            history_rebuilt = send_context_cache.history_rebuilt(),
             last_input_tokens = context_input_tokens,
             "LLM call started"
         );
@@ -782,7 +783,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         }
 
         // 6. Execute tool calls
-        let tools_started = Instant::now();
         tracing::info!(
             iteration = total_iterations,
             tool_count = response.tool_calls.len(),
@@ -834,6 +834,10 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
         let mut cancelled_during_tools = false;
 
+        // Started after the narration delivery and the `context_browse`
+        // snapshot: those write to a channel (SMTP, websocket) and clone the
+        // transcript, neither of which is the tools' time.
+        let tools_started = Instant::now();
         for tool_call in &response.tool_calls {
             if cancel.is_cancelled() {
                 tracing::info!("Cancelled during tool execution");
@@ -935,7 +939,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         turn_tool_ms += tool_batch_ms;
         tracing::info!(
             iteration = total_iterations,
-            tool_count = response.tool_calls.len(),
             duration_ms = tool_batch_ms,
             "Tool calls finished"
         );
@@ -1060,6 +1063,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     // max-cycles limit). A turn cancelled by the user is a failed turn whatever
     // it managed to deliver first, including a question that ended the turn.
     let duration = start_time.elapsed();
+    // `llm_ms + tool_ms` need not reach `total_ms`: a call cancelled in
+    // flight is timed nowhere, and the gap is where the rest of the turn
+    // (delivery, persistence) sits.
     tracing::info!(
         iterations = total_iterations,
         total_ms = duration.as_millis() as u64,

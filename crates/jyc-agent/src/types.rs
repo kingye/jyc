@@ -239,6 +239,42 @@ pub struct AgentLoopResult {
     /// session — the caller passes it to `save_raw_context` so the journal
     /// write can append only the new tail instead of rewriting everything.
     pub persisted_len: usize,
+    /// The topics this turn sent messages to, as `(channel, topic)` pairs.
+    ///
+    /// The service reads it to tell a turn that already answered a
+    /// `require_reply` request from one that did not.
+    pub outbound_targets: Vec<(String, String)>,
+    /// The reply requests that arrived while this turn was running.
+    ///
+    /// A request that arrives mid-turn joins the conversation and asks for
+    /// an answer as well, so the guard owes it one too.
+    pub pending_replies: Vec<crate::service::reply_guard::ReplyRequest>,
+}
+
+/// The turn died, and what it still owed.
+///
+/// The requests that arrived while the turn was running died with it: the
+/// turn is not going to answer them, so whoever asked has to hear that the
+/// turn failed — and the loop hands them back here, because they are the
+/// only ones the caller cannot see any more.
+#[derive(Debug)]
+pub struct AgentLoopError {
+    /// Why the turn died.
+    pub error: anyhow::Error,
+    /// The reply requests that arrived while the turn was running.
+    pub pending_replies: Vec<crate::service::reply_guard::ReplyRequest>,
+}
+
+impl std::fmt::Display for AgentLoopError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for AgentLoopError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.error.as_ref())
+    }
 }
 
 #[cfg(test)]

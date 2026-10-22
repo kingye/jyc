@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use crate::tools::{Tool, ToolContext, ToolOutput};
-use jyc_core::command::send_handler::{SendRequest, SendSource, send_to_topic};
+use jyc_core::command::send_handler::{SendRequest, SendSource, send_to_topic_with_target};
 
 /// Tool for sending messages to other agents and their topics.
 pub struct SendToThreadTool;
@@ -66,6 +66,11 @@ impl Tool for SendToThreadTool {
                 },
                 "require_reply": {
                     "type": "boolean",
+                    // The fallback — the framework forwards the turn's last
+                    // message when the target never answers — is stated in
+                    // the prompt's cross-topic section, not here: this schema
+                    // rides in every request's cached prefix, and the prompt
+                    // says it better ("an explicit reply is still better").
                     "description": "Ask the target agent to send its results back to this topic; it then uses jyc_send_to_topic. Default false."
                 }
             },
@@ -107,8 +112,18 @@ impl Tool for SendToThreadTool {
             require_reply,
         };
 
-        match send_to_topic(managers, source, req).await {
-            Ok(message) => Ok(ToolOutput::success(message)),
+        match send_to_topic_with_target(managers, source, req).await {
+            Ok(outcome) => {
+                // Record where the message landed. A turn that answers a
+                // `require_reply` request has to be recognizable as having
+                // answered it, so the service does not forward the turn's
+                // final words on top of a reply that already arrived.
+                ctx.outbound_targets
+                    .lock()
+                    .expect("outbound_targets poisoned")
+                    .push((outcome.channel, outcome.topic));
+                Ok(ToolOutput::success(outcome.message))
+            }
             Err(e) => Ok(ToolOutput::error(e.to_string())),
         }
     }

@@ -112,7 +112,7 @@ jobs:
         # `!cancelled()` and not `always()`: a run this workflow cancelled
         # (concurrency: cancel-in-progress) must not report a test failure it
         # never saw.
-        if: !cancelled() && steps.tests.outcome == 'failure'
+        if: ${{ !cancelled() && steps.tests.outcome == 'failure' }}
         run: |
           echo "::error::Tests failed — every failure is listed in the 'Run tests' step above"
           exit 1

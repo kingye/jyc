@@ -158,15 +158,14 @@ impl JycAgentService {
     /// nothing is forwarded on top of that.
     ///
     /// `outbound_targets` is what this turn sent to, as `(channel, topic)`
-    /// pairs; `final_text` and `failure` say what the turn ended with.
+    /// pairs; `ending` says how the turn ended.
     async fn forward_unanswered_reply(
         &self,
         managers: Option<&Arc<TopicManagers>>,
         message: &InboundMessage,
         topic_name: &str,
         topic_path: &Path,
-        final_text: Option<&str>,
-        failure: Option<&str>,
+        ending: reply_guard::TurnEnding<'_>,
         outbound_targets: &[(String, String)],
     ) {
         let Some(source) = reply_guard::reply_source(&message.metadata) else {
@@ -182,7 +181,7 @@ impl JycAgentService {
             );
             return;
         };
-        let text = reply_guard::forward_message(&source, topic_name, final_text, failure);
+        let text = reply_guard::forward_message(&source, topic_name, ending);
         let from = SendSource {
             channel: Some(self.channel_name.as_str()),
             topic: Some(topic_name),
@@ -634,8 +633,7 @@ impl AgentService for JycAgentService {
                     message,
                     topic_name,
                     topic_path,
-                    None,
-                    Some(&e.to_string()),
+                    reply_guard::TurnEnding::Failed(&e.to_string()),
                     &[],
                 )
                 .await;
@@ -651,8 +649,7 @@ impl AgentService for JycAgentService {
             message,
             topic_name,
             topic_path,
-            Some(result.text.as_str()),
-            None,
+            reply_guard::TurnEnding::Finished(Some(result.text.as_str())),
             &result.outbound_targets,
         )
         .await;

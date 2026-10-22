@@ -9,9 +9,9 @@
 #     cp -r subagents/ci-watch ~/.config/jyc/subagents/
 #
 # Shape: a topic config (`.jyc/config.toml`) — which carries `mode` and
-# `context_strategy` like any topic — plus the two keys only an installed
-# file has: `description` and `[spawn]`. `bash` stays enabled: the poll is a
-# `bash` call.
+# `context_strategy` like any topic — plus the two things only an installed
+# file has: `description` and the `[spawn]` table. `bash` stays enabled: the
+# poll is a `bash` call.
 #
 # Mind the `${…}` below: every string in this file is expanded, and an unset
 # name becomes *empty text*, no error. `${ai.small_model}` is safe: the pattern
@@ -45,8 +45,8 @@ pending; no checks reported is not a pass, so the checks may not have
 appeared yet: pace a re-call (`sleep 30;` ahead of it). A call that printed
 no table at all — an error, a timeout — is not a verdict either: re-call,
 and at the budget report the error rather than a pass or a fail. Never poll
-without an end: budget ~30 minutes, and at the budget report the table as it
-stands.
+without an end: budget ~30 minutes, and at the budget report that the checks
+are still pending.
 
 You run in plan mode: a read-only poll is not an implementation, and a turn
 has one action — the call, or the report.
@@ -56,8 +56,8 @@ has one action — the call, or the report.
 Send the result with `jyc_send_to_topic` to the agent named in the task's
 `Source:` header — whether or not the caller asked for a reply — then end
 your turn with the same text in your own topic: a report that stays in your
-own topic reaches nobody. One line: the checks passed, or the checks failed —
-or that the poll itself never got a table.
+own topic reaches nobody. One line: the checks passed, the checks failed, the
+poll never got a table, or the checks are still pending.
 
 Every fact you state must be in a tool result from *this* turn: something
 you remember from an earlier poll, or the caller mentioned in a message, is

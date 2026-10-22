@@ -8,10 +8,10 @@
 # Install into the config dir, once:
 #     cp -r subagents/ci-watch ~/.config/jyc/subagents/
 #
-# Shape: a topic config (`.jyc/config.toml`) plus `mode`, and the two keys
-# only an installed file has: `description` and `[spawn]`.
-# `context_strategy` is an ordinary topic key — a role carries one the same
-# way. `bash` stays enabled: the poll is a `bash` call.
+# Shape: a topic config (`.jyc/config.toml`) — which carries `mode` and
+# `context_strategy` like any topic — plus the two keys only an installed
+# file has: `description` and `[spawn]`. `bash` stays enabled: the poll is a
+# `bash` call.
 #
 # Mind the `${…}` below: every string in this file is expanded, and an unset
 # name becomes *empty text*, no error. `${ai.small_model}` is safe: the pattern

@@ -6,6 +6,7 @@ use jyc_types::state_dir::resolve_state_dir;
 use std::path::{Path, PathBuf};
 
 use crate::capabilities;
+use crate::tools::builtin::lesson;
 
 use jyc_types::InboundMessage;
 use jyc_types::TopicConfig;
@@ -129,6 +130,17 @@ impl JycAgentService {
             prompt.push_str("\n\n");
         }
 
+        // The agent's own lessons — what it learned and kept for itself. The
+        // head of the file rides along with every turn, so a lesson is in
+        // view without a tool call. Static per file change (it changes when
+        // the file does, not per turn), so it stays cache-friendly. After the
+        // owner's instructions: the project rules come first, the agent's
+        // own experience second.
+        let state_dir = resolve_state_dir(topic_name, topic_path);
+        if let Some(section) = lesson::prompt_section(&state_dir.join(lesson::LESSONS_FILE)) {
+            prompt.push_str(&section);
+        }
+
         // Reply instructions
         prompt.push_str(
             "## Reply Instructions\n\
@@ -160,7 +172,6 @@ impl JycAgentService {
 
         // Chat history access instructions — point at the resolved state dir
         // (relocated out of the topic dir for pinned topics).
-        let state_dir = jyc_types::state_dir::resolve_state_dir(topic_name, topic_path);
         prompt.push_str(&format!(
             "## Chat History\n\
              This topic maintains a chronological chat history in \

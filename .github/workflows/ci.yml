@@ -35,14 +35,25 @@ jobs:
         with:
           components: rustfmt, clippy, llvm-tools-preview
 
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protoc and mold
+        # mold: the test step below links 21 instrumented test binaries, and
+        # the runner's default (GNU ld) needs ~110s for exactly that — the
+        # single biggest slice of the job. mold does it in a fraction of
+        # the time. The linker is a CI-only concern: the build itself does
+        # not change.
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold
 
       - name: Install cargo-llvm-cov
         # Pinned: the workflow leans on the exit code of the test run
         # (--no-report without --ignore-run-fail), so a new release must not
         # change that silently.
-        run: cargo install cargo-llvm-cov --version 0.9.1
+        # The runner image already ships this exact version, and installing
+        # it again would compile it from source for nothing — so only install
+        # when the image's copy is missing or a different one.
+        run: |
+          if ! cargo llvm-cov --version 2>/dev/null | grep -qE '^cargo-llvm-cov 0\.9\.1\b'; then
+            cargo install cargo-llvm-cov --version 0.9.1
+          fi
 
       - name: Check formatting
         run: cargo fmt -- --check
@@ -65,6 +76,12 @@ jobs:
       - name: Run tests (every binary, fail-late)
         id: tests
         continue-on-error: true
+        # mold instead of the runner's default linker: linking the 21
+        # instrumented test binaries was ~110s of this step's 3m28s.
+        # cargo-llvm-cov merges this RUSTFLAGS with its own instrumentation
+        # flags, so the linker choice survives into the inner cargo call.
+        env:
+          RUSTFLAGS: -C link-arg=-fuse-ld=mold
         run: cargo llvm-cov --workspace --all-targets --no-report --no-fail-fast
 
       # The report comes from the run above, not from a second run of the

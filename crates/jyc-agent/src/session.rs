@@ -1488,14 +1488,12 @@ fn pairs_tail_start(raw_context: &[serde_json::Value], keep_pairs: usize) -> usi
             // Same keep-rule as `flush_turn`: an assistant with neither text
             // nor tool calls leaves no pair behind.
             seen_payload |= keeps_turn_alive(msg);
-        } else if opens_turn(msg) {
-            if seen_payload {
-                turns += 1;
-                if turns == keep_pairs {
-                    return idx;
-                }
-                seen_payload = false;
+        } else if opens_turn(msg) && seen_payload {
+            turns += 1;
+            if turns == keep_pairs {
+                return idx;
             }
+            seen_payload = false;
         }
     }
     0
@@ -2089,18 +2087,14 @@ mod tests {
     fn extract_user_assistant_pairs_matches_full_extraction() {
         // The old behaviour (`note_window = Some(0)`), kept as the oracle.
         fn full_tail(ctx: &[serde_json::Value], keep: usize) -> Vec<serde_json::Value> {
-            let pairs: Vec<_> = super::extract_pairs(ctx)
-                .into_iter()
-                .rev()
-                .take(keep)
-                .collect();
-            pairs
-                .into_iter()
-                .rev()
+            let pairs = super::extract_pairs(ctx);
+            let skip = pairs.len().saturating_sub(keep);
+            pairs[skip..]
+                .iter()
                 .flat_map(|p| {
-                    let mut v = vec![p.user];
-                    if let Some(assistant) = p.assistant {
-                        v.push(assistant);
+                    let mut v = vec![p.user.clone()];
+                    if let Some(assistant) = &p.assistant {
+                        v.push(assistant.clone());
                     }
                     v
                 })

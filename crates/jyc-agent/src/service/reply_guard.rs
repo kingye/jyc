@@ -260,15 +260,15 @@ mod tests {
         assert!(!answered(&a_request(0), &[]));
     }
 
-    /// A send made before the request arrived cannot be its answer: it went
-    /// to that topic before anybody asked.
+    /// A send made before the request was folded in cannot be its answer:
+    /// the model had not been shown the request yet.
     #[test]
-    fn a_reply_sent_before_the_request_arrived_is_not_its_answer() {
+    fn a_reply_sent_before_the_request_was_folded_in_is_not_its_answer() {
         let request = a_request(1);
         let sent_earlier = vec![("agents".to_string(), "jyc".to_string())];
         assert!(
             !answered(&request, &sent_earlier),
-            "the send predates the request"
+            "the send came before the request was folded in"
         );
 
         let request = a_request(1);
@@ -276,7 +276,10 @@ mod tests {
             ("agents".to_string(), "other".to_string()),
             ("agents".to_string(), "jyc".to_string()),
         ];
-        assert!(answered(&request, &sent_after), "the send came after it");
+        assert!(
+            answered(&request, &sent_after),
+            "the send came after the request was folded in"
+        );
     }
 
     #[test]

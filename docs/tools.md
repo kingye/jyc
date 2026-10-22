@@ -217,20 +217,23 @@ Re-planning means a new `task_create` (which renumbers), not patching a stale li
 
 ### `lesson_add` / `lesson_read`
 
-The agent's own record of what it learned, kept at `.jyc/lessons.md` — one file
-per topic, beside the user's `notes.md`. A lesson is one distilled, reusable
-rule: a trap the agent fell into, a fix that worked, a convention of this repo
-or this user.
+The agent's own record of what it learned, kept at `lessons.md` in the topic's
+state dir (in the unpinned layout that is `<topic>/.jyc/lessons.md`; a pinned
+topic's state dir lives in the data dir) — one file per topic, beside the
+user's `notes.md`. A lesson is one distilled, reusable rule: a trap the agent
+fell into, a fix that worked, a convention of this repo or this user.
 
 | Tool | Input | Effect |
 |------|-------|--------|
 | `lesson_add` | `lesson: string` (one rule, ≤1000 chars) | Appends `- YYYY-MM-DD — <rule>`; the same rule twice is not appended twice |
-| `lesson_read` | — | Returns the file, or the part of it the system prompt could not carry |
+| `lesson_read` | — | Returns the earlier lessons — the ones the system prompt could not carry |
 
-The head of the file (2 KiB) rides along in the system prompt, so a recorded
-lesson is in view on every later turn without a tool call; `lesson_read` reaches
-the rest. The file is append-only — the agent can add and read, never rewrite or
-drop — so pruning it is the user's call.
+The **newest** 2 KiB of the file ride along in the system prompt, so a recent
+lesson is in view on every later turn without a tool call; `lesson_read`
+reaches the earlier ones. The tool only appends and reads — it never rewrites
+the file — so pruning it is the user's call. (That is a property of the tool,
+not a security boundary: in the unpinned layout the state dir sits inside the
+topic's working dir, where `write` and `edit` can already reach it.)
 
 ---
 

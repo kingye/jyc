@@ -76,6 +76,8 @@ const BUDGETS: &[(&str, usize, usize)] = &[
     ("jyc_send_message", 215, 400),
     ("jyc_send_to_topic", 315, 630),
     ("jyc_spawn_subagent", 1200, 515),
+    ("lesson_add", 200, 40),
+    ("lesson_read", 110, 0),
     ("task_list", 280, 0),
     ("task_create", 425, 60),
     ("task_update", 345, 80),

@@ -70,7 +70,7 @@ impl Tool for SpawnSubagentTool {
          (`/build`, `/plan`, `/model`, …), which spends none of its turns. When the subagent \
          list in your system prompt already holds one that fits, continue it. Send `/close \
          --force` to close it (a bare `/close` only asks to confirm); messaging a closed child \
-         starts a new topic."
+         is refused."
     }
 
     fn input_schema(&self) -> Value {

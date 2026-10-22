@@ -39,7 +39,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov
+        # Pinned: the workflow leans on the exit code of the test run
+        # (--no-report without --ignore-run-fail), so a new release must not
+        # change that silently.
+        run: cargo install cargo-llvm-cov --version 0.9.1
 
       - name: Check formatting
         run: cargo fmt -- --check
@@ -47,16 +50,44 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # The suite runs once, instrumented: the same run leaves the data the
+      # report is built from, so nothing is run twice. Two flags give the run
+      # the shape #972 asked for:
+      #   --no-fail-fast  every binary runs, even after one of them fails —
+      #                   cargo test is fail-fast by default, so a single
+      #                   failure used to hide every binary behind it
+      #   --no-report    the report is the next step, built from the data
+      #                   this run leaves behind, so a red *test* run still
+      #                   has one — a build that does not compile leaves no
+      #                   data at all, and the report step is red then too
+      # `continue-on-error` keeps the step from ending the job — the last
+      # step below turns a red test run back into a red workflow.
+      - name: Run tests (every binary, fail-late)
+        id: tests
+        continue-on-error: true
+        run: cargo llvm-cov --workspace --all-targets --no-report --no-fail-fast
+
+      # The report comes from the run above, not from a second run of the
+      # suite: `cargo llvm-cov report` reads the coverage data that run left
+      # behind. It is therefore there on a red test run too — the step this
+      # one replaced (the pre-#972 one) aborted at the first failure and
+      # never had a report at all.
       - name: Coverage
+        # Runs on a red test run: `continue-on-error` leaves the test step's
+        # conclusion at success, so `success()` is still true. Skipped only
+        # when an earlier step (fmt, clippy) failed, where there is nothing
+        # to report.
+        if: success()
         run: |
           echo '## 📊 Coverage Report' > coverage.txt
           echo '' >> coverage.txt
           echo '```' >> coverage.txt
-          cargo llvm-cov --workspace --all-targets --summary-only \
+          cargo llvm-cov report --summary-only \
             --ignore-filename-regex 'crates/jyc-cli/src/main\.rs' >> coverage.txt
           echo '```' >> coverage.txt
 
       - name: Check coverage threshold
+        if: success()
         run: |
           threshold=60
           pct=$(awk '/^TOTAL/ {gsub(/%/,"",$10); printf "%.0f", $10}' coverage.txt)
@@ -72,7 +103,10 @@ jobs:
           echo "✅ Coverage ${pct}% meets ${threshold}% threshold"
 
       - name: Ensure coverage file exists
-        if: always()
+        # `!cancelled()` and not `always()`: a run this workflow cancelled must
+        # not write a placeholder report either — the same rule the test
+        # failure step below follows.
+        if: ${{ !cancelled() }}
         run: |
           if [ ! -f coverage.txt ]; then
             echo "⚠️ Coverage report not generated (previous step failed or was skipped)" > coverage.txt
@@ -81,6 +115,19 @@ jobs:
       - name: Post coverage comment
         uses: marocchino/sticky-pull-request-comment@v3
         # No PR context on push events — skip the comment step there
-        if: always() && github.event_name == 'pull_request'
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         with:
           path: coverage.txt
+
+      # The test step above swallowed its failure on purpose, so that every
+      # binary got to run and the coverage report still got written. This is
+      # where that failure is paid back: the job ends red, with every failure
+      # listed in the log of the step that found them.
+      - name: Fail if tests failed
+        # `!cancelled()` and not `always()`: a run this workflow cancelled
+        # (concurrency: cancel-in-progress) must not report a test failure it
+        # never saw.
+        if: ${{ !cancelled() && steps.tests.outcome == 'failure' }}
+        run: |
+          echo "::error::Tests failed — every failure is listed in the 'Run tests' step above"
+          exit 1

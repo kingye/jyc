@@ -1451,11 +1451,19 @@ fn build_user_prompt_injects_build_mode_tag() {
         "plan mode prompt should contain PLAN tag, got: {plan_prompt}"
     );
     // The task list and the lessons are the plan-mode exceptions: both live in
-    // the topic's own state, so they stay available while the mode is on.
-    assert!(
-        plan_prompt.contains("task_create") && plan_prompt.contains("lesson_add"),
-        "plan mode prompt should keep the task list and lesson tools available, got: {plan_prompt}"
-    );
+    // the topic's own state, so they stay available while the mode is on. The
+    // names are pinned to the allowed-actions line — a name appearing anywhere
+    // else in the block would not be the rule this is about.
+    let allowed = plan_prompt
+        .lines()
+        .find(|line| line.contains("You MAY ONLY"))
+        .expect("plan mode prompt should carry an allowed-actions line");
+    for tool in ["task_create", "task_update", "task_list", "lesson_add"] {
+        assert!(
+            allowed.contains(tool),
+            "the allowed-actions line should keep {tool}, got: {allowed}"
+        );
+    }
 
     // Build mode (None = no override): should inject BUILD tag
     let build_prompt = svc.build_user_prompt_text(&message, None, "");

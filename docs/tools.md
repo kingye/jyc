@@ -215,6 +215,38 @@ Use it for anything multi-step: write the list before starting, mark an item
 `in_progress` as you pick it up and `completed` once it is genuinely done.
 Re-planning means a new `task_create` (which renumbers), not patching a stale list.
 
+### `lesson_add` / `lesson_read`
+
+The agent's own record of what it learned, kept at `lessons.md` in the topic's
+state dir (in the unpinned layout that is `<topic>/.jyc/lessons.md`; a pinned
+topic's state dir lives in the data dir) — one file per topic, beside the
+user's `notes.md`. A lesson is one distilled, reusable rule: a trap the agent
+fell into, a fix that worked, a convention of this repo or this user.
+
+| Tool | Input | Effect |
+|------|-------|--------|
+| `lesson_add` | `lesson: string` (one rule, ≤1000 chars) | Appends `- YYYY-MM-DD — <rule>`; the same rule twice is not appended twice |
+| `lesson_read` | — | Returns the earlier lessons — the ones the system prompt could not carry |
+
+The **newest** lessons ride along in the system prompt — 2 KiB of them, and up
+to 4 KiB when the cut backs up to a whole lesson rather than show half of one
+— so a recent lesson is in view on every later turn without a tool call;
+`lesson_read` reaches the earlier ones. The cut lands on a line boundary, so
+a lesson is whole in one end or the other; when the remainder is too long to
+carry whole, the fragment is marked as cut rather than passed off as a whole
+rule. The tool only appends and reads — it never rewrites the file — so
+pruning it is the user's call. (That is a property of the tool, not a security
+boundary: in the unpinned layout the state dir sits inside the topic's
+working dir, where `write` and `edit` can already reach it.)
+
+The file is meant to stay small. Past roughly 20 KB (at most 4 KiB in the
+prompt + 16 KiB per read) the middle of the archive is out of reach of both
+tools, and the file wants pruning — by the user, since the tools never
+rewrite it. The lessons live in the topic's state dir, so closing the topic
+takes them with it.
+
+---
+
 ## MCP Bridge Tools
 
 These are JYC-specific tools implemented as in-process bridges (not external MCP subprocesses). They are always registered unless excluded via `disabled_tools`.

@@ -551,7 +551,6 @@ async fn a_drained_reply_request_is_announced_and_collected() {
     let mut history: Vec<Message> = Vec::new();
     let mut raw_context: Vec<serde_json::Value> = Vec::new();
 
-    // The turn had sent three times before the request arrived.
     let (count, requests) = super::drain_injections(
         &mut rx,
         &mut history,
@@ -703,7 +702,7 @@ async fn a_reply_request_that_arrives_mid_turn_is_owed_an_answer() {
     assert_eq!(result.pending_replies[0].source.channel, "agents");
     assert_eq!(
         result.pending_replies[0].sent_before, 0,
-        "the turn had sent nothing when the request arrived"
+        "the turn's own request carries the mark of zero: nothing had been sent when the turn started"
     );
 
     // And the model was told, in the call that carried the message.
@@ -791,14 +790,16 @@ async fn a_turn_that_dies_hands_back_the_requests_it_owed() {
     );
 }
 
-/// A send the turn made *before* the request arrived is no answer to it.
+/// A send the turn made *before* the request was folded in is no answer
+/// to it.
 ///
-/// The turn wrote to the asking topic first, then the topic asked for a
-/// reply. The turn's record of where it sent is cumulative, so without a
-/// mark the request would look answered and the requester would hear
-/// nothing.
+/// The request arrived while the turn was running, and the turn sent to
+/// the asking topic before the request was folded into the conversation:
+/// the model had not been shown it yet, so that send was no answer to it.
+/// The turn's record of where it sent is cumulative, so without a mark the
+/// request would look answered and the requester would hear nothing.
 #[tokio::test]
-async fn a_send_from_before_the_request_arrived_is_not_its_answer() {
+async fn a_send_from_before_the_request_was_folded_in_is_not_its_answer() {
     let tmp = TempDir::new().unwrap();
     let working_dir = tmp.path().to_path_buf();
     jyc_types::state_dir::register("inject-loop-mark", &working_dir.join(".jyc"));
@@ -856,11 +857,12 @@ async fn a_send_from_before_the_request_arrived_is_not_its_answer() {
         .await
         .expect("agent loop should run to completion");
 
-    // The turn did send to the asking topic — before the request arrived.
+    // The turn did send to the asking topic — before the request was
+    // folded in, so before the model was shown it.
     assert_eq!(
         result.outbound_targets,
         [("agents".to_string(), "jyc".to_string())],
-        "the turn sent to the asking topic before the request arrived"
+        "the turn sent to the asking topic before the request was folded in"
     );
     assert_eq!(
         result.pending_replies.len(),
@@ -880,7 +882,7 @@ async fn a_send_from_before_the_request_arrived_is_not_its_answer() {
     assert_eq!(
         owed.len(),
         1,
-        "a send from before the request arrived is not its answer"
+        "a send from before the request was folded in is not its answer"
     );
     assert_eq!(owed[0].topic, "jyc");
 }

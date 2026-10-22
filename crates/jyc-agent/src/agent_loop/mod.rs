@@ -346,9 +346,10 @@ pub async fn run(
         // (`live_injection`). They join the conversation here, before
         // this iteration's call is built, so the model sees them in it.
         if let Some(rx) = injection_rx.as_deref_mut() {
-            // The sends this turn has made so far. A request that arrives
+            // The sends this turn has made so far. A request folded in
             // now can only be answered by a send that comes after it: the
-            // ones before it went to that topic before anybody asked.
+            // ones before it went to that topic before the model was shown
+            // the request, so they were no answer to it.
             let sent_before = ctx
                 .outbound_targets
                 .lock()
@@ -364,8 +365,8 @@ pub async fn run(
                 topic_path,
             );
             // The requests carry the mark: it is what tells a send the
-            // turn made afterwards from one it made before the request
-            // arrived.
+            // turn made afterwards from one it made before the request was
+            // folded in.
             pending_replies.extend(arrived.into_iter().map(|source| {
                 crate::service::reply_guard::ReplyRequest {
                     source,

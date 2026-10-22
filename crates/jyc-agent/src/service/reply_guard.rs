@@ -67,28 +67,52 @@ pub fn reply_source(metadata: &HashMap<String, Value>) -> Option<ReplySource> {
     source_of(metadata)
 }
 
+/// A reply request the turn owes an answer to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyRequest {
+    /// Where the answer goes.
+    pub source: ReplySource,
+    /// How many outbound sends the turn had made when the request arrived.
+    ///
+    /// A send made before this mark cannot be the answer to this request:
+    /// it went to that topic before anybody asked. The turn's own request —
+    /// the one it started with — carries the mark of zero, since nothing
+    /// had been sent yet.
+    pub sent_before: usize,
+}
+
 /// The reply requests a turn has to answer: the one the turn started with,
 /// plus the ones that arrived while it ran.
 pub fn reply_requests(
     metadata: &HashMap<String, Value>,
-    arrived: &[ReplySource],
-) -> Vec<ReplySource> {
-    let mut requests: Vec<ReplySource> = reply_source(metadata).into_iter().collect();
+    arrived: &[ReplyRequest],
+) -> Vec<ReplyRequest> {
+    let mut requests: Vec<ReplyRequest> = reply_source(metadata)
+        .into_iter()
+        .map(|source| ReplyRequest {
+            source,
+            sent_before: 0,
+        })
+        .collect();
     requests.extend(arrived.iter().cloned());
     requests
 }
 
-/// Whether this turn already answered `source`.
+/// Whether this turn already answered `request`.
 ///
-/// The channel is part of the pair because a topic name is unique process
-/// wide but a channel name is not: the same name on two channels is two
-/// topics, and only the pair names one. A manager whose channel name differs
-/// from the one the sender recorded would hide an answer — both are the same
-/// configured string today.
-pub fn answered(source: &ReplySource, outbound_targets: &[(String, String)]) -> bool {
-    outbound_targets
-        .iter()
-        .any(|(channel, topic)| channel == &source.channel && topic == &source.topic)
+/// Only the sends that came after the request arrived count: a send made
+/// before it cannot be its answer — it went to that topic before anybody
+/// asked.
+///
+/// The channel is part of the pair as a collision guard. A topic name is
+/// unique process wide, so the pair names one topic either way; what the
+/// pair buys is that the guard compares the send's own record with the
+/// request's own record, like with like.
+pub fn answered(request: &ReplyRequest, outbound_targets: &[(String, String)]) -> bool {
+    let from = request.sent_before.min(outbound_targets.len());
+    outbound_targets[from..].iter().any(|(channel, topic)| {
+        channel == &request.source.channel && topic == &request.source.topic
+    })
 }
 
 /// The requests this turn left unanswered.
@@ -96,7 +120,7 @@ pub fn answered(source: &ReplySource, outbound_targets: &[(String, String)]) -> 
 /// A request the turn already answered is not in here, and a request that
 /// arrived twice is in here once: the requester gets one answer, not two.
 pub fn unanswered_requests(
-    requests: &[ReplySource],
+    requests: &[ReplyRequest],
     outbound_targets: &[(String, String)],
 ) -> Vec<ReplySource> {
     let mut unanswered: Vec<ReplySource> = Vec::new();
@@ -104,10 +128,10 @@ pub fn unanswered_requests(
         if answered(request, outbound_targets) {
             continue;
         }
-        if unanswered.contains(request) {
+        if unanswered.contains(&request.source) {
             continue;
         }
-        unanswered.push(request.clone());
+        unanswered.push(request.source.clone());
     }
     unanswered
 }
@@ -177,39 +201,65 @@ mod tests {
         assert!(reply_source(&map).is_none());
     }
 
+    /// A request for the answer to go to topic "jyc" on the agents channel.
+    fn a_request(sent_before: usize) -> ReplyRequest {
+        ReplyRequest {
+            source: reply_source(&metadata(true, "agents", "jyc")).unwrap(),
+            sent_before,
+        }
+    }
+
     #[test]
     fn a_reply_to_the_asking_topic_answers_it() {
-        let source = reply_source(&metadata(true, "agents", "jyc")).unwrap();
         assert!(answered(
-            &source,
+            &a_request(0),
             &[("agents".to_string(), "jyc".to_string())]
         ));
     }
 
     #[test]
     fn a_reply_elsewhere_leaves_the_request_unanswered() {
-        let source = reply_source(&metadata(true, "agents", "jyc")).unwrap();
         assert!(!answered(
-            &source,
+            &a_request(0),
             &[("agents".to_string(), "other".to_string())]
         ));
         assert!(!answered(
-            &source,
+            &a_request(0),
             &[("email".to_string(), "jyc".to_string())]
         ));
-        assert!(!answered(&source, &[]));
+        assert!(!answered(&a_request(0), &[]));
+    }
+
+    /// A send made before the request arrived cannot be its answer: it went
+    /// to that topic before anybody asked.
+    #[test]
+    fn a_reply_sent_before_the_request_arrived_is_not_its_answer() {
+        let request = a_request(1);
+        let sent_earlier = vec![("agents".to_string(), "jyc".to_string())];
+        assert!(
+            !answered(&request, &sent_earlier),
+            "the send predates the request"
+        );
+
+        let request = a_request(1);
+        let sent_after = vec![
+            ("agents".to_string(), "other".to_string()),
+            ("agents".to_string(), "jyc".to_string()),
+        ];
+        assert!(answered(&request, &sent_after), "the send came after it");
     }
 
     #[test]
     fn only_the_unanswered_requests_are_forwarded_to() {
-        let source = reply_source(&metadata(true, "agents", "jyc")).unwrap();
+        let request = a_request(0);
         let unanswered = unanswered_requests(
-            &[source.clone(), source.clone()],
+            &[request.clone(), request.clone()],
             &[("agents".to_string(), "jyc".to_string())],
         );
         assert!(unanswered.is_empty());
 
-        let unanswered = unanswered_requests(&[source.clone(), source.clone()], &[]);
+        let request = a_request(0);
+        let unanswered = unanswered_requests(&[request.clone(), request.clone()], &[]);
         assert_eq!(unanswered.len(), 1, "the same request twice is one request");
     }
 

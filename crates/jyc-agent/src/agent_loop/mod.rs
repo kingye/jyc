@@ -3,7 +3,6 @@
 //! Sends messages to the LLM, detects tool calls, executes them,
 //! and loops until the LLM responds with only text (no tool calls).
 
-use anyhow::Result;
 use chrono::Utc;
 use std::path::Path;
 use std::sync::Arc;
@@ -140,7 +139,13 @@ pub struct AgentLoopConfig<'a> {
 /// Run the agent loop to completion.
 ///
 /// Returns the final text response and metadata about tool usage.
-pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
+///
+/// A turn that dies hands back the reply requests it still owed: they are
+/// the only thing the caller cannot see any more, and whoever asked for
+/// them has to hear that the turn failed.
+pub async fn run(
+    config: AgentLoopConfig<'_>,
+) -> std::result::Result<AgentLoopResult, crate::types::AgentLoopError> {
     let AgentLoopConfig {
         provider,
         small_provider: _,
@@ -329,7 +334,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
     // The reply requests that arrived while this turn was running. The
     // guard forwards an answer for each one the turn did not send.
-    let mut pending_replies: Vec<crate::service::reply_guard::ReplySource> = Vec::new();
+    let mut pending_replies: Vec<crate::service::reply_guard::ReplyRequest> = Vec::new();
 
     loop {
         if cancel.is_cancelled() {
@@ -341,6 +346,14 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // (`live_injection`). They join the conversation here, before
         // this iteration's call is built, so the model sees them in it.
         if let Some(rx) = injection_rx.as_deref_mut() {
+            // The sends this turn has made so far. A request that arrives
+            // now can only be answered by a send that comes after it: the
+            // ones before it went to that topic before anybody asked.
+            let sent_before = ctx
+                .outbound_targets
+                .lock()
+                .expect("outbound_targets poisoned")
+                .len();
             let (_, arrived) = drain_injections(
                 rx,
                 &mut history,
@@ -349,6 +362,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 ctx.outbound.as_deref(),
                 topic_name,
                 topic_path,
+                sent_before,
             );
             pending_replies.extend(arrived);
         }
@@ -498,7 +512,13 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 // The turn dies here, so the failures that stand are
                 // reported now — the turn's end is this path's to write.
                 report_standing_failures(status.as_ref(), topic_name, &tool_failures);
-                return Err(e);
+                // The reply requests that arrived mid-turn die with the
+                // turn: they go back with the error, so the caller can tell
+                // whoever asked that the turn failed.
+                return Err(crate::types::AgentLoopError {
+                    error: e,
+                    pending_replies: std::mem::take(&mut pending_replies),
+                });
             }
         };
         let call_ms = call_started.elapsed().as_millis() as u64;
@@ -765,7 +785,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                     .lock()
                     .expect("outbound_targets poisoned")
                     .clone(),
-                pending_replies: pending_replies.clone(),
+                pending_replies: std::mem::take(&mut pending_replies),
             });
         }
 
@@ -784,12 +804,18 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 // The turn is over: report the failures that stand before
                 // it ends, so the topic's status says what happened.
                 report_standing_failures(status.as_ref(), topic_name, &tool_failures);
-                anyhow::bail!(
-                    "model generated tool calls with empty arguments for {} consecutive \
-                     iterations — this usually indicates the provider does not support \
-                     function calling correctly",
-                    consecutive_empty_tool_iterations
-                );
+                // The reply requests that arrived mid-turn die with the
+                // turn: they go back with the error, so the caller can tell
+                // whoever asked that the turn failed.
+                return Err(crate::types::AgentLoopError {
+                    error: anyhow::anyhow!(
+                        "model generated tool calls with empty arguments for {} consecutive \
+                         iterations — this usually indicates the provider does not support \
+                         function calling correctly",
+                        consecutive_empty_tool_iterations
+                    ),
+                    pending_replies: std::mem::take(&mut pending_replies),
+                });
             }
         } else {
             consecutive_empty_tool_iterations = 0;
@@ -1126,7 +1152,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             .lock()
             .expect("outbound_targets poisoned")
             .clone(),
-        pending_replies: pending_replies.clone(),
+        pending_replies: std::mem::take(&mut pending_replies),
     })
 }
 
@@ -1205,7 +1231,12 @@ async fn drain_pending_texts(
 /// that message stores it then — so every message lands in the log
 /// exactly once.
 ///
-/// Returns how many messages were folded in.
+/// Returns how many messages were folded in, and the reply requests they
+/// carried.
+///
+/// `sent_before` is how many outbound sends the turn had made when the
+/// batch was drained: a request in it can only be answered by a send that
+/// comes after that mark.
 fn drain_injections(
     rx: &mut tokio::sync::mpsc::Receiver<QueueItem>,
     history: &mut Vec<Message>,
@@ -1214,9 +1245,10 @@ fn drain_injections(
     outbound: Option<&dyn jyc_types::channel::OutboundAdapter>,
     topic_name: &str,
     topic_path: &Path,
-) -> (usize, Vec<crate::service::reply_guard::ReplySource>) {
+    sent_before: usize,
+) -> (usize, Vec<crate::service::reply_guard::ReplyRequest>) {
     let mut count = 0usize;
-    let mut requests: Vec<crate::service::reply_guard::ReplySource> = Vec::new();
+    let mut requests: Vec<crate::service::reply_guard::ReplyRequest> = Vec::new();
     while let Ok(item) = rx.try_recv() {
         let Some(raw) = item.message.content.text.as_deref().map(str::trim) else {
             continue;
@@ -1233,20 +1265,29 @@ fn drain_injections(
         } else {
             cleaned.trim()
         };
-        // A message that asked for a reply says so in the conversation: the
-        // model has to know it came from another topic that is waiting for
-        // an answer. The request is collected as well, so the guard can
+        // A message that names where it came from says so in the
+        // conversation: the model has to know it came from another topic.
+        // One that asked for a reply says that too — it is waiting for an
+        // answer — and the request is collected as well, so the guard can
         // forward an answer the turn forgot to send.
-        let text = match crate::service::reply_guard::reply_source(&item.message.metadata) {
-            Some(source) => {
-                requests.push(source.clone());
+        let source = crate::service::reply_guard::source_of(&item.message.metadata);
+        let asks = crate::service::reply_guard::asks_for_reply(&item.message.metadata);
+        let text = match (source, asks) {
+            (Some(source), true) => {
+                requests.push(crate::service::reply_guard::ReplyRequest {
+                    source: source.clone(),
+                    sent_before,
+                });
                 format!(
                     "{}{}",
                     crate::service::prompt::reply_request_notice(&source),
                     body
                 )
             }
-            None => body.to_string(),
+            (Some(source), false) => {
+                format!("{}\n{}", crate::service::prompt::source_line(&source), body)
+            }
+            (None, _) => body.to_string(),
         };
         let blocks = vec![ContentBlock::Text { text }];
         history.push(Message::user_with_blocks(blocks.clone()));

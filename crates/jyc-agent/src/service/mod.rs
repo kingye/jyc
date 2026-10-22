@@ -165,7 +165,7 @@ impl JycAgentService {
     async fn forward_unanswered_replies(
         &self,
         managers: Option<&Arc<TopicManagers>>,
-        requests: &[reply_guard::ReplySource],
+        requests: &[reply_guard::ReplyRequest],
         topic_name: &str,
         topic_path: &Path,
         ending: reply_guard::TurnEnding<'_>,
@@ -632,19 +632,20 @@ impl AgentService for JycAgentService {
                 // The turn died. Whoever asked for a reply has to hear
                 // that, or it waits forever — a turn that had already
                 // answered may still get a second, redundant notice. The
-                // requests that arrived mid-turn are lost with the turn:
-                // what it took in never reached the model either.
-                let requests = reply_guard::reply_requests(&message.metadata, &[]);
+                // requests that arrived mid-turn died with the turn: the
+                // loop hands them back with the error.
+                let requests = reply_guard::reply_requests(&message.metadata, &e.pending_replies);
+                let failure = e.error.to_string();
                 self.forward_unanswered_replies(
                     topic_managers.as_ref(),
                     &requests,
                     topic_name,
                     topic_path,
-                    reply_guard::TurnEnding::Failed(&e.to_string()),
+                    reply_guard::TurnEnding::Failed(&failure),
                     &[],
                 )
                 .await;
-                return Err(e);
+                return Err(e.error);
             }
         };
 

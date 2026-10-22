@@ -766,7 +766,7 @@ mod tests {
         let huge = format!("- {}\n", "x".repeat(INJECT_BYTES + 100));
         std::fs::write(&path, format!("{HEADER}\n\n{huge}")).unwrap();
         let section = prompt_section(&path).unwrap();
-        assert!(section.contains(&huge.trim_end()), "{section}");
+        assert!(section.contains(huge.trim_end()), "{section}");
         // No cut marker: nothing was cut.
         assert!(!section.contains('…'), "{section}");
     }

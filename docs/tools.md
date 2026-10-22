@@ -305,7 +305,7 @@ Unlike `jyc_send_message` (which bypasses agent processing for direct outbound d
 The command form is `/send <agent> [--topic|-t <topic>] [--reply] [--attach <file>] [--recipient <id>] <message>`; both call the same `command::send_handler::send_to_topic`.
 
 **Parameters:**
-- `agent` (string, required): Target agent name (e.g. `"invoice"`, `"mail-bot"`). The name is matched against topic names first; a name no topic owns is an error — the topic has to exist already (create it with `/spawn` or `jyc_spawn_subagent`)
+- `agent` (string, required): Target agent name (e.g. `"invoice"`, `"mail-bot"`). The name is matched against topic names first; a name no topic owns is an error — the topic has to exist already (create it with `/spawn` or `jyc_spawn_subagent`; a topic `/spawn` just made counts as existing, so the task that follows the spawn can be sent to it)
 - `topic` (string, optional): One of that agent's topics (e.g. `"invoice-processing"`), for when it has more than one. A topic's name is its address — it is unique process-wide, so a named topic identifies its agent too. An agent's own topic is named after the agent, so passing the same name as `agent` addresses that same default topic
 - `message` (string, required): Message body to inject into the target topic
 - `attachments` (string[], optional): List of filenames within the current topic directory to attach
@@ -313,8 +313,8 @@ The command form is `/send <agent> [--topic|-t <topic>] [--reply] [--attach <fil
 - `require_reply` (boolean, optional, default false): When `true`, the target agent is instructed to send the results back to the source agent via `jyc_send_to_topic`
 
 **Behavior:**
-- Resolves the addressee to the `TopicManager` that serves it — the one running the topic's queue or able to locate its directory, otherwise the channel the topic's own state records (`.jyc/topic-meta.json`), which is what reaches a topic idle since the last restart; the channel is never named by the caller
-- A name no topic owns is refused: a send reaches topics that exist, it does not make them — create the agent first with `/spawn` or `jyc_spawn_subagent`, and the refusal says so. A recorded channel that is not running is refused too
+- Resolves the addressee to the `TopicManager` that serves it — the one running the topic's queue, the channel the topic's own state records (`.jyc/topic-meta.json`), or the agents channel for a topic that exists but has never been routed to (a child `/spawn` just made, which has no queue and no routing record yet); the channel is never named by the caller
+- A name no topic owns is refused: a send reaches topics that exist, it does not make them — create the agent first with `/spawn` or `jyc_spawn_subagent`, and the refusal says so. A recorded channel that is not running is refused too, and so is a closed child (its home is gone)
 - Builds an `InboundMessage` with source metadata (`source_channel`, `source_topic`, `require_reply`)
 - Enqueues the message into the target topic's queue
 - The target agent sees a `**Source:**` header in its incoming message prompt

@@ -36,8 +36,7 @@ impl Tool for SendToThreadTool {
         "Send a message to another agent: its own topic by default, or one of its \
          topics with 'topic'. The topic must already exist — a name no topic owns is \
          an error, so create the agent first with jyc_spawn_subagent. Set require_reply=true \
-         to have the target send its results back to this topic; should its turn end without \
-         that reply, the framework forwards its last message to you instead."
+         to have the target send its results back to this topic."
     }
 
     fn input_schema(&self) -> Value {
@@ -67,7 +66,7 @@ impl Tool for SendToThreadTool {
                 },
                 "require_reply": {
                     "type": "boolean",
-                    "description": "Ask the target agent to send its results back to this topic; it then uses jyc_send_to_topic. Default false."
+                    "description": "Ask the target agent to send its results back to this topic; it then uses jyc_send_to_topic. If it does not, the framework forwards its last message to you. Default false."
                 }
             },
             "required": ["agent", "message"]

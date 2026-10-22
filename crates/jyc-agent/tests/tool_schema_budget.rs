@@ -90,12 +90,14 @@ const BUDGETS: &[(&str, usize, usize)] = &[
 
 /// The whole in-process set, in characters. It was 8,349 when the budgets
 /// above were set; other tools have grown it since, and the two lesson
-/// tools (#971) brought it to 9,511. The ceiling is the standing per-call
-/// cost of every request's prefix, so raising it is a deliberate act — this
-/// one was raised for #971, where the alternative was to cut a tool's
+/// tools (#971) brought it to 9,511 — 9,487 after the send tool's wording
+/// was trimmed to say what a send does not do, and 9,479 after the spawn
+/// tool's said what a send to a closed child does. The ceiling is the standing
+/// per-call cost of every request's prefix, so raising it is a deliberate
+/// act — it was raised for #971, where the alternative was to cut a tool's
 /// description until the model stopped understanding what the tool was for.
 ///
-/// Only 89 characters of slack are left. The next tool will have to raise
+/// Only 121 characters of slack are left. The next tool will have to raise
 /// it again, and before it does, look for an older description that can
 /// retire: a budget that only ever grows is not a budget.
 const TOTAL_BUDGET: usize = 9_600;

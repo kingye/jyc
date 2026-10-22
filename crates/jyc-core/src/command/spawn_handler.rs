@@ -1534,12 +1534,15 @@ mod tests {
             orders.contains("no checks reported is not a pass"),
             "an empty reading is waited out, not reported as a verdict"
         );
-        // A failure log is fetched through a filter inside the call: the result
-        // cap bounds a finished turn, not the turn the log lands in, and a plain
-        // byte tail of this repo's own failure misses the failing lines.
+        // The role reports the outcome and stops there — no log fetching, no
+        // naming of the failing step: the caller reads the diff and the logs.
         assert!(
-            orders.contains("--log-failed | grep -aE 'panicked|FAILED|error: ' | tail -n 5"),
-            "the log comes back filtered and tailed inside the call, not whole"
+            orders.contains("no digging into a failure"),
+            "the watcher reports pass or fail, it does not dig into the failure"
+        );
+        assert!(
+            !orders.contains("--log-failed"),
+            "the role fetches no failure log: its report is pass or fail"
         );
         // The failure this rule answers: a turn that *described* the next poll and
         // issued no call — the turn ended, the watch with it, and the caller was

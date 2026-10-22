@@ -297,6 +297,18 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     // leaves it in error.
     let mut tool_failures = ToolFailures::default();
 
+    // Wall time split reported at the end of the turn: how much of it the
+    // model spent, how much the tools spent. Nothing is logged while an LLM
+    // call is in flight (the "Thinking..." state travels on the event bus),
+    // so these are what make a quiet stretch of `jyc.log` legible.
+    let mut turn_llm_ms: u64 = 0;
+    let mut turn_tool_ms: u64 = 0;
+
+    // Regions ①+② of the send context are rebuilt per call unless cached;
+    // within a turn the persisted prefix is fixed, so build them once (see
+    // `SendContextCache`).
+    let mut send_context_cache = crate::agent_loop::context::SendContextCache::default();
+
     // Publish ProcessingStarted
     // The topic's live status follows the events this loop publishes (see
     // `jyc_core::topic_manager::live_status`): write it first, so every
@@ -405,13 +417,15 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // `send_regions` is the parallel Vec<u8> of per-message region
         // labels (1=compacted history / Full-mode, 2=verbatim, 3=current
         // turn) — used only by the wire-payload debug dump.
-        let (send_context, send_regions) =
-            crate::agent_loop::context::build_send_context_with_regions(
-                provider,
-                &raw_context,
-                prior_len,
-                &context_strategy,
-            );
+        let build_started = Instant::now();
+        let (send_context, send_regions) = crate::agent_loop::context::build_send_context_cached(
+            provider,
+            &raw_context,
+            prior_len,
+            &context_strategy,
+            &mut send_context_cache,
+        );
+        let context_build_ms = build_started.elapsed().as_millis() as u64;
         // Optional debug dump: when the user runs `/context dump on`, append
         // one JSON line per LLM call to `<topic>/.jyc/wire-payload.jsonl`
         // (capped at 50 lines). Best-effort — failures are not fatal.
@@ -443,6 +457,19 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // than inside `complete_with_retry` so the retries and their
         // backoff are part of what the user waited.
         let call_started = Instant::now();
+        // The call logs nothing until it returns; without these two lines a
+        // slow model and a stalled process look the same in the log.
+        tracing::info!(
+            iteration = total_iterations,
+            model = model_label,
+            send_messages = send_context.len(),
+            context_build_ms,
+            history_rebuilt = %send_context_cache
+                .history_rebuilt()
+                .map_or("-", |rebuilt| if rebuilt { "rebuilt" } else { "reused" }),
+            last_input_tokens = context_input_tokens,
+            "LLM call started"
+        );
         let mut response = match complete_with_retry(
             provider,
             &send_context,
@@ -470,6 +497,16 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             }
         };
         let call_ms = call_started.elapsed().as_millis() as u64;
+        turn_llm_ms += call_ms;
+        tracing::info!(
+            iteration = total_iterations,
+            duration_ms = call_ms,
+            input_tokens = response.input_tokens,
+            output_tokens = response.output_tokens,
+            reasoning_tokens = response.reasoning_tokens,
+            cache_hit_tokens = response.cache_hit_tokens,
+            "LLM call finished"
+        );
 
         // Track tokens across LLM calls in this session:
         // - `context_input_tokens` = input tokens from the most recent LLM call
@@ -799,6 +836,10 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
         let mut cancelled_during_tools = false;
 
+        // Started after the narration delivery and the `context_browse`
+        // snapshot: those write to a channel (SMTP, websocket) and clone the
+        // transcript, neither of which is the tools' time.
+        let tools_started = Instant::now();
         for tool_call in &response.tool_calls {
             if cancel.is_cancelled() {
                 tracing::info!("Cancelled during tool execution");
@@ -895,6 +936,14 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             ));
             handed_over |= output.ends_turn;
         }
+
+        let tool_batch_ms = tools_started.elapsed().as_millis() as u64;
+        turn_tool_ms += tool_batch_ms;
+        tracing::info!(
+            iteration = total_iterations,
+            duration_ms = tool_batch_ms,
+            "Tool calls finished"
+        );
 
         // If cancelled mid-tool-execution, the assistant message we just added
         // to raw_context has tool_calls whose results were not all appended.
@@ -1016,6 +1065,16 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     // max-cycles limit). A turn cancelled by the user is a failed turn whatever
     // it managed to deliver first, including a question that ended the turn.
     let duration = start_time.elapsed();
+    // `llm_ms + tool_ms` need not reach `total_ms`: a call cancelled in
+    // flight is timed nowhere, and the gap is where the rest of the turn
+    // (delivery, persistence) sits.
+    tracing::info!(
+        iterations = total_iterations,
+        total_ms = duration.as_millis() as u64,
+        llm_ms = turn_llm_ms,
+        tool_ms = turn_tool_ms,
+        "Agent loop summary"
+    );
     let turn_succeeded = handed_over && !cancel.is_cancelled();
     finish_turn(
         status.as_ref(),

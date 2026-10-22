@@ -1386,7 +1386,7 @@ fn flush_turn(
 /// window and the wire-payload region split — a turn boundary that means
 /// different things in different places loses or duplicates turns. It takes
 /// the text so callers that already extracted it do not extract it twice.
-pub(crate) fn opens_turn_text(text: &str) -> bool {
+fn opens_turn_text(text: &str) -> bool {
     !text.is_empty() && !text.starts_with(HISTORY_NOTE_PREFIX)
 }
 

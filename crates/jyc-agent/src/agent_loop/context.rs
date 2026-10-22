@@ -1207,9 +1207,11 @@ mod render_raw_context_tests {
             json!({"role": "user", "content": "u2"}),
             json!({"role": "assistant", "content": "a2"}),
         ];
+        // `window: 1` leaves one pair in the compacted region ①, so the
+        // sentinel proves reuse of a populated region, not of an empty one.
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
-            window: 2,
+            window: 1,
             note_window: Some(1),
             tool_result_cap: None,
             turn_tool_result_cap: None,

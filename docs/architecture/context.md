@@ -132,7 +132,8 @@ only on `raw_context[..prior_len]`, which is fixed while a turn runs
 (injections append after it; the one shrink — a cancellation truncation —
 ends the turn). `SendContextCache` (keyed on that split point) holds
 them for the turn's remaining calls; the log's `history_rebuilt` says
-whether a call rebuilt them.
+whether a call rebuilt them (`rebuilt`), reused them (`reused`), or built
+nothing at all (`-`, `full` mode).
 
 Why the split: the recent turns and the current turn are mid-flight tool
 activity, so their `tool_use` ↔ `tool_result` structure must stay legally

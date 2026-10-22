@@ -74,16 +74,16 @@ pub(crate) struct SendContextCache {
     boundary: Option<usize>,
     region1: Vec<serde_json::Value>,
     region2: Vec<serde_json::Value>,
-    /// Whether the last build rebuilt the regions instead of reusing them.
-    /// The log reads it to show the cache working; `false` in `Full` mode,
-    /// which builds nothing.
-    rebuilt: bool,
+    /// Whether the last build rebuilt the regions (`Some(true)`), reused them
+    /// (`Some(false)`), or built nothing at all (`None`, `Full` mode — the log
+    /// must not read that as "reused").
+    rebuilt: Option<bool>,
 }
 
 impl SendContextCache {
     /// Whether the last [`build_send_context_cached`] rebuilt the history
-    /// regions rather than reusing them.
-    pub(crate) fn history_rebuilt(&self) -> bool {
+    /// regions, or `None` when it built nothing (`Full` mode).
+    pub(crate) fn history_rebuilt(&self) -> Option<bool> {
         self.rebuilt
     }
 }
@@ -139,11 +139,12 @@ pub(crate) fn build_send_context_cached<'a>(
     strategy: &ContextStrategyConfig,
     cache: &mut SendContextCache,
 ) -> (Cow<'a, [serde_json::Value]>, Vec<u8>) {
-    // Only the sliding-window branch builds anything; `Full` borrows the
-    // context as it is.
-    cache.rebuilt = false;
     match strategy.mode {
-        ContextStrategy::Full => (Cow::Borrowed(raw_context), vec![1; raw_context.len()]),
+        ContextStrategy::Full => {
+            // Nothing is built: `Full` borrows the context as it is.
+            cache.rebuilt = None;
+            (Cow::Borrowed(raw_context), vec![1; raw_context.len()])
+        }
         ContextStrategy::SlidingWindow => {
             // A stale `prior_len` must not index past the context: the
             // cancellation truncation is the only shrink, and it clamps
@@ -158,7 +159,9 @@ pub(crate) fn build_send_context_cached<'a>(
                 cache.region1 = region1;
                 cache.region2 = region2;
                 cache.boundary = Some(boundary);
-                cache.rebuilt = true;
+                cache.rebuilt = Some(true);
+            } else {
+                cache.rebuilt = Some(false);
             }
 
             let region1_len = cache.region1.len();
@@ -1190,6 +1193,65 @@ mod render_raw_context_tests {
             build_send_context_with_regions(&prov(), &ctx, next_prior_len, &cfg);
         assert_eq!(third.as_ref(), cold3.as_ref());
         assert_eq!(third_regions, cold3_regions);
+    }
+
+    /// The equivalence test above passes whether the regions are reused or
+    /// rebuilt (a rebuild derives the same bytes), so prove reuse directly: a
+    /// sentinel spliced into the cache can only reach the payload if the next
+    /// call reuses it.
+    #[test]
+    fn cached_build_reuses_history_regions() {
+        let prior = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2"}),
+        ];
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 2,
+            note_window: Some(1),
+            tool_result_cap: None,
+            turn_tool_result_cap: None,
+            max_history_tokens: None,
+        };
+        let prior_len = prior.len();
+        let mut ctx = prior.clone();
+        ctx.push(json!({"role": "user", "content": "u3"}));
+
+        let mut cache = SendContextCache::default();
+        let _ = build_send_context_cached(&prov(), &ctx, prior_len, &cfg, &mut cache);
+        assert_eq!(
+            cache.history_rebuilt(),
+            Some(true),
+            "a cold cache must build"
+        );
+
+        // Spliced into the cache, not into `raw_context`: a rebuild derives
+        // the regions from `raw_context` and would drop it.
+        cache
+            .region1
+            .push(json!({"role": "user", "content": "CACHED-SENTINEL"}));
+        let (warm, _) = build_send_context_cached(&prov(), &ctx, prior_len, &cfg, &mut cache);
+        assert!(
+            warm.iter()
+                .any(|m| m.get("content").and_then(|c| c.as_str()) == Some("CACHED-SENTINEL")),
+            "same prefix: the cached regions must be reused"
+        );
+        assert_eq!(cache.history_rebuilt(), Some(false));
+
+        // The next turn moves the prefix: rebuild, so the sentinel is gone.
+        ctx.push(json!({"role": "assistant", "content": "a3"}));
+        let next_prior_len = ctx.len();
+        let (rebuilt, _) =
+            build_send_context_cached(&prov(), &ctx, next_prior_len, &cfg, &mut cache);
+        assert!(
+            !rebuilt
+                .iter()
+                .any(|m| m.get("content").and_then(|c| c.as_str()) == Some("CACHED-SENTINEL")),
+            "a new prefix must rebuild the regions"
+        );
+        assert_eq!(cache.history_rebuilt(), Some(true));
     }
 
     #[test]

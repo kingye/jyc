@@ -464,7 +464,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             model = model_label,
             send_messages = send_context.len(),
             context_build_ms,
-            history_rebuilt = send_context_cache.history_rebuilt(),
+            history_rebuilt = %send_context_cache
+                .history_rebuilt()
+                .map_or("-", |rebuilt| if rebuilt { "rebuilt" } else { "reused" }),
             last_input_tokens = context_input_tokens,
             "LLM call started"
         );

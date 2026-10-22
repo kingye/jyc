@@ -6,6 +6,7 @@ use jyc_types::state_dir::resolve_state_dir;
 use std::path::{Path, PathBuf};
 
 use crate::capabilities;
+use crate::tools::builtin::lesson;
 
 use jyc_types::InboundMessage;
 use jyc_types::TopicConfig;
@@ -160,7 +161,7 @@ impl JycAgentService {
 
         // Chat history access instructions — point at the resolved state dir
         // (relocated out of the topic dir for pinned topics).
-        let state_dir = jyc_types::state_dir::resolve_state_dir(topic_name, topic_path);
+        let state_dir = resolve_state_dir(topic_name, topic_path);
         prompt.push_str(&format!(
             "## Chat History\n\
              This topic maintains a chronological chat history in \
@@ -235,6 +236,19 @@ impl JycAgentService {
             // instead (`build_turn_reference`); what stays here is the static
             // prose above, which does not move.
             prompt.push('\n');
+        }
+
+        // The agent's own lessons — what it learned and kept for itself. The
+        // newest ones ride along with every turn, so a lesson is in view
+        // without a tool call. They live in the *system* prompt, which is
+        // cached by prefix: adding a lesson moves the system breakpoint, so
+        // the next request re-sends this topic's history uncached — once
+        // per lesson, not once per turn. Carrying them in the turn
+        // reference instead would keep the history cache but pay for these
+        // bytes on every turn, uncached. The owner's instructions come
+        // first, the agent's own experience after.
+        if let Some(section) = lesson::prompt_section(&state_dir.join(lesson::LESSONS_FILE)) {
+            prompt.push_str(&section);
         }
 
         prompt

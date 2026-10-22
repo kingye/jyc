@@ -13,7 +13,10 @@
 //!   in-process natural language from 10,108 to 8,349 chars (-17.4%) without
 //!   touching a single name, parameter name, type or required list. The budgets
 //!   carry a few percent of slack, so an ordinary wording fix does not have to
-//!   bump them.
+//!   bump them. The *total* ceiling is a different thing: it is the standing
+//!   per-call cost of the whole set, and it was raised once on purpose (#971,
+//!   the two lesson tools) rather than paid for by squeezing a description
+//!   until the model stopped understanding what the tool was for.
 //!
 //! Editing a description is therefore a deliberate act that costs one round of
 //! prefix cache misses. Keep such an edit in its own change, where the diff
@@ -76,7 +79,7 @@ const BUDGETS: &[(&str, usize, usize)] = &[
     ("jyc_send_message", 215, 400),
     ("jyc_send_to_topic", 315, 630),
     ("jyc_spawn_subagent", 1200, 515),
-    ("lesson_add", 200, 40),
+    ("lesson_add", 250, 40),
     ("lesson_read", 110, 0),
     ("task_list", 280, 0),
     ("task_create", 425, 60),
@@ -85,9 +88,13 @@ const BUDGETS: &[(&str, usize, usize)] = &[
     ("write", 140, 115),
 ];
 
-/// The whole in-process set, in characters: 8,349 when the budgets above were
-/// set, plus `task_create`'s `format!` template and `jyc_send_message`.
-const TOTAL_BUDGET: usize = 9_400;
+/// The whole in-process set, in characters. It was 8,349 when the budgets
+/// above were set; other tools have grown it since, and the two lesson
+/// tools (#971) brought it to 9,495. The ceiling is the standing per-call
+/// cost of every request's prefix, so raising it is a deliberate act — this
+/// one was raised for #971, where the alternative was to cut a tool's
+/// description until the model stopped understanding what the tool was for.
+const TOTAL_BUDGET: usize = 9_600;
 
 /// `jyc_spawn_subagent`'s `type` description ends with the catalog of roles
 /// configured *on this machine*, so its length is configuration rather than

@@ -75,25 +75,53 @@ fn split_file(content: &str) -> (&str, &str) {
     }
 }
 
-/// The start of the last `bytes` bytes of `body`, moved forward to the start
-/// of a line: a lesson is a line, and half a line reads as noise.
+/// The start of the last `bytes` bytes of `body`, moved to a line boundary:
+/// a lesson is a line, and half a line reads as noise.
 fn tail_start_at_line(body: &str, bytes: usize) -> usize {
     let mut start = body.len().saturating_sub(bytes);
     while start < body.len() && !body.is_char_boundary(start) {
         start += 1;
     }
     if start > 0 && !body[..start].ends_with('\n') {
-        // Move to the start of the next line, so a lesson is not cut in half.
-        // If nothing follows, stay put: a partial last line beats an empty
-        // section.
-        if let Some(pos) = body[start..].find('\n') {
-            let next = start + pos + 1;
-            if next < body.len() {
-                start = next;
-            }
+        // Move *back* to the start of the line the cut landed in, so the
+        // lesson is whole in one of the two ends and the other end never
+        // carries half a rule. Only a line longer than twice the cap keeps
+        // the byte cut — there the fragment is marked where it is shown.
+        let line_start = body[..start].rfind('\n').map(|pos| pos + 1).unwrap_or(0);
+        if body.len() - line_start <= 2 * bytes {
+            start = line_start;
         }
     }
     start
+}
+
+/// Whether the cut at `at` landed inside a line — which happens only for a
+/// line longer than twice the cap.
+fn cut_mid_line(body: &str, at: usize) -> bool {
+    at > 0 && !body[..at].ends_with('\n')
+}
+
+/// The lesson lines in a slice of the file: the lines that start with the
+/// lesson marker.
+fn lesson_count(slice: &str) -> usize {
+    slice.lines().filter(|l| l.starts_with("- ")).count()
+}
+
+/// The note that says what the prompt carries and what `lesson_read` holds.
+fn split_note(body: &str, at: usize, mid_line: bool) -> String {
+    if mid_line {
+        return "_The last lesson was too long for this prompt and is cut in two: \
+                 what is here is its tail — call `lesson_read` for the rest._\n\n"
+            .to_string();
+    }
+    let total = lesson_count(body);
+    let older = lesson_count(&body[..at]);
+    format!(
+        "_The file holds {total} lesson{}; {shown} of them are shown here (the \
+         newest), the earlier {older} are not — call `lesson_read` for those._\n\n",
+        if total == 1 { "" } else { "s" },
+        shown = total - older,
+    )
 }
 
 /// Where the file splits: the newest part rides in the system prompt, the
@@ -115,16 +143,18 @@ pub(crate) fn prompt_section(path: &Path) -> Option<String> {
         return None;
     }
     let at = split(body);
+    let mid_line = cut_mid_line(body, at);
     let shown = &body[at..];
-    let mut section = format!("## Lessons Learned (from {LESSONS_FILE})\n\n{shown}\n\n");
+    let mut section = format!("## Lessons Learned (from {LESSONS_FILE})\n\n");
+    if mid_line {
+        // The cut landed inside a lesson: mark the fragment, so the model
+        // does not read half a rule as a whole one.
+        section.push('…');
+    }
+    section.push_str(shown);
+    section.push_str("\n\n");
     if at > 0 {
-        let total = body.lines().count();
-        let older = body[..at].lines().count();
-        section.push_str(&format!(
-            "_The file holds {total} lesson{}; the newest are shown here and the \
-             earlier {older} are not — call `lesson_read` for those._\n\n",
-            if total == 1 { "" } else { "s" }
-        ));
+        section.push_str(&split_note(body, at, mid_line));
     }
     // The lessons are the agent's own text, but the agent's inputs are not
     // all trustworthy: a lesson recorded from a web page or a stranger's
@@ -148,7 +178,8 @@ impl Tool for LessonAddTool {
 
     fn description(&self) -> &str {
         "Record one lesson you learned, in this topic's `lessons.md`: a reusable fact \
-         worth keeping — a trap you fell into, a fix that worked. One rule, not a story."
+         worth keeping — a trap you fell into, a fix that worked. One rule, not a \
+         story. It rides in your prompt from the next turn."
     }
 
     fn input_schema(&self) -> Value {
@@ -240,9 +271,11 @@ impl Tool for LessonAddTool {
         file.write_all(to_write.as_bytes())
             .await
             .map_err(|e| anyhow::anyhow!("Failed to append to {LESSONS_FILE}: {e}"))?;
-        file.flush()
+        // `flush` is a no-op on a tokio file; `sync_all` is what puts the
+        // line on disk. Cheap enough: a lesson is recorded rarely.
+        file.sync_all()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to flush {LESSONS_FILE}: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Failed to sync {LESSONS_FILE}: {e}"))?;
 
         Ok(ToolOutput::success(format!(
             "Recorded in {LESSONS_FILE}: {lesson}{}",
@@ -274,8 +307,27 @@ impl Tool for LessonReadTool {
     }
 
     async fn execute(&self, _input: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput> {
-        let path = lessons_path(ctx)?;
-        let content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+        let path = match lessons_path(ctx) {
+            Ok(p) => p,
+            Err(e) => return Ok(ToolOutput::error(e.to_string())),
+        };
+        // A read failure other than "no file yet" must be reported, not
+        // answered as an empty archive: `lesson_add` refuses such a file,
+        // and the model would otherwise be told to record one and hit the
+        // wall.
+        let content = match tokio::fs::read_to_string(&path).await {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(ToolOutput::success(
+                    "No lessons recorded yet. Record one with `lesson_add`.",
+                ));
+            }
+            Err(e) => {
+                return Ok(ToolOutput::error(format!(
+                    "Could not read {LESSONS_FILE}: {e}. The file was left untouched."
+                )));
+            }
+        };
         if content.trim().is_empty() {
             return Ok(ToolOutput::success(
                 "No lessons recorded yet. Record one with `lesson_add`.",
@@ -285,8 +337,12 @@ impl Tool for LessonReadTool {
         let at = split(body);
         if at == 0 {
             // The whole file fits in the prompt already.
-            return Ok(ToolOutput::success(content.trim().to_string()));
+            return Ok(ToolOutput::success(format!(
+                "{}\n\n_All of it is already in your system prompt._",
+                content.trim()
+            )));
         }
+        let mid_line = cut_mid_line(body, at);
         let archive = &body[..at];
         let mut out = String::new();
         if !header.is_empty() {
@@ -297,22 +353,31 @@ impl Tool for LessonReadTool {
             out.push_str(archive);
         } else {
             // More lessons than one read should carry: take them in file
-            // order and say how much was left out.
+            // order and say how much was left out. Pruning is the user's
+            // call — this tool only reads.
             let cut = floor_char_boundary(archive, READ_CAP_BYTES);
             out.push_str(&archive[..cut]);
             out.push_str(&format!(
                 "\n\n_[{} bytes of earlier lessons were left out; the file is {} bytes \
-                 long and should be pruned.]_",
+                 long — ask the user to prune it.]_",
                 archive.len() - cut,
                 body.len()
             ));
         }
-        let older = archive.lines().count();
-        out.push_str(&format!(
-            "\n\n_The newest {INJECT_BYTES} bytes are in your system prompt; these \
-             are the {older} earlier lesson{}._",
-            if older == 1 { "" } else { "s" }
-        ));
+        if mid_line {
+            out.push_str(
+                "\n\n_The newest lessons are in your system prompt; this is the head \
+                 of the one that was too long for it._",
+            );
+        } else {
+            let older = lesson_count(archive);
+            out.push_str(&format!(
+                "\n\n_The newest {shown} bytes are in your system prompt; these are \
+                 the {older} earlier lesson{}._",
+                if older == 1 { "" } else { "s" },
+                shown = body.len() - at,
+            ));
+        }
         Ok(ToolOutput::success(out))
     }
 }
@@ -508,6 +573,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_reports_an_unreadable_file_instead_of_an_empty_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(".jyc").join(LESSONS_FILE);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let broken = [b'-', b' ', b'x', 0xff, 0xfe, b'\n'];
+        std::fs::write(&path, broken).unwrap();
+
+        let out = read("lesson-read-broken", tmp.path()).await;
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("Could not read"), "{}", out.content);
+        // Not the "nothing recorded yet" answer: that would send the model
+        // to record a lesson into a file it cannot read.
+        assert!(
+            !out.content.contains("No lessons recorded yet"),
+            "{}",
+            out.content
+        );
+    }
+
+    #[tokio::test]
     async fn add_writes_to_the_registered_state_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let work = tmp.path().join("work");
@@ -594,8 +679,15 @@ mod tests {
         assert!(!out.is_error, "{}", out.content);
         // The read is capped, and the cap is stated.
         assert!(out.content.contains("were left out"), "{}", out.content);
+        // Pruning is the user's call, and the note says so in words the
+        // model can act on.
         assert!(
-            out.content.len() < INJECT_BYTES + READ_CAP_BYTES + 1000,
+            out.content.contains("ask the user to prune"),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content.len() <= READ_CAP_BYTES + 400,
             "{}",
             out.content.len()
         );
@@ -638,6 +730,12 @@ mod tests {
         assert!(!section.contains("EARLIEST"), "{section}");
         // ...and the archive is pointed at.
         assert!(section.contains("call `lesson_read`"), "{section}");
+        // A lesson too long to ride along whole is marked as cut, so the
+        // model does not read half a rule as a whole one.
+        assert!(
+            section.starts_with(&format!("## Lessons Learned (from {LESSONS_FILE})\n\n…")),
+            "{section}"
+        );
         // The section itself stays small: the head, not the whole file.
         assert!(section.len() < INJECT_BYTES + 1000, "{}", section.len());
     }
@@ -660,19 +758,37 @@ mod tests {
     }
 
     #[test]
-    fn prompt_section_still_shows_something_when_one_lesson_is_huge() {
+    fn prompt_section_shows_a_long_lesson_whole() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join(LESSONS_FILE);
-        // A single line longer than the whole cap: skipping to the next line
-        // would leave nothing to show.
+        // One lesson longer than the cap, but not longer than twice it: it
+        // rides along whole rather than in two pieces.
         let huge = format!("- {}\n", "x".repeat(INJECT_BYTES + 100));
         std::fs::write(&path, format!("{HEADER}\n\n{huge}")).unwrap();
         let section = prompt_section(&path).unwrap();
-        assert!(section.contains('x'), "{section}");
+        assert!(section.contains(&huge.trim_end()), "{section}");
+        // No cut marker: nothing was cut.
+        assert!(!section.contains('…'), "{section}");
     }
 
     #[test]
-    fn the_prompt_and_the_read_agree_on_the_split() {
+    fn prompt_section_marks_a_lesson_too_long_to_carry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(LESSONS_FILE);
+        // A single lesson longer than twice the cap: it cannot ride along
+        // whole, so it is cut — and the fragment says so.
+        let huge = format!("- {}\n", "x".repeat(2 * INJECT_BYTES + 100));
+        std::fs::write(&path, format!("{HEADER}\n\n{huge}")).unwrap();
+        let section = prompt_section(&path).unwrap();
+        assert!(section.contains('…'), "{section}");
+        assert!(
+            section.contains("cut in two"),
+            "the model has to know the rule it reads is half a rule: {section}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_prompt_and_the_read_agree_on_the_split() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join(LESSONS_FILE);
         let body: String = (0..200)
@@ -690,5 +806,47 @@ mod tests {
         // other way round.
         assert!(section.contains(prompt_part.trim()), "{section}");
         assert!(!section.contains(archive_part.trim()), "{section}");
+        // The two ends do not overlap: the first line of the archive is not
+        // in the prompt, and the last line of the file is not in the read.
+        let first_archived = archive_part.lines().next().unwrap();
+        let last_shown = prompt_part.lines().last().unwrap();
+        assert!(!section.contains(first_archived), "{section}");
+        let out = read("lesson-read-split", tmp.path()).await;
+        assert!(!out.content.contains(last_shown), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn no_lesson_is_split_between_the_two_ends() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(".jyc").join(LESSONS_FILE);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // The last lesson is long enough that a byte cut would land inside
+        // it. It must not: the lesson is whole in one end or the other.
+        let long = "w".repeat(INJECT_BYTES + 100);
+        std::fs::write(&path, format!("{HEADER}\n\n- FIRST\n- SECOND\n- {long}\n")).unwrap();
+
+        let section = prompt_section(&path).unwrap();
+        let out = read("lesson-read-nosplit", tmp.path()).await;
+        // Every line in the prompt is a whole line of the file, and the
+        // archive holds the lines before it — no rule in two pieces.
+        let content = std::fs::read_to_string(&path).unwrap();
+        let (_, body) = split_file(content.trim());
+        for line in section
+            .lines()
+            .filter(|l| l.starts_with("- ") && l.contains("w"))
+        {
+            assert!(
+                body.contains(line),
+                "the prompt shows a piece the file does not hold: {line}"
+            );
+        }
+        assert!(out.content.contains("SECOND"), "{}", out.content);
+        // The long lesson is in the prompt whole, and not in the archive.
+        assert!(section.contains(&format!("- {long}")), "{section}");
+        assert!(
+            !out.content.contains(&format!("- {long}")),
+            "{}",
+            out.content
+        );
     }
 }

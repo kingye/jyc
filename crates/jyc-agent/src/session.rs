@@ -69,7 +69,7 @@ async fn migrate_legacy_context(state_dir: &Path) {
 /// where the journal ends.
 async fn append_journal(
     journal_path: &Path,
-    offset: u64,
+    point: &crate::context_reader::AppendPoint,
     new: &[serde_json::Value],
 ) -> std::io::Result<()> {
     let mut buf = String::new();
@@ -83,14 +83,16 @@ async fn append_journal(
     let mut f = tokio::fs::OpenOptions::new()
         .write(true)
         .create(true)
-        // No truncate: the cut point is the end of the last complete
-        // line, applied explicitly via set_len below (a bare truncate
-        // would drop the whole prefix).
+        // No truncate: the cut point is applied explicitly via set_len
+        // below (a bare truncate would drop the whole prefix).
         .truncate(false)
         .open(journal_path)
         .await?;
-    f.set_len(offset).await?;
-    f.seek(std::io::SeekFrom::End(0)).await?;
+    f.set_len(point.offset).await?;
+    f.seek(std::io::SeekFrom::Start(point.offset)).await?;
+    if !point.prefix.is_empty() {
+        f.write_all(point.prefix).await?;
+    }
     f.write_all(buf.as_bytes()).await?;
     f.sync_data().await?;
     Ok(())
@@ -265,10 +267,10 @@ pub struct SessionState {
 /// file and nothing before them is touched, so the write costs what the
 /// turn added, not what the topic accumulated.
 ///
-/// The reader's parsed tail is extended with the same messages, so the next
-/// turn reads the journal from memory instead of from disk. A failed write
-/// drops that tail: the next load re-reads the journal instead of serving
-/// values that never reached disk.
+/// The reader's pair count is extended with the same messages, so the next
+/// turn does not count the journal again. A failed write drops that count:
+/// the next load recounts the journal instead of serving a total that never
+/// reached disk.
 pub async fn save_raw_context(
     topic_name: &str,
     topic_path: &Path,
@@ -286,10 +288,19 @@ pub async fn save_raw_context(
     );
 
     let before = reader.stat().await;
-    // The append point: after the journal's last complete line. A torn
-    // tail (a crash mid-append) is dropped instead of continued.
-    let offset = reader.clean_end().await;
-    match append_journal(&journal_path, offset, &current).await {
+    // The append point: after the journal's last complete line, or after a
+    // torn tail that is a complete message missing only its newline. When
+    // it cannot be determined the append is skipped — truncating a journal
+    // that is merely unreadable would destroy its history.
+    let Some(point) = reader.clean_end().await else {
+        tracing::warn!(
+            file = %journal_path.display(),
+            "save_raw_context: journal unreadable, append skipped"
+        );
+        reader.invalidate();
+        return;
+    };
+    match append_journal(&journal_path, &point, &current).await {
         Ok(()) => {
             if let (Some(before), Some(after)) = (before, reader.stat().await) {
                 reader.note_append(&current, before, after);

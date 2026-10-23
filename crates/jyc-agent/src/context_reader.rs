@@ -5,11 +5,11 @@
 //! caller asked for. Only the tail is parsed, so a journal that grew to
 //! hundreds of megabytes costs the same per turn as a small one.
 //!
-//! The reader owns the journal's read side — including the parsed tail it
+//! The reader owns the journal's read side — including the pair count it
 //! keeps in process between turns. The writer
 //! ([`crate::session::save_raw_context`]) owns the write side and tells the
-//! reader what it appended, so the tail stays warm instead of being
-//! re-read.
+//! reader what it appended, so the count stays current instead of being
+//! recounted.
 
 use jyc_core::session_state::AGENT_CONTEXT_FILE;
 use serde_json::Value;
@@ -41,6 +41,16 @@ struct PairCount {
 fn pair_counts() -> &'static Mutex<HashMap<String, PairCount>> {
     static CACHE: OnceLock<Mutex<HashMap<String, PairCount>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Where the writer appends the next message.
+pub(crate) struct AppendPoint {
+    /// The offset the new messages are written at. Anything after it is
+    /// dropped.
+    pub offset: u64,
+    /// Bytes written before the new messages — the newline a recovered
+    /// torn tail is missing.
+    pub prefix: &'static [u8],
 }
 
 /// A slice of the journal: the tail the caller asked for, oldest first.
@@ -160,23 +170,86 @@ impl ContextReader {
         total
     }
 
-    /// The offset a new message is appended at: after the last complete
-    /// line, so a torn tail (a crash mid-append) is dropped instead of
-    /// being continued.
-    pub(crate) async fn clean_end(&self) -> u64 {
+    /// Where a new message is appended.
+    ///
+    /// The journal's tail may be torn: a crash mid-append leaves a partial
+    /// line behind. That fragment is dropped — unless it is a complete
+    /// message that lost only its newline (the usual shape, the write was
+    /// cut at its last byte), which is kept and terminated.
+    ///
+    /// Returns `None` when the cut point cannot be determined — the journal
+    /// cannot be read. The caller must skip the append then: appending at 0
+    /// would discard a history that is merely unreadable.
+    pub(crate) async fn clean_end(&self) -> Option<AppendPoint> {
         let Some((file_len, _)) = self.stat().await else {
-            return 0;
+            // No journal yet: the append creates it.
+            return Some(AppendPoint {
+                offset: 0,
+                prefix: b"",
+            });
         };
         if file_len == 0 {
-            return 0;
+            return Some(AppendPoint {
+                offset: 0,
+                prefix: b"",
+            });
         }
-        let start = file_len.saturating_sub(READ_BLOCK);
-        let Some((_, bytes)) = self.read_block(start, file_len).await else {
-            return 0;
+
+        // Scan back for the last newline. The torn tail can be longer than
+        // one block, so a block without a newline is not the answer.
+        let mut end = file_len;
+        loop {
+            let start = end.saturating_sub(READ_BLOCK);
+            let Some((_, bytes)) = self.read_block(start, end).await else {
+                return None;
+            };
+            if let Some(i) = bytes.iter().rposition(|&b| b == b'\n') {
+                let cut = start + i as u64 + 1;
+                return Some(self.append_point_after(cut, file_len).await);
+            }
+            if start == 0 {
+                // The whole file is one unterminated line: a torn tail from
+                // the very first append. It is dropped, the file starts
+                // over.
+                return Some(AppendPoint {
+                    offset: 0,
+                    prefix: b"",
+                });
+            }
+            end = start;
+        }
+    }
+
+    /// The append point for a journal whose last newline ends at `cut`:
+    /// either `cut` itself (nothing follows the newline), or — when the
+    /// fragment after it is a complete message missing only its newline —
+    /// the fragment's end, with the newline supplied by the prefix.
+    async fn append_point_after(&self, cut: u64, file_len: u64) -> AppendPoint {
+        if cut == file_len {
+            return AppendPoint {
+                offset: cut,
+                prefix: b"",
+            };
+        }
+        let Some((_, bytes)) = self.read_block(cut, file_len).await else {
+            // The fragment cannot be read: drop it rather than risk
+            // continuing a partial line.
+            return AppendPoint {
+                offset: cut,
+                prefix: b"",
+            };
         };
-        match bytes.iter().rposition(|&b| b == b'\n') {
-            Some(i) => start + i as u64 + 1,
-            None => 0,
+        let complete = serde_json::from_slice::<Value>(&bytes)
+            .is_ok_and(|v| crate::provider::is_valid_message(&v));
+        if complete {
+            return AppendPoint {
+                offset: file_len,
+                prefix: b"\n",
+            };
+        }
+        AppendPoint {
+            offset: cut,
+            prefix: b"",
         }
     }
 
@@ -203,7 +276,11 @@ impl ContextReader {
         }
         // The appended messages are this turn: its user message and its
         // assistant reply are both in here, so the turn is counted whole.
-        let added = crate::session::pairs_tail_start(appended, usize::MAX).1;
+        // The reader repairs the journal as it reads it; applying the same
+        // repair here keeps the count from including a turn that will be
+        // cut away.
+        let appended = crate::provider::repair_dangling_tool_calls(appended.to_vec());
+        let added = crate::session::pairs_tail_start(&appended, usize::MAX).1;
         entry.total_pairs += added;
         entry.file_len = after.0;
         entry.file_mtime = after.1;
@@ -273,6 +350,12 @@ impl ContextReader {
                 break;
             }
         }
+        // The whole-file load path repaired dangling tool calls before the
+        // strategies saw the context; the append-only reader must do the
+        // same, or the repair would only run on the wire — where it drops
+        // the dangling assistant *and everything after it*, the current
+        // turn included.
+        acc.messages = crate::provider::repair_dangling_tool_calls(acc.messages);
         acc
     }
 
@@ -387,15 +470,22 @@ fn parse_block(prev: Option<u8>, bytes: &[u8], carry: Option<Vec<u8>>) -> BlockP
         Some(_) => Some(first_fragment.to_vec()),
     };
 
-    // The spanning line is complete when the carry supplies its tail, or
-    // when the block ends the line itself. Otherwise it is a torn tail
-    // (a crash mid-append) and is dropped.
+    // The line that spans the newer boundary is complete when the carry
+    // supplies its tail, or when the block ends the line itself. A block
+    // that ends mid-line without a carry is the journal's torn tail: a
+    // crash mid-append. It is kept when it is a complete message that lost
+    // only its newline — the usual shape, the write was cut at its last
+    // byte — and dropped otherwise.
     let spanning = if carry.is_some() || bytes.ends_with(b"\n") {
         let mut line = head.to_vec();
         if let Some(tail) = carry {
             line.extend_from_slice(&tail);
         }
         Some(line)
+    } else if serde_json::from_slice::<Value>(head)
+        .is_ok_and(|v| crate::provider::is_valid_message(&v))
+    {
+        Some(head.to_vec())
     } else {
         None
     };
@@ -558,6 +648,101 @@ mod tests {
         let slice = reader.read_prior(PriorDepth::All).await;
         assert_eq!(slice.messages.len(), 1, "the torn line is dropped");
         assert_eq!(slice.messages[0]["content"], "survived");
+    }
+
+    #[tokio::test]
+    async fn a_torn_tail_that_lost_only_its_newline_is_kept() {
+        // The usual crash shape: every byte of the message reached disk but
+        // the newline did not. The whole-file parser used to recover it.
+        let body = format!(
+            "{}\n{}\n{}",
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "assistant", "content": "a2"}),
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let reader = reader_for(&tmp, &body).await;
+        let slice = reader.read_prior(PriorDepth::All).await;
+        assert_eq!(slice.messages.len(), 3, "the completed message is kept");
+        assert_eq!(slice.messages[2]["content"], "a2");
+    }
+
+    #[tokio::test]
+    async fn a_dangling_tool_call_is_repaired_out_of_the_slice() {
+        // The wire-side repair drops a dangling assistant and everything
+        // after it — the current turn included. The slice must be clean
+        // before it gets there.
+        let body = format!(
+            "{}\n{}\n{}\n",
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "x", "arguments": "{}"}
+                }]
+            }),
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let reader = reader_for(&tmp, &body).await;
+        let slice = reader.read_prior(PriorDepth::All).await;
+        assert_eq!(slice.messages.len(), 2, "the dangling assistant is dropped");
+        assert_eq!(slice.messages[1]["content"], "a1");
+    }
+
+    #[tokio::test]
+    async fn clean_end_finds_the_last_newline_behind_a_long_torn_tail() {
+        // The torn tail is longer than one block: a single backward read
+        // finds no newline in it, and cutting at 0 would take the whole
+        // history away.
+        let body = format!(
+            "{}\n{{\"role\":\"user\",\"content\":\"{}",
+            json!({"role": "assistant", "content": "survived"}),
+            "x".repeat(READ_BLOCK as usize * 2)
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let reader = reader_for(&tmp, &body).await;
+        let point = reader.clean_end().await.expect("the cut point is known");
+        assert_eq!(
+            point.offset,
+            body.find('\n').unwrap() as u64 + 1,
+            "the history is kept, the fragment dropped"
+        );
+        assert!(point.prefix.is_empty());
+    }
+
+    #[tokio::test]
+    async fn clean_end_keeps_a_torn_tail_that_is_a_complete_message() {
+        let body = format!(
+            "{}\n{}",
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let reader = reader_for(&tmp, &body).await;
+        let point = reader.clean_end().await.expect("the cut point is known");
+        assert_eq!(point.offset, body.len() as u64, "the message is kept");
+        assert_eq!(
+            point.prefix,
+            b"\n".as_slice(),
+            "the missing newline is written back"
+        );
+    }
+
+    #[tokio::test]
+    async fn clean_end_cuts_a_partial_tail_at_the_last_newline() {
+        let body = format!(
+            "{}\n{{\"role\":\"user\",\"cont",
+            json!({"role": "assistant", "content": "survived"}),
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let reader = reader_for(&tmp, &body).await;
+        let point = reader.clean_end().await.expect("the cut point is known");
+        assert_eq!(point.offset, body.find('\n').unwrap() as u64 + 1);
+        assert!(point.prefix.is_empty());
     }
 
     #[tokio::test]

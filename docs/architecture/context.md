@@ -91,13 +91,27 @@ finds and hands out the window the caller asked for.
   same turns they would have seen in the full journal — the payload is
   byte-identical either way (a differential test in
   `agent_loop/context.rs` pins that).
-- **The parsed tail stays warm.** The reader keeps the tail it parsed
-  in process, keyed by the journal's length and mtime; the writer hands
-  it the messages it appended. A turn that changes nothing on disk costs
-  a `stat` and a memory scan, not a re-read.
-- **A torn tail line is dropped** (a crash mid-append) and a corrupt
-  line ends the backward scan: the newer turns stay, the older ones are
-  not trusted.
+- **Dangling tool calls are repaired on the way out.** The slice drops
+  an assistant message whose tool calls have no tool result, and
+  everything after it, as the whole-file load path did. The repair
+  cannot wait for the wire: there it would also drop the current turn,
+  which sits after the dangling message.
+- **The pair count stays warm.** The reader keeps how many pairs the
+  journal holds in process, keyed by the journal's length and mtime, and
+  the writer adds to it as it appends. A turn that changes nothing on
+  disk costs a `stat`, not a full count.
+- **A torn tail is repaired or dropped.** A crash mid-append can leave a
+  partial last line. When it is a complete message that lost only its
+  newline — the usual shape, the write was cut at its last byte — it is
+  kept, and the next append terminates it. A partial line is dropped
+  instead. Either way the history in front of it is untouched: the cut
+  point is found by scanning back for the last newline, and an
+  unreadable journal (the scan fails) is left alone rather than
+  truncated.
+- **A corrupt line ends the backward scan**: the newer turns stay, the
+  older ones are not trusted. This is the inverse of the whole-file
+  parser, which kept the older prefix — with a backwards scan the newer
+  turns are the ones already parsed.
 
 The write side is append-only too: a turn's messages are appended at the
 end of the file (`session::save_raw_context`), and nothing before them

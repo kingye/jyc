@@ -59,7 +59,7 @@ pub struct AgentLoopConfig<'a> {
     /// Prior conversation history (internal format, for logic).
     pub prior_history: Vec<Message>,
     /// Prior raw context (provider-formatted JSON, for API calls).
-    pub prior_raw_context: std::sync::Arc<Vec<serde_json::Value>>,
+    pub prior_raw_context: Vec<serde_json::Value>,
     /// Messages that arrived while this turn was running, handed over by
     /// the worker when the pattern's `live_injection` is on.
     ///
@@ -210,10 +210,7 @@ pub async fn run(
     // the loop (tail-append when the prefix is unchanged); the strategy
     // decides what is sent to the LLM (see `build_send_context`).
     let mut prior_len = prior_raw_context.len();
-    // Sole owner when the parse cache did not hand this Arc out elsewhere;
-    // otherwise pay one deep clone here instead of re-parsing on every load.
-    let mut raw_context: Vec<serde_json::Value> =
-        std::sync::Arc::try_unwrap(prior_raw_context).unwrap_or_else(|arc| (*arc).clone());
+    let mut raw_context: Vec<serde_json::Value> = prior_raw_context;
     raw_context.push(provider.format_user_message(&user_blocks));
 
     let mut context_input_tokens: u64 = 0;

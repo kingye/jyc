@@ -639,7 +639,7 @@ impl AgentService for JycAgentService {
             topic_name,
             event_bus: event_bus.as_ref(),
             prior_history,
-            prior_raw_context: std::sync::Arc::new(prior_raw_context),
+            prior_raw_context,
             // The queue the worker hands live messages to: the loop folds
             // them into the running turn (see `live_injection`).
             injection_rx: Some(&mut *pending_rx),

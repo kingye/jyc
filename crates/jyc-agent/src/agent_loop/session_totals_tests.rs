@@ -81,6 +81,7 @@ async fn the_session_totals_continue_the_earlier_turns() {
         60,
         70,
         0,
+        0,
     )
     .await;
 

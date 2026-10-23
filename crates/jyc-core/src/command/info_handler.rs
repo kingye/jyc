@@ -111,13 +111,10 @@ fn format_topic_info(t: &TopicInfo) -> String {
         lines.push("Cache:".to_string());
         lines.extend(cache_lines);
     }
-    if let Some(reasoning) = t.total_reasoning_tokens
-        && reasoning > 0
+    if let Some(figures) =
+        jyc_types::format_output_pair(t.total_reasoning_tokens, t.turn_reasoning_tokens)
     {
-        lines.push(format!(
-            "Reasoning: {}",
-            jyc_types::format_token_count(reasoning)
-        ));
+        lines.push(format!("Reasoning: {figures}"));
     }
     if let Some(cost) = &t.cost {
         lines.push(format!("Cost: {}", jyc_types::format_cost_pair(cost)));
@@ -238,6 +235,7 @@ mod tests {
             total_cache_hit_tokens: Some(987_654),
             total_cache_creation_tokens: Some(111),
             total_reasoning_tokens: Some(4_096),
+            turn_reasoning_tokens: Some(512),
             turn_cache_hit_tokens: None,
             turn_input_tokens: None,
             today_all: Vec::new(),
@@ -296,7 +294,7 @@ Output: 2.00K turn · 12.06K session
 Cache:
   Session: 964.51K / 1.18M (80%)
   Create: 111
-Reasoning: 4.00K
+Reasoning: 512 turn · 4.00K session
 Cost: $1.23 today · $0.42 session
 Latency: 1.10s/call (3) · 820ms/call (37)
 Tasks (1/3):
@@ -346,6 +344,7 @@ Files (2):
         t.total_cache_hit_tokens = None;
         t.total_cache_creation_tokens = None;
         t.total_reasoning_tokens = None;
+        t.turn_reasoning_tokens = None;
         t.changed_files = None;
         t.cost = None;
         t.avg_call_ms = None;

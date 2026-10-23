@@ -717,6 +717,7 @@ for each.
 | `mode`                       | string?               | ✓               | —                  |
 | `output_tokens`              | u64?                  | ✓               | —                  |
 | `turn_output_tokens`        | u64?                  | ✓               | —                  |
+| `turn_reasoning_tokens`     | u64?                  | ✓               | —                  |
 | `total_input_tokens`         | u64?                  | ✓               | —                  |
 | `total_cache_hit_tokens`     | u64?                  | ✓               | —                  |
 | `total_cache_creation_tokens`| u64?                  | ✓               | —                  |
@@ -768,6 +769,11 @@ The output figures come in the same two scopes, and print on one row:
 (also zeroed at every turn start, so `None` until the turn makes its first
 call). Both surfaces print them as `12.00K turn · 1.18M session` from one
 shared formatter.
+
+`total_reasoning_tokens` (the hidden chain-of-thought share of the output,
+already included in `output_tokens`) and `turn_reasoning_tokens` follow the
+same pattern and print on the `Reasoning:` row through that same formatter —
+turn first, session second.
 
 `today_all` is the day's spend across *every* topic, per currency — the
 ledger's own day total, the same figure `/bill` reports. It is kept apart

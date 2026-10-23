@@ -24,6 +24,14 @@ use super::OpenArgs;
 const TUNNEL_READY_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a remote `jyc serve` we started may take to answer.
 const SERVE_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long one ssh command may take, end to end.
+///
+/// `ConnectTimeout` bounds only the TCP connect: name resolution, a hanging
+/// `ProxyCommand`/`ProxyJump`, an sshd that accepts and never sends a banner,
+/// and a remote command that never exits are all unbounded there. Every
+/// bootstrap step goes through [`Remote::capture`], and all of them run before
+/// the TUI takes the terminal, so a hang has no way out but this deadline.
+const SSH_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Arguments for `jyc connect`.
 #[derive(Args, Debug)]
@@ -75,13 +83,33 @@ impl Remote {
         }
     }
 
+    /// The host:port the remote inspect server listens on, split.
+    ///
+    /// Bracketed IPv6 is accepted (`[::1]:9876`); a bare v6 literal is not,
+    /// because `host:port` then has no unambiguous port.
+    fn bind_parts(&self) -> Result<(&str, u16)> {
+        let invalid = || format!("invalid --remote-bind '{}': expected host:port", self.bind);
+        let (host, port) = self.bind.rsplit_once(':').with_context(invalid)?;
+        if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
+            bail!(
+                "invalid --remote-bind '{}': bracket IPv6 literals, e.g. '[::1]:9876'",
+                self.bind
+            );
+        }
+        let port = port.parse::<u16>().with_context(invalid)?;
+        Ok((host, port))
+    }
+
     /// The port the remote inspect server listens on — the port the tunnel
     /// forwards to.
     pub(super) fn bind_port(&self) -> Result<u16> {
-        self.bind
-            .rsplit_once(':')
-            .and_then(|(_, port)| port.parse().ok())
-            .with_context(|| format!("invalid --remote-bind '{}': expected host:port", self.bind))
+        Ok(self.bind_parts()?.1)
+    }
+
+    /// The host part of [`Remote::bind`], which is what the links the server
+    /// generates start with (unless `[inspect] base_url` overrides them).
+    pub(super) fn bind_host(&self) -> Result<&str> {
+        Ok(self.bind_parts()?.0)
     }
 
     /// One ssh invocation running `remote_cmd` on the host.
@@ -103,11 +131,18 @@ impl Remote {
 
     /// Run a command over ssh and return its trimmed stdout.
     async fn capture(&self, remote_cmd: &str) -> Result<String> {
-        let out = self
-            .ssh(remote_cmd)
-            .stdin(Stdio::null())
-            .output()
+        let mut cmd = self.ssh(remote_cmd);
+        // Dropping the future on timeout must not leave the ssh child behind.
+        cmd.stdin(Stdio::null()).kill_on_drop(true);
+        let out = tokio::time::timeout(SSH_COMMAND_TIMEOUT, cmd.output())
             .await
+            .with_context(|| {
+                format!(
+                    "ssh {} did not answer within {}s",
+                    self.host,
+                    SSH_COMMAND_TIMEOUT.as_secs()
+                )
+            })?
             .with_context(|| format!("failed to run `ssh {}`", self.host))?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
@@ -146,15 +181,25 @@ impl Remote {
 
     /// Start `jyc serve` on the remote host and return at once.
     ///
-    /// `setsid nohup` detaches it from this ssh session: it has no controlling
-    /// terminal and does not take SIGHUP when the session closes, so it keeps
-    /// running — the dashboard owns a tunnel, not the hub.
+    /// `nohup` is the part that keeps it alive: it ignores SIGHUP, so closing
+    /// the ssh session — which hangs up the remote shell and its jobs — does
+    /// not take the hub down. `setsid` is added where it exists, to also drop
+    /// the controlling terminal; it is optional on purpose, since macOS ships
+    /// no `setsid` and `nohup` plus redirected stdio is enough there.
     pub(super) async fn start_serve(&self, pipe: bool) -> Result<()> {
         let mut argv = self.argv(&["serve"]);
         if pipe {
             argv.push("--pipe".to_string());
         }
-        let cmd = format!("setsid nohup {} >/dev/null 2>&1 &", command_line(&argv));
+        let serve = command_line(&argv);
+        // All three stdio channels are cut loose: the channel ssh forwards
+        // closes when the shell exits only if nothing it left behind still
+        // holds them, and `serve --pipe` would otherwise hand them to its
+        // `jyc-pipe` child.
+        let cmd = format!(
+            "if command -v setsid >/dev/null 2>&1; then setsid nohup {serve} >/dev/null 2>&1 </dev/null & \
+             else nohup {serve} >/dev/null 2>&1 </dev/null & fi"
+        );
         self.capture(&cmd)
             .await
             .context("could not start `jyc serve` on the remote host")?;
@@ -269,7 +314,7 @@ impl Tunnel {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
-        let rewrite = rewrite_pair(local_port, remote_port);
+        let rewrite = rewrite_pair(local_port, remote_port, remote.bind_host()?);
         Ok(Self {
             addr,
             rewrite,
@@ -279,15 +324,31 @@ impl Tunnel {
 }
 
 /// The message-text translation a tunnel needs, if any: publish links carry
-/// the remote's own loopback URL, which only resolves here when the ports
-/// happen to match.
-fn rewrite_pair(local_port: u16, remote_port: u16) -> Option<(String, String)> {
-    (local_port != remote_port).then(|| {
-        (
-            format!("http://127.0.0.1:{remote_port}"),
-            format!("http://127.0.0.1:{local_port}"),
-        )
-    })
+/// the remote's own URL, which only resolves here when the ports happen to
+/// match.
+///
+/// The host comes from `--remote-bind` because that is what the server builds
+/// links from when `[inspect] base_url` is unset. Two cases are outside this
+/// rewrite's reach, and the docs say so: a wildcard bind (the server swaps in
+/// its LAN IP, which this machine cannot know) and a configured `base_url`
+/// (which may be anything at all). Same-port preference is all that is left
+/// there.
+fn rewrite_pair(local_port: u16, remote_port: u16, bind_host: &str) -> Option<(String, String)> {
+    if local_port == remote_port || is_wildcard(bind_host) {
+        return None;
+    }
+    Some((
+        format!("http://{bind_host}:{remote_port}"),
+        format!("http://127.0.0.1:{local_port}"),
+    ))
+}
+
+/// Whether `host` is an unspecified address (`0.0.0.0`, `[::]`), the one bind
+/// whose generated links never mention it.
+fn is_wildcard(host: &str) -> bool {
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_unspecified())
 }
 
 /// Pick the local port for the tunnel.
@@ -350,18 +411,31 @@ pub(super) async fn bootstrap(
         if token.is_none() && explicit_token.is_none() {
             token = remote.token().await.ok();
         }
-        last = probe(tunnel, token.as_deref()).await;
+        // A probe blocks on its own timeout, so it is bounded by what is left
+        // of the window rather than by the window plus one probe.
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        last = match tokio::time::timeout(remaining, probe(tunnel, token.as_deref())).await {
+            Ok(result) => result,
+            Err(_) => Err(anyhow::anyhow!(
+                "no answer within {}s",
+                SERVE_STARTUP_TIMEOUT.as_secs()
+            )),
+        };
         if last.is_ok() {
             return Ok(token);
         }
         if tokio::time::Instant::now() >= deadline {
+            // Part of the failure text, not a log line: it is printed before
+            // the TUI starts, and the error is the one thing the user keeps.
             let tail = remote.log_tail().await;
-            if !tail.is_empty() {
-                eprintln!("--- remote jyc.log ---\n{tail}\n--- end of log ---");
-            }
+            let log = if tail.is_empty() {
+                String::new()
+            } else {
+                format!("\n  --- remote jyc.log tail ---\n{tail}\n  --- end of log ---")
+            };
             bail!(
                 "jyc serve did not answer at {} on {} within {}s:\n  {}\n  \
-                 see its log on {} (path shown when --remote-data-dir is given)",
+                 start it by hand on {} to see why{log}",
                 remote.bind,
                 remote.host,
                 SERVE_STARTUP_TIMEOUT.as_secs(),
@@ -392,6 +466,11 @@ pub(super) fn resolve_remote_path(path: Option<&str>, home: &str) -> Result<Stri
     };
     let home = home.trim_end_matches('/');
     if let Some(rest) = path.strip_prefix('~') {
+        // Only this user's own home: `~other/x` would need that user's home
+        // dir, which this side has no way to learn.
+        if !(rest.is_empty() || rest.starts_with('/')) {
+            bail!("remote paths may not expand another user's home (got '{path}')");
+        }
         let rest = rest.trim_start_matches('/');
         return Ok(if rest.is_empty() {
             home.to_string()
@@ -443,11 +522,23 @@ mod tests {
     #[test]
     fn bind_port_reads_the_port_off_the_remote_bind() {
         assert_eq!(remote().bind_port().unwrap(), 9876);
+        assert_eq!(remote().bind_host().unwrap(), "127.0.0.1");
         let mut remote = remote();
         remote.bind = "0.0.0.0:9000".into();
         assert_eq!(remote.bind_port().unwrap(), 9000);
         remote.bind = "nonsense".into();
         assert!(remote.bind_port().is_err());
+    }
+
+    #[test]
+    fn bind_parts_takes_a_bracketed_v6_literal_and_rejects_a_bare_one() {
+        let mut remote = remote();
+        remote.bind = "[::1]:9876".into();
+        assert_eq!(remote.bind_host().unwrap(), "[::1]");
+        assert_eq!(remote.bind_port().unwrap(), 9876);
+        remote.bind = "::1:9876".into();
+        let err = remote.bind_parts().unwrap_err();
+        assert!(err.to_string().contains("bracket"), "{err}");
     }
 
     #[test]
@@ -478,14 +569,42 @@ mod tests {
     }
 
     #[test]
+    fn remote_path_refuses_another_users_home() {
+        let err = resolve_remote_path(Some("~other/src"), "/home/dev").unwrap_err();
+        assert!(err.to_string().contains("another user"), "{err}");
+    }
+
+    #[test]
     fn rewrite_pair_appears_only_when_the_ports_differ() {
-        assert_eq!(rewrite_pair(9876, 9876), None);
+        assert_eq!(rewrite_pair(9876, 9876, "127.0.0.1"), None);
         assert_eq!(
-            rewrite_pair(41234, 9876),
+            rewrite_pair(41234, 9876, "127.0.0.1"),
             Some((
                 "http://127.0.0.1:9876".to_string(),
                 "http://127.0.0.1:41234".to_string()
             ))
         );
+    }
+
+    #[test]
+    fn rewrite_pair_follows_the_bind_host_but_skips_a_wildcard() {
+        assert_eq!(
+            rewrite_pair(41234, 9876, "localhost"),
+            Some((
+                "http://localhost:9876".to_string(),
+                "http://127.0.0.1:41234".to_string()
+            ))
+        );
+        assert_eq!(
+            rewrite_pair(41234, 9876, "[::1]"),
+            Some((
+                "http://[::1]:9876".to_string(),
+                "http://127.0.0.1:41234".to_string()
+            ))
+        );
+        // A wildcard bind generates links with the remote's LAN IP, which this
+        // machine cannot know: no rewrite to offer.
+        assert_eq!(rewrite_pair(41234, 9876, "0.0.0.0"), None);
+        assert_eq!(rewrite_pair(41234, 9876, "[::]"), None);
     }
 }

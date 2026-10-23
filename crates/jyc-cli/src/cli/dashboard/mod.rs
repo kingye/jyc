@@ -654,7 +654,14 @@ pub async fn run(
 
     // Resolve the auth token: explicit flag/env wins, otherwise read it
     // from `<data dir>/auth.token` (which `jyc serve` writes on startup).
-    let token = resolve_dashboard_token(args.token.as_deref(), data_dir)?;
+    // A remote hub is the exception: its token was read over ssh, and this
+    // machine's file belongs to a different hub — sending it there would be
+    // the wrong secret in the wrong place.
+    let token = if args.remote {
+        args.token.clone()
+    } else {
+        resolve_dashboard_token(args.token.as_deref(), data_dir)?
+    };
 
     let client = match &token {
         Some(t) => InspectClient::with_token(&args.addr, Some(t.as_str())),

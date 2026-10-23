@@ -387,10 +387,15 @@ jyc connect devbox -s              # start `jyc serve` there first
 jyc connect devbox -p ~/src/app    # open that remote directory as a topic
 ```
 
-Requires `[inspect] enabled = true` on the remote and non-interactive ssh auth
+Requires `[inspect] enabled = true` on the remote, non-interactive ssh auth
 (`ssh devbox true` must not prompt): the bootstrap and the tunnel both run
 before the TUI takes the terminal, so a password prompt would have nowhere to
-appear.
+appear. The remote login shell must be POSIX-ish (`sh`/`bash`/`zsh`/`dash`) —
+the bootstrap expands `$HOME` and probes for `setsid` through it. That probe is
+also why `-s` works on macOS: `setsid` is used when present, `nohup` alone
+otherwise. Link rewriting covers a concrete `--remote-bind` host; with a
+wildcard bind or a configured `[inspect] base_url` the tunnel still works, but
+the links the server generates then keep their remote URL.
 
 **Plugins**: a *plugin bundle* is a gzipped tar with `skills/`, `subagents/`,
 `hooks/` and `templates/` at its root — the four user-editable collections this

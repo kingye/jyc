@@ -3142,6 +3142,13 @@ What the design buys, and what it deliberately does not:
   here, an ephemeral port is used and message text is translated from the
   remote prefix to the tunnel's as it enters the pane — the rewrite is applied
   in one place (`ChatState::push_message`), so every ingestion path gets it.
+  The prefix that gets rewritten is the one the *server* builds links from
+  (`effective_base_url`): `http://<--remote-bind host>:<port>`. Two setups are
+  out of its reach and rely on the same-port preference alone — a wildcard
+  bind (the server substitutes its LAN IP, which this machine cannot know) and
+  a configured `[inspect] base_url` (which may name anything, including a
+  proxy). `jyc connect` emits no rewrite in those two cases rather than one
+  that cannot match.
 - **The token is read per session, never copied.** `jyc connect` runs
   `jyc token show` on the remote and keeps the result in memory. A copy in the
   local data dir would be a second secret to keep in sync, and the dashboard
@@ -3151,8 +3158,10 @@ What the design buys, and what it deliberately does not:
   the tunnel and, when nothing answers, fails with that probe's error — which
   names a 401 when the server is up but the token is stale, and a transport
   error when nothing is listening — plus the two remedies. With `-s` it starts
-  `setsid nohup jyc serve` (no controlling terminal, no SIGHUP when the
-  session closes) and waits up to 60 s.
+  `nohup jyc serve` (SIGHUP ignored, so the closed session cannot take the hub
+  down), prefixed with `setsid` where that exists to also drop the controlling
+  terminal — macOS ships no `setsid`, and `nohup` plus redirected stdio is
+  enough there — and waits up to 60 s.
 - **Exiting ends the tunnel only.** The hub may be serving other dashboards,
   channels and scheduled jobs; `jyc connect` owns the forward, not the server.
   (A dashboard killed with SIGKILL never runs its `Drop`, so the `ssh -N` it
@@ -3161,6 +3170,13 @@ What the design buys, and what it deliberately does not:
   tunnel both run before the TUI takes the terminal, so a password prompt
   nobody can answer would hang in raw mode; `BatchMode=yes` turns that into a
   fast failure whose text says to check `ssh <host> true` and the agent.
+  Every ssh command also carries an overall deadline (30 s), because
+  `ConnectTimeout` bounds only the TCP connect — name resolution, a
+  `ProxyCommand`, an sshd that never sends a banner, or a remote command that
+  never exits would otherwise hang the same way.
+- **A POSIX-ish remote login shell.** The bootstrap runs `printf '%s' "$HOME"`
+  and a `command -v setsid` test, and quoting assumes POSIX single-quote rules
+  — `sh`, `bash`, `zsh`, `dash` all fine, `csh`/`fish` not.
 
 ### Protocol
 

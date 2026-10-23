@@ -3685,6 +3685,7 @@ Dashboard (crates/jyc-cli/src/cli/dashboard/)
 | Per-channel broadcast bus (`InspectContext.inspect_broadcast`) | One shared bus; handlers filter by `(channel, topic)` from each payload |
 | `id: u64` monotonic per-topic for dedup | Survives WS reconnect / Lagged recovery; small field, backward compat via `#[serde(default)]` |
 | Chat row ids allocated by `chat_seq` (one owner: `jyc-core`), not by the inspect counter | The live row and the logged row are the same row only if both carry the same number; the number has to exist before either consumer runs (enqueue for a message, delivery for a reply), so the log cannot mint it and the observer cannot either. Sharing the activity counter instead made one watermark describe two number spaces |
+| Chat dedup by membership on screen, not by a high-water mark | Numbers are handed out in arrival order, but a row is written when it is delivered or injected: a message that arrives mid-turn is logged *after* replies that took higher numbers, so neither the log nor a hydrate is in id order. A high-water mark skipped that row for the rest of the session, and seeding from the file's last line could hand out a number already used |
 | `resync` on `Lagged(n)` instead of panicking | Client re-hydrates via REST; same code path as cold start |
 | REST hydrate on selection + WS for live | Cold start from disk (authoritative); warm path push-based (low latency) |
 | `chat.progress` and `activity` pane read from the **same** `live_activity` buffer | Single source of truth; both panes show identical data |

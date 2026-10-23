@@ -10,11 +10,19 @@
 //! Rows logged before this module existed have no id (they deserialize as
 //! `0`) and are not part of the sequence.
 //!
+//! The number is allocated in arrival order, but a row is *written* when it is
+//! delivered or injected, so the log is not in id order: a message that arrived
+//! during a running turn is appended after replies that took higher numbers.
+//! Seeding therefore takes the highest id in the file's tail rather than the
+//! last line's, and a client dedups by membership rather than by a high-water
+//! mark.
+//!
 //! [`TopicManager::enqueue`]: crate::topic_manager::TopicManager::enqueue
 //! [`ChatLogStore`]: crate::chat_log_store::ChatLogStore
 
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
 use std::sync::{LazyLock, Mutex};
 
 use jyc_types::InboundMessage;
@@ -53,13 +61,20 @@ pub fn next(topic_name: &str) -> u64 {
 
 /// The highest id already written to the topic's chat log, or `0` when none.
 ///
-/// Reads the tail of the newest `chat_history_*.jsonl` file: allocation is
-/// per topic and files roll over by date, so the newest file's last record
-/// holds the highest number.
+/// Reads the tail of the newest `chat_history_*.jsonl` file: files roll over
+/// by date, and only the newest one can hold numbers allocated since. The
+/// highest number is taken over every whole record in the window, not over
+/// the last line, because a reordered write (see the module comment) can put
+/// a lower number last — and because a half-written last line is the common
+/// shape of a crash, and it must not reset the sequence.
 fn max_on_disk(topic_name: &str) -> u64 {
     // Only the state dir can hold numbered rows: the legacy topic-root
     // location is where pre-sequence rows live, and they carry no id.
     let Some(state_dir) = jyc_types::state_dir::registered_state(topic_name) else {
+        tracing::warn!(
+            topic = %topic_name,
+            "chat sequence has no registered state dir; allocating from 1"
+        );
         return 0;
     };
     let Some(newest) = crate::chat_log_store::chat_history_files_in(&state_dir)
@@ -73,7 +88,9 @@ fn max_on_disk(topic_name: &str) -> u64 {
     };
 
     // The last record can be longer than the window (a long message); widen
-    // until its opening line is inside the window or the whole file is.
+    // until the window opens on a line boundary and holds a number, or covers
+    // the whole file. A window that opens mid-record hides that record's id,
+    // and the id could be exactly the one a reordered write left behind it.
     let mut window = 64 * 1024;
     loop {
         let start = len.saturating_sub(window);
@@ -83,14 +100,20 @@ fn max_on_disk(topic_name: &str) -> u64 {
         if file.seek(SeekFrom::Start(start)).is_err() {
             return 0;
         }
-        let mut buf = String::new();
-        if file.read_to_string(&mut buf).is_err() {
+        let mut bytes = Vec::new();
+        if file.read_to_end(&mut bytes).is_err() {
             return 0;
         }
-        if let Some(record) = buf.split('\n').rev().find(|l| !l.trim().is_empty())
-            && let Some(id) = serde_json::from_str::<serde_json::Value>(record)
-                .ok()
-                .and_then(|v| v.get("id").and_then(|i| i.as_u64()))
+        // Lossy: a crash can split a multi-byte character. The torn line does
+        // not parse and is skipped, like any other partial record.
+        let buf = String::from_utf8_lossy(&bytes);
+        let max = buf
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter_map(|row| row.get("id").and_then(|id| id.as_u64()))
+            .max();
+        if let Some(id) = max
+            && (start == 0 || opens_on_a_line(&newest, start))
         {
             return id;
         }
@@ -99,6 +122,21 @@ fn max_on_disk(topic_name: &str) -> u64 {
         }
         window = window.saturating_mul(2);
     }
+}
+
+/// Whether `offset` begins a line, i.e. the byte before it is a newline.
+fn opens_on_a_line(path: &Path, offset: u64) -> bool {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    if file
+        .seek(SeekFrom::Start(offset.saturating_sub(1)))
+        .is_err()
+    {
+        return false;
+    }
+    let mut byte = [0u8; 1];
+    matches!(file.read_exact(&mut byte), Ok(()) if byte[0] == b'\n')
 }
 
 /// The chat sequence number an inbound message was tagged with, if any.
@@ -177,6 +215,64 @@ mod tests {
         );
 
         assert_eq!(next(topic), 42);
+    }
+
+    #[test]
+    fn takes_the_highest_id_not_the_last_line() {
+        // A message that arrived mid-turn is logged when it is injected, after
+        // a reply that took a higher number — so the file is not in id order.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "chat-seq-reordered";
+        let state_dir_path = tmp.path().join(".jyc");
+        state_dir::register(topic, &state_dir_path);
+        write_log(
+            &state_dir_path,
+            &[
+                r#"{"id":11,"type":"reply","content":"heartbeat"}"#,
+                r#"{"id":10,"type":"received","content":"typed mid-turn"}"#,
+            ],
+        );
+
+        assert_eq!(next(topic), 12);
+    }
+
+    #[test]
+    fn seeds_past_a_half_written_last_line() {
+        // A crash mid-append leaves a truncated record. It does not parse, and
+        // it must not take the sequence back to 1.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "chat-seq-torn";
+        let state_dir_path = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&state_dir_path).unwrap();
+        std::fs::write(
+            state_dir_path.join("chat_history_2026-10-23.jsonl"),
+            "{\"id\":13,\"type\":\"reply\",\"content\":\"ok\"}\n{\"id\":14,\"type\":\"rep",
+        )
+        .unwrap();
+        state_dir::register(topic, &state_dir_path);
+
+        assert_eq!(next(topic), 14);
+    }
+
+    #[test]
+    fn reads_past_a_record_the_window_opens_inside() {
+        // The record before a reordered one is longer than the window, so the
+        // window opens mid-record and the highest id sits in the hidden part.
+        // The window must widen until it opens on a line boundary.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "chat-seq-mid-record";
+        let state_dir_path = tmp.path().join(".jyc");
+        state_dir::register(topic, &state_dir_path);
+        let long = "x".repeat(200 * 1024);
+        write_log(
+            &state_dir_path,
+            &[
+                &format!(r#"{{"id":21,"type":"reply","content":"{long}"}}"#),
+                r#"{"id":20,"type":"received","content":"typed mid-turn"}"#,
+            ],
+        );
+
+        assert_eq!(next(topic), 22);
     }
 
     #[test]

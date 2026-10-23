@@ -2869,12 +2869,15 @@ fn is_user_visible_activity_filters_heartbeats() {
 // Bug history: the original `(sender, text)` dedup silently dropped repeated
 // runs of `/context` and similar deterministic-output commands. The fix gave
 // every row a sequence number, allocated where the message enters the system;
-// the pane then draws a row when its number exceeds the highest already drawn.
+// the pane then draws a row unless it already holds that number.
 //
 // `sync_live_chat` implements that as three cases:
 //   1. Echo confirmation: a live entry carrying the client id of an
 //      unconfirmed local echo (`id == 0`) replaces that echo in place.
-//   2. Live entries (`id != 0`): append when `id > last_pushed`.
+//   2. Live entries (`id != 0`): append unless a row with that id is already
+//      on screen. Membership, not a high-water mark — ids are allocated on
+//      arrival but rows are written on delivery, so a hydrate can hand them
+//      over out of order (`hydrate_draws_a_row_whose_number_is_behind_...`).
 //   3. Rows with `id == 0` that match no echo: logged before the sequence
 //      existed, so they have nothing to place them by — not drawn.
 // ---------------------------------------------------------------------------
@@ -2921,7 +2924,7 @@ fn poll_sync_appends_each_live_entry_by_unique_id() {
     );
     assert!(app.chat.sync_live_chat("agents", "t"));
     assert_eq!(app.chat.messages.len(), 2);
-    // Second sync: nothing new; tracker stays at id 4.
+    // Second sync: both are already on screen, so nothing is appended.
     assert!(!app.chat.sync_live_chat("agents", "t"));
     assert_eq!(app.chat.messages.len(), 2);
 }
@@ -3132,13 +3135,10 @@ fn poll_sync_command_repeats_with_historical_backdrop() {
 }
 
 #[test]
-fn seed_live_resets_last_pushed_chat_seq_so_revisit_rehydrates() {
-    // The bug fixed by `seed_live` resetting `last_pushed_chat_seq` to 0:
-    // when the user closes and reopens a topic, the egress tracker still
-    // holds the previous visit's max id. Without the reset, the freshly
-    // hydrated historical rows (whose ids ≤ old max) would all be
-    // skipped by rule (1), so the chat pane would show only new live
-    // entries — no historical context.
+fn revisit_rehydrates_every_row() {
+    // Closing and reopening a topic clears the pane (`reset_chat_state`) and
+    // hydrates the same rows again. They must all come back: the pane is its
+    // own record of what it drew, so a cleared pane draws everything.
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     let historical: Vec<jyc_types::ChatMessageEntry> = (0..10)
@@ -3159,28 +3159,11 @@ fn seed_live_resets_last_pushed_chat_seq_so_revisit_rehydrates() {
         .seed_live("agents", "t", vec![], historical.clone());
     app.chat.sync_live_chat("agents", "t");
     assert_eq!(app.chat.messages.len(), 10);
-    // The egress tracker now sits at the max historical id (10).
-    assert_eq!(
-        app.chat
-            .last_pushed_chat_seq
-            .get(&("agents".into(), "t".into()))
-            .copied(),
-        Some(10)
-    );
     // Second visit: simulate `open()` clearing `messages` + a fresh
-    // REST hydrate via `seed_live`. The tracker must be reset so the
-    // hydrated historicals are re-pushed.
+    // REST hydrate via `seed_live`.
     app.chat.messages.clear();
     app.chat
         .seed_live("agents", "t", vec![], historical.clone());
-    assert_eq!(
-        app.chat
-            .last_pushed_chat_seq
-            .get(&("agents".into(), "t".into()))
-            .copied(),
-        Some(0),
-        "seed_live must reset the egress tracker so the freshly hydrated rows are not skipped"
-    );
     app.chat.sync_live_chat("agents", "t");
     assert_eq!(
         app.chat.messages.len(),
@@ -3245,9 +3228,9 @@ fn ws_chat_message_for_another_topic_stays_in_its_buffer() {
 
 #[test]
 fn resync_hydrate_does_not_repush_rows_already_on_screen() {
-    // `seed_live` zeroes the egress tracker only when `messages` is empty
-    // (a fresh `open()`). A resync hydrate leaves `messages` in place, so
-    // zeroing it there re-pushed up to 50 rows the user was already looking at.
+    // A resync hydrate replaces the buffer with the same rows the pane is
+    // already showing; matching them by sequence number is what keeps them
+    // from being stacked a second time.
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
@@ -3269,13 +3252,8 @@ fn resync_hydrate_does_not_repush_rows_already_on_screen() {
         "topic": "t1",
     }));
     assert_eq!(app.chat.live_chat_for("chan", "t1").count(), 0);
-    assert_eq!(
-        app.chat
-            .last_pushed_chat_seq
-            .get(&("chan".to_string(), "t1".to_string())),
-        Some(&3),
-        "the tracker describes the pane, so a buffer wipe must not clear it"
-    );
+    // The pane still holds the three rows, so the re-hydrated copies match by
+    // sequence number and are not drawn a second time.
     app.chat.seed_live("chan", "t1", vec![], history.clone());
     app.chat.sync_live_if_visible("chan", "t1");
     assert_eq!(
@@ -3284,13 +3262,66 @@ fn resync_hydrate_does_not_repush_rows_already_on_screen() {
         "a resync hydrate must not re-push rows already on screen"
     );
 
-    // Rows newer than the tracker still land after the resync.
+    // Rows the pane has not drawn still land after the resync.
     let mut with_new = history;
     with_new.push(history_row("ai", "fresh", 4));
     app.chat.seed_live("chan", "t1", vec![], with_new);
     app.chat.sync_live_if_visible("chan", "t1");
     assert_eq!(app.chat.messages.len(), 4);
     assert_eq!(app.chat.messages[3].text, "fresh");
+}
+
+#[test]
+fn hydrate_draws_a_row_whose_number_is_behind_the_newest() {
+    // Numbers are allocated on arrival but rows are written on delivery, so a
+    // message injected mid-turn is logged *after* replies that took higher
+    // numbers. A resync hydrate therefore hands rows over out of id order; a
+    // high-water mark would skip the reordered row for the rest of the
+    // session, even though it never reached the pane.
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.visible = true;
+    app.chat.channel = Some("chan".to_string());
+    app.chat.topic = Some("t1".to_string());
+
+    // On screen: only the heartbeat reply, which took the higher number.
+    app.chat.seed_live(
+        "chan",
+        "t1",
+        vec![],
+        vec![history_row("ai", "heartbeat", 110)],
+    );
+    assert!(app.chat.sync_live_if_visible("chan", "t1"));
+    assert_eq!(app.chat.messages.len(), 1);
+
+    // The socket fell behind: a resync drops the buffer, and the hydrate
+    // returns the message the agent received mid-turn (logged later, lower
+    // number) beside the reply that was already drawn.
+    app.chat.handle_live_event(&serde_json::json!({
+        "type": "resync",
+        "channel": "chan",
+        "topic": "t1",
+    }));
+    app.chat.seed_live(
+        "chan",
+        "t1",
+        vec![],
+        vec![
+            history_row("ai", "heartbeat", 110),
+            history_row("user", "typed mid-turn", 109),
+        ],
+    );
+    assert!(app.chat.sync_live_if_visible("chan", "t1"));
+    assert_eq!(
+        app.chat.messages.len(),
+        2,
+        "the reordered row must reach the pane, the drawn one must not repeat"
+    );
+    assert_eq!(app.chat.messages[1].text, "typed mid-turn");
+
+    // Folding the same buffer again adds nothing.
+    assert!(!app.chat.sync_live_if_visible("chan", "t1"));
+    assert_eq!(app.chat.messages.len(), 2);
 }
 
 // ── Message-pane cursor ───────────────────────────────────────────────────

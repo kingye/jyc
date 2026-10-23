@@ -119,6 +119,12 @@ pub(crate) async fn read_signal_attachments(
 /// out to the dashboard.
 ///
 /// The watcher runs until cancelled (when the agent finishes processing).
+///
+/// Delivery is at-least-once: the signal files are removed after a successful
+/// send, so if the process dies between the send and the removal (or the
+/// removal fails) the next poll delivers again. That second delivery is a new
+/// chat row with a new sequence number — the dashboard shows the reply twice,
+/// which is the honest rendering of what happened.
 // The `hooks` parameter pushed this over clippy's 7-arg heuristic;
 // grouping the delivery targets into a struct would obscure more than
 // it helps (same call as `#[allow(clippy::too_many_arguments)]` in

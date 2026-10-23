@@ -239,15 +239,11 @@ pub(super) struct ChatState {
     /// Last-seen monotonic id per (channel, topic) — used to drop duplicate
     /// WS events after reconnect / `resync`.
     pub(super) last_seen_activity_id: std::collections::BTreeMap<(String, String), u64>,
-    /// Highest `ChatMessageEntry::id` already pushed from `live_chat` into
-    /// `messages` for each (channel, topic). Used by `sync_live_chat` to skip
-    /// live entries that have already been pushed; without this, historical
-    /// `id = 0` rows from `chat_log_store.rs` JSONL hydrate would re-push on
-    /// every fold.
+    /// Highest chat sequence number seen on the WS stream (and in a hydrate)
+    /// for each (channel, topic) — used to drop duplicate WS events after
+    /// reconnect / `resync`. The pane's own dedup does not use it: see
+    /// `sync_live_chat`.
     pub(super) last_seen_chat_seq: std::collections::BTreeMap<(String, String), u64>,
-    /// Highest chat sequence number already drawn in the pane. Chat rows carry
-    /// the number the chat log stores, so this is the whole dedup rule.
-    pub(super) last_pushed_chat_seq: std::collections::BTreeMap<(String, String), u64>,
     /// Counter behind this client's own message ids (see `ChatMessage::client_id`).
     pub(super) next_client_msg_seq: u64,
     /// Last (channel, topic) that was REST-hydrated by the poll loop.
@@ -2661,7 +2657,6 @@ impl ChatState {
             live_tick_ms: std::collections::BTreeMap::new(),
             last_seen_activity_id: std::collections::BTreeMap::new(),
             last_seen_chat_seq: std::collections::BTreeMap::new(),
-            last_pushed_chat_seq: std::collections::BTreeMap::new(),
             next_client_msg_seq: 0,
             last_hydrated_key: None,
             open_addr: None,
@@ -3748,7 +3743,8 @@ impl ChatState {
         let max_chat_seq = chat.iter().map(|e| e.id).max().unwrap_or(0);
         let activity_buf: std::collections::VecDeque<_> = activity.into_iter().collect();
         let chat_buf: std::collections::VecDeque<_> = chat.into_iter().collect();
-        // Cap buffer sizes to match the in-memory cap in jyc-inspect.
+        // Bound the buffers. The activity cap matches what `hydrate_live` asks
+        // for; the chat cap matches its request too (50 rows).
         const MAX_ACTIVITY: usize = 180;
         const MAX_CHAT: usize = 50;
         let mut activity_buf = activity_buf;
@@ -3764,14 +3760,6 @@ impl ChatState {
         self.last_seen_activity_id
             .insert(key.clone(), max_activity_id);
         self.last_seen_chat_seq.insert(key.clone(), max_chat_seq);
-        // A fresh `open()` cleared `messages` (via `reset_chat_state`), so the
-        // hydrated rows must be re-pushed in full — leaving the previous
-        // visit's max id would skip every historical row whose id ≤ old max.
-        // A resync hydrate is *not* that case: `messages` survives it, and
-        // zeroing the tracker would re-push rows already on screen.
-        if self.messages.is_empty() {
-            self.last_pushed_chat_seq.insert(key, 0);
-        }
     }
 
     /// Handle a parsed `{"type":"activity",...}` or similar WS payload.
@@ -3902,11 +3890,11 @@ impl ChatState {
             }
             "resync" => {
                 // Server fell behind (Lagged): the buffers are a cache of what
-                // the socket carried, so re-fetch them. `messages` and
-                // `last_pushed_chat_id` describe the *pane*, which the wipe
-                // does not touch — clearing the tracker would re-push every
-                // hydrated row already on screen. Rows missed while lagged
-                // stay missing until the next hydrate (a reconnect).
+                // the socket carried, so re-fetch them. `messages` describes
+                // the *pane*, which the wipe does not touch: the hydrate's
+                // rows match it by sequence number, so nothing already on
+                // screen is drawn twice. Rows missed while lagged stay
+                // missing until the next hydrate (a reconnect).
                 self.live_activity.remove(&key);
                 self.live_chat.remove(&key);
                 self.live_thinking.remove(&key);
@@ -4014,15 +4002,22 @@ impl ChatState {
         true
     }
 
-    /// Append the live buffer's new rows to the rendered message list.
-    /// Returns `true` if the pane changed.
+    /// Append the live buffer's rows the pane is not showing yet. Returns
+    /// `true` if the pane changed.
     ///
-    /// One rule: a row is appended when its chat sequence number is greater
-    /// than the highest one already drawn. The number is allocated once, where
-    /// the message entered the system, and the chat log stores the same value
-    /// — so the live row and the historical row are the same row, and no
+    /// One rule: a row is appended unless the pane already holds a row with
+    /// its chat sequence number. The number is allocated once, where the
+    /// message entered the system, and the chat log stores the same value —
+    /// so the live row and the historical row are the same row, and no
     /// comparison of message text is needed (or wanted: it silently dropped a
     /// repeated message).
+    ///
+    /// Membership, not a high-water mark. Numbers are handed out in arrival
+    /// order but a row is written when it is delivered or injected, so a
+    /// message that arrived mid-turn is logged *after* replies that took
+    /// higher numbers: a hydrate hands its rows over out of id order, and
+    /// "greater than the highest drawn" would skip the out-of-order row for
+    /// the rest of the session.
     ///
     /// The one exception is the row this client is the author of: it already
     /// drew an optimistic echo (`id == 0`, tagged with a client id). The
@@ -4033,17 +4028,10 @@ impl ChatState {
     /// sequence existed; they are not drawn.
     fn sync_live_chat(&mut self, channel: &str, topic: &str) -> bool {
         // Collect into a Vec first to release the immutable borrow on
-        // self.live_chat before mutating self.messages and last_pushed_chat_seq.
+        // self.live_chat before mutating self.messages.
         let live_msgs: Vec<jyc_types::ChatMessageEntry> =
             self.live_chat_for(channel, topic).cloned().collect();
-        let push_key = (channel.to_string(), topic.to_string());
-        let last_pushed = self
-            .last_pushed_chat_seq
-            .get(&push_key)
-            .copied()
-            .unwrap_or(0);
         let mut changed = false;
-        let mut max_pushed = last_pushed;
         for msg in &live_msgs {
             if msg.id == 0 {
                 continue;
@@ -4059,7 +4047,7 @@ impl ChatState {
                 echo.id = msg.id;
                 echo.timestamp = msg.timestamp.clone();
                 changed = true;
-            } else if msg.id > last_pushed {
+            } else if !self.messages.iter().any(|m| m.id == msg.id) {
                 self.messages.push(ChatMessage {
                     sender: msg.sender.clone(),
                     text: msg.text.clone(),
@@ -4068,15 +4056,7 @@ impl ChatState {
                     client_id: msg.client_msg_id.clone(),
                 });
                 changed = true;
-            } else {
-                continue;
             }
-            if msg.id > max_pushed {
-                max_pushed = msg.id;
-            }
-        }
-        if max_pushed > last_pushed {
-            self.last_pushed_chat_seq.insert(push_key, max_pushed);
         }
         changed
     }

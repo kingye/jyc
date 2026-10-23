@@ -200,9 +200,7 @@ impl ContextReader {
         let mut end = file_len;
         loop {
             let start = end.saturating_sub(READ_BLOCK);
-            let Some((_, bytes)) = self.read_block(start, end).await else {
-                return None;
-            };
+            let (_, bytes) = self.read_block(start, end).await?;
             if let Some(i) = bytes.iter().rposition(|&b| b == b'\n') {
                 let cut = start + i as u64 + 1;
                 return Some(self.append_point_after(cut, file_len).await);

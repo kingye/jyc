@@ -29,7 +29,7 @@ pub(super) fn test_config<'a>(
         topic_name,
         event_bus: None,
         prior_history: vec![],
-        prior_raw_context: std::sync::Arc::new(vec![]),
+        prior_raw_context: vec![],
         injection_rx: None,
         max_iterations: Some(5),
         sse_read_timeout: std::time::Duration::from_secs(60),

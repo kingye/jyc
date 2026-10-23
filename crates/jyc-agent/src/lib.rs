@@ -4,6 +4,7 @@
 
 pub mod agent_loop;
 pub mod capabilities;
+pub(crate) mod context_reader;
 pub mod provider;
 pub mod service;
 pub mod session;
@@ -117,7 +118,7 @@ mod integration_tests {
             topic_name: "test",
             event_bus: None,
             prior_history: Vec::new(),
-            prior_raw_context: std::sync::Arc::new(Vec::new()),
+            prior_raw_context: Vec::new(),
             injection_rx: None,
             max_iterations: None,
             sse_read_timeout: std::time::Duration::from_secs(120),

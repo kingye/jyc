@@ -199,12 +199,13 @@ pub struct ToolContext<'a> {
     /// `None` when running in contexts without cross-channel support
     /// (e.g. unit tests).
     pub outbounds: Option<OutboundsMap>,
-    /// Snapshot of the in-memory conversation transcript (`raw_context`)
-    /// at the start of the current tool batch. Injected by the agent loop;
-    /// lets tools read back turns that are outside the model's sliding
-    /// window (e.g. `context_browse`). Read from memory, never from disk —
-    /// the persisted `agent-context.jsonl` goes stale mid-loop. Empty when
-    /// not injected (unit tests, synthetic progress replies).
+    /// The current turn's messages, injected by the agent loop at the
+    /// start of the current tool batch. The turns before it are not in
+    /// memory — the agent loop reads only the window the context
+    /// strategy asks for, and a tool that needs older turns reads them
+    /// back from the topic's `agent-context.jsonl` journal itself (see
+    /// `context_browse`). Empty when not injected (unit tests, synthetic
+    /// progress replies).
     pub raw_context: Vec<serde_json::Value>,
     /// The assistant's own text for the current tool batch, when that batch
     /// asks the user a question. Injected by the agent loop next to

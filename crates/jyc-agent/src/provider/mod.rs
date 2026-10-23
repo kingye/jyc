@@ -44,41 +44,48 @@ pub type EventStream = Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>;
 pub fn filter_valid_messages(raw_messages: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let filtered: Vec<serde_json::Value> = raw_messages
         .iter()
-        .filter(|m| {
-            if m.get("role").and_then(|r| r.as_str()) != Some("assistant") {
-                return true;
-            }
-            // OpenAI format: content as non-empty string
-            let has_string_content = m
-                .get("content")
-                .and_then(|c| c.as_str())
-                .is_some_and(|s| !s.is_empty());
-            // Anthropic format: content as array with meaningful blocks
-            let has_array_content =
-                m.get("content")
-                    .and_then(|c| c.as_array())
-                    .is_some_and(|blocks| {
-                        blocks.iter().any(|b| {
-                            let t = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                            t == "tool_use"
-                                || (t == "text"
-                                    && b.get("text")
-                                        .and_then(|x| x.as_str())
-                                        .is_some_and(|s| !s.is_empty()))
-                        })
-                    });
-            // OpenAI format: tool_calls array
-            let has_tool_calls = m
-                .get("tool_calls")
-                .and_then(|t| t.as_array())
-                .is_some_and(|a| !a.is_empty());
-
-            has_string_content || has_array_content || has_tool_calls
-        })
+        .filter(|m| is_valid_message(m))
         .cloned()
         .collect();
 
     repair_dangling_tool_calls(filtered)
+}
+
+/// Whether one message may be sent back to the provider.
+///
+/// Only assistant messages are judged: one with no content and no tool
+/// calls carries nothing, and replaying it makes the provider reject the
+/// request. Every other role passes through.
+pub(crate) fn is_valid_message(m: &serde_json::Value) -> bool {
+    if m.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+        return true;
+    }
+    // OpenAI format: content as non-empty string
+    let has_string_content = m
+        .get("content")
+        .and_then(|c| c.as_str())
+        .is_some_and(|s| !s.is_empty());
+    // Anthropic format: content as array with meaningful blocks
+    let has_array_content = m
+        .get("content")
+        .and_then(|c| c.as_array())
+        .is_some_and(|blocks| {
+            blocks.iter().any(|b| {
+                let t = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                t == "tool_use"
+                    || (t == "text"
+                        && b.get("text")
+                            .and_then(|x| x.as_str())
+                            .is_some_and(|s| !s.is_empty()))
+            })
+        });
+    // OpenAI format: tool_calls array
+    let has_tool_calls = m
+        .get("tool_calls")
+        .and_then(|t| t.as_array())
+        .is_some_and(|a| !a.is_empty());
+
+    has_string_content || has_array_content || has_tool_calls
 }
 
 /// Remove assistant messages whose `tool_calls` lack matching `tool` result
@@ -95,7 +102,9 @@ pub fn filter_valid_messages(raw_messages: &[serde_json::Value]) -> Vec<serde_js
 /// (Anthropic) message. If any are missing, the assistant message and
 /// everything after it is dropped — later messages may depend on the
 /// missing tool results and would create cascading errors.
-fn repair_dangling_tool_calls(messages: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+pub(crate) fn repair_dangling_tool_calls(
+    messages: Vec<serde_json::Value>,
+) -> Vec<serde_json::Value> {
     let mut result = Vec::with_capacity(messages.len());
 
     for (i, msg) in messages.iter().enumerate() {

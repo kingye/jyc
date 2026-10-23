@@ -1,6 +1,10 @@
-//! `context_browse` — page through the agent's in-memory conversation
-//! transcript (user/assistant text pairs), including turns that fell out of
-//! the model's sliding context window.
+//! `context_browse` — page through the agent's conversation transcript
+//! (user/assistant text pairs), including turns that fell out of the
+//! model's sliding context window.
+//!
+//! The transcript lives in the topic's `agent-context.jsonl` journal. The
+//! prior turns are read back from there — the reader parses only the tail
+//! the page needs — while the running turn is still in memory.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -8,13 +12,17 @@ use serde_json::{Value, json};
 
 use super::super::{Tool, ToolContext, ToolOutput};
 
+use crate::context_reader::ContextReader;
+use crate::session::TurnPair;
+use crate::types::PriorDepth;
+
 /// Hard cap on pairs returned per call. The result is appended to the
 /// transcript and resent on the next request, so an unbounded page would
 /// blow the window; 50 pairs is plenty for any "what happened earlier"
 /// question.
 const MAX_PAGE: usize = 50;
 
-/// Page through the in-memory conversation transcript.
+/// Page through the conversation transcript.
 pub struct ContextBrowseTool;
 
 #[async_trait]
@@ -60,8 +68,12 @@ impl Tool for ContextBrowseTool {
             .unwrap_or(10)
             .clamp(1, MAX_PAGE as i64) as usize;
 
-        let pairs = crate::session::extract_pairs(&ctx.raw_context);
-        let total = pairs.len();
+        let (journal_pairs, journal_total) = journal_view(ctx, offset + limit).await;
+        // The running turn is still in memory — the journal does not have
+        // it yet.
+        let current_pairs = crate::session::extract_pairs(&ctx.raw_context);
+        let total = journal_total + current_pairs.len();
+
         // Page [start..end) in oldest→newest order, with `offset` counted
         // from the newest end. Saturating math clamps out-of-range offsets
         // to an empty page instead of panicking.
@@ -74,33 +86,79 @@ impl Tool for ContextBrowseTool {
             )));
         }
 
+        // The journal's pairs hold the numbers [journal_first .. journal_total]
+        // (counting from the oldest), the running turn's the ones after
+        // them. The page is [start, end) in the same numbering.
+        let journal_first = journal_total.saturating_sub(journal_pairs.len());
+        let (journal_from, journal_to) = (start.max(journal_first), end.min(journal_total));
+        let (current_from, current_to) = (start.max(journal_total), end);
+
         let mut out = format!(
             "=== Transcript pairs {}-{} of {} (oldest→newest, offset {offset}) ===\n",
             start + 1,
             end,
             total
         );
-        for (i, pair) in pairs[start..end].iter().enumerate() {
-            let n = start + i + 1;
-            out.push_str(&format!(
-                "\n[{n}] USER: {}\n",
-                crate::session::extract_message_text(&pair.user),
-            ));
-            if let Some(assistant) = &pair.assistant {
-                out.push_str(&format!(
-                    "[{n}] ASSISTANT: {}\n",
-                    crate::session::extract_message_text(assistant),
-                ));
+        let mut n = start;
+        if journal_from < journal_to {
+            for pair in &journal_pairs[journal_from - journal_first..journal_to - journal_first] {
+                n += 1;
+                out.push_str(&format_pair(n, pair));
             }
-            if let Some(note) = &pair.note {
-                out.push_str(&format!(
-                    "[{n}] TOOLS: {}\n",
-                    crate::session::extract_message_text(note),
-                ));
+        }
+        if current_from < current_to {
+            for pair in &current_pairs[current_from - journal_total..current_to - journal_total] {
+                n += 1;
+                out.push_str(&format_pair(n, pair));
             }
         }
         Ok(ToolOutput::success(out))
     }
+}
+
+/// One pair as the tool renders it.
+fn format_pair(n: usize, pair: &TurnPair) -> String {
+    let mut out = format!(
+        "\n[{n}] USER: {}\n",
+        crate::session::extract_message_text(&pair.user),
+    );
+    if let Some(assistant) = &pair.assistant {
+        out.push_str(&format!(
+            "[{n}] ASSISTANT: {}\n",
+            crate::session::extract_message_text(assistant),
+        ));
+    }
+    if let Some(note) = &pair.note {
+        out.push_str(&format!(
+            "[{n}] TOOLS: {}\n",
+            crate::session::extract_message_text(note),
+        ));
+    }
+    out
+}
+
+/// The journal's tail pairs and the journal's total pair count.
+///
+/// The reader parses only the tail the page needs; the total comes from
+/// the reader's counter, which the writer keeps up to date. A topic
+/// without a journal (a fresh one, or a test) has neither.
+async fn journal_view(ctx: &ToolContext<'_>, want: usize) -> (Vec<TurnPair>, usize) {
+    let Some(topic) = ctx.current_topic.as_deref() else {
+        return (Vec::new(), 0);
+    };
+    let Some(state_dir) = jyc_types::state_dir::registered_state(topic) else {
+        return (Vec::new(), 0);
+    };
+    let reader = ContextReader::new(topic, &state_dir);
+    let slice = reader
+        .read_prior(PriorDepth::Window {
+            pairs: want,
+            openers: want,
+        })
+        .await;
+    let pairs = crate::session::extract_pairs(&slice.messages);
+    let total = reader.total_pairs().await;
+    (pairs, total)
 }
 
 #[cfg(test)]
@@ -177,6 +235,46 @@ mod tests {
             out.content
         );
         assert!(!out.is_error);
+    }
+
+    /// The older turns come from the journal — the tool reads them back
+    /// there, and the running turn from memory.
+    #[tokio::test]
+    async fn the_journal_supplies_the_older_turns() {
+        let dir = tempfile::tempdir().expect("create working dir");
+        let state_dir = dir.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        let topic = "context_browse_journal";
+        jyc_types::state_dir::register(topic, &state_dir);
+        let mut body = String::new();
+        for i in 1..=6 {
+            body.push_str(&format!(
+                "{}\n",
+                json!({"role": "user", "content": format!("u{i}")})
+            ));
+            body.push_str(&format!(
+                "{}\n",
+                json!({"role": "assistant", "content": format!("a{i}")})
+            ));
+        }
+        tokio::fs::write(state_dir.join("agent-context.jsonl"), body)
+            .await
+            .unwrap();
+
+        let tool = ContextBrowseTool;
+        let mut ctx = ToolContext::new(dir.path());
+        ctx.current_topic = Some(topic.to_string());
+        // The running turn: no assistant reply yet, so it is no pair.
+        ctx.raw_context = vec![json!({"role": "user", "content": "current"})];
+        let out = tool
+            .execute(json!({"offset": 0, "limit": 3}), &ctx)
+            .await
+            .unwrap();
+        let text = out.content;
+        assert!(text.contains("pairs 4-6 of 6"), "header: {text}");
+        assert!(text.contains("[4] USER: u4"), "first: {text}");
+        assert!(text.contains("[6] ASSISTANT: a6"), "last: {text}");
+        assert!(!text.contains("u3"), "older pair leaked: {text}");
     }
 
     #[tokio::test]

@@ -11,7 +11,11 @@ Three core principles govern the whole system:
 1. **The raw context is the source of truth.**
    `.jyc/agent-context.jsonl` (append-only journal, one message per line; the legacy `.json` array migrates once on load) stores the full conversation (including tool
    calls and results) exactly as recorded. Strategies never reshape this
-   file — only a session reset (manual `/reset`) clears it.
+   file — only a session reset (manual `/reset`) clears it. The journal
+   is read back **backwards, in blocks** (see
+   [Reading the prior back](#reading-the-prior-back)): only the window
+   the strategy needs is parsed, so a journal that grew to hundreds of
+   megabytes costs the same per turn as a small one.
 2. **Only the wire payload is shaped.** Every LLM request passes through
    `build_send_context_cached()` (`crates/jyc-agent/src/agent_loop/context.rs`),
    which decides what slice of the raw context to send and in what form.
@@ -45,19 +49,16 @@ flowchart TD
         F[".jyc/agent-context.jsonl<br/>FULL raw context (journal)"]
     end
     subgraph Mem["In memory — per incoming message"]
-        RC["raw_context: Vec&lt;serde_json::Value&gt;<br/>provider wire format"]
-        PRIOR["raw_context[..prior_len]<br/>prior history (from disk)"]
+        PRIOR["raw_context[..prior_len]<br/>prior history (the strategy's window)"]
         CURR["raw_context[prior_len..]<br/>current turn (this message's loop)"]
     end
     subgraph PerReq["Per LLM request"]
         BSC["build_send_context_cached<br/>(provider, raw_context, prior_len, strategy, cache)"]
         WIRE["wire payload sent to the provider"]
     end
-    F --> RC
-    RC --> PRIOR
-    RC --> CURR
-    PRIOR --> BSC
+    F -->|"ContextReader: read the tail back"| PRIOR
     CURR --> BSC
+    PRIOR --> BSC
     BSC --> WIRE
     style Disk fill:#fff3e0,stroke:#e65100
     style Mem fill:#e3f2fd,stroke:#1565c0
@@ -69,6 +70,52 @@ message was received. Everything after it — the new user message, the
 assistant's intermediate steps, tool calls, tool results — is the
 **current turn**, which is always sent verbatim so tool_use/tool_result
 pairing stays valid mid-loop.
+
+### Reading the prior back
+
+`crates/jyc-agent/src/context_reader.rs` owns the journal's read side.
+The journal is append-only, so the reader never needs the whole file: it
+walks **backwards** from the end in 64 KB blocks, parses the lines it
+finds and hands out the window the caller asked for.
+
+- **The unit is the turn, not the message.** A turn opens at a
+  text-bearing user message; a *pair* is a turn that produced an
+  assistant reply. The two counts differ (an unanswered user message is
+  an opener without a pair), and the strategies read both kinds.
+- **The depth comes from the strategy.**
+  `agent_loop::context::prior_depth()` turns the config into a
+  `PriorDepth`: `sliding_window` asks for the last `window` pairs and
+  the last `note_window` openers; `full` mode and an unset
+  `note_window` ask for everything.
+- **The slice starts at a turn boundary**, so the strategies see the
+  same turns they would have seen in the full journal — the payload is
+  byte-identical either way (a differential test in
+  `agent_loop/context.rs` pins that).
+- **Dangling tool calls are repaired on the way out.** The slice drops
+  an assistant message whose tool calls have no tool result, and
+  everything after it, as the whole-file load path did. The repair
+  cannot wait for the wire: there it would also drop the current turn,
+  which sits after the dangling message.
+- **The pair count stays warm.** The reader keeps how many pairs the
+  journal holds in process, keyed by the journal's length and mtime, and
+  the writer adds to it as it appends. A turn that changes nothing on
+  disk costs a `stat`, not a full count.
+- **A torn tail is repaired or dropped.** A crash mid-append can leave a
+  partial last line. When it is a complete message that lost only its
+  newline — the usual shape, the write was cut at its last byte — it is
+  kept, and the next append terminates it. A partial line is dropped
+  instead. Either way the history in front of it is untouched: the cut
+  point is found by scanning back for the last newline, and an
+  unreadable journal (the scan fails) is left alone rather than
+  truncated.
+- **A corrupt line ends the backward scan**: the newer turns stay, the
+  older ones are not trusted. This is the inverse of the whole-file
+  parser, which kept the older prefix — with a backwards scan the newer
+  turns are the ones already parsed.
+
+The write side is append-only too: a turn's messages are appended at the
+end of the file (`session::save_raw_context`), and nothing before them
+is touched.
 
 ## Context Strategies
 
@@ -314,15 +361,16 @@ identical.
 ## Recovering dropped turns: `context_browse`
 
 Turns that fall out of the window are not gone — they remain in the
-in-memory `raw_context` and on disk. The built-in `context_browse` tool
-pages through the full transcript (shared `extract_pairs` view):
+journal on disk. The built-in `context_browse` tool pages through the
+full transcript (shared `extract_pairs` view):
 
 - `offset` — pairs to skip from the **newest** end (0 = most recent).
 - `limit` — page size (default 10, max 50).
 - Returns numbered `USER:` / `ASSISTANT:` lines, oldest→newest within the
   page.
-- Reads the in-memory snapshot (never the on-disk file, which is stale
-  mid-loop); the snapshot is taken once per tool batch.
+- Reads the older turns back from the journal (the reader parses only
+  the tail the page needs) and takes the running turn from memory —
+  the journal does not have it yet.
 
 The system prompt tells the agent to use `context_browse` whenever it
 needs earlier turns of the current conversation.
@@ -516,10 +564,12 @@ weight runs away.
 | Component | Location |
 |-----------|----------|
 | Wire payload shaping (`build_send_context_cached`, its `SendContextCache`, `dump_send_context`, `cap_tool_result_content`) | `crates/jyc-agent/src/agent_loop/context.rs` |
+| How much prior the strategy reads (`prior_depth`) | `crates/jyc-agent/src/agent_loop/context.rs` |
+| Reading the prior back from the journal (`ContextReader`, block scan, parsed tail) | `crates/jyc-agent/src/context_reader.rs` |
 | Turn pairing, history notes, truncation caps (`extract_pairs`, `flush_turn`) | `crates/jyc-agent/src/session.rs` |
+| Journal writes (`save_raw_context`) | `crates/jyc-agent/src/session.rs` |
 | Wire-payload dump persistence (`read_wire_payload_dump_enabled`, `append_wire_payload_dump`) | `crates/jyc-agent/src/session.rs` |
 | Agent loop iteration (calls `build_send_context_cached`, triggers dump) | `crates/jyc-agent/src/agent_loop/mod.rs` |
-| Mid-loop compression | `crates/jyc-agent/src/agent_loop/mod.rs` |
 | Strategy resolution, pre-loop pre-check | `crates/jyc-agent/src/service/mod.rs` |
 | System-prompt guidance (History Format, Chat History sections) | `crates/jyc-agent/src/service/prompt.rs` |
 | `context_browse` tool | `crates/jyc-agent/src/tools/builtin/context_browse.rs` |

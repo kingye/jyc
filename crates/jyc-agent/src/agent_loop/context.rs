@@ -7,7 +7,32 @@ use std::borrow::Cow;
 use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
 
 use crate::provider::Provider;
-use crate::types::ContentBlock;
+use crate::types::{ContentBlock, PriorDepth};
+
+/// How much of the prior context the strategy needs to build its payload.
+///
+/// The sliding window reads the last `window` pair-producing turns and the
+/// last `note_window` turn openers — an unanswered user message is an
+/// opener without a pair, and the verbatim region counts openers.
+/// `full` mode and an unset `note_window` send the whole prior, so no
+/// bounded slice can replace it.
+///
+/// The reader is told this before it reads: it parses only that much of
+/// the journal, which is what keeps a long history cheap.
+pub(crate) fn prior_depth(strategy: &ContextStrategyConfig) -> PriorDepth {
+    match strategy.mode {
+        ContextStrategy::Full => PriorDepth::All,
+        ContextStrategy::SlidingWindow => match strategy.note_window {
+            Some(openers) => PriorDepth::Window {
+                pairs: strategy.window,
+                openers,
+            },
+            // Without a note window the whole prior is verbatim — the
+            // window does not bound it.
+            None => PriorDepth::All,
+        },
+    }
+}
 
 /// Reformat a cleaned message (string content from `extract_user_assistant_pairs`)
 /// into the active provider's wire format via the Provider trait. This is
@@ -844,7 +869,7 @@ mod render_raw_context_tests {
 
     #[test]
     fn sliding_window_prior_shorter_than_raw_context() {
-        // After mid-loop compression, prior_len could exceed raw_context.len().
+        // A defensive boundary: prior_len never exceeds raw_context.len().
         let ctx = vec![
             json!({"role": "user", "content": "u1"}),
             json!({"role": "assistant", "content": "a1"}),
@@ -2034,5 +2059,74 @@ mod render_raw_context_tests {
         ];
         assert_eq!(oldest_turn_len(&msgs), Some(2));
         assert_eq!(oldest_turn_len(&[]), None);
+    }
+
+    /// The payload must not change when the prior comes from the
+    /// reader's window instead of the whole journal: the reader exists to
+    /// make a long history cheap to read, not to change what the model
+    /// sees.
+    #[tokio::test]
+    async fn the_window_payload_is_the_same_from_a_reader_slice() {
+        let mut prior: Vec<serde_json::Value> = Vec::new();
+        for i in 1..=12 {
+            prior.push(json!({"role": "user", "content": format!("u{i}")}));
+            if i == 4 {
+                // A tool turn in the middle of the history.
+                prior.push(json!({"role": "assistant", "content": "a4", "tool_calls": [{"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}]}));
+                prior.push(json!({"role": "tool", "tool_call_id": "1", "content": "out"}));
+            } else {
+                prior.push(json!({"role": "assistant", "content": format!("a{i}")}));
+            }
+        }
+        let current = vec![
+            json!({"role": "user", "content": "current"}),
+            json!({"role": "assistant", "content": "reply"}),
+        ];
+
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 4,
+            note_window: Some(2),
+            tool_result_cap: None,
+            turn_tool_result_cap: None,
+            max_history_tokens: None,
+        };
+
+        // The journal the reader reads back.
+        let tmp = tempfile::tempdir().unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        let mut body = String::new();
+        for v in &prior {
+            body.push_str(&serde_json::to_string(v).unwrap());
+            body.push('\n');
+        }
+        tokio::fs::write(
+            state_dir.join(jyc_core::session_state::AGENT_CONTEXT_FILE),
+            body,
+        )
+        .await
+        .unwrap();
+        let reader = crate::context_reader::ContextReader::new("reader-diff", &state_dir);
+        let slice = reader.read_prior(prior_depth(&cfg)).await;
+
+        // The whole journal and the reader's window must produce the same
+        // payload.
+        let mut whole = prior.clone();
+        whole.extend(current.clone());
+        let (whole_payload, whole_regions) =
+            build_send_context_with_regions(&prov(), &whole, prior.len(), &cfg);
+
+        let mut windowed = slice.messages.clone();
+        windowed.extend(current.clone());
+        let (windowed_payload, windowed_regions) =
+            build_send_context_with_regions(&prov(), &windowed, slice.messages.len(), &cfg);
+
+        assert_eq!(
+            whole_payload.into_owned(),
+            windowed_payload.into_owned(),
+            "the window must not change the payload"
+        );
+        assert_eq!(whole_regions, windowed_regions);
     }
 }

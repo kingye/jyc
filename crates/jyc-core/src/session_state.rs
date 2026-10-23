@@ -11,8 +11,8 @@ pub const DEFAULT_CONTEXT_WINDOW: u64 = 128000;
 
 /// Raw provider context store inside a topic's state dir: an append-only
 /// journal, one message per line. This is the authoritative format;
-/// `jyc-agent::session` writes it incrementally (append tail lines after a
-/// normal turn, rewrite after compaction) and tolerates a torn tail line.
+/// `jyc-agent::session` appends a turn's messages at the end of the file
+/// and tolerates a torn tail line.
 pub const AGENT_CONTEXT_FILE: &str = "agent-context.jsonl";
 
 /// Legacy raw context store: the whole context as a single JSON array.

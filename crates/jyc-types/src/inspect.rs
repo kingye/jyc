@@ -277,6 +277,12 @@ pub struct TopicInfo {
     /// activity/chat pane can show it without a separate fetch.
     #[serde(default)]
     pub output_tokens: Option<u64>,
+    /// Output tokens of the LLM calls in the latest turn — the
+    /// turn-scoped twin of `output_tokens`, so the info pane can print
+    /// the turn beside the session total. `None` while the current turn
+    /// has produced nothing.
+    #[serde(default)]
+    pub turn_output_tokens: Option<u64>,
     /// Accumulated input tokens across all LLM calls in this session.
     /// See `TopicSummary::total_input_tokens` for the full description.
     #[serde(default)]
@@ -659,6 +665,7 @@ mod tests {
                 context_output_tokens: Some(1200),
                 max_tokens: Some(120000),
                 output_tokens: Some(12345),
+                turn_output_tokens: None,
                 total_input_tokens: Some(45000),
                 total_cache_hit_tokens: None,
                 total_cache_creation_tokens: None,

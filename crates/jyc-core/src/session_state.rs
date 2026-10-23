@@ -191,6 +191,9 @@ pub struct TokenState {
     /// The input tokens of the LLM calls in the latest turn — the
     /// turn-scoped twin of `total_input_tokens`.
     pub turn_input_tokens: Option<u64>,
+    /// The output tokens of the LLM calls in the latest turn — the
+    /// turn-scoped twin of `total_output_tokens`.
+    pub turn_output_tokens: Option<u64>,
 }
 
 /// Read every token field of a session in a single file read.
@@ -221,6 +224,7 @@ pub async fn read_token_state(topic_name: &str, topic_path: &Path) -> TokenState
         turn_cache_hit_tokens: (state.turn_cache_hit_tokens > 0)
             .then_some(state.turn_cache_hit_tokens),
         turn_input_tokens: (state.turn_input_tokens > 0).then_some(state.turn_input_tokens),
+        turn_output_tokens: (state.turn_output_tokens > 0).then_some(state.turn_output_tokens),
     }
 }
 
@@ -257,6 +261,8 @@ struct AgentSessionState {
     turn_cache_hit_tokens: u64,
     #[serde(default)]
     turn_input_tokens: u64,
+    #[serde(default)]
+    turn_output_tokens: u64,
 }
 
 /// Read the mode override file if it exists.

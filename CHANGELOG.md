@@ -8,6 +8,8 @@
 
 - The info pane and `/info` report the cache rate of the *latest turn* next to the session's: each row carries the cache-hit tokens, the input tokens they are a share of, and that share in percent — the turn's bar with `12.00K / 15.00K (80%)` under it, the session's with `964.51K / 1.18M (80%)` under it, under the pane's `Cache:` header. The turn's pair is zeroed at every turn start and accumulates per call, the way the turn's latency figures do, so a long turn's own rate is visible without waiting for the session's to move. The two scopes are separate facts on the topic's detail (`turn_cache_hit_tokens` / `turn_input_tokens`, next to the session's pair) and both surfaces print them through one shared formatter, so the pane and `/info` cannot drift (#964)
 
+- The info pane and `/info` report the *latest turn's* output beside the session's, on one row: `Output: 12.00K turn · 1.18M session`. Only the session's running total was shown, so the turn's own spend was a subtraction the reader had to do — and nothing recorded it at all. `turn_output_tokens` is now the third turn-scoped figure: accumulated per LLM call from that call's own `output_tokens`, the way the turn's cache pair is, and zeroed at every turn start. Both surfaces print the row through one shared formatter, so they cannot drift, and a turn that has not called yet reads `0 turn` rather than vanishing (#984)
+
 - The day's spend across *every* topic, as its own row: `Today (all): $12.34` — the billing ledger's day total, per currency, beside the topic's own `Cost` row (a day spanning two currencies shows both, `$12.34 · ¥3.20`). The day's ledger is now read once per list instead of once per topic, so the row costs one parse rather than one per topic (#964)
 
 ### Changed

@@ -573,6 +573,7 @@ fn topic_detail_for(name: &str, channel: &str) -> jyc_types::TopicInfo {
         context_output_tokens: None,
         max_tokens: None,
         output_tokens: None,
+        turn_output_tokens: None,
         total_input_tokens: None,
         total_cache_hit_tokens: None,
         total_cache_creation_tokens: None,
@@ -679,6 +680,7 @@ fn files_section_colors_uncommitted_paths_yellow() {
         context_output_tokens: None,
         max_tokens: None,
         output_tokens: None,
+        turn_output_tokens: None,
         total_input_tokens: None,
         total_cache_hit_tokens: None,
         total_cache_creation_tokens: None,
@@ -936,6 +938,7 @@ fn info_scroll_is_clamped_after_render() {
         context_output_tokens: None,
         max_tokens: None,
         output_tokens: None,
+        turn_output_tokens: None,
         total_input_tokens: None,
         total_cache_hit_tokens: None,
         total_cache_creation_tokens: None,
@@ -1824,6 +1827,7 @@ fn info_pane_app(tasks: jyc_types::task::TaskList) -> App {
         context_output_tokens: None,
         max_tokens: None,
         output_tokens: None,
+        turn_output_tokens: None,
         total_input_tokens: None,
         total_cache_hit_tokens: None,
         total_cache_creation_tokens: None,
@@ -2320,6 +2324,7 @@ fn info_pane_end_reaches_the_last_wrapped_row() {
         context_output_tokens: None,
         max_tokens: None,
         output_tokens: None,
+        turn_output_tokens: None,
         total_input_tokens: None,
         total_cache_hit_tokens: None,
         total_cache_creation_tokens: None,
@@ -3330,7 +3335,7 @@ fn info_pane_aligns_every_value_in_one_column() {
         ("Model: ", "minimax/Minimax-M3"),
         ("Mode: ", "build"),
         ("Status: ", "Idle"),
-        ("Output: ", "1.21K"),
+        ("Output: ", "0 turn · 1.21K"),
     ] {
         let row = rows
             .iter()

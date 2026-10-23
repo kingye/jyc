@@ -102,6 +102,27 @@ pub fn format_cache_rate(cache_hits: Option<u64>, total_input: Option<u64>) -> O
     ))
 }
 
+/// The output figures of both scopes — the session total and the latest
+/// turn — as the pane and `/info` print them, e.g. `"12.00K turn ·
+/// 1.18M session"`. The turn comes first: it is the figure that moves, and
+/// the session total is the anchor it is read against.
+///
+/// `None` when the session has produced no output at all: a session that
+/// never completed a call has nothing to report, and the caller omits the
+/// row. A turn that has not called yet reads as `0 turn` — it is a real
+/// zero, like the pane's turn cache row, which is drawn at zero before the
+/// turn's first call (`/info` omits that row instead: a 0/0 rate says
+/// nothing, while a 0 output is a figure).
+pub fn format_output_pair(session: Option<u64>, turn: Option<u64>) -> Option<String> {
+    let session = session?;
+    let turn = turn.unwrap_or(0);
+    Some(format!(
+        "{} turn · {} session",
+        format_token_count(turn),
+        format_token_count(session)
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +168,32 @@ mod tests {
     fn cache_rate_needs_input_tokens() {
         assert_eq!(format_cache_rate(Some(300), None), None);
         assert_eq!(format_cache_rate(Some(300), Some(0)), None);
+    }
+
+    #[test]
+    fn output_pair_prints_the_turn_then_the_session() {
+        assert_eq!(
+            format_output_pair(Some(1_234_567), Some(12288)),
+            Some("12.00K turn · 1.18M session".to_string())
+        );
+        assert_eq!(
+            format_output_pair(Some(500), Some(500)),
+            Some("500 turn · 500 session".to_string())
+        );
+    }
+
+    /// A turn that has not called yet is a real zero, printed as one.
+    #[test]
+    fn output_pair_counts_a_turn_without_calls_as_zero() {
+        assert_eq!(
+            format_output_pair(Some(500), None),
+            Some("0 turn · 500 session".to_string())
+        );
+    }
+
+    #[test]
+    fn output_pair_needs_the_session_figure() {
+        assert_eq!(format_output_pair(None, Some(500)), None);
     }
 
     #[test]

@@ -8,7 +8,7 @@
 //! On reset: session state and the raw context are cleared — the next turn
 //! starts from an empty context.
 
-use jyc_core::session_state::{AGENT_CONTEXT_FILE, AGENT_CONTEXT_LEGACY_FILE};
+use jyc_core::session_state::AGENT_CONTEXT_FILE;
 use jyc_types::state_dir::resolve_state_dir;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -20,48 +20,6 @@ use crate::types::{Message, PriorDepth, Role};
 const SESSION_FILE: &str = "agent-session.json";
 
 // ─── Raw context journal ─────────────────────────────────────────────
-
-/// Convert a legacy context file into the journal, once.
-///
-/// Legacy `agent-context.json` is a single JSON array; the journal
-/// `agent-context.jsonl` is append-only (one message per line). When only
-/// the legacy file exists, convert it and remove the legacy file — after
-/// this point the journal is authoritative. Rollback to an older binary
-/// requires restoring the array file from a backup (the old build cannot
-/// read the journal); see CHANGELOG.
-async fn migrate_legacy_context(state_dir: &Path) {
-    let journal_path = state_dir.join(AGENT_CONTEXT_FILE);
-    let legacy_path = state_dir.join(AGENT_CONTEXT_LEGACY_FILE);
-    if journal_path.exists() || !legacy_path.exists() {
-        return;
-    }
-    let Ok(content) = tokio::fs::read_to_string(&legacy_path).await else {
-        return;
-    };
-    match serde_json::from_str::<Vec<serde_json::Value>>(&content) {
-        Ok(values) => match write_journal(state_dir, &values).await {
-            Ok(()) => {
-                tokio::fs::remove_file(&legacy_path).await.ok();
-            }
-            Err(e) => {
-                // Journal not written — keep the legacy file so the next
-                // load retries the migration instead of losing the context.
-                tracing::warn!(
-                    error = %e,
-                    "auto-migration: journal write failed, legacy kept"
-                );
-            }
-        },
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                file_len = content.len(),
-                "load_context: failed to parse legacy context file, deleting"
-            );
-            jyc_core::session_state::remove_raw_context_files(state_dir).await;
-        }
-    }
-}
 
 /// Append the messages to the journal, truncating a torn tail (a crash
 /// mid-append) first. `offset` is the end of the journal's last complete
@@ -95,42 +53,6 @@ async fn append_journal(
     }
     f.write_all(buf.as_bytes()).await?;
     f.sync_data().await?;
-    Ok(())
-}
-
-/// Write the journal in full (one message per line) via tmp file + rename,
-/// so readers never see a partial file. Removes the legacy array file.
-/// On rename failure the tmp file is removed best-effort so no garbage is
-/// left in the state dir; the original error is propagated.
-async fn write_journal(state_dir: &Path, new: &[serde_json::Value]) -> std::io::Result<()> {
-    let journal_path = state_dir.join(AGENT_CONTEXT_FILE);
-    let tmp_path = journal_path.with_file_name(format!(
-        "{}.tmp",
-        journal_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("agent-context")
-    ));
-    let mut buf = String::new();
-    for v in new {
-        match serde_json::to_string(v) {
-            Ok(line) => {
-                buf.push_str(&line);
-                buf.push('\n');
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "write_journal: skipping unserializable message");
-            }
-        }
-    }
-    tokio::fs::write(&tmp_path, buf).await?;
-    if let Err(e) = tokio::fs::rename(&tmp_path, &journal_path).await {
-        tokio::fs::remove_file(&tmp_path).await.ok();
-        return Err(e);
-    }
-    tokio::fs::remove_file(state_dir.join(AGENT_CONTEXT_LEGACY_FILE))
-        .await
-        .ok();
     Ok(())
 }
 
@@ -417,7 +339,6 @@ pub async fn load_context(
     let state_dir = resolve_state_dir(topic_name, topic_path);
     let session_path = state_dir.join(SESSION_FILE);
     let journal_path = state_dir.join(AGENT_CONTEXT_FILE);
-    let legacy_path = state_dir.join(AGENT_CONTEXT_LEGACY_FILE);
 
     let empty = (Vec::new(), Vec::new());
 
@@ -431,17 +352,13 @@ pub async fn load_context(
         return empty;
     }
 
-    // No context store at all (neither journal nor legacy to migrate).
-    if !journal_path.exists() && !legacy_path.exists() {
+    if !journal_path.exists() {
         tracing::warn!(
             journal_path = %journal_path.display(),
             "load_context: session file exists but no context file"
         );
         return empty;
     }
-
-    // One-time conversion of a legacy context file into the journal.
-    migrate_legacy_context(&state_dir).await;
 
     let reader = ContextReader::new(topic_name, &state_dir);
     let slice = reader.read_prior(depth).await;

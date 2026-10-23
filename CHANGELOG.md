@@ -50,6 +50,8 @@
 
 ### Removed
 
+- The one-time `agent-context.json` → `agent-context.jsonl` conversion is gone. The journal is the only context store: a pre-journal array file is neither read nor converted, and it is left where it is (nothing replaces it, so deleting it would destroy a conversation). A deployment still on the array format therefore loses its raw context on the next load — the migration had already been a no-op for every deployment that had run since the journal landed (#986)
+
 - The explicit `[channels.<name>]` form with `type = "websocket"` is gone: channels are forwarders owned by the pipe process, and the only websocket channel in the hub is the one synthesized from `[agents.<name>]`. Config validation now rejects the old form outright — the startup deprecation warning is gone with it, and so is the pattern-level configuration (template, topic_path, skills, …) that only such a channel could carry. Declare the agent as `[agents.<name>]` instead: each entry becomes one pattern on the synthesized "agents" channel, its name being the agent name (#967)
 
 - The info pane's `Channel:` row is gone, and `/info` no longer prints one: every topic of a channel shares its channel, and the pane it sits in already says which channel it shows. The topic's detail keeps the field — it is the topic's identity in the tree and on the wire (#964)

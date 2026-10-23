@@ -9,7 +9,7 @@ prevent context overflow.
 Three core principles govern the whole system:
 
 1. **The raw context is the source of truth.**
-   `.jyc/agent-context.jsonl` (append-only journal, one message per line; the legacy `.json` array migrates once on load) stores the full conversation (including tool
+   `.jyc/agent-context.jsonl` (append-only journal, one message per line) stores the full conversation (including tool
    calls and results) exactly as recorded. Strategies never reshape this
    file — only a session reset (manual `/reset`) clears it. The journal
    is read back **backwards, in blocks** (see

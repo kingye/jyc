@@ -1642,6 +1642,24 @@ mod tests {
             "empty thinking block should produce no events, got {events:?}"
         );
     }
+    /// Message content with the prompt-cache markers stripped.
+    ///
+    /// `apply_cache_breakpoints` puts a `cache_control` marker on the tail of
+    /// messages `n-3` and `n-2`, so a body compared block by block against a
+    /// journal entry has to ignore that one key — the conversion is what these
+    /// tests are about, not the cache layout.
+    fn content_without_cache(msg: &serde_json::Value) -> serde_json::Value {
+        let mut content = msg["content"].clone();
+        if let Some(blocks) = content.as_array_mut() {
+            for block in blocks {
+                if let Some(obj) = block.as_object_mut() {
+                    obj.remove("cache_control");
+                }
+            }
+        }
+        content
+    }
+
     /// A journal written on an OpenAI-family model is normalized before it
     /// reaches `/messages`: the `tool_calls` / `role:"tool"` turns become
     /// `tool_use` / `tool_result`. Before this, the API rejected the body
@@ -1702,13 +1720,13 @@ mod tests {
 
         assert_eq!(messages[0]["role"], "user");
         assert_eq!(
-            messages[1]["content"],
+            content_without_cache(&messages[1]),
             json!([{"type": "tool_use", "id": "call_1", "name": "read", "input": {"path": "a"}}]),
             "the tool call travels as a tool_use block: {sent:#}"
         );
         assert_eq!(messages[2]["role"], "user");
         assert_eq!(
-            messages[2]["content"],
+            content_without_cache(&messages[2]),
             json!([{"type": "tool_result", "tool_use_id": "call_1", "content": "file body"}])
         );
         for msg in messages {
@@ -1809,13 +1827,14 @@ mod tests {
         assert_eq!(messages.len(), 7, "{sent:#}");
         assert!(!body.contains("tool_calls"), "{body}");
         assert_eq!(
-            messages[1]["content"],
+            content_without_cache(&messages[1]),
             json!([{"type": "tool_use", "id": "call_1", "name": "read", "input": {"path": "a"}}])
         );
         assert_eq!(
-            messages[5]["content"], raw[5]["content"],
+            content_without_cache(&messages[5]),
+            raw[5]["content"],
             "a Claude-written turn travels as recorded: {sent:#}"
         );
-        assert_eq!(messages[6]["content"], raw[6]["content"]);
+        assert_eq!(content_without_cache(&messages[6]), raw[6]["content"]);
     }
 }

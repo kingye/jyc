@@ -507,7 +507,13 @@ pub async fn resolve_active_context_window(
 /// so leaving both in the file would make it fail to deserialize. The key
 /// goes even when the window itself does not change — otherwise a file
 /// carrying both keys would keep failing to deserialize forever.
+///
+/// A closed topic is skipped: its state dir is gone on purpose, and
+/// recreating it here would leave a topic behind that nothing owns.
 pub async fn write_context_window(topic_name: &str, topic_path: &Path, new_window: u64) {
+    if jyc_types::state_dir::is_closed(topic_name) {
+        return;
+    }
     let session_path = resolve_state_dir(topic_name, topic_path).join("agent-session.json");
     let content = tokio::fs::read_to_string(&session_path)
         .await
@@ -1549,6 +1555,23 @@ model = "provider/first-pattern"
             first_mtime, second_mtime,
             "file should not be rewritten when value unchanged"
         );
+    }
+
+    /// A closed topic's state dir is gone on purpose; wiring the window
+    /// (which happens mid-turn, when the agent learns the model's limit)
+    /// must not bring it back.
+    #[tokio::test]
+    async fn write_context_window_skips_a_closed_topic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "write_context_window_skips_a_closed_topic";
+        let state_dir = tmp.path().join(".jyc");
+        jyc_types::state_dir::register(topic, &state_dir);
+        jyc_types::state_dir::mark_closed(topic);
+
+        write_context_window(topic, tmp.path(), 12345).await;
+
+        assert!(!state_dir.exists(), "a closed topic's state dir stays gone");
+        jyc_types::state_dir::clear_closed(topic);
     }
 
     // ── resolve_context_strategy ──────────────────────────────────────

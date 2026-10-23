@@ -212,11 +212,20 @@ pub struct SessionState {
 /// turn does not count the journal again. A failed write drops that count:
 /// the next load recounts the journal instead of serving a total that never
 /// reached disk.
+///
+/// A **closed** topic writes nothing: a turn that runs `/close` on itself
+/// finishes after the close has already deleted its state dir, and recreating
+/// it here would leave a parentless, config-less topic behind (the dir's
+/// existence is what `list_topic_names` counts as an open topic).
 pub async fn save_raw_context(
     topic_name: &str,
     topic_path: &Path,
     current: Vec<serde_json::Value>,
 ) {
+    if jyc_types::state_dir::is_closed(topic_name) {
+        tracing::debug!("save_raw_context: topic closed, skipping");
+        return;
+    }
     let state_dir = resolve_state_dir(topic_name, topic_path);
     tokio::fs::create_dir_all(&state_dir).await.ok();
     let journal_path = state_dir.join(AGENT_CONTEXT_FILE);
@@ -293,6 +302,9 @@ pub async fn append_wire_payload_dump(
     regions: &[u8],
     wire: &[serde_json::Value],
 ) {
+    if jyc_types::state_dir::is_closed(topic_name) {
+        return;
+    }
     let state_dir = resolve_state_dir(topic_name, topic_path);
     if tokio::fs::create_dir_all(&state_dir).await.is_err() {
         return;
@@ -520,7 +532,7 @@ pub async fn ensure_session_file(topic_name: &str, topic_path: &Path, context_wi
     }
     state.created_at = chrono::Utc::now().to_rfc3339();
 
-    save_session_state(&session_path, &state).await;
+    save_session_state(topic_name, &session_path, &state).await;
     tracing::info!(
         file = %session_path.display(),
         context_window = state.context_window,
@@ -561,7 +573,7 @@ pub async fn begin_turn_counters(topic_name: &str, topic_path: &Path) {
     state.turn_input_tokens = 0;
     state.turn_output_tokens = 0;
     state.turn_reasoning_tokens = 0;
-    save_session_state(&session_path, &state).await;
+    save_session_state(topic_name, &session_path, &state).await;
 }
 
 /// The session's token totals so far — the base the agent loop's running
@@ -703,7 +715,7 @@ pub async fn persist_tokens(
         state.created_at = chrono::Utc::now().to_rfc3339();
     }
 
-    save_session_state(&session_path, &state).await;
+    save_session_state(topic_name, &session_path, &state).await;
 }
 
 /// Add to `session_cost` without touching the token counters.
@@ -725,7 +737,7 @@ pub async fn add_session_cost(topic_name: &str, topic_path: &Path, cost: f64) {
     if state.created_at.is_empty() {
         state.created_at = chrono::Utc::now().to_rfc3339();
     }
-    save_session_state(&session_path, &state).await;
+    save_session_state(topic_name, &session_path, &state).await;
 }
 
 // ─── Reset ───────────────────────────────────────────────────────────
@@ -1498,7 +1510,13 @@ async fn load_session_state(path: &Path) -> SessionState {
 }
 
 /// Save session state to disk.
-async fn save_session_state(path: &Path, state: &SessionState) {
+async fn save_session_state(topic_name: &str, path: &Path, state: &SessionState) {
+    // As in `save_raw_context`: a turn that closes its own topic finishes
+    // after the close deleted the state dir, and this write must not bring
+    // it back.
+    if jyc_types::state_dir::is_closed(topic_name) {
+        return;
+    }
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await.ok();
     }

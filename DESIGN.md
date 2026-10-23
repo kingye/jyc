@@ -3085,7 +3085,7 @@ Template directory structure (in data dir):
 │   jyc serve          │  ◄──────────────────────────► │   jyc dashboard      │
 │                       │   HTTP/1.1 + WS upgrade       │   (ratatui TUI)      │
 │  ┌─────────────────┐ │                                │                      │
-│  │ InspectServer    │ │   GET  /api/state             │  polls every 500ms   │
+│  │ InspectServer    │ │   GET  /api/state             │  polls every 1s      │
 │  │ (axum router)   │ │  ◄──────────────────────────  │  reqwest + Bearer    │
 │  │                  │ │   200 + {channels, topics…}  │  auto-reconnect      │
 │  │ routes:         │ │  ──────────────────────────►  │                      │
@@ -3418,7 +3418,7 @@ When the user selects a non-websocket topic (email, feishu, github) in the overv
 │    • Return in InspectState (JSON)                                 │
 └───────────────────────────────┬───────────────────────────────────┘
                                 │
-                                │  TCP poll (500ms)
+                                │  TCP poll (1s)
                                 ▼
 ┌───────────────────────────────────────────────────────────────────┐
 │                  Dashboard (detail/chat mode)                      │
@@ -3656,7 +3656,7 @@ InspectClient (crates/jyc-inspect/src/client.rs)
   └── reload_config() → (bool, String)
 
 Dashboard (crates/jyc-cli/src/cli/dashboard/)
-  ├── main poll: client.get_overview() every 500ms (slim payload)
+  ├── main poll: client.get_overview() every 1s (slim payload)
   ├── detail poll: client.get_topic_info() for the shown topic every 4s, its
   │   branch/changed_files stamped onto that row of the polled summaries
   ├── on topic selection: REST hydrate (get_topic_activity + get_topic_chat)
@@ -3666,7 +3666,8 @@ Dashboard (crates/jyc-cli/src/cli/dashboard/)
   ├── Activity pane + chat progress read from these live buffers
   │   (rendering logic unchanged from before the refactor)
   └── handle_live_event() appends WS events to the live buffers with
-      last_seen_id dedup
+      last_seen_id dedup, and folds the chat pane on receipt
+      (`sync_live_if_visible`) — no timer between a reply and the screen
 ```
 
 #### Key Design Decisions
@@ -4123,7 +4124,7 @@ table, not a special case in `jyc-cli`.
   `YYYY-MM` pattern, which stand in for the months the popup offers instead —
   and a test refuses a word that also names a value the popup offers, at any
   level, which is what would make it a second copy.
-- **Trade-off**: the values are computed per topic on every ~500 ms overview
+- **Trade-off**: the values are computed per topic on every ~1 s overview
   poll and serialized per topic, so a long model list is repeated for every
   topic (`topics × models`). Leaf entries omit their empty `description`/`args`
   on the wire to keep that cheap — but `usage` is not empty for any row, so it

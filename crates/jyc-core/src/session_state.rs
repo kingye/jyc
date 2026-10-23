@@ -15,17 +15,12 @@ pub const DEFAULT_CONTEXT_WINDOW: u64 = 128000;
 /// and tolerates a torn tail line.
 pub const AGENT_CONTEXT_FILE: &str = "agent-context.jsonl";
 
-/// Legacy raw context store: the whole context as a single JSON array.
-/// Superseded by [`AGENT_CONTEXT_FILE`]; `jyc-agent::session` migrates it
-/// once on load. The name survives only so cleanup sites remove both.
-pub const AGENT_CONTEXT_LEGACY_FILE: &str = "agent-context.json";
-
-/// Best-effort removal of the raw context store (journal + legacy). Missing
-/// files are ignored; used by reset paths where absence means "no context".
+/// Best-effort removal of the raw context journal. A missing file is
+/// ignored; used by reset paths where absence means "no context".
 pub async fn remove_raw_context_files(state_dir: &Path) {
-    for name in [AGENT_CONTEXT_FILE, AGENT_CONTEXT_LEGACY_FILE] {
-        tokio::fs::remove_file(state_dir.join(name)).await.ok();
-    }
+    tokio::fs::remove_file(state_dir.join(AGENT_CONTEXT_FILE))
+        .await
+        .ok();
 }
 
 /// Read input tokens from the agent session state file.

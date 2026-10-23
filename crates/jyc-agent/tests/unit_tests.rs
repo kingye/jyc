@@ -261,10 +261,14 @@ mod session {
             .unwrap();
     }
 
+    /// A pre-journal `agent-context.json` (the whole context as one JSON
+    /// array) is neither read nor converted: the journal is the only context
+    /// store. The array is left where it is — nothing replaced it, so the
+    /// file is the user's data, not garbage to sweep up.
     #[tokio::test]
-    async fn load_context_migrates_legacy_json_array() {
+    async fn load_context_ignores_a_legacy_array_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "load_context_migrates_legacy_json_array";
+        let topic = "load_context_ignores_a_legacy_array_file";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let state_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&state_dir).await.unwrap();
@@ -275,7 +279,6 @@ mod session {
         .await
         .unwrap();
 
-        // Legacy whole-file format: one JSON array.
         let legacy = vec![
             serde_json::json!({"role": "user", "content": "hello"}),
             serde_json::json!({"role": "assistant", "content": "hi"}),
@@ -289,24 +292,16 @@ mod session {
 
         let (messages, raw_context) =
             session::load_context(topic, tmp.path(), jyc_agent::types::PriorDepth::All).await;
-        assert_eq!(raw_context.len(), 2);
-        assert_eq!(messages.len(), 2);
-
-        // Migrated: journal written, legacy removed.
-        let journal = tokio::fs::read_to_string(state_dir.join("agent-context.jsonl"))
-            .await
-            .unwrap();
-        assert_eq!(journal.lines().count(), 2);
-        assert!(!state_dir.join("agent-context.json").exists());
-
-        // The migrated journal round-trips through save (append fast path):
-        // persisting the same prefix plus one new message appends one line.
-        let extended = vec![serde_json::json!({"role": "user", "content": "again"})];
-        session::save_raw_context(topic, tmp.path(), extended).await;
-        let journal = tokio::fs::read_to_string(state_dir.join("agent-context.jsonl"))
-            .await
-            .unwrap();
-        assert_eq!(journal.lines().count(), 3, "tail append after migration");
+        assert!(messages.is_empty(), "the array is not read");
+        assert!(raw_context.is_empty());
+        assert!(
+            state_dir.join("agent-context.json").exists(),
+            "the array is left untouched"
+        );
+        assert!(
+            !state_dir.join("agent-context.jsonl").exists(),
+            "no journal is conjured from it"
+        );
     }
 
     #[tokio::test]
@@ -418,33 +413,6 @@ mod session {
             session::load_context(topic, tmp.path(), jyc_agent::types::PriorDepth::All).await;
         assert_eq!(second.len(), 2, "external change must miss the cache");
         assert_eq!(second[1]["content"], "two");
-    }
-
-    #[tokio::test]
-    async fn load_context_deletes_corrupt_legacy_and_returns_empty() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "load_context_deletes_corrupt_legacy_and_returns_empty";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let state_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&state_dir).await.unwrap();
-        tokio::fs::write(
-            state_dir.join("agent-session.json"),
-            r#"{"created_at":"2026-01-01T00:00:00Z","context_input_tokens":0,"total_output_tokens":0,"max_input_tokens":0}"#,
-        )
-        .await
-        .unwrap();
-        tokio::fs::write(state_dir.join("agent-context.json"), "this is not json")
-            .await
-            .unwrap();
-
-        let (messages, raw_context) =
-            session::load_context(topic, tmp.path(), jyc_agent::types::PriorDepth::All).await;
-        assert!(messages.is_empty());
-        assert!(raw_context.is_empty());
-        assert!(
-            !state_dir.join("agent-context.json").exists(),
-            "corrupt legacy must be deleted"
-        );
     }
 
     #[tokio::test]
@@ -621,7 +589,7 @@ mod session {
         tokio::fs::write(state_dir.join("agent-session.json"), "{}")
             .await
             .unwrap();
-        tokio::fs::write(state_dir.join("agent-context.json"), "[]")
+        tokio::fs::write(state_dir.join("agent-context.jsonl"), "[]\n")
             .await
             .unwrap();
 
@@ -629,12 +597,11 @@ mod session {
 
         assert!(!state_dir.join("agent-session.json").exists());
         // The context is cleared, not summarized.
-        assert!(!state_dir.join("agent-context.json").exists());
         assert!(!state_dir.join("agent-context.jsonl").exists());
     }
 
     /// `persist_tokens` writes the session file and nothing else: the
-    /// on-disk `agent-context.json` is the raw context and only a reset
+    /// on-disk `agent-context.jsonl` is the raw context and only a reset
     /// (or the loop's own save) touches it.
     #[tokio::test]
     async fn persist_tokens_leaves_the_context_alone() {
@@ -645,8 +612,8 @@ mod session {
 
         // Seed a context file the reset would otherwise delete.
         tokio::fs::create_dir_all(&state_dir).await.unwrap();
-        let context_before = r#"[{"role":"user","content":"seed"}]"#;
-        tokio::fs::write(state_dir.join("agent-context.json"), context_before)
+        let context_before = "{\"role\":\"user\",\"content\":\"seed\"}\n";
+        tokio::fs::write(state_dir.join("agent-context.jsonl"), context_before)
             .await
             .unwrap();
 
@@ -671,7 +638,7 @@ mod session {
         .await;
 
         // Context file untouched.
-        let context_after = tokio::fs::read_to_string(state_dir.join("agent-context.json"))
+        let context_after = tokio::fs::read_to_string(state_dir.join("agent-context.jsonl"))
             .await
             .unwrap();
         assert_eq!(context_after, context_before);

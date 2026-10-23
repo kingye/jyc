@@ -10,7 +10,7 @@
 //! of the dashboard's public surface.
 
 use jyc_core::duration::format_latency;
-use jyc_types::{TopicInfo, format_amount};
+use jyc_types::TopicInfo;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 
@@ -340,22 +340,19 @@ pub(super) fn push_reasoning_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     }
 }
 
-/// Append the "Cost: $X session · $Y today" row to `spans`. Pushes
+/// Append the "Cost: $Y today · $X session" row to `spans`. Pushes
 /// nothing when the topic has no cost data (model without configured
 /// `pricing`), so an unpriced topic shows no row at all rather than a
 /// misleading zero.
 ///
 /// `session` resets with the agent session; `today` is the durable
 /// per-day total from the billing ledger — they differ after a reset by
-/// design.
+/// design. The row is spelled by `jyc_types::format_cost_pair`, which
+/// `/info` shares, so the two surfaces cannot drift apart.
 pub(super) fn push_cost_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     if let Some(ref c) = t.cost {
         spans.push(label_span("Cost: "));
-        spans.push(Span::raw(format!(
-            "{} session · {} today",
-            format_amount(c.session, &c.currency),
-            format_amount(c.today, &c.currency),
-        )));
+        spans.push(Span::raw(jyc_types::format_cost_pair(c)));
     }
 }
 
@@ -802,9 +799,9 @@ mod tests {
         assert!(spans.is_empty());
     }
 
-    /// Both figures render, and USD uses the `$` symbol.
+    /// Both figures render, the day first, and USD uses the `$` symbol.
     #[test]
-    fn push_cost_span_writes_session_and_today() {
+    fn push_cost_span_writes_today_and_session() {
         let mut t = info_with(Some(100), Some(10000), Some(50), Some(720), Some(640), None);
         t.cost = Some(jyc_types::TopicCost {
             session: 0.0521,
@@ -815,7 +812,7 @@ mod tests {
         push_cost_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content, padded("Cost: "));
-        assert_eq!(spans[1].content, "$0.05 session · $1.31 today");
+        assert_eq!(spans[1].content, "$1.31 today · $0.05 session");
     }
 
     /// CNY renders with `¥`, not a dollar sign.
@@ -829,7 +826,7 @@ mod tests {
         });
         let mut spans = Vec::new();
         push_cost_span(&mut spans, &t);
-        assert_eq!(spans[1].content, "¥2.50 session · ¥10.00 today");
+        assert_eq!(spans[1].content, "¥10.00 today · ¥2.50 session");
     }
 
     /// An unrecognised currency is suffixed rather than given the wrong
@@ -844,7 +841,7 @@ mod tests {
         });
         let mut spans = Vec::new();
         push_cost_span(&mut spans, &t);
-        assert_eq!(spans[1].content, "1.00 mixed session · 2.00 mixed today");
+        assert_eq!(spans[1].content, "2.00 mixed today · 1.00 mixed session");
     }
 
     /// The day's spend across every topic, per currency: one figure for a

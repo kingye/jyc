@@ -787,7 +787,7 @@ pub async fn run(
                 total_reasoning_tokens,
                 history,
                 raw_context,
-                persisted_len: prior_len,
+                prior_len,
                 outbound_targets: ctx
                     .outbound_targets
                     .lock()
@@ -871,12 +871,16 @@ pub async fn run(
         // the full transcript on every batch that never browses would be
         // wasted O(n) work per iteration. (The shared `ctx` built at the top
         // of `run()` is reused.)
+        //
+        // The snapshot is this turn's messages only: the prior context is
+        // not in memory (the reader parses the journal on demand), and
+        // `context_browse` reads it from the journal itself.
         if response
             .tool_calls
             .iter()
             .any(|tc| tc.name == "context_browse")
         {
-            ctx.raw_context = raw_context.clone();
+            ctx.raw_context = raw_context[prior_len..].to_vec();
         }
 
         let mut cancelled_during_tools = false;
@@ -1014,7 +1018,7 @@ pub async fn run(
                 raw_context.truncate(pos);
                 // The truncation never reaches into the persisted prefix in
                 // practice (the dangling message is always from this turn),
-                // but clamp defensively so `persisted_len` never overstates
+                // but clamp defensively so `prior_len` never overstates
                 // what is actually on disk.
                 prior_len = prior_len.min(raw_context.len());
             }
@@ -1154,7 +1158,7 @@ pub async fn run(
         total_reasoning_tokens,
         history,
         raw_context,
-        persisted_len: prior_len,
+        prior_len,
         outbound_targets: ctx
             .outbound_targets
             .lock()
@@ -1560,7 +1564,7 @@ mod session_totals_tests;
 #[cfg(test)]
 mod injection_tests;
 
-mod context;
+pub(crate) mod context;
 mod embedded_ask;
 mod response;
 mod retry;

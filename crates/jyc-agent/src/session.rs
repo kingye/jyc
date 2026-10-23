@@ -12,123 +12,36 @@ use jyc_core::session_state::{AGENT_CONTEXT_FILE, AGENT_CONTEXT_LEGACY_FILE};
 use jyc_types::state_dir::resolve_state_dir;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock};
 use tracing;
 
-use crate::types::{Message, Role};
+use crate::context_reader::ContextReader;
+use crate::types::{Message, PriorDepth, Role};
 
 const SESSION_FILE: &str = "agent-session.json";
 
-/// In-process parse cache for the raw context journal, keyed by topic name
-/// (topics are unique process-wide). Re-parsing a 50 MB+ journal on every
-/// turn dominated `Turn setup`; the cache hands out the already-parsed
-/// `Arc<Vec<Value>>` and is invalidated by file metadata (len + mtime) or
-/// by any write through [`replace_raw_context`] / reset.
-struct ContextCacheEntry {
-    file_len: u64,
-    file_mtime: Option<std::time::SystemTime>,
-    raw: Arc<Vec<serde_json::Value>>,
-}
-
-fn context_cache() -> &'static Mutex<std::collections::HashMap<String, ContextCacheEntry>> {
-    static CACHE: OnceLock<Mutex<std::collections::HashMap<String, ContextCacheEntry>>> =
-        OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
-}
-
-fn cache_drop(topic_name: &str) {
-    context_cache()
-        .lock()
-        .expect("context cache poisoned")
-        .remove(topic_name);
-}
-
-/// Insert/refresh the cache entry for `topic_name` from a fresh fstat of the
-/// journal. Callers pass the exact `Arc` that matches the file content.
-fn cache_insert(topic_name: &str, journal_path: &Path, raw: Arc<Vec<serde_json::Value>>) {
-    let (file_len, file_mtime) = std::fs::metadata(journal_path)
-        .map(|m| (m.len(), m.modified().ok()))
-        .unwrap_or((0, None));
-    context_cache()
-        .lock()
-        .expect("context cache poisoned")
-        .insert(
-            topic_name.to_string(),
-            ContextCacheEntry {
-                file_len,
-                file_mtime,
-                raw,
-            },
-        );
-}
-
-/// Look up a fresh cache entry: present, and file metadata still matches.
-fn cache_get(topic_name: &str, journal_path: &Path) -> Option<Arc<Vec<serde_json::Value>>> {
-    let cache = context_cache().lock().expect("context cache poisoned");
-    let entry = cache.get(topic_name)?;
-    let meta = std::fs::metadata(journal_path).ok()?;
-    if meta.len() == entry.file_len && meta.modified().ok() == entry.file_mtime {
-        Some(Arc::clone(&entry.raw))
-    } else {
-        None
-    }
-}
-
 // ─── Raw context journal ─────────────────────────────────────────────
 
-/// Parse journal bytes (one message per line) into values. A torn tail line
-/// (crash mid-append) is dropped; the first unparseable line stops the scan —
-/// mid-file corruption keeps the already-parsed prefix, mirroring the legacy
-/// whole-file parser's tolerate-and-continue spirit.
-fn parse_journal_lines(bytes: &[u8]) -> Vec<serde_json::Value> {
-    let mut out = Vec::new();
-    for (i, line) in bytes.split(|&b| b == b'\n').enumerate() {
-        if line.iter().all(|b| b.is_ascii_whitespace()) {
-            continue;
-        }
-        match serde_json::from_slice::<serde_json::Value>(line) {
-            Ok(v) => out.push(v),
-            Err(e) => {
-                tracing::warn!(
-                    line = i,
-                    error = %e,
-                    "agent-context.jsonl: unparseable line, keeping prefix"
-                );
-                break;
-            }
-        }
-    }
-    out
-}
-
-/// Read raw context values from the state dir, journal first. Shared by
-/// `load_context` and the compaction paths; no validation here — callers
-/// apply their own policies. Returns `None` when no context file exists.
-async fn read_context_values(state_dir: &Path) -> Option<Vec<serde_json::Value>> {
+/// Convert a legacy context file into the journal, once.
+///
+/// Legacy `agent-context.json` is a single JSON array; the journal
+/// `agent-context.jsonl` is append-only (one message per line). When only
+/// the legacy file exists, convert it and remove the legacy file — after
+/// this point the journal is authoritative. Rollback to an older binary
+/// requires restoring the array file from a backup (the old build cannot
+/// read the journal); see CHANGELOG.
+async fn migrate_legacy_context(state_dir: &Path) {
     let journal_path = state_dir.join(AGENT_CONTEXT_FILE);
     let legacy_path = state_dir.join(AGENT_CONTEXT_LEGACY_FILE);
-
-    if journal_path.exists() {
-        let bytes = tokio::fs::read(&journal_path).await.ok()?;
-        return Some(parse_journal_lines(&bytes));
+    if journal_path.exists() || !legacy_path.exists() {
+        return;
     }
-
-    // ── One-time auto-migration ─────────────────────────────────────
-    // Legacy `agent-context.json` is a single JSON array; the journal
-    // `agent-context.jsonl` is append-only (one message per line). When
-    // only the legacy file exists, convert it once here and remove the
-    // legacy file — after this point the journal is authoritative.
-    // Rollback to an older binary requires restoring the array file from
-    // a backup (the old build cannot read the journal); see CHANGELOG.
-    if !legacy_path.exists() {
-        return None;
-    }
-    let content = tokio::fs::read_to_string(&legacy_path).await.ok()?;
+    let Ok(content) = tokio::fs::read_to_string(&legacy_path).await else {
+        return;
+    };
     match serde_json::from_str::<Vec<serde_json::Value>>(&content) {
         Ok(values) => match write_journal(state_dir, &values).await {
             Ok(()) => {
                 tokio::fs::remove_file(&legacy_path).await.ok();
-                Some(values)
             }
             Err(e) => {
                 // Journal not written — keep the legacy file so the next
@@ -137,7 +50,6 @@ async fn read_context_values(state_dir: &Path) -> Option<Vec<serde_json::Value>>
                     error = %e,
                     "auto-migration: journal write failed, legacy kept"
                 );
-                Some(values)
             }
         },
         Err(e) => {
@@ -147,32 +59,19 @@ async fn read_context_values(state_dir: &Path) -> Option<Vec<serde_json::Value>>
                 "load_context: failed to parse legacy context file, deleting"
             );
             jyc_core::session_state::remove_raw_context_files(state_dir).await;
-            None
         }
     }
 }
 
-/// Serialize `new[persisted_len..]` and append it to the journal, first
-/// truncating any torn tail bytes after the `persisted_len`-th newline.
-/// `bytes` is the journal's current content (known to have exactly
-/// `persisted_len` complete lines).
+/// Append the messages to the journal, truncating a torn tail (a crash
+/// mid-append) first. `offset` is the end of the journal's last complete
+/// line — the reader owns that lookup, so the two never disagree about
+/// where the journal ends.
 async fn append_journal(
     journal_path: &Path,
-    bytes: &[u8],
-    persisted_len: usize,
+    offset: u64,
     new: &[serde_json::Value],
 ) -> std::io::Result<()> {
-    let mut offset = 0usize;
-    let mut seen = 0usize;
-    for (i, &b) in bytes.iter().enumerate() {
-        if b == b'\n' {
-            seen += 1;
-            offset = i + 1;
-            if seen == persisted_len {
-                break;
-            }
-        }
-    }
     let mut buf = String::new();
     for v in new {
         if let Ok(line) = serde_json::to_string(v) {
@@ -184,13 +83,13 @@ async fn append_journal(
     let mut f = tokio::fs::OpenOptions::new()
         .write(true)
         .create(true)
-        // No truncate: the cut point is the persisted_len-th newline,
-        // applied explicitly via set_len below (a bare truncate would
-        // drop the whole prefix).
+        // No truncate: the cut point is the end of the last complete
+        // line, applied explicitly via set_len below (a bare truncate
+        // would drop the whole prefix).
         .truncate(false)
         .open(journal_path)
         .await?;
-    f.set_len(offset as u64).await?;
+    f.set_len(offset).await?;
     f.seek(std::io::SeekFrom::End(0)).await?;
     f.write_all(buf.as_bytes()).await?;
     f.sync_data().await?;
@@ -231,53 +130,6 @@ async fn write_journal(state_dir: &Path, new: &[serde_json::Value]) -> std::io::
         .await
         .ok();
     Ok(())
-}
-
-/// The single writer for the raw context journal. Every mutation — turn-end
-/// save, compaction, migration — goes through here so the on-disk file and
-/// the parse cache can never disagree.
-///
-/// Append fast path: when the journal holds exactly `persisted_len` complete
-/// lines and `new` extends that prefix (the normal turn-end case), only the
-/// tail `new[persisted_len..]` is serialized and appended — O(delta). Any
-/// other shape (compaction, external edit, crash residue) rewrites the whole
-/// journal atomically via tmp + rename.
-///
-/// The cache is updated only after a successful write; a failed write drops
-/// the entry so the next load re-reads the journal instead of serving values
-/// that never reached disk.
-async fn replace_raw_context(
-    state_dir: &Path,
-    topic_name: &str,
-    new: Arc<Vec<serde_json::Value>>,
-    persisted_len: usize,
-) {
-    let journal_path = state_dir.join(AGENT_CONTEXT_FILE);
-
-    let result = async {
-        // Append fast path: the on-disk journal holds exactly
-        // `persisted_len` complete lines and `new` extends that prefix.
-        if persisted_len <= new.len()
-            && let Ok(bytes) = tokio::fs::read(&journal_path).await
-            && bytes.iter().filter(|&&b| b == b'\n').count() == persisted_len
-        {
-            append_journal(&journal_path, &bytes, persisted_len, &new[persisted_len..]).await
-        } else {
-            write_journal(state_dir, &new).await
-        }
-    }
-    .await;
-
-    match result {
-        Ok(()) => cache_insert(topic_name, &journal_path, new),
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "replace_raw_context: journal write failed, cache dropped"
-            );
-            cache_drop(topic_name);
-        }
-    }
 }
 
 /// Session state persisted to `.jyc/agent-session.json`.
@@ -408,27 +260,49 @@ pub struct SessionState {
 /// exactly as they were sent/received (preserves provider-specific fields like
 /// DeepSeek's reasoning_content).
 ///
-/// `persisted_len` is how many leading messages of `raw_context` were already
-/// on disk before this turn (0 after in-loop compaction or a fresh session) —
-/// it lets [`replace_raw_context`] append only the new tail instead of
-/// rewriting the whole journal.
+/// `current` is this turn's messages — the ones the journal does not hold
+/// yet. The journal is append-only: they are appended at the end of the
+/// file and nothing before them is touched, so the write costs what the
+/// turn added, not what the topic accumulated.
+///
+/// The reader's parsed tail is extended with the same messages, so the next
+/// turn reads the journal from memory instead of from disk. A failed write
+/// drops that tail: the next load re-reads the journal instead of serving
+/// values that never reached disk.
 pub async fn save_raw_context(
     topic_name: &str,
     topic_path: &Path,
-    raw_context: Vec<serde_json::Value>,
-    persisted_len: usize,
+    current: Vec<serde_json::Value>,
 ) {
     let state_dir = resolve_state_dir(topic_name, topic_path);
     tokio::fs::create_dir_all(&state_dir).await.ok();
+    let journal_path = state_dir.join(AGENT_CONTEXT_FILE);
+    let reader = ContextReader::new(topic_name, &state_dir);
 
     tracing::info!(
-        message_count = raw_context.len(),
-        persisted_len,
-        file = %state_dir.join(AGENT_CONTEXT_FILE).display(),
+        message_count = current.len(),
+        file = %journal_path.display(),
         "save_raw_context: saving context"
     );
 
-    replace_raw_context(&state_dir, topic_name, Arc::new(raw_context), persisted_len).await;
+    let before = reader.stat().await;
+    // The append point: after the journal's last complete line. A torn
+    // tail (a crash mid-append) is dropped instead of continued.
+    let offset = reader.clean_end().await;
+    match append_journal(&journal_path, offset, &current).await {
+        Ok(()) => {
+            if let (Some(before), Some(after)) = (before, reader.stat().await) {
+                reader.note_append(&current, before, after);
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "save_raw_context: journal write failed, reader cache dropped"
+            );
+            reader.invalidate();
+        }
+    }
 }
 
 /// Wire-payload debug dump — toggled by the user via `/context dump on|off`.
@@ -507,22 +381,25 @@ pub async fn append_wire_payload_dump(
 ///
 /// Returns (internal_messages, raw_context):
 /// - internal_messages: for logic (reply detection, text extraction)
-/// - raw_context: for sending to the API (preserves provider-specific fields);
-///   `raw_context.len()` is the persisted prefix length the caller later hands
-///   back to `save_raw_context` as `persisted_len`.
+/// - raw_context: for sending to the API (preserves provider-specific fields).
 ///
-/// If no session file exists (fresh or after reset), returns empty. A hit in
-/// the in-process parse cache skips both the file read and the JSON parse.
+/// `depth` is how much of the journal the caller needs: the strategies
+/// read a window, `full` mode reads everything. The reader parses only
+/// that much — a journal that grew to hundreds of megabytes costs the
+/// same per turn as a small one.
+///
+/// If no session file exists (fresh or after reset), returns empty.
 pub async fn load_context(
     topic_name: &str,
     topic_path: &Path,
-) -> (Vec<Message>, Arc<Vec<serde_json::Value>>) {
+    depth: PriorDepth,
+) -> (Vec<Message>, Vec<serde_json::Value>) {
     let state_dir = resolve_state_dir(topic_name, topic_path);
     let session_path = state_dir.join(SESSION_FILE);
     let journal_path = state_dir.join(AGENT_CONTEXT_FILE);
     let legacy_path = state_dir.join(AGENT_CONTEXT_LEGACY_FILE);
 
-    let empty = (Vec::new(), Arc::new(Vec::new()));
+    let empty = (Vec::new(), Vec::new());
 
     // No session file = fresh start. No prior context.
     if !session_path.exists() {
@@ -543,21 +420,12 @@ pub async fn load_context(
         return empty;
     }
 
-    // Parse cache: same file (len + mtime) → reuse the parsed values.
-    if let Some(raw) = cache_get(topic_name, &journal_path) {
-        tracing::debug!(
-            context_messages = raw.len(),
-            "load_context: cache hit, skipping read + parse"
-        );
-        return (raw_context_to_messages(&raw), raw);
-    }
+    // One-time conversion of a legacy context file into the journal.
+    migrate_legacy_context(&state_dir).await;
 
-    let Some(values) = read_context_values(&state_dir).await else {
-        return empty;
-    };
-
-    // Filter out invalid assistant messages (no content, no tool_calls)
-    let raw_context = crate::provider::filter_valid_messages(&values);
+    let reader = ContextReader::new(topic_name, &state_dir);
+    let slice = reader.read_prior(depth).await;
+    let raw_context = slice.messages;
 
     if !raw_context.is_empty() {
         // Validate: must contain at least one assistant message
@@ -567,14 +435,18 @@ pub async fn load_context(
         if has_assistant {
             tracing::debug!(
                 context_messages = raw_context.len(),
+                reached_head = slice.reached_head,
                 "Loaded raw context from agent-context.jsonl"
             );
             // Build internal messages from raw context (for reply detection logic)
-            let raw = Arc::new(raw_context);
-            cache_insert(topic_name, &journal_path, Arc::clone(&raw));
-            let internal = raw_context_to_messages(&raw);
-            return (internal, raw);
-        } else {
+            let internal = raw_context_to_messages(&raw_context);
+            return (internal, raw_context);
+        } else if slice.reached_head {
+            // The whole journal holds no assistant message — the context
+            // is corrupt (e.g. a summarization produced user-only
+            // context). Only then is it safe to drop it: a window that
+            // happens to hold no assistant message says nothing about
+            // the turns behind it.
             tracing::error!(
                 context_messages = raw_context.len(),
                 roles = ?raw_context.iter()
@@ -585,7 +457,7 @@ pub async fn load_context(
                  user-only context)."
             );
             jyc_core::session_state::remove_raw_context_files(&state_dir).await;
-            cache_drop(topic_name);
+            reader.invalidate();
         }
     }
 
@@ -904,7 +776,8 @@ pub async fn reset_session(topic_name: &str, topic_path: &Path) {
     // Delete everything — session file and raw context store (journal +
     // legacy).
     jyc_core::session_state::remove_raw_context_files(&state_dir).await;
-    cache_drop(topic_name);
+    // The reader's parsed tail describes a journal that is gone.
+    ContextReader::new(topic_name, &state_dir).invalidate();
     let session_path = state_dir.join(SESSION_FILE);
     tokio::fs::remove_file(&session_path).await.ok();
     tracing::info!("Agent session reset");
@@ -1228,8 +1101,8 @@ const WINDOWED_ANNOTATION_MAX: usize = 2000;
 /// precedes the assistant text (matching the chronological order: tool
 /// calls happen before the final reply) and so an `assistant → user(note)`
 /// adjacency never sits right before the next real user message.
-/// `extract_pairs` skips these notes so a compacted-then-reparsed context
-/// does not treat them as turn-opening user messages.
+/// `extract_pairs` skips these notes so a round-tripped note does not
+/// open a turn.
 pub(crate) const HISTORY_NOTE_PREFIX: &str = "[History note] assistant tool calls:";
 
 /// Wire-only marker inserted at the start of the compacted history region.
@@ -1431,9 +1304,8 @@ fn message_keeps_turn_alive(msg: &serde_json::Value) -> bool {
 /// values truncated, tool results appended as `→ <result>`), never into
 /// the assistant's own text. Returns pairs in oldest→newest order.
 ///
-/// History notes already present in the input (round-tripped through
-/// heuristic compaction) are skipped — they are metadata, not turn
-/// boundaries.
+/// History notes already present in the input (round-tripped from an
+/// older context) are skipped — they are metadata, not turn boundaries.
 ///
 /// A trailing turn whose user message has no assistant reply yet is
 /// dropped, mirroring the windowed-view semantics — a completed turn only
@@ -1443,7 +1315,7 @@ fn message_keeps_turn_alive(msg: &serde_json::Value) -> bool {
 /// they stream by, so a tool_call_id reused in a later turn can never
 /// misattach to an earlier turn's call.
 ///
-/// Shared by session heuristic compaction and the `context_browse` built-in
+/// Shared by the sliding-window payload and the `context_browse` built-in
 /// tool.
 pub(crate) fn extract_pairs(raw_context: &[serde_json::Value]) -> Vec<TurnPair> {
     let mut pairs: Vec<TurnPair> = Vec::new();
@@ -1485,7 +1357,8 @@ pub(crate) fn extract_pairs(raw_context: &[serde_json::Value]) -> Vec<TurnPair> 
     pairs
 }
 
-/// Index where the last `keep_pairs` pair-producing turns begin.
+/// Index where the last `keep_pairs` pair-producing turns begin, and how
+/// many pair-producing turns the slice holds.
 ///
 /// A turn counts only when [`flush_turn`] would keep it — an assistant with
 /// text or a tool call. Counting openers alone starts too late for an
@@ -1494,12 +1367,16 @@ pub(crate) fn extract_pairs(raw_context: &[serde_json::Value]) -> Vec<TurnPair> 
 /// behind, so `take(keep_pairs)` cannot recover it). Scanning backward costs
 /// one pass over the roles and the text of user messages, instead of the
 /// deep clone [`extract_pairs`] spends on everything before the tail.
-fn pairs_tail_start(raw_context: &[serde_json::Value], keep_pairs: usize) -> usize {
+pub(crate) fn pairs_tail_start(
+    raw_context: &[serde_json::Value],
+    keep_pairs: usize,
+) -> (usize, usize) {
     if keep_pairs == 0 {
-        return raw_context.len();
+        return (raw_context.len(), 0);
     }
     let mut turns = 0usize;
     let mut seen_payload = false;
+    let mut start = 0usize;
     for (idx, msg) in raw_context.iter().enumerate().rev() {
         if msg.get("role").and_then(|r| r.as_str()) == Some("assistant") {
             // Same keep-rule as `flush_turn`: an assistant with neither text
@@ -1507,13 +1384,23 @@ fn pairs_tail_start(raw_context: &[serde_json::Value], keep_pairs: usize) -> usi
             seen_payload |= message_keeps_turn_alive(msg);
         } else if opens_turn(msg) && seen_payload {
             turns += 1;
-            if turns == keep_pairs {
-                return idx;
+            if turns == keep_pairs && start == 0 {
+                start = idx;
             }
             seen_payload = false;
         }
     }
-    0
+    (start, turns)
+}
+
+/// How many turn openers the slice holds.
+///
+/// An opener is a text-bearing user message — the same boundary
+/// [`extract_pairs`] and [`verbatim_start_index`] use. A turn opener
+/// without a reply (an unanswered user message) is an opener without a
+/// pair, so the two counts differ.
+pub(crate) fn count_turn_openers(raw_context: &[serde_json::Value]) -> usize {
+    raw_context.iter().filter(|m| opens_turn(m)).count()
 }
 
 /// Extract user+assistant text pairs from raw context and keep only the
@@ -1528,9 +1415,8 @@ fn pairs_tail_start(raw_context: &[serde_json::Value], keep_pairs: usize) -> usi
 /// pairs (`None` = notes on every kept pair); older pairs are text-only.
 /// Values above `keep_pairs` clamp to `keep_pairs`.
 ///
-/// Shared between session heuristic compaction, mid-loop compression
-/// (both pass `None`), and the sliding-window wire payload (passes the
-/// configured `note_window`).
+/// Shared by the sliding-window wire payload (passes the configured
+/// `note_window`) and the region builders (pass `None`).
 pub(crate) fn extract_user_assistant_pairs(
     raw_context: &[serde_json::Value],
     keep_pairs: usize,
@@ -1541,7 +1427,7 @@ pub(crate) fn extract_user_assistant_pairs(
     // assistant's final text). Start the extraction where the kept turns
     // begin: `extract_pairs` deep-clones every message it visits, and on a
     // long history the discarded prefix is the bulk of that work.
-    let tail_start = pairs_tail_start(raw_context, keep_pairs);
+    let tail_start = pairs_tail_start(raw_context, keep_pairs).0;
     let pairs: Vec<_> = extract_pairs(&raw_context[tail_start..])
         .into_iter()
         .rev()

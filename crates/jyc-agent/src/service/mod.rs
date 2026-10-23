@@ -604,9 +604,14 @@ impl AgentService for JycAgentService {
         // rebuilt by the pre-check) is already settled.
         session::begin_turn_counters(topic_name, topic_path).await;
 
-        // Load session and prior raw context.
-        let (prior_history, prior_raw_context) =
-            session::load_context(topic_name, topic_path).await;
+        // Load session and prior raw context. The strategy says how much
+        // of the journal it reads — the reader parses only that much.
+        let (prior_history, prior_raw_context) = session::load_context(
+            topic_name,
+            topic_path,
+            crate::agent_loop::context::prior_depth(&context_strategy),
+        )
+        .await;
 
         tracing::debug!(
             prior_messages = prior_history.len(),
@@ -634,7 +639,7 @@ impl AgentService for JycAgentService {
             topic_name,
             event_bus: event_bus.as_ref(),
             prior_history,
-            prior_raw_context,
+            prior_raw_context: std::sync::Arc::new(prior_raw_context),
             // The queue the worker hands live messages to: the loop folds
             // them into the running turn (see `live_injection`).
             injection_rx: Some(&mut *pending_rx),
@@ -705,14 +710,12 @@ impl AgentService for JycAgentService {
             "Agent loop completed"
         );
 
-        // 8. Save raw context (preserves provider-specific fields for round-tripping)
-        session::save_raw_context(
-            topic_name,
-            topic_path,
-            result.raw_context,
-            result.persisted_len,
-        )
-        .await;
+        // 8. Save raw context (preserves provider-specific fields for round-tripping).
+        // The journal already holds the prior turns; only this turn's
+        // messages are new, and the journal is append-only.
+        let mut raw_context = result.raw_context;
+        let current = raw_context.split_off(result.prior_len);
+        session::save_raw_context(topic_name, topic_path, current).await;
 
         // 9. Update session token tracking. The loop already persisted
         // these figures after every LLM call; this is the turn's final

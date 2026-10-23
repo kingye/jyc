@@ -233,12 +233,12 @@ pub struct AgentLoopResult {
     pub history: Vec<Message>,
     /// Raw provider-formatted context (for persistence in agent-context.jsonl).
     /// This preserves provider-specific fields like DeepSeek's reasoning_content.
+    /// It holds the prior context the strategy read plus this turn's messages.
     pub raw_context: Vec<serde_json::Value>,
-    /// How many leading messages of `raw_context` were already persisted on
-    /// disk before this run. `0` after an in-loop compaction or a fresh
-    /// session — the caller passes it to `save_raw_context` so the journal
-    /// write can append only the new tail instead of rewriting everything.
-    pub persisted_len: usize,
+    /// How many leading messages of `raw_context` are the prior context —
+    /// everything after that index is this turn. The caller appends only
+    /// that tail to the journal, which is append-only.
+    pub prior_len: usize,
     /// The topics this turn sent messages to, as `(channel, topic)` pairs.
     ///
     /// The service reads it to tell a turn that already answered a
@@ -249,6 +249,21 @@ pub struct AgentLoopResult {
     /// A request that arrives mid-turn joins the conversation and asks for
     /// an answer as well, so the guard owes it one too.
     pub pending_replies: Vec<crate::service::reply_guard::ReplyRequest>,
+}
+
+/// How much of a topic's prior context a caller needs.
+///
+/// The two counts of a window differ on purpose: a turn *opener* is a
+/// text-bearing user message, a *pair* is a turn that produced an
+/// assistant reply. An unanswered user message is an opener without a
+/// pair, and the context strategies read both kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PriorDepth {
+    /// The whole context — the caller sends every turn.
+    All,
+    /// The last `pairs` pair-producing turns and the last `openers` turn
+    /// openers.
+    Window { pairs: usize, openers: usize },
 }
 
 /// The turn died, and what it still owed.

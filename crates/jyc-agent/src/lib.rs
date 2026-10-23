@@ -4,6 +4,7 @@
 
 pub mod agent_loop;
 pub mod capabilities;
+pub(crate) mod context_reader;
 pub mod provider;
 pub mod service;
 pub mod session;

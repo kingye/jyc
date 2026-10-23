@@ -935,6 +935,7 @@ mod list_topics_tests {
         ) -> Result<jyc_types::SendResult> {
             Ok(jyc_types::SendResult {
                 message_id: "test".to_string(),
+                chat_seq: 0,
             })
         }
         async fn send_message(
@@ -945,6 +946,7 @@ mod list_topics_tests {
         ) -> Result<jyc_types::SendResult> {
             Ok(jyc_types::SendResult {
                 message_id: "test".to_string(),
+                chat_seq: 0,
             })
         }
     }

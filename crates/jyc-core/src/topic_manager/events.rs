@@ -59,8 +59,10 @@ impl TopicManager {
     pub(crate) async fn publish_incoming_message(
         &self,
         topic_name: &str,
+        id: u64,
         sender: &str,
         text: &str,
+        client_msg_id: Option<&str>,
     ) {
         if !self.enable_events {
             return;
@@ -68,8 +70,10 @@ impl TopicManager {
         if let Some(bus) = self.get_event_bus(topic_name).await {
             let event = crate::topic_event::TopicEvent::IncomingMessage {
                 topic_name: topic_name.to_string(),
+                id,
                 sender: sender.to_string(),
                 text: text.to_string(),
+                client_msg_id: client_msg_id.map(|s| s.to_string()),
                 timestamp: chrono::Utc::now(),
             };
             if let Err(e) = bus.publish(event).await {
@@ -86,13 +90,23 @@ impl TopicManager {
     ///
     /// Called after `outbound.send_reply()` succeeds. Enables the dashboard
     /// to display live AI replies for non-WebSocket topics.
-    pub(crate) async fn publish_reply_sent(&self, topic_name: &str, text: &str) {
+    ///
+    /// `id` is the chat sequence number the reply's log row carries; channels
+    /// whose adapter writes no log row pass `0` and a number is allocated
+    /// here — the live row still needs one to be placed in the sequence.
+    pub(crate) async fn publish_reply_sent(&self, topic_name: &str, text: &str, id: u64) {
         if !self.enable_events {
             return;
         }
+        let id = if id == 0 {
+            crate::chat_seq::next(topic_name)
+        } else {
+            id
+        };
         if let Some(bus) = self.get_event_bus(topic_name).await {
             let event = crate::topic_event::TopicEvent::ReplySent {
                 topic_name: topic_name.to_string(),
+                id,
                 text: text.to_string(),
                 timestamp: chrono::Utc::now(),
             };

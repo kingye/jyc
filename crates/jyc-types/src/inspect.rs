@@ -466,9 +466,15 @@ pub struct ChatMessageEntry {
     /// RFC 3339 timestamp
     #[serde(default)]
     pub timestamp: Option<String>,
-    /// Monotonic per-topic sequence number (see `ActivityEntry::id`).
+    /// Per-topic chat sequence number, carried by both the live row and the
+    /// logged row for the same message (`0` for rows logged before the
+    /// sequence existed).
     #[serde(default)]
     pub id: u64,
+    /// The dashboard client's own id for a message it sent, echoed back so
+    /// the client can recognize (and replace) its optimistic copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_msg_id: Option<String>,
 }
 
 /// Topic processing status.

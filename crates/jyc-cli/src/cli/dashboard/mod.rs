@@ -351,7 +351,8 @@ impl App {
                 // a fresh channel — the dedup state from the previous
                 // session would drop every incoming event until events
                 // catch up. Clear it and re-hydrate the current topic.
-                self.chat.last_seen_id.clear();
+                self.chat.last_seen_activity_id.clear();
+                self.chat.last_seen_chat_seq.clear();
                 if let (Some(channel), Some(topic)) =
                     (self.chat.channel.clone(), self.chat.topic.clone())
                 {

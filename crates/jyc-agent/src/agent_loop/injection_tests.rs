@@ -379,6 +379,7 @@ impl jyc_types::channel::OutboundAdapter for QuoteStrippingOutbound {
     ) -> anyhow::Result<jyc_types::channel::SendResult> {
         Ok(jyc_types::channel::SendResult {
             message_id: "test".to_string(),
+            chat_seq: 0,
         })
     }
     async fn send_message(
@@ -389,6 +390,7 @@ impl jyc_types::channel::OutboundAdapter for QuoteStrippingOutbound {
     ) -> anyhow::Result<jyc_types::channel::SendResult> {
         Ok(jyc_types::channel::SendResult {
             message_id: "test".to_string(),
+            chat_seq: 0,
         })
     }
 }

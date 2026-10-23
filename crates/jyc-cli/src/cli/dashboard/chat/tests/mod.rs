@@ -4,6 +4,8 @@ use crate::cli::command_popup::popup_height;
 
 fn history_msg(sender: &str, text: &str, ts: Option<&str>) -> ChatMessage {
     ChatMessage {
+        id: 0,
+        client_id: None,
         sender: sender.to_string(),
         text: text.to_string(),
         timestamp: ts.map(|s| s.to_string()),
@@ -165,11 +167,15 @@ fn topic_switch_clears_chat_messages() {
 
     // Simulate messages from a previous topic
     app.chat.messages.push(ChatMessage {
+        id: 0,
+        client_id: None,
         sender: "user".to_string(),
         text: "hello from topic A".to_string(),
         timestamp: None,
     });
     app.chat.messages.push(ChatMessage {
+        id: 0,
+        client_id: None,
         sender: "ai".to_string(),
         text: "reply from topic A".to_string(),
         timestamp: None,
@@ -1897,6 +1903,8 @@ fn mouse_scroll_in_message_area_advances_scroll_offset() {
     // scroll maximum (last_max_scroll) is non-zero.
     for i in 0..100 {
         app.chat.messages.push(ChatMessage {
+            id: 0,
+            client_id: None,
             sender: "user".into(),
             text: format!("msg {i}"),
             timestamp: Some("2026-01-01T00:00:00Z".into()),
@@ -2040,6 +2048,8 @@ fn mouse_scroll_ignored_when_capture_disabled() {
     app.chat.focus = Focus::ChatPane;
     app.chat.scroll = 0;
     app.chat.messages.push(ChatMessage {
+        id: 0,
+        client_id: None,
         sender: "user".into(),
         text: "hi".into(),
         timestamp: Some("2026-01-01T00:00:00Z".into()),
@@ -2115,6 +2125,8 @@ fn mouse_scroll_over_message_area_moves_focus_from_other_panes() {
     // maximum (last_max_scroll) is non-zero.
     for i in 0..100 {
         app.chat.messages.push(ChatMessage {
+            id: 0,
+            client_id: None,
             sender: "user".into(),
             text: format!("msg {i}"),
             timestamp: Some("2026-01-01T00:00:00Z".into()),
@@ -2149,6 +2161,8 @@ fn mouse_scroll_over_message_area_moves_focus_from_other_panes() {
     app2.chat.topic = Some("jyc".to_string());
     for i in 0..100 {
         app2.chat.messages.push(ChatMessage {
+            id: 0,
+            client_id: None,
             sender: "user".into(),
             text: format!("msg {i}"),
             timestamp: Some("2026-01-01T00:00:00Z".into()),
@@ -2349,7 +2363,7 @@ fn handle_ws_message_routes_activity_events_to_live_buffer() {
     let mut app = App::new(rx, None);
 
     // Simulate hydrate: seed an activity entry, then a WS event with
-    // the same id arrives — should be deduped (id <= last_seen_id).
+    // the same id arrives — should be deduped (id <= last_seen_activity_id).
     let entry = jyc_types::ActivityEntry {
         event: serde_json::Value::Null,
         text: Some("Tool: bash".to_string()),
@@ -2893,12 +2907,14 @@ fn poll_sync_appends_each_live_entry_by_unique_id() {
         "t",
         vec![
             jyc_types::ChatMessageEntry {
+                client_msg_id: None,
                 sender: "ai".into(),
                 text: text.clone(),
                 timestamp: Some("2026-01-01T00:00:01Z".into()),
                 id: 2,
             },
             jyc_types::ChatMessageEntry {
+                client_msg_id: None,
                 sender: "ai".into(),
                 text,
                 timestamp: Some("2026-01-01T00:00:02Z".into()),
@@ -2914,17 +2930,18 @@ fn poll_sync_appends_each_live_entry_by_unique_id() {
 }
 
 #[test]
-fn poll_sync_does_not_repush_historical_id_zero_rows_across_polls() {
-    // 5 identical historical AI rows (id == 0) flushed by REST hydrate.
-    // After 10 sync cycles `self.messages` must still contain exactly one
-    // copy — the bug that produced the `id == 0` flood.
+fn poll_sync_skips_rows_logged_before_the_chat_sequence() {
+    // Rows logged before the sequence existed carry id 0. They are not
+    // drawn: the sequence number is the whole dedup rule, and a row
+    // outside the sequence has nothing to place it by. (They stay on
+    // disk; the pane starts at the upgrade.)
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
-    let text = "/context: current strategy is sliding_window (window=10) (default)".to_string();
     let rows = (0..5)
         .map(|i| jyc_types::ChatMessageEntry {
+            client_msg_id: None,
             sender: "ai".into(),
-            text: text.clone(),
+            text: format!("legacy-{i}"),
             timestamp: Some(format!("2026-01-01T00:00:0{i}Z")),
             id: 0,
         })
@@ -2935,15 +2952,65 @@ fn poll_sync_does_not_repush_historical_id_zero_rows_across_polls() {
     }
     assert_eq!(
         app.chat.messages.len(),
-        1,
-        "historical id=0 row must not be re-pushed across polls"
+        0,
+        "rows without a sequence number are not drawn"
     );
 }
 
 #[test]
-fn poll_sync_keeps_distinct_historical_texts() {
-    // Distinct historical texts must all be kept — `id == 0` should not
-    // collapse every historical row to one.
+fn poll_sync_server_row_replaces_the_local_echo() {
+    // `send_message_inner` pushes the local echo with id 0 and a client id;
+    // the server broadcasts the same message back with a sequence number
+    // and that same client id. The row must replace the echo in place, not
+    // be appended beside it.
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.send_message_inner("/hello".into());
+    let client_id = app
+        .chat
+        .messages
+        .last()
+        .and_then(|m| m.client_id.clone())
+        .expect("echo carries a client id");
+    assert_eq!(app.chat.messages[0].id, 0, "echo is unconfirmed");
+
+    push_live_chat(
+        &mut app,
+        "agents",
+        "t",
+        vec![jyc_types::ChatMessageEntry {
+            client_msg_id: Some(client_id),
+            sender: "user".into(),
+            text: "/hello".into(),
+            timestamp: Some("2026-01-01T00:00:00.500Z".into()),
+            id: 7,
+        }],
+    );
+    assert!(app.chat.sync_live_chat("agents", "t"));
+
+    let user_msgs: Vec<&ChatMessage> = app
+        .chat
+        .messages
+        .iter()
+        .filter(|m| m.sender == "user")
+        .collect();
+    assert_eq!(user_msgs.len(), 1, "the server row replaced the echo");
+    assert_eq!(user_msgs[0].id, 7, "the echo adopted the server's sequence");
+    assert_eq!(
+        user_msgs[0].timestamp.as_deref(),
+        Some("2026-01-01T00:00:00.500Z"),
+        "the echo adopted the server's timestamp"
+    );
+
+    // A repeated fold must not append the confirmed row again.
+    assert!(!app.chat.sync_live_chat("agents", "t"));
+    assert_eq!(app.chat.messages.len(), 1);
+}
+
+#[test]
+fn poll_sync_keeps_two_identical_messages() {
+    // The bug the sequence fixes: two messages with the same sender and
+    // text used to collapse into one, because text was the only key.
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     push_live_chat(
@@ -2952,89 +3019,53 @@ fn poll_sync_keeps_distinct_historical_texts() {
         "t",
         vec![
             jyc_types::ChatMessageEntry {
-                sender: "ai".into(),
-                text: "first ai reply".into(),
-                timestamp: Some("2026-01-01T00:00:00Z".into()),
-                id: 0,
-            },
-            jyc_types::ChatMessageEntry {
-                sender: "ai".into(),
-                text: "second ai reply".into(),
-                timestamp: Some("2026-01-01T00:00:01Z".into()),
-                id: 0,
-            },
-            jyc_types::ChatMessageEntry {
+                client_msg_id: None,
                 sender: "user".into(),
-                text: "user said something".into(),
-                timestamp: Some("2026-01-01T00:00:02Z".into()),
-                id: 0,
+                text: "ok".into(),
+                timestamp: Some("2026-01-01T00:00:00Z".into()),
+                id: 3,
+            },
+            jyc_types::ChatMessageEntry {
+                client_msg_id: None,
+                sender: "user".into(),
+                text: "ok".into(),
+                timestamp: Some("2026-01-01T00:00:05Z".into()),
+                id: 5,
             },
         ],
     );
     assert!(app.chat.sync_live_chat("agents", "t"));
-    assert_eq!(app.chat.messages.len(), 3);
-    assert!(!app.chat.sync_live_chat("agents", "t"));
-    assert_eq!(app.chat.messages.len(), 3);
-}
-
-#[test]
-fn poll_sync_local_user_echo_and_server_echo_are_deduped() {
-    // `send_message_inner` pushes the local echo with no id; the server
-    // echoes back via `live_chat` with id > 0. The local echo must stay,
-    // the server echo must be dropped — this is rule (2).
-    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-    let mut app = App::new(rx, None);
-    // Local echo.
-    app.chat.send_message_inner("/hello".into());
-    // Server echoes back via live_chat.
-    push_live_chat(
-        &mut app,
-        "agents",
-        "t",
-        vec![jyc_types::ChatMessageEntry {
-            sender: "user".into(),
-            text: "/hello".into(),
-            timestamp: Some("2026-01-01T00:00:00.500Z".into()),
-            id: 7,
-        }],
-    );
-    app.chat.sync_live_chat("agents", "t");
-    let user_msgs: Vec<&ChatMessage> = app
-        .chat
-        .messages
-        .iter()
-        .filter(|m| m.sender == "user")
-        .collect();
     assert_eq!(
-        user_msgs.len(),
-        1,
-        "local echo must win, server echo dropped"
+        app.chat.messages.len(),
+        2,
+        "identical text does not make a message a duplicate"
     );
 }
 
 #[test]
 fn poll_sync_command_repeats_with_historical_backdrop() {
-    // The user's exact scenario: 30 historical rows (id == 0) plus 3
-    // fresh `/context` commands. All 3 user echoes + 3 AI replies must
-    // be present, and the historical rows must not be re-pushed across
-    // polls.
+    // The user's exact scenario: 30 logged rows plus 3 fresh `/context`
+    // commands. All 3 user echoes + 3 AI replies must be present, and the
+    // logged rows must not be re-pushed across polls.
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
-    // Seed 30 historical rows: 15 user + 15 ai, all id == 0, distinct text.
+    // Seed 30 logged rows: 15 user + 15 ai, distinct text.
     let mut hist: Vec<jyc_types::ChatMessageEntry> = (0..15)
         .flat_map(|i| {
             [
                 jyc_types::ChatMessageEntry {
+                    client_msg_id: None,
                     sender: "user".into(),
                     text: format!("old-user-{i}"),
                     timestamp: Some(format!("2026-01-01T00:00:{i:02}Z")),
-                    id: 0,
+                    id: 2 * i as u64 + 1,
                 },
                 jyc_types::ChatMessageEntry {
+                    client_msg_id: None,
                     sender: "ai".into(),
                     text: format!("old-ai-{i}"),
                     timestamp: Some(format!("2026-01-01T00:01:{i:02}Z")),
-                    id: 0,
+                    id: 2 * i as u64 + 2,
                 },
             ]
         })
@@ -3047,12 +3078,14 @@ fn poll_sync_command_repeats_with_historical_backdrop() {
     for round in 0..3 {
         app.chat.send_message_inner("/context".into());
         hist.push(jyc_types::ChatMessageEntry {
+            client_msg_id: None,
             sender: "user".into(),
             text: "/context".into(),
             timestamp: Some(format!("2026-02-01T00:0{round}:00Z")),
             id: 100 + round as u64 * 2,
         });
         hist.push(jyc_types::ChatMessageEntry {
+            client_msg_id: None,
             sender: "ai".into(),
             text: ai_text.clone(),
             timestamp: Some(format!("2026-02-01T00:0{round}:01Z")),
@@ -3095,8 +3128,8 @@ fn poll_sync_command_repeats_with_historical_backdrop() {
 }
 
 #[test]
-fn seed_live_resets_last_pushed_chat_id_so_revisit_rehydrates() {
-    // The bug fixed by `seed_live` resetting `last_pushed_chat_id` to 0:
+fn seed_live_resets_last_pushed_chat_seq_so_revisit_rehydrates() {
+    // The bug fixed by `seed_live` resetting `last_pushed_chat_seq` to 0:
     // when the user closes and reopens a topic, the egress tracker still
     // holds the previous visit's max id. Without the reset, the freshly
     // hydrated historical rows (whose ids ≤ old max) would all be
@@ -3106,6 +3139,7 @@ fn seed_live_resets_last_pushed_chat_id_so_revisit_rehydrates() {
     let mut app = App::new(rx, None);
     let historical: Vec<jyc_types::ChatMessageEntry> = (0..10)
         .map(|i| jyc_types::ChatMessageEntry {
+            client_msg_id: None,
             sender: if i % 2 == 0 {
                 "user".into()
             } else {
@@ -3124,7 +3158,7 @@ fn seed_live_resets_last_pushed_chat_id_so_revisit_rehydrates() {
     // The egress tracker now sits at the max historical id (10).
     assert_eq!(
         app.chat
-            .last_pushed_chat_id
+            .last_pushed_chat_seq
             .get(&("agents".into(), "t".into()))
             .copied(),
         Some(10)
@@ -3137,7 +3171,7 @@ fn seed_live_resets_last_pushed_chat_id_so_revisit_rehydrates() {
         .seed_live("agents", "t", vec![], historical.clone());
     assert_eq!(
         app.chat
-            .last_pushed_chat_id
+            .last_pushed_chat_seq
             .get(&("agents".into(), "t".into()))
             .copied(),
         Some(0),
@@ -3153,6 +3187,7 @@ fn seed_live_resets_last_pushed_chat_id_so_revisit_rehydrates() {
 
 fn history_row(sender: &str, text: &str, id: u64) -> jyc_types::ChatMessageEntry {
     jyc_types::ChatMessageEntry {
+        client_msg_id: None,
         sender: sender.to_string(),
         text: text.to_string(),
         timestamp: Some(format!("2026-01-01T00:00:{id:02}Z")),
@@ -3232,7 +3267,7 @@ fn resync_hydrate_does_not_repush_rows_already_on_screen() {
     assert_eq!(app.chat.live_chat_for("chan", "t1").count(), 0);
     assert_eq!(
         app.chat
-            .last_pushed_chat_id
+            .last_pushed_chat_seq
             .get(&("chan".to_string(), "t1".to_string())),
         Some(&3),
         "the tracker describes the pane, so a buffer wipe must not clear it"

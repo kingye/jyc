@@ -2170,6 +2170,8 @@ mod tests {
         );
         ev(
             TopicEvent::IncomingMessage {
+                id: 0,
+                client_msg_id: None,
                 topic_name: "t".into(),
                 sender: "u".into(),
                 text: "hi".into(),
@@ -2179,6 +2181,7 @@ mod tests {
         );
         ev(
             TopicEvent::ReplySent {
+                id: 0,
                 topic_name: "t".into(),
                 text: "x".repeat(150),
                 timestamp: ts,

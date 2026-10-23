@@ -88,6 +88,7 @@ impl OutboundAdapter for CapturingOutbound {
         self.log.record("reply", reply_text.to_string());
         Ok(SendResult {
             message_id: "mock-reply".to_string(),
+            chat_seq: 0,
         })
     }
 
@@ -99,6 +100,7 @@ impl OutboundAdapter for CapturingOutbound {
     ) -> anyhow::Result<SendResult> {
         Ok(SendResult {
             message_id: "mock-msg".to_string(),
+            chat_seq: 0,
         })
     }
 

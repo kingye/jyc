@@ -296,20 +296,25 @@ impl ActivityTracker {
 
                                                                     // Capture chat messages for live dashboard display
                                                                     let chat_msg: Option<ChatMessageEntry> = match &event {
-                                                                        TopicEvent::IncomingMessage { sender, text, timestamp, .. } => {
+                                                                        TopicEvent::IncomingMessage { id, sender, text, client_msg_id, timestamp, .. } => {
                                                                             Some(ChatMessageEntry {
                                                                                 sender: sender.clone(),
                                                                                 text: text.clone(),
                                                                                 timestamp: Some(timestamp.to_rfc3339()),
-                                                                                id: 0, // assigned below in the fanout step
+                                                                                // Allocated where the message entered the
+                                                                                // system; the chat log stores the same number,
+                                                                                // so clients dedup on it alone.
+                                                                                id: *id,
+                                                                                client_msg_id: client_msg_id.clone(),
                                                                             })
                                                                         }
-                                                                        TopicEvent::ReplySent { text, timestamp, .. } => {
+                                                                        TopicEvent::ReplySent { id, text, timestamp, .. } => {
                                                                             Some(ChatMessageEntry {
                                                                                 sender: "ai".to_string(),
                                                                                 text: text.clone(),
                                                                                 timestamp: Some(timestamp.to_rfc3339()),
-                                                                                id: 0, // assigned below in the fanout step
+                                                                                id: *id,
+                                                                                client_msg_id: None,
                                                                             })
                                                                         }
                                                                         _ => None,
@@ -359,9 +364,7 @@ impl ActivityTracker {
                                                                             );
                                                                         }
 
-                                                                        if let Some(mut msg) = chat_msg {
-                                                                            msg.id = state.next_id;
-                                                                            state.next_id = state.next_id.wrapping_add(1);
+                                                                        if let Some(msg) = chat_msg {
                                                                             state.recent_messages.push_back(msg.clone());
                                                                             if state.recent_messages.len() > MAX_RECENT_MESSAGES {
                                                                                 state.recent_messages.pop_front();

@@ -26,7 +26,7 @@ use super::worker::process_message;
 impl TopicManager {
     pub async fn enqueue(
         &self,
-        message: InboundMessage,
+        mut message: InboundMessage,
         topic_name: String,
         pattern_match: PatternMatch,
         attachment_config: Option<InboundAttachmentConfig>,
@@ -47,8 +47,8 @@ impl TopicManager {
         queues.retain(|_, sender| !sender.is_closed());
 
         // Capture data for IncomingMessage event before `message` is moved.
-        // Use full text — no truncation — so dashboard dedup between history
-        // and recent_messages works correctly.
+        // Use full text — no truncation — so the dashboard row and the chat
+        // log row carry the same content.
         let event_sender = message.sender.clone();
         let event_text = message.content.text.clone().unwrap_or_default();
 
@@ -91,6 +91,17 @@ impl TopicManager {
             crate::topic_path::activate_workspace_state(&topic_name, &topic_path, workspace);
         }
 
+        // Allocate this message's chat sequence number at the single funnel
+        // every inbound message passes through, before either consumer runs:
+        // the dashboard event below carries it, and the chat-log writer
+        // stores the same number (it reads it back from the metadata).
+        let event_id = crate::chat_seq::next(&topic_name);
+        message.metadata.insert(
+            crate::chat_seq::METADATA_CHAT_SEQ.to_string(),
+            serde_json::json!(event_id),
+        );
+        let event_client_msg_id = crate::chat_seq::client_msg_id(&message);
+
         let item = QueueItem {
             topic_name: topic_name.clone(),
             message,
@@ -107,8 +118,14 @@ impl TopicManager {
             match sender.try_send(item) {
                 Ok(()) => {
                     tracing::debug!(topic = %topic_name, "Message enqueued");
-                    self.publish_incoming_message(&topic_name, &event_sender, &event_text)
-                        .await;
+                    self.publish_incoming_message(
+                        &topic_name,
+                        event_id,
+                        &event_sender,
+                        &event_text,
+                        event_client_msg_id.as_deref(),
+                    )
+                    .await;
                     return;
                 }
                 Err(mpsc::error::TrySendError::Full(_)) => {
@@ -126,8 +143,14 @@ impl TopicManager {
                     queues.remove(&topic_name);
                     self.create_and_enqueue(&mut queues, topic_name.clone(), item)
                         .await;
-                    self.publish_incoming_message(&topic_name, &event_sender, &event_text)
-                        .await;
+                    self.publish_incoming_message(
+                        &topic_name,
+                        event_id,
+                        &event_sender,
+                        &event_text,
+                        event_client_msg_id.as_deref(),
+                    )
+                    .await;
                     return;
                 }
             }
@@ -135,8 +158,14 @@ impl TopicManager {
 
         self.create_and_enqueue(&mut queues, topic_name.clone(), item)
             .await;
-        self.publish_incoming_message(&topic_name, &event_sender, &event_text)
-            .await;
+        self.publish_incoming_message(
+            &topic_name,
+            event_id,
+            &event_sender,
+            &event_text,
+            event_client_msg_id.as_deref(),
+        )
+        .await;
     }
 
     /// Build the per-worker TopicManager clone used inside a topic worker.

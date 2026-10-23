@@ -45,6 +45,10 @@ pub struct ReplyDelivery {
     pub direct: bool,
     /// Channel message id (direct deliveries only).
     pub message_id: Option<String>,
+    /// Chat sequence number the adapter wrote into the chat log row for this
+    /// reply (`0` when the channel logs no row). The caller publishes its
+    /// `ReplySent` event with it so the live row and the logged row agree.
+    pub chat_seq: u64,
 }
 
 /// Deliver `text` as a user-visible reply — the single delivery path shared
@@ -99,6 +103,7 @@ pub async fn deliver_reply(
                 return Ok(ReplyDelivery {
                     direct: true,
                     message_id: Some(result.message_id),
+                    chat_seq: result.chat_seq,
                 });
             }
             Err(e) => {
@@ -133,6 +138,7 @@ pub async fn deliver_reply(
     Ok(ReplyDelivery {
         direct: false,
         message_id: None,
+        chat_seq: 0,
     })
 }
 

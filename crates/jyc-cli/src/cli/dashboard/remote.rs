@@ -337,7 +337,7 @@ pub(super) async fn bootstrap(
              if it is running, check [inspect] enabled = true — and that the token is current",
             remote.bind,
             remote.host,
-            format!("{:#}", last.as_ref().unwrap_err()),
+            last.as_ref().unwrap_err(),
             remote.bin
         );
     }
@@ -365,7 +365,7 @@ pub(super) async fn bootstrap(
                 remote.bind,
                 remote.host,
                 SERVE_STARTUP_TIMEOUT.as_secs(),
-                format!("{:#}", last.as_ref().unwrap_err()),
+                last.as_ref().unwrap_err(),
                 remote.host
             );
         }

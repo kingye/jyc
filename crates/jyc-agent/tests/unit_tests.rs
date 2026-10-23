@@ -208,7 +208,8 @@ mod session {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "load_context_returns_empty_when_no_session_file";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let (messages, raw_context) = session::load_context(topic, tmp.path()).await;
+        let (messages, raw_context) =
+            session::load_context(topic, tmp.path(), jyc_agent::types::PriorDepth::All).await;
         assert!(messages.is_empty());
         assert!(raw_context.is_empty());
     }
@@ -232,13 +233,15 @@ mod session {
             serde_json::json!({"role": "user", "content": "hello"}),
             serde_json::json!({"role": "assistant", "content": "Hi there!"}),
         ];
-        session::save_raw_context(topic, tmp.path(), context, 0).await;
+        session::save_raw_context(topic, tmp.path(), context).await;
 
-        // Load it back — twice: the second load is served by the parse cache.
-        let (messages, raw_context) = session::load_context(topic, tmp.path()).await;
+        // Load it back — twice: the second load reads the same journal.
+        let (messages, raw_context) =
+            session::load_context(topic, tmp.path(), jyc_agent::types::PriorDepth::All).await;
         assert_eq!(raw_context.len(), 2);
         assert_eq!(messages.len(), 2);
-        let (messages2, raw_context2) = session::load_context(topic, tmp.path()).await;
+        let (messages2, raw_context2) =
+            session::load_context(topic, tmp.path(), jyc_agent::types::PriorDepth::All).await;
         assert_eq!(raw_context2.len(), 2);
         assert_eq!(messages2.len(), 2);
         assert_eq!(
@@ -284,7 +287,8 @@ mod session {
         .await
         .unwrap();
 
-        let (messages, raw_context) = session::load_context(topic, tmp.path()).await;
+        let (messages, raw_context) =
+            session::load_context(topic, tmp.path(), jyc_agent::types::PriorDepth::All).await;
         assert_eq!(raw_context.len(), 2);
         assert_eq!(messages.len(), 2);
 
@@ -297,9 +301,8 @@ mod session {
 
         // The migrated journal round-trips through save (append fast path):
         // persisting the same prefix plus one new message appends one line.
-        let mut extended = (*raw_context).clone();
-        extended.push(serde_json::json!({"role": "user", "content": "again"}));
-        session::save_raw_context(topic, tmp.path(), extended, raw_context.len()).await;
+        let extended = vec![serde_json::json!({"role": "user", "content": "again"})];
+        session::save_raw_context(topic, tmp.path(), extended).await;
         let journal = tokio::fs::read_to_string(state_dir.join("agent-context.jsonl"))
             .await
             .unwrap();
@@ -328,16 +331,17 @@ mod session {
             .await
             .unwrap();
 
-        let (messages, raw_context) = session::load_context(topic, tmp.path()).await;
+        let (messages, raw_context) =
+            session::load_context(topic, tmp.path(), jyc_agent::types::PriorDepth::All).await;
         assert_eq!(raw_context.len(), 1, "torn tail dropped");
         assert_eq!(raw_context[0]["content"], "survived");
         assert_eq!(messages.len(), 1);
     }
 
     #[tokio::test]
-    async fn save_raw_context_rewrites_when_prefix_diverges() {
+    async fn save_raw_context_appends_the_turn_and_keeps_the_prefix() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "save_raw_context_rewrites_when_prefix_diverges";
+        let topic = "save_raw_context_appends_the_turn_and_keeps_the_prefix";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let state_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&state_dir).await.unwrap();
@@ -354,27 +358,27 @@ mod session {
         ];
         write_context_journal(&state_dir, &seed).await;
 
-        // Compaction-shaped content never extends the on-disk prefix; the
-        // writer must rewrite the journal in full, not append after the old
-        // tail (which would interleave compacted and uncompacted content).
-        let compacted = vec![
-            serde_json::json!({"role": "user", "content": "task anchor"}),
-            serde_json::json!({"role": "assistant", "content": "summary of everything"}),
+        // The journal is append-only: the turn's messages land after the
+        // prefix that is already there.
+        let turn = vec![
+            serde_json::json!({"role": "user", "content": "next question"}),
+            serde_json::json!({"role": "assistant", "content": "next answer"}),
         ];
-        session::save_raw_context(topic, tmp.path(), compacted.clone(), 0).await;
+        session::save_raw_context(topic, tmp.path(), turn.clone()).await;
         let journal = tokio::fs::read_to_string(state_dir.join("agent-context.jsonl"))
             .await
             .unwrap();
         assert_eq!(
             journal.lines().count(),
-            compacted.len(),
-            "persisted_len=0 forces a full rewrite"
+            seed.len() + turn.len(),
+            "the turn is appended, the prefix stays"
         );
         let parsed: Vec<serde_json::Value> = journal
             .lines()
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
-        assert_eq!(parsed[1]["content"], "summary of everything");
+        assert_eq!(parsed[0]["content"], "original");
+        assert_eq!(parsed[2]["content"], "next question");
     }
 
     #[tokio::test]
@@ -394,7 +398,8 @@ mod session {
         let seed = vec![serde_json::json!({"role": "assistant", "content": "one"})];
         write_context_journal(&state_dir, &seed).await;
 
-        let (_, first) = session::load_context(topic, tmp.path()).await;
+        let (_, first) =
+            session::load_context(topic, tmp.path(), jyc_agent::types::PriorDepth::All).await;
         assert_eq!(first.len(), 1);
 
         // An out-of-band append (another writer, a restore) must invalidate
@@ -409,7 +414,8 @@ mod session {
             .await
             .unwrap();
 
-        let (_, second) = session::load_context(topic, tmp.path()).await;
+        let (_, second) =
+            session::load_context(topic, tmp.path(), jyc_agent::types::PriorDepth::All).await;
         assert_eq!(second.len(), 2, "external change must miss the cache");
         assert_eq!(second[1]["content"], "two");
     }
@@ -431,7 +437,8 @@ mod session {
             .await
             .unwrap();
 
-        let (messages, raw_context) = session::load_context(topic, tmp.path()).await;
+        let (messages, raw_context) =
+            session::load_context(topic, tmp.path(), jyc_agent::types::PriorDepth::All).await;
         assert!(messages.is_empty());
         assert!(raw_context.is_empty());
         assert!(
@@ -463,7 +470,8 @@ mod session {
         write_context_journal(&state_dir, &context).await;
 
         // Load — should filter out the invalid message
-        let (messages, raw_context) = session::load_context(topic, tmp.path()).await;
+        let (messages, raw_context) =
+            session::load_context(topic, tmp.path(), jyc_agent::types::PriorDepth::All).await;
         assert_eq!(raw_context.len(), 2); // user + valid assistant
         assert_eq!(messages.len(), 2);
     }
@@ -490,7 +498,8 @@ mod session {
         write_context_journal(&state_dir, &context).await;
 
         // Load — should return empty (no valid assistant messages)
-        let (messages, raw_context) = session::load_context(topic, tmp.path()).await;
+        let (messages, raw_context) =
+            session::load_context(topic, tmp.path(), jyc_agent::types::PriorDepth::All).await;
         assert!(messages.is_empty());
         assert!(raw_context.is_empty());
     }

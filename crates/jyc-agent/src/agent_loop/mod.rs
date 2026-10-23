@@ -59,7 +59,7 @@ pub struct AgentLoopConfig<'a> {
     /// Prior conversation history (internal format, for logic).
     pub prior_history: Vec<Message>,
     /// Prior raw context (provider-formatted JSON, for API calls).
-    pub prior_raw_context: std::sync::Arc<Vec<serde_json::Value>>,
+    pub prior_raw_context: Vec<serde_json::Value>,
     /// Messages that arrived while this turn was running, handed over by
     /// the worker when the pattern's `live_injection` is on.
     ///
@@ -210,10 +210,7 @@ pub async fn run(
     // the loop (tail-append when the prefix is unchanged); the strategy
     // decides what is sent to the LLM (see `build_send_context`).
     let mut prior_len = prior_raw_context.len();
-    // Sole owner when the parse cache did not hand this Arc out elsewhere;
-    // otherwise pay one deep clone here instead of re-parsing on every load.
-    let mut raw_context: Vec<serde_json::Value> =
-        std::sync::Arc::try_unwrap(prior_raw_context).unwrap_or_else(|arc| (*arc).clone());
+    let mut raw_context: Vec<serde_json::Value> = prior_raw_context;
     raw_context.push(provider.format_user_message(&user_blocks));
 
     let mut context_input_tokens: u64 = 0;
@@ -787,7 +784,7 @@ pub async fn run(
                 total_reasoning_tokens,
                 history,
                 raw_context,
-                persisted_len: prior_len,
+                prior_len,
                 outbound_targets: ctx
                     .outbound_targets
                     .lock()
@@ -871,12 +868,16 @@ pub async fn run(
         // the full transcript on every batch that never browses would be
         // wasted O(n) work per iteration. (The shared `ctx` built at the top
         // of `run()` is reused.)
+        //
+        // The snapshot is this turn's messages only: the prior context is
+        // not in memory (the reader parses the journal on demand), and
+        // `context_browse` reads it from the journal itself.
         if response
             .tool_calls
             .iter()
             .any(|tc| tc.name == "context_browse")
         {
-            ctx.raw_context = raw_context.clone();
+            ctx.raw_context = raw_context[prior_len..].to_vec();
         }
 
         let mut cancelled_during_tools = false;
@@ -1014,7 +1015,7 @@ pub async fn run(
                 raw_context.truncate(pos);
                 // The truncation never reaches into the persisted prefix in
                 // practice (the dangling message is always from this turn),
-                // but clamp defensively so `persisted_len` never overstates
+                // but clamp defensively so `prior_len` never overstates
                 // what is actually on disk.
                 prior_len = prior_len.min(raw_context.len());
             }
@@ -1154,7 +1155,7 @@ pub async fn run(
         total_reasoning_tokens,
         history,
         raw_context,
-        persisted_len: prior_len,
+        prior_len,
         outbound_targets: ctx
             .outbound_targets
             .lock()
@@ -1560,7 +1561,7 @@ mod session_totals_tests;
 #[cfg(test)]
 mod injection_tests;
 
-mod context;
+pub(crate) mod context;
 mod embedded_ask;
 mod response;
 mod retry;

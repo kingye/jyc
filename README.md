@@ -392,6 +392,9 @@ The tunnel runs `ssh -C`: the dashboard's traffic is repetitive JSON (a
 thinking event re-sends the whole reasoning, so a long turn would otherwise
 push its square), and compression is what keeps a thin uplink usable. On a fast
 link where that CPU matters, `--ssh-opt Compression=no` turns it off.
+`--ssh-opt` also overrides the options this command relies on (`BatchMode`,
+`ConnectTimeout`) — do that only if you know what a password prompt with no
+terminal in front of it does to the bootstrap.
 
 Requires `[inspect] enabled = true` on the remote, non-interactive ssh auth
 (`ssh devbox true` must not prompt): the bootstrap and the tunnel both run

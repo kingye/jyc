@@ -63,6 +63,9 @@ enum Commands {
         args: cli::dashboard::OpenArgs,
     },
 
+    /// Run the dashboard against a hub on another machine, over SSH
+    Connect(cli::dashboard::ConnectArgs),
+
     /// Manage configuration
     Config {
         #[command(subcommand)]
@@ -214,6 +217,7 @@ async fn main() -> Result<()> {
             )
             .await
         }
+        Commands::Connect(args) => cli::dashboard::run_connect(args, &data_dir, cli.pipe).await,
         Commands::Config { action } => {
             cli::config::run(action, &data_dir, cli.data_dir.is_some()).await
         }
@@ -260,6 +264,47 @@ mod tests {
             let cli = parse(&args);
             assert!(cli.pipe, "{args:?}");
             assert!(matches!(cli.command, Commands::Serve(_)), "{args:?}");
+        }
+    }
+
+    /// `jyc connect` takes the host positionally and needs nothing else: the
+    /// remote flags default to the remote's own loopback bind and to `jyc`.
+    #[test]
+    fn connect_takes_a_host_and_defaults_the_rest() {
+        let cli = parse(&["jyc", "connect", "devbox"]);
+        match cli.command {
+            Commands::Connect(args) => {
+                assert_eq!(args.host, "devbox");
+                assert!(!args.serve);
+                assert_eq!(args.bin, "jyc");
+                assert_eq!(args.remote_bind, "127.0.0.1:9876");
+                assert!(args.remote_data_dir.is_none());
+                assert!(args.open.topic.is_none() && args.open.path.is_none());
+            }
+            _ => panic!("expected `jyc connect`"),
+        }
+    }
+
+    /// `-s/--serve` and the open flags ride along in one invocation.
+    #[test]
+    fn connect_accepts_serve_and_open_flags() {
+        let cli = parse(&[
+            "jyc",
+            "connect",
+            "dev@box",
+            "-s",
+            "-p",
+            "~/src/app",
+            "-t",
+            "app",
+        ]);
+        match cli.command {
+            Commands::Connect(args) => {
+                assert!(args.serve);
+                assert_eq!(args.open.path.as_deref(), Some("~/src/app"));
+                assert_eq!(args.open.topic.as_deref(), Some("app"));
+            }
+            _ => panic!("expected `jyc connect`"),
         }
     }
 

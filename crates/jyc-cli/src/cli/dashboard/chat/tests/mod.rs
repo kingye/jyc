@@ -2867,19 +2867,16 @@ fn is_user_visible_activity_filters_heartbeats() {
 // (`ChatState::sync_live_chat`).
 //
 // Bug history: the original `(sender, text)` dedup silently dropped repeated
-// runs of `/context` and similar deterministic-output commands. Fixing that
-// with an id-based dedup exposed a second bug: historical rows from
-// `chat_log_store.rs` JSONL hydrate carry `id = 0`, so a naive id-tracker
-// treated them as never-pushed and re-appended them on every 500 ms poll
-// cycle, flooding `self.messages` and pushing the live content off-screen.
+// runs of `/context` and similar deterministic-output commands. The fix gave
+// every row a sequence number, allocated where the message enters the system;
+// the pane then draws a row when its number exceeds the highest already drawn.
 //
-// `sync_live_chat` implements three dedup rules:
-//   1. Live entries (`id != 0`): skip if already pushed (`id <= last_pushed`).
-//   2. User echoes (`sender == "user"`): dedup by `(sender, text)` so the
-//      server's IncomingMessage echo is dropped against the local echo from
-//      `send_message_inner`.
-//   3. Historical rows (`id == 0`): dedup by `(sender, text)` so a repeated
-//      fold does not re-push them forever.
+// `sync_live_chat` implements that as three cases:
+//   1. Echo confirmation: a live entry carrying the client id of an
+//      unconfirmed local echo (`id == 0`) replaces that echo in place.
+//   2. Live entries (`id != 0`): append when `id > last_pushed`.
+//   3. Rows with `id == 0` that match no echo: logged before the sequence
+//      existed, so they have nothing to place them by — not drawn.
 // ---------------------------------------------------------------------------
 
 fn push_live_chat(
@@ -3072,13 +3069,20 @@ fn poll_sync_command_repeats_with_historical_backdrop() {
         .collect();
     push_live_chat(&mut app, "agents", "t", hist.clone());
 
-    // User types /context three times. Each typing pushes a local echo;
-    // each server reply arrives via live_chat with a fresh id.
+    // User types /context three times. Each typing pushes a local echo; the
+    // server echoes the message back through live_chat with a fresh id and
+    // the echo's client id, followed by the AI reply.
     let ai_text = "/context: current strategy is sliding_window (window=10) (default)".to_string();
     for round in 0..3 {
         app.chat.send_message_inner("/context".into());
+        let client_id = app
+            .chat
+            .messages
+            .last()
+            .and_then(|m| m.client_id.clone())
+            .expect("the echo carries a client id");
         hist.push(jyc_types::ChatMessageEntry {
-            client_msg_id: None,
+            client_msg_id: Some(client_id),
             sender: "user".into(),
             text: "/context".into(),
             timestamp: Some(format!("2026-02-01T00:0{round}:00Z")),

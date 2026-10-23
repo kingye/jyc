@@ -43,6 +43,7 @@ impl jyc_types::OutboundAdapter for NoopOutbound {
     ) -> Result<jyc_types::SendResult> {
         Ok(jyc_types::SendResult {
             message_id: "test".to_string(),
+            chat_seq: 0,
         })
     }
     async fn send_message(
@@ -53,6 +54,7 @@ impl jyc_types::OutboundAdapter for NoopOutbound {
     ) -> Result<jyc_types::SendResult> {
         Ok(jyc_types::SendResult {
             message_id: "test".to_string(),
+            chat_seq: 0,
         })
     }
 }
@@ -91,6 +93,7 @@ impl jyc_types::OutboundAdapter for RecordingOutbound {
             .push((original.id.clone(), reply_text.to_string()));
         Ok(jyc_types::SendResult {
             message_id: "recorded".to_string(),
+            chat_seq: 0,
         })
     }
     async fn send_message(
@@ -101,6 +104,7 @@ impl jyc_types::OutboundAdapter for RecordingOutbound {
     ) -> Result<jyc_types::SendResult> {
         Ok(jyc_types::SendResult {
             message_id: "recorded".to_string(),
+            chat_seq: 0,
         })
     }
 }
@@ -596,7 +600,7 @@ async fn test_publish_incoming_message_on_event_bus() {
     let mut rx = bus.subscribe().await.unwrap();
 
     // Publish incoming message event
-    tm.publish_incoming_message(tname, "user", "hello world")
+    tm.publish_incoming_message(tname, 1, "user", "hello world", None)
         .await;
 
     let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
@@ -634,7 +638,7 @@ async fn test_publish_reply_sent_on_event_bus() {
     let mut rx = bus.subscribe().await.unwrap();
 
     // Publish reply sent event
-    tm.publish_reply_sent(tname, "AI reply here").await;
+    tm.publish_reply_sent(tname, "AI reply here", 1).await;
 
     let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
@@ -663,7 +667,8 @@ async fn test_publish_incoming_message_noop_without_event_bus() {
     let tm = make_test_tm(&workspace);
 
     // No event bus created — publish should silently succeed (no panic)
-    tm.publish_incoming_message(tname, "user", "hello").await;
+    tm.publish_incoming_message(tname, 1, "user", "hello", None)
+        .await;
 
     tm.shutdown().await;
 }

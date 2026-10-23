@@ -4,6 +4,8 @@ use crate::cli::command_popup::popup_height;
 
 fn history_msg(sender: &str, text: &str, ts: Option<&str>) -> ChatMessage {
     ChatMessage {
+        id: 0,
+        client_id: None,
         sender: sender.to_string(),
         text: text.to_string(),
         timestamp: ts.map(|s| s.to_string()),
@@ -165,11 +167,15 @@ fn topic_switch_clears_chat_messages() {
 
     // Simulate messages from a previous topic
     app.chat.messages.push(ChatMessage {
+        id: 0,
+        client_id: None,
         sender: "user".to_string(),
         text: "hello from topic A".to_string(),
         timestamp: None,
     });
     app.chat.messages.push(ChatMessage {
+        id: 0,
+        client_id: None,
         sender: "ai".to_string(),
         text: "reply from topic A".to_string(),
         timestamp: None,
@@ -1897,6 +1903,8 @@ fn mouse_scroll_in_message_area_advances_scroll_offset() {
     // scroll maximum (last_max_scroll) is non-zero.
     for i in 0..100 {
         app.chat.messages.push(ChatMessage {
+            id: 0,
+            client_id: None,
             sender: "user".into(),
             text: format!("msg {i}"),
             timestamp: Some("2026-01-01T00:00:00Z".into()),
@@ -2040,6 +2048,8 @@ fn mouse_scroll_ignored_when_capture_disabled() {
     app.chat.focus = Focus::ChatPane;
     app.chat.scroll = 0;
     app.chat.messages.push(ChatMessage {
+        id: 0,
+        client_id: None,
         sender: "user".into(),
         text: "hi".into(),
         timestamp: Some("2026-01-01T00:00:00Z".into()),
@@ -2115,6 +2125,8 @@ fn mouse_scroll_over_message_area_moves_focus_from_other_panes() {
     // maximum (last_max_scroll) is non-zero.
     for i in 0..100 {
         app.chat.messages.push(ChatMessage {
+            id: 0,
+            client_id: None,
             sender: "user".into(),
             text: format!("msg {i}"),
             timestamp: Some("2026-01-01T00:00:00Z".into()),
@@ -2149,6 +2161,8 @@ fn mouse_scroll_over_message_area_moves_focus_from_other_panes() {
     app2.chat.topic = Some("jyc".to_string());
     for i in 0..100 {
         app2.chat.messages.push(ChatMessage {
+            id: 0,
+            client_id: None,
             sender: "user".into(),
             text: format!("msg {i}"),
             timestamp: Some("2026-01-01T00:00:00Z".into()),
@@ -2349,7 +2363,7 @@ fn handle_ws_message_routes_activity_events_to_live_buffer() {
     let mut app = App::new(rx, None);
 
     // Simulate hydrate: seed an activity entry, then a WS event with
-    // the same id arrives — should be deduped (id <= last_seen_id).
+    // the same id arrives — should be deduped (id <= last_seen_activity_id).
     let entry = jyc_types::ActivityEntry {
         event: serde_json::Value::Null,
         text: Some("Tool: bash".to_string()),
@@ -2853,19 +2867,19 @@ fn is_user_visible_activity_filters_heartbeats() {
 // (`ChatState::sync_live_chat`).
 //
 // Bug history: the original `(sender, text)` dedup silently dropped repeated
-// runs of `/context` and similar deterministic-output commands. Fixing that
-// with an id-based dedup exposed a second bug: historical rows from
-// `chat_log_store.rs` JSONL hydrate carry `id = 0`, so a naive id-tracker
-// treated them as never-pushed and re-appended them on every 500 ms poll
-// cycle, flooding `self.messages` and pushing the live content off-screen.
+// runs of `/context` and similar deterministic-output commands. The fix gave
+// every row a sequence number, allocated where the message enters the system;
+// the pane then draws a row unless it already holds that number.
 //
-// `sync_live_chat` implements three dedup rules:
-//   1. Live entries (`id != 0`): skip if already pushed (`id <= last_pushed`).
-//   2. User echoes (`sender == "user"`): dedup by `(sender, text)` so the
-//      server's IncomingMessage echo is dropped against the local echo from
-//      `send_message_inner`.
-//   3. Historical rows (`id == 0`): dedup by `(sender, text)` so a repeated
-//      fold does not re-push them forever.
+// `sync_live_chat` implements that as three cases:
+//   1. Echo confirmation: a live entry carrying the client id of an
+//      unconfirmed local echo (`id == 0`) replaces that echo in place.
+//   2. Live entries (`id != 0`): append unless a row with that id is already
+//      on screen. Membership, not a high-water mark — ids are allocated on
+//      arrival but rows are written on delivery, so a hydrate can hand them
+//      over out of order (`hydrate_draws_a_row_whose_number_is_behind_...`).
+//   3. Rows with `id == 0` that match no echo: logged before the sequence
+//      existed, so they have nothing to place them by — not drawn.
 // ---------------------------------------------------------------------------
 
 fn push_live_chat(
@@ -2893,12 +2907,14 @@ fn poll_sync_appends_each_live_entry_by_unique_id() {
         "t",
         vec![
             jyc_types::ChatMessageEntry {
+                client_msg_id: None,
                 sender: "ai".into(),
                 text: text.clone(),
                 timestamp: Some("2026-01-01T00:00:01Z".into()),
                 id: 2,
             },
             jyc_types::ChatMessageEntry {
+                client_msg_id: None,
                 sender: "ai".into(),
                 text,
                 timestamp: Some("2026-01-01T00:00:02Z".into()),
@@ -2908,23 +2924,24 @@ fn poll_sync_appends_each_live_entry_by_unique_id() {
     );
     assert!(app.chat.sync_live_chat("agents", "t"));
     assert_eq!(app.chat.messages.len(), 2);
-    // Second sync: nothing new; tracker stays at id 4.
+    // Second sync: both are already on screen, so nothing is appended.
     assert!(!app.chat.sync_live_chat("agents", "t"));
     assert_eq!(app.chat.messages.len(), 2);
 }
 
 #[test]
-fn poll_sync_does_not_repush_historical_id_zero_rows_across_polls() {
-    // 5 identical historical AI rows (id == 0) flushed by REST hydrate.
-    // After 10 sync cycles `self.messages` must still contain exactly one
-    // copy — the bug that produced the `id == 0` flood.
+fn poll_sync_skips_rows_logged_before_the_chat_sequence() {
+    // Rows logged before the sequence existed carry id 0. They are not
+    // drawn: the sequence number is the whole dedup rule, and a row
+    // outside the sequence has nothing to place it by. (They stay on
+    // disk; the pane starts at the upgrade.)
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
-    let text = "/context: current strategy is sliding_window (window=10) (default)".to_string();
     let rows = (0..5)
         .map(|i| jyc_types::ChatMessageEntry {
+            client_msg_id: None,
             sender: "ai".into(),
-            text: text.clone(),
+            text: format!("legacy-{i}"),
             timestamp: Some(format!("2026-01-01T00:00:0{i}Z")),
             id: 0,
         })
@@ -2935,15 +2952,65 @@ fn poll_sync_does_not_repush_historical_id_zero_rows_across_polls() {
     }
     assert_eq!(
         app.chat.messages.len(),
-        1,
-        "historical id=0 row must not be re-pushed across polls"
+        0,
+        "rows without a sequence number are not drawn"
     );
 }
 
 #[test]
-fn poll_sync_keeps_distinct_historical_texts() {
-    // Distinct historical texts must all be kept — `id == 0` should not
-    // collapse every historical row to one.
+fn poll_sync_server_row_replaces_the_local_echo() {
+    // `send_message_inner` pushes the local echo with id 0 and a client id;
+    // the server broadcasts the same message back with a sequence number
+    // and that same client id. The row must replace the echo in place, not
+    // be appended beside it.
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.send_message_inner("/hello".into());
+    let client_id = app
+        .chat
+        .messages
+        .last()
+        .and_then(|m| m.client_id.clone())
+        .expect("echo carries a client id");
+    assert_eq!(app.chat.messages[0].id, 0, "echo is unconfirmed");
+
+    push_live_chat(
+        &mut app,
+        "agents",
+        "t",
+        vec![jyc_types::ChatMessageEntry {
+            client_msg_id: Some(client_id),
+            sender: "user".into(),
+            text: "/hello".into(),
+            timestamp: Some("2026-01-01T00:00:00.500Z".into()),
+            id: 7,
+        }],
+    );
+    assert!(app.chat.sync_live_chat("agents", "t"));
+
+    let user_msgs: Vec<&ChatMessage> = app
+        .chat
+        .messages
+        .iter()
+        .filter(|m| m.sender == "user")
+        .collect();
+    assert_eq!(user_msgs.len(), 1, "the server row replaced the echo");
+    assert_eq!(user_msgs[0].id, 7, "the echo adopted the server's sequence");
+    assert_eq!(
+        user_msgs[0].timestamp.as_deref(),
+        Some("2026-01-01T00:00:00.500Z"),
+        "the echo adopted the server's timestamp"
+    );
+
+    // A repeated fold must not append the confirmed row again.
+    assert!(!app.chat.sync_live_chat("agents", "t"));
+    assert_eq!(app.chat.messages.len(), 1);
+}
+
+#[test]
+fn poll_sync_keeps_two_identical_messages() {
+    // The bug the sequence fixes: two messages with the same sender and
+    // text used to collapse into one, because text was the only key.
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     push_live_chat(
@@ -2952,107 +3019,80 @@ fn poll_sync_keeps_distinct_historical_texts() {
         "t",
         vec![
             jyc_types::ChatMessageEntry {
-                sender: "ai".into(),
-                text: "first ai reply".into(),
-                timestamp: Some("2026-01-01T00:00:00Z".into()),
-                id: 0,
-            },
-            jyc_types::ChatMessageEntry {
-                sender: "ai".into(),
-                text: "second ai reply".into(),
-                timestamp: Some("2026-01-01T00:00:01Z".into()),
-                id: 0,
-            },
-            jyc_types::ChatMessageEntry {
+                client_msg_id: None,
                 sender: "user".into(),
-                text: "user said something".into(),
-                timestamp: Some("2026-01-01T00:00:02Z".into()),
-                id: 0,
+                text: "ok".into(),
+                timestamp: Some("2026-01-01T00:00:00Z".into()),
+                id: 3,
+            },
+            jyc_types::ChatMessageEntry {
+                client_msg_id: None,
+                sender: "user".into(),
+                text: "ok".into(),
+                timestamp: Some("2026-01-01T00:00:05Z".into()),
+                id: 5,
             },
         ],
     );
     assert!(app.chat.sync_live_chat("agents", "t"));
-    assert_eq!(app.chat.messages.len(), 3);
-    assert!(!app.chat.sync_live_chat("agents", "t"));
-    assert_eq!(app.chat.messages.len(), 3);
-}
-
-#[test]
-fn poll_sync_local_user_echo_and_server_echo_are_deduped() {
-    // `send_message_inner` pushes the local echo with no id; the server
-    // echoes back via `live_chat` with id > 0. The local echo must stay,
-    // the server echo must be dropped — this is rule (2).
-    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-    let mut app = App::new(rx, None);
-    // Local echo.
-    app.chat.send_message_inner("/hello".into());
-    // Server echoes back via live_chat.
-    push_live_chat(
-        &mut app,
-        "agents",
-        "t",
-        vec![jyc_types::ChatMessageEntry {
-            sender: "user".into(),
-            text: "/hello".into(),
-            timestamp: Some("2026-01-01T00:00:00.500Z".into()),
-            id: 7,
-        }],
-    );
-    app.chat.sync_live_chat("agents", "t");
-    let user_msgs: Vec<&ChatMessage> = app
-        .chat
-        .messages
-        .iter()
-        .filter(|m| m.sender == "user")
-        .collect();
     assert_eq!(
-        user_msgs.len(),
-        1,
-        "local echo must win, server echo dropped"
+        app.chat.messages.len(),
+        2,
+        "identical text does not make a message a duplicate"
     );
 }
 
 #[test]
 fn poll_sync_command_repeats_with_historical_backdrop() {
-    // The user's exact scenario: 30 historical rows (id == 0) plus 3
-    // fresh `/context` commands. All 3 user echoes + 3 AI replies must
-    // be present, and the historical rows must not be re-pushed across
-    // polls.
+    // The user's exact scenario: 30 logged rows plus 3 fresh `/context`
+    // commands. All 3 user echoes + 3 AI replies must be present, and the
+    // logged rows must not be re-pushed across polls.
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
-    // Seed 30 historical rows: 15 user + 15 ai, all id == 0, distinct text.
+    // Seed 30 logged rows: 15 user + 15 ai, distinct text.
     let mut hist: Vec<jyc_types::ChatMessageEntry> = (0..15)
         .flat_map(|i| {
             [
                 jyc_types::ChatMessageEntry {
+                    client_msg_id: None,
                     sender: "user".into(),
                     text: format!("old-user-{i}"),
                     timestamp: Some(format!("2026-01-01T00:00:{i:02}Z")),
-                    id: 0,
+                    id: 2 * i as u64 + 1,
                 },
                 jyc_types::ChatMessageEntry {
+                    client_msg_id: None,
                     sender: "ai".into(),
                     text: format!("old-ai-{i}"),
                     timestamp: Some(format!("2026-01-01T00:01:{i:02}Z")),
-                    id: 0,
+                    id: 2 * i as u64 + 2,
                 },
             ]
         })
         .collect();
     push_live_chat(&mut app, "agents", "t", hist.clone());
 
-    // User types /context three times. Each typing pushes a local echo;
-    // each server reply arrives via live_chat with a fresh id.
+    // User types /context three times. Each typing pushes a local echo; the
+    // server echoes the message back through live_chat with a fresh id and
+    // the echo's client id, followed by the AI reply.
     let ai_text = "/context: current strategy is sliding_window (window=10) (default)".to_string();
     for round in 0..3 {
         app.chat.send_message_inner("/context".into());
+        let client_id = app
+            .chat
+            .messages
+            .last()
+            .and_then(|m| m.client_id.clone())
+            .expect("the echo carries a client id");
         hist.push(jyc_types::ChatMessageEntry {
+            client_msg_id: Some(client_id),
             sender: "user".into(),
             text: "/context".into(),
             timestamp: Some(format!("2026-02-01T00:0{round}:00Z")),
             id: 100 + round as u64 * 2,
         });
         hist.push(jyc_types::ChatMessageEntry {
+            client_msg_id: None,
             sender: "ai".into(),
             text: ai_text.clone(),
             timestamp: Some(format!("2026-02-01T00:0{round}:01Z")),
@@ -3095,17 +3135,15 @@ fn poll_sync_command_repeats_with_historical_backdrop() {
 }
 
 #[test]
-fn seed_live_resets_last_pushed_chat_id_so_revisit_rehydrates() {
-    // The bug fixed by `seed_live` resetting `last_pushed_chat_id` to 0:
-    // when the user closes and reopens a topic, the egress tracker still
-    // holds the previous visit's max id. Without the reset, the freshly
-    // hydrated historical rows (whose ids ≤ old max) would all be
-    // skipped by rule (1), so the chat pane would show only new live
-    // entries — no historical context.
+fn revisit_rehydrates_every_row() {
+    // Closing and reopening a topic clears the pane (`reset_chat_state`) and
+    // hydrates the same rows again. They must all come back: the pane is its
+    // own record of what it drew, so a cleared pane draws everything.
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     let historical: Vec<jyc_types::ChatMessageEntry> = (0..10)
         .map(|i| jyc_types::ChatMessageEntry {
+            client_msg_id: None,
             sender: if i % 2 == 0 {
                 "user".into()
             } else {
@@ -3121,28 +3159,11 @@ fn seed_live_resets_last_pushed_chat_id_so_revisit_rehydrates() {
         .seed_live("agents", "t", vec![], historical.clone());
     app.chat.sync_live_chat("agents", "t");
     assert_eq!(app.chat.messages.len(), 10);
-    // The egress tracker now sits at the max historical id (10).
-    assert_eq!(
-        app.chat
-            .last_pushed_chat_id
-            .get(&("agents".into(), "t".into()))
-            .copied(),
-        Some(10)
-    );
     // Second visit: simulate `open()` clearing `messages` + a fresh
-    // REST hydrate via `seed_live`. The tracker must be reset so the
-    // hydrated historicals are re-pushed.
+    // REST hydrate via `seed_live`.
     app.chat.messages.clear();
     app.chat
         .seed_live("agents", "t", vec![], historical.clone());
-    assert_eq!(
-        app.chat
-            .last_pushed_chat_id
-            .get(&("agents".into(), "t".into()))
-            .copied(),
-        Some(0),
-        "seed_live must reset the egress tracker so the freshly hydrated rows are not skipped"
-    );
     app.chat.sync_live_chat("agents", "t");
     assert_eq!(
         app.chat.messages.len(),
@@ -3153,6 +3174,7 @@ fn seed_live_resets_last_pushed_chat_id_so_revisit_rehydrates() {
 
 fn history_row(sender: &str, text: &str, id: u64) -> jyc_types::ChatMessageEntry {
     jyc_types::ChatMessageEntry {
+        client_msg_id: None,
         sender: sender.to_string(),
         text: text.to_string(),
         timestamp: Some(format!("2026-01-01T00:00:{id:02}Z")),
@@ -3206,9 +3228,9 @@ fn ws_chat_message_for_another_topic_stays_in_its_buffer() {
 
 #[test]
 fn resync_hydrate_does_not_repush_rows_already_on_screen() {
-    // `seed_live` zeroes the egress tracker only when `messages` is empty
-    // (a fresh `open()`). A resync hydrate leaves `messages` in place, so
-    // zeroing it there re-pushed up to 50 rows the user was already looking at.
+    // A resync hydrate replaces the buffer with the same rows the pane is
+    // already showing; matching them by sequence number is what keeps them
+    // from being stacked a second time.
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
@@ -3230,13 +3252,8 @@ fn resync_hydrate_does_not_repush_rows_already_on_screen() {
         "topic": "t1",
     }));
     assert_eq!(app.chat.live_chat_for("chan", "t1").count(), 0);
-    assert_eq!(
-        app.chat
-            .last_pushed_chat_id
-            .get(&("chan".to_string(), "t1".to_string())),
-        Some(&3),
-        "the tracker describes the pane, so a buffer wipe must not clear it"
-    );
+    // The pane still holds the three rows, so the re-hydrated copies match by
+    // sequence number and are not drawn a second time.
     app.chat.seed_live("chan", "t1", vec![], history.clone());
     app.chat.sync_live_if_visible("chan", "t1");
     assert_eq!(
@@ -3245,13 +3262,66 @@ fn resync_hydrate_does_not_repush_rows_already_on_screen() {
         "a resync hydrate must not re-push rows already on screen"
     );
 
-    // Rows newer than the tracker still land after the resync.
+    // Rows the pane has not drawn still land after the resync.
     let mut with_new = history;
     with_new.push(history_row("ai", "fresh", 4));
     app.chat.seed_live("chan", "t1", vec![], with_new);
     app.chat.sync_live_if_visible("chan", "t1");
     assert_eq!(app.chat.messages.len(), 4);
     assert_eq!(app.chat.messages[3].text, "fresh");
+}
+
+#[test]
+fn hydrate_draws_a_row_whose_number_is_behind_the_newest() {
+    // Numbers are allocated on arrival but rows are written on delivery, so a
+    // message injected mid-turn is logged *after* replies that took higher
+    // numbers. A resync hydrate therefore hands rows over out of id order; a
+    // high-water mark would skip the reordered row for the rest of the
+    // session, even though it never reached the pane.
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.visible = true;
+    app.chat.channel = Some("chan".to_string());
+    app.chat.topic = Some("t1".to_string());
+
+    // On screen: only the heartbeat reply, which took the higher number.
+    app.chat.seed_live(
+        "chan",
+        "t1",
+        vec![],
+        vec![history_row("ai", "heartbeat", 110)],
+    );
+    assert!(app.chat.sync_live_if_visible("chan", "t1"));
+    assert_eq!(app.chat.messages.len(), 1);
+
+    // The socket fell behind: a resync drops the buffer, and the hydrate
+    // returns the message the agent received mid-turn (logged later, lower
+    // number) beside the reply that was already drawn.
+    app.chat.handle_live_event(&serde_json::json!({
+        "type": "resync",
+        "channel": "chan",
+        "topic": "t1",
+    }));
+    app.chat.seed_live(
+        "chan",
+        "t1",
+        vec![],
+        vec![
+            history_row("ai", "heartbeat", 110),
+            history_row("user", "typed mid-turn", 109),
+        ],
+    );
+    assert!(app.chat.sync_live_if_visible("chan", "t1"));
+    assert_eq!(
+        app.chat.messages.len(),
+        2,
+        "the reordered row must reach the pane, the drawn one must not repeat"
+    );
+    assert_eq!(app.chat.messages[1].text, "typed mid-turn");
+
+    // Folding the same buffer again adds nothing.
+    assert!(!app.chat.sync_live_if_visible("chan", "t1"));
+    assert_eq!(app.chat.messages.len(), 2);
 }
 
 // ── Message-pane cursor ───────────────────────────────────────────────────

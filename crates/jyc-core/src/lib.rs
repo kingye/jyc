@@ -4,6 +4,7 @@ pub mod attachment_storage;
 pub mod billing_log_store;
 pub mod channel_orchestrator;
 pub mod chat_log_store;
+pub mod chat_seq;
 pub mod command;
 pub mod duration;
 pub mod job_scheduler;

@@ -321,6 +321,7 @@ mode = "agent"
         ) -> Result<jyc_types::SendResult> {
             Ok(jyc_types::SendResult {
                 message_id: "noop".to_string(),
+                chat_seq: 0,
             })
         }
         async fn send_message(
@@ -331,6 +332,7 @@ mode = "agent"
         ) -> Result<jyc_types::SendResult> {
             Ok(jyc_types::SendResult {
                 message_id: "noop".to_string(),
+                chat_seq: 0,
             })
         }
     }

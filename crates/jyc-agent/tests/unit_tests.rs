@@ -1755,6 +1755,7 @@ mod mcp_bridge {
             ));
             Ok(SendResult {
                 message_id: "direct-1".to_string(),
+                chat_seq: 0,
             })
         }
         async fn send_message(
@@ -1765,6 +1766,7 @@ mod mcp_bridge {
         ) -> anyhow::Result<SendResult> {
             Ok(SendResult {
                 message_id: "msg-1".to_string(),
+                chat_seq: 0,
             })
         }
     }

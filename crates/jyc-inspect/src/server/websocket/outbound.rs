@@ -66,11 +66,13 @@ impl WebsocketOutboundAdapter {
         topic: &str,
         text: &str,
         attachments: Option<serde_json::Value>,
+        chat_seq: u64,
     ) -> Result<()> {
         let mut payload = serde_json::json!({
             "type": "reply",
             "topic": topic,
             "text": text,
+            "id": chat_seq,
         });
         if let Some(atts) = attachments {
             payload["attachments"] = atts;
@@ -188,21 +190,28 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
                 .collect::<Vec<_>>()
                 .into()
         });
-        self.broadcast_reply(topic, reply_text, attachments_json)
+        // Allocate the reply's chat sequence number before anything reads
+        // the row: the broadcast frame, the chat log row and the `ReplySent`
+        // event the caller publishes all carry this one number.
+        let chat_seq = jyc_core::chat_seq::next(topic);
+        self.broadcast_reply(topic, reply_text, attachments_json, chat_seq)
             .await?;
         let message_id = uuid::Uuid::new_v4().to_string();
 
         // Persist reply to chat log for history loading
         if let Err(e) = self
             .storage
-            .store_reply(topic, topic_path, reply_text, _message_dir)
+            .store_reply(topic, topic_path, reply_text, _message_dir, chat_seq)
             .await
         {
             tracing::warn!(error = %e, "Failed to store WebSocket reply to chat log");
         }
 
         tracing::info!(text_len = reply_text.len(), message_id = %message_id, "WebSocket reply broadcast");
-        Ok(SendResult { message_id })
+        Ok(SendResult {
+            message_id,
+            chat_seq,
+        })
     }
 
     async fn send_message(
@@ -211,10 +220,14 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
         _subject: &str,
         body: &str,
     ) -> Result<SendResult> {
-        self.broadcast_reply(_recipient, body, None).await?;
+        // A proactive send logs no chat row, so it carries no sequence.
+        self.broadcast_reply(_recipient, body, None, 0).await?;
         let message_id = uuid::Uuid::new_v4().to_string();
         tracing::info!(text_len = body.len(), message_id = %message_id, "WebSocket message broadcast");
-        Ok(SendResult { message_id })
+        Ok(SendResult {
+            message_id,
+            chat_seq: 0,
+        })
     }
 
     /// Proactive send with the context a pipe-owned channel needs.
@@ -239,6 +252,7 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
             );
             return Ok(SendResult {
                 message_id: uuid::Uuid::new_v4().to_string(),
+                chat_seq: 0,
             });
         };
 
@@ -284,6 +298,7 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
         );
         Ok(SendResult {
             message_id: uuid::Uuid::new_v4().to_string(),
+            chat_seq: 0,
         })
     }
 

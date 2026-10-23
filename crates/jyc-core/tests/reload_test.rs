@@ -66,6 +66,7 @@ impl jyc_types::OutboundAdapter for MockOutbound {
     ) -> anyhow::Result<jyc_types::SendResult> {
         Ok(jyc_types::SendResult {
             message_id: "".to_string(),
+            chat_seq: 0,
         })
     }
 
@@ -77,6 +78,7 @@ impl jyc_types::OutboundAdapter for MockOutbound {
     ) -> anyhow::Result<jyc_types::SendResult> {
         Ok(jyc_types::SendResult {
             message_id: "".to_string(),
+            chat_seq: 0,
         })
     }
 }

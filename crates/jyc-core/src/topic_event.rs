@@ -146,10 +146,16 @@ pub enum TopicEvent {
     IncomingMessage {
         /// Name of the topic
         topic_name: String,
+        /// Per-topic chat sequence number, the same one the chat log stores
+        /// for this message (see [`crate::chat_seq`]).
+        id: u64,
         /// Sender identifier (e.g., "user", display name, "job")
         sender: String,
         /// Message body preview (may be truncated)
         text: String,
+        /// Identifies the sender's own copy of a message it just sent, so the
+        /// client can replace its optimistic echo with this row.
+        client_msg_id: Option<String>,
         /// When the message arrived
         timestamp: DateTime<Utc>,
     },
@@ -161,6 +167,9 @@ pub enum TopicEvent {
     ReplySent {
         /// Name of the topic
         topic_name: String,
+        /// Per-topic chat sequence number, the same one the chat log stores
+        /// for this reply (see [`crate::chat_seq`]).
+        id: u64,
         /// The AI reply text
         text: String,
         /// When the reply was sent

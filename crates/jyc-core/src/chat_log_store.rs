@@ -47,6 +47,11 @@ pub fn list_chat_history_files(topic_name: &str, topic_path: &Path) -> (Vec<Path
     (files, topic_path.to_path_buf())
 }
 
+/// List the chat history files in one directory, oldest first.
+pub(crate) fn chat_history_files_in(dir: &Path) -> Vec<PathBuf> {
+    read_chat_history_dir(dir)
+}
+
 fn read_chat_history_dir(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -109,7 +114,13 @@ pub fn load_recent_chat_history(
                         .get("ts")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string()),
-                    id: 0, // historical entries from JSONL predate the seq field
+                    // Rows written before the sequence existed carry no id and
+                    // load as 0; they are not part of the sequence.
+                    id: parsed.get("id").and_then(|v| v.as_u64()).unwrap_or(0),
+                    client_msg_id: parsed
+                        .get("client_msg_id")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                 })
             })
             .collect();
@@ -221,7 +232,13 @@ impl ChatLogStore {
             .or(message.content.markdown.as_deref())
             .unwrap_or("[no text content]");
 
+        // The enqueue funnel tags the message with the number its dashboard
+        // event carried; allocate here only for a caller that skipped it.
+        let id = crate::chat_seq::of_message(message)
+            .unwrap_or_else(|| crate::chat_seq::next(&self.topic_name));
+
         let mut record = serde_json::json!({
+            "id": id,
             "ts": message.timestamp.to_rfc3339(),
             "type": "received",
             "matched": is_matched,
@@ -236,6 +253,10 @@ impl ChatLogStore {
             record["sender_name"] = serde_json::json!(name);
         }
 
+        if let Some(client_id) = crate::chat_seq::client_msg_id(message) {
+            record["client_msg_id"] = serde_json::json!(client_id);
+        }
+
         if let Some(ref ext_id) = message.external_id {
             record["external_id"] = serde_json::json!(ext_id);
         }
@@ -245,7 +266,16 @@ impl ChatLogStore {
     }
 
     /// Append a reply message to the chat log.
-    pub fn append_reply(&mut self, reply_text: &str, metadata: &ReplyMetadata) -> Result<()> {
+    ///
+    /// `id` is the number the reply's dashboard event carries, allocated by
+    /// the deliverer (see [`crate::chat_seq`]) so the live row and the logged
+    /// row are the same row.
+    pub fn append_reply(
+        &mut self,
+        reply_text: &str,
+        metadata: &ReplyMetadata,
+        id: u64,
+    ) -> Result<()> {
         // A closed topic's state is frozen: drop the write rather than
         // recreating the deleted state dir.
         if jyc_types::state_dir::is_closed(&self.topic_name) {
@@ -258,6 +288,7 @@ impl ChatLogStore {
         self.ensure_file_open()?;
 
         let mut record = serde_json::json!({
+            "id": id,
             "ts": Utc::now().to_rfc3339(),
             "type": "reply",
             "matched": true,
@@ -365,7 +396,9 @@ mod tests {
             model: None,
             mode: None,
         };
-        store.append_reply("reply while closed", &metadata).unwrap();
+        store
+            .append_reply("reply while closed", &metadata, 1)
+            .unwrap();
         assert!(
             !store.get_today_file_path().exists(),
             "closed topic must not recreate the chat log"
@@ -419,6 +452,54 @@ mod tests {
     }
 
     #[test]
+    fn append_message_stores_the_tagged_sequence_number() {
+        // The enqueue funnel tags the message; the log must store that exact
+        // number, not one of its own — the dashboard row already carries it.
+        let temp_dir = tempdir().unwrap();
+        let topic = "test_append_message_tagged_seq";
+        jyc_types::state_dir::register(topic, &temp_dir.path().join(".jyc"));
+        let mut store = ChatLogStore::new(topic, temp_dir.path());
+
+        let mut message = create_test_message();
+        message
+            .metadata
+            .insert(crate::chat_seq::METADATA_CHAT_SEQ.to_string(), 41.into());
+        message.metadata.insert(
+            crate::chat_seq::METADATA_CLIENT_MSG_ID.to_string(),
+            "client-7".into(),
+        );
+        store.append_message(&message, true).unwrap();
+
+        let content = std::fs::read_to_string(store.get_today_file_path()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(parsed["id"], 41);
+        assert_eq!(parsed["client_msg_id"], "client-7");
+
+        let entries = load_recent_chat_history(topic, temp_dir.path(), 100);
+        assert_eq!(entries[0].id, 41);
+        assert_eq!(entries[0].client_msg_id.as_deref(), Some("client-7"));
+    }
+
+    #[test]
+    fn append_message_allocates_a_sequence_when_untagged() {
+        let temp_dir = tempdir().unwrap();
+        let topic = "test_append_message_allocates_seq";
+        jyc_types::state_dir::register(topic, &temp_dir.path().join(".jyc"));
+        let mut store = ChatLogStore::new(topic, temp_dir.path());
+
+        store.append_message(&create_test_message(), true).unwrap();
+        store.append_message(&create_test_message(), true).unwrap();
+
+        let entries = load_recent_chat_history(topic, temp_dir.path(), 100);
+        let ids: Vec<u64> = entries.iter().map(|e| e.id).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(
+            ids[0] > 0 && ids[1] > ids[0],
+            "ids must be positive and rising"
+        );
+    }
+
+    #[test]
     fn test_append_reply() {
         let temp_dir = tempdir().unwrap();
         let topic = "test_append_reply";
@@ -432,7 +513,7 @@ mod tests {
             mode: Some("build".to_string()),
         };
 
-        let result = store.append_reply("This is a test reply.", &metadata);
+        let result = store.append_reply("This is a test reply.", &metadata, 1);
 
         assert!(result.is_ok());
 
@@ -464,10 +545,10 @@ mod tests {
             model: None,
             mode: None,
         };
-        store.append_reply("Reply 1", &metadata).unwrap();
+        store.append_reply("Reply 1", &metadata, 2).unwrap();
 
         store.append_message(&message, false).unwrap();
-        store.append_reply("Reply 2", &metadata).unwrap();
+        store.append_reply("Reply 2", &metadata, 3).unwrap();
 
         let file_path = store.get_today_file_path();
         let content = std::fs::read_to_string(&file_path).unwrap();

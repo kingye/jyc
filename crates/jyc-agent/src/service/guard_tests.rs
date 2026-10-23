@@ -46,6 +46,7 @@ impl jyc_types::OutboundAdapter for NoopOutbound {
     ) -> anyhow::Result<jyc_types::SendResult> {
         Ok(jyc_types::SendResult {
             message_id: "noop".to_string(),
+            chat_seq: 0,
         })
     }
     async fn send_message(
@@ -56,6 +57,7 @@ impl jyc_types::OutboundAdapter for NoopOutbound {
     ) -> anyhow::Result<jyc_types::SendResult> {
         Ok(jyc_types::SendResult {
             message_id: "noop".to_string(),
+            chat_seq: 0,
         })
     }
 }

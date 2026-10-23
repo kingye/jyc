@@ -115,9 +115,10 @@ impl MessageStorage {
         topic_path: &Path,
         reply_text: &str,
         message_dir: &str,
+        chat_seq: u64,
     ) -> Result<()> {
         // Append to chat log
-        self.append_reply_to_chat_log(topic_name, topic_path, reply_text, message_dir)
+        self.append_reply_to_chat_log(topic_name, topic_path, reply_text, message_dir, chat_seq)
             .await?;
 
         tracing::debug!("Reply stored to chat log");
@@ -151,6 +152,7 @@ impl MessageStorage {
         topic_path: &Path,
         reply_text: &str,
         _message_dir: &str,
+        chat_seq: u64,
     ) -> Result<()> {
         use crate::chat_log_store::{ChatLogStore, ReplyMetadata};
 
@@ -164,7 +166,7 @@ impl MessageStorage {
 
         let mut chat_log = ChatLogStore::new(topic_name, topic_path);
         chat_log
-            .append_reply(reply_text, &metadata)
+            .append_reply(reply_text, &metadata, chat_seq)
             .with_context(|| {
                 format!(
                     "Failed to append reply to chat log in {}",
@@ -237,6 +239,7 @@ mod tests {
                 &result.topic_path,
                 "Here is my reply.",
                 &result.message_dir,
+                1,
             )
             .await
             .unwrap();

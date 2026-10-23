@@ -454,7 +454,10 @@ impl ActivityTracker {
                                             // forever and the topic is never re-subscribed, causing
                                             // activity events to silently stop appearing in the
                                             // dashboard. A panic does not reach here: the release
-                                            // profile aborts the process instead of unwinding.
+                                            // profile aborts the process instead of unwinding. A dev
+                                            // or test build still unwinds, so a panic there does skip
+                                            // this and leaves the key behind — but that build is not
+                                            // the one that runs for hours.
                                             let mut sub = subscribed_for_task.lock().await;
                                             sub.remove(&key);
                                         });

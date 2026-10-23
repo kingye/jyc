@@ -32,6 +32,11 @@ const SERVE_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 /// bootstrap step goes through [`Remote::capture`], and all of them run before
 /// the TUI takes the terminal, so a hang has no way out but this deadline.
 const SSH_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long fetching the remote log tail may take on the failure path.
+///
+/// Shorter than [`SSH_COMMAND_TIMEOUT`] on purpose: when ssh itself is what
+/// failed, the diagnosis must not wait another half minute to be printed.
+const LOG_TAIL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Arguments for `jyc connect`.
 #[derive(Args, Debug)]
@@ -90,6 +95,9 @@ impl Remote {
     fn bind_parts(&self) -> Result<(&str, u16)> {
         let invalid = || format!("invalid --remote-bind '{}': expected host:port", self.bind);
         let (host, port) = self.bind.rsplit_once(':').with_context(invalid)?;
+        if host.is_empty() {
+            bail!("invalid --remote-bind '{}': missing host", self.bind);
+        }
         if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
             bail!(
                 "invalid --remote-bind '{}': bracket IPv6 literals, e.g. '[::1]:9876'",
@@ -427,7 +435,11 @@ pub(super) async fn bootstrap(
         if tokio::time::Instant::now() >= deadline {
             // Part of the failure text, not a log line: it is printed before
             // the TUI starts, and the error is the one thing the user keeps.
-            let tail = remote.log_tail().await;
+            // Best effort and short of breath — the reason to be here may be
+            // that ssh itself stopped answering.
+            let tail = tokio::time::timeout(LOG_TAIL_TIMEOUT, remote.log_tail())
+                .await
+                .unwrap_or_default();
             let log = if tail.is_empty() {
                 String::new()
             } else {
@@ -539,6 +551,9 @@ mod tests {
         remote.bind = "::1:9876".into();
         let err = remote.bind_parts().unwrap_err();
         assert!(err.to_string().contains("bracket"), "{err}");
+        remote.bind = ":9876".into();
+        let err = remote.bind_parts().unwrap_err();
+        assert!(err.to_string().contains("missing host"), "{err}");
     }
 
     #[test]

@@ -197,9 +197,10 @@ impl Remote {
     /// dir. Not cached anywhere: it is the remote install's secret, and a copy
     /// on this machine would be a second place to keep in sync (and to leak).
     pub(super) async fn token(&self) -> Result<String> {
+        // No context here: every caller says what it wanted the token for, and
+        // a second "could not read the dashboard token" above it only repeats.
         self.capture(&command_line(&self.argv(&["token", "show"])))
             .await
-            .context("could not read the dashboard token on the remote host")
     }
 
     /// The remote user's home directory — the default topic path, and what
@@ -451,11 +452,7 @@ pub(super) async fn bootstrap(
         // up but the token is stale, and a transport error when nothing is
         // listening behind the tunnel. A token that could not be read at all
         // explains a 401 on its own, so it leads the text.
-        let source = match (explicit_token, token_error.as_ref()) {
-            (Some(_), _) => TokenSource::Explicit,
-            (None, Some(err)) => TokenSource::Unreadable(err),
-            (None, None) => TokenSource::Read,
-        };
+        let source = token_source(explicit_token, token_error.as_ref());
         bail!("{}", no_answer(remote, last.as_ref().unwrap_err(), source));
     }
 
@@ -512,13 +509,15 @@ pub(super) async fn bootstrap(
 /// A dropped ssh connection is indistinguishable downstream from "this hub has
 /// no token": the probe then runs unauthenticated and the server answers 401,
 /// which reads as "the token is wrong". One retry costs a few seconds and
-/// removes the most common way that happens.
+/// removes the most common way that happens. Every failure is retried, not
+/// just timeouts — [`Remote::capture`] flattens the cause into text, so
+/// telling them apart would mean matching that text.
 async fn read_token(remote: &Remote) -> Result<String> {
     match remote.token().await {
-        Err(first) => remote
-            .token()
-            .await
-            .map_err(|second| second.context(format!("retried once, first error: {first:#}"))),
+        Err(first) => match remote.token().await {
+            Ok(token) => Ok(token),
+            Err(second) => Err(anyhow::anyhow!("{first:#} (retry: {second:#})")),
+        },
         ok => ok,
     }
 }
@@ -536,7 +535,35 @@ enum TokenSource<'a> {
     Unreadable(&'a anyhow::Error),
 }
 
+/// Which [`TokenSource`] the probe ran with.
+fn token_source<'a>(
+    explicit_token: Option<&str>,
+    token_error: Option<&'a anyhow::Error>,
+) -> TokenSource<'a> {
+    match (explicit_token, token_error) {
+        (Some(_), _) => TokenSource::Explicit,
+        (None, Some(err)) => TokenSource::Unreadable(err),
+        (None, None) => TokenSource::Read,
+    }
+}
+
+/// Whether the probe was answered with 401.
+///
+/// [`InspectClient`] flattens the status into its message
+/// (`GET … returned 401 Unauthorized: …`), so this reads the text; the advice
+/// [`no_answer`] gives about a rejected token is only worth printing when a
+/// token was actually rejected.
+fn is_unauthorized(err: &anyhow::Error) -> bool {
+    err.chain()
+        .any(|cause| cause.to_string().contains("returned 401"))
+}
+
 /// The message for a probe that failed and `--serve` was not given.
+///
+/// What the 401 advice may claim depends on whether a token was sent: with one,
+/// a 401 means the hub refused it; without one, a 401 is what any hub answers,
+/// and pointing at the token's freshness would be the misdiagnosis this text
+/// exists to avoid.
 fn no_answer(remote: &Remote, probe_err: &anyhow::Error, token: TokenSource<'_>) -> String {
     let mut text = String::new();
     if let TokenSource::Unreadable(err) = token {
@@ -557,12 +584,21 @@ fn no_answer(remote: &Remote, probe_err: &anyhow::Error, token: TokenSource<'_>)
         }
     ));
     text.push_str(&format!(
-        "\n  start it there (`{} serve`), or pass -s/--serve to start one for you\n  \
-         if it is running: check [inspect] enabled = true, and that the token is current — \
-         a 401 here means the serve that answered made its token elsewhere \
-         (`--remote-data-dir`), or rotated it after it started (restart it)",
+        "\n  start it there (`{} serve`), or pass -s/--serve to start one for you",
         remote.bin
     ));
+    match token {
+        TokenSource::Unreadable(_) => text.push_str(
+            "\n  if one is running, fix the read first (`--bin`, `--remote-data-dir`, or \
+             `--token <token>`): without a token the hub answers 401 whatever its token is",
+        ),
+        _ if is_unauthorized(probe_err) => text.push_str(
+            "\n  if it is running, check [inspect] enabled = true: that token was rejected — \
+             the serve that answered made its token elsewhere (`--remote-data-dir`), or \
+             rotated it after it started (restart it)",
+        ),
+        _ => text.push_str("\n  if it is running, check [inspect] enabled = true"),
+    }
     text
 }
 
@@ -625,22 +661,32 @@ mod tests {
     }
 
     fn probe_error() -> anyhow::Error {
-        anyhow::anyhow!("GET /api/state/overview returned 401 Unauthorized")
+        anyhow::anyhow!("GET /api/state/overview returned 401 Unauthorized: auth_failed")
+    }
+
+    fn refused() -> anyhow::Error {
+        anyhow::anyhow!("GET /api/state/overview request failed: connection refused")
     }
 
     #[test]
     fn a_token_that_could_not_be_read_leads_the_failure_text() {
-        let err = anyhow::anyhow!("ssh devbox did not answer within 10s");
+        let err = anyhow::anyhow!("`ssh devbox jyc token show` failed: jyc: command not found");
         let text = no_answer(&remote(), &probe_error(), TokenSource::Unreadable(&err));
         assert!(
-            text.starts_with("could not read the dashboard token from devbox: ssh devbox"),
+            text.starts_with(
+                "could not read the dashboard token from devbox: `ssh devbox jyc token show` failed"
+            ),
             "{text}"
         );
         assert!(
             text.contains("unreadable — the probe ran without one"),
             "{text}"
         );
-        assert!(text.contains("401 Unauthorized"), "{text}");
+        // No token was sent, so there is nothing to call stale: the advice is
+        // to fix the read, not to check whether the hub's token is current.
+        assert!(text.contains("fix the read first"), "{text}");
+        assert!(!text.contains("was rejected"), "{text}");
+        assert!(!text.contains("rotated"), "{text}");
     }
 
     #[test]
@@ -648,6 +694,7 @@ mod tests {
         let text = no_answer(&remote(), &probe_error(), TokenSource::Explicit);
         assert!(text.contains("token: from --token"), "{text}");
         assert!(!text.contains("could not read"), "{text}");
+        assert!(text.contains("that token was rejected"), "{text}");
 
         let mut remote_with_data_dir = remote();
         remote_with_data_dir.data_dir = Some("/srv/jyc".into());
@@ -656,7 +703,28 @@ mod tests {
             text.contains("token: read with `jyc --data-dir /srv/jyc token show`"),
             "{text}"
         );
-        assert!(text.contains("a 401 here means"), "{text}");
+    }
+
+    #[test]
+    fn a_transport_failure_is_not_dressed_up_as_a_token_problem() {
+        let text = no_answer(&remote(), &refused(), TokenSource::Read);
+        assert!(text.contains("connection refused"), "{text}");
+        assert!(text.contains("[inspect] enabled = true"), "{text}");
+        assert!(!text.contains("was rejected"), "{text}");
+        assert!(!text.contains("rotated"), "{text}");
+    }
+
+    #[test]
+    fn the_token_source_says_where_the_probe_token_came_from() {
+        let err = anyhow::anyhow!("boom");
+        assert!(matches!(
+            token_source(Some("t"), Some(&err)),
+            TokenSource::Explicit
+        ));
+        assert!(
+            matches!(token_source(None, Some(&err)), TokenSource::Unreadable(e) if std::ptr::eq(e, &err))
+        );
+        assert!(matches!(token_source(None, None), TokenSource::Read));
     }
 
     #[test]

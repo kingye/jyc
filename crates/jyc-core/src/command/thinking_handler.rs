@@ -44,6 +44,16 @@ impl CommandHandler for ThinkingCommandHandler {
             }
         };
 
+        // Defence in depth: the dispatcher already refuses commands for a
+        // topic closed earlier in the same command block (`/close` +
+        // `/thinking show`), but the create below would rebuild the state dir
+        // the close just deleted if this is ever reached directly.
+        if jyc_types::state_dir::is_closed(&context.topic_name) {
+            return Ok(CommandResult::refusal(
+                "/thinking: this topic was just closed; nothing to change".to_string(),
+            ));
+        }
+
         let state_dir = resolve_state_dir(&context.topic_name, &context.topic_path);
         tokio::fs::create_dir_all(&state_dir).await?;
 

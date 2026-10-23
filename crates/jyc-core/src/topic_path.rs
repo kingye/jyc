@@ -307,14 +307,14 @@ pub fn activate_workspace_state(topic_name: &str, topic_dir: &Path, workspace: &
         // legitimate reopen records the dir on its next enqueue, once the
         // worker's start has lifted the freeze; in between, resolution falls
         // back to inference, which is what a never-recorded topic does anyway.
-        if !jyc_types::state_dir::is_closed(topic_name) {
-            if let Err(e) = record_topic_work_dir(&state_dir, topic_dir) {
-                tracing::debug!(
-                    topic = %topic_name,
-                    error = %e,
-                    "Could not record the topic's working directory"
-                );
-            }
+        if !jyc_types::state_dir::is_closed(topic_name)
+            && let Err(e) = record_topic_work_dir(&state_dir, topic_dir)
+        {
+            tracing::debug!(
+                topic = %topic_name,
+                error = %e,
+                "Could not record the topic's working directory"
+            );
         }
     }
 }

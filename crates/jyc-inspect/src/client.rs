@@ -237,6 +237,10 @@ impl InspectClient {
             .await
             .with_context(|| format!("GET {path} read body failed"))?;
         if !status.is_success() {
+            // `jyc connect` reads the status back out of this text to tell a
+            // rejected token (401) from an unreachable server; keep
+            // "returned {status}" in the message (see `is_unauthorized` in
+            // jyc-cli's dashboard/remote.rs).
             anyhow::bail!(
                 "GET {path} returned {status}: {}",
                 String::from_utf8_lossy(&bytes)

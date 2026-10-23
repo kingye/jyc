@@ -119,6 +119,12 @@ pub(crate) async fn read_signal_attachments(
 /// out to the dashboard.
 ///
 /// The watcher runs until cancelled (when the agent finishes processing).
+///
+/// Delivery is at-least-once: the signal files are removed after a successful
+/// send, so if the process dies between the send and the removal (or the
+/// removal fails) the next poll delivers again. That second delivery is a new
+/// chat row with a new sequence number — the dashboard shows the reply twice,
+/// which is the honest rendering of what happened.
 // The `hooks` parameter pushed this over clippy's 7-arg heuristic;
 // grouping the delivery targets into a struct would obscure more than
 // it helps (same call as `#[allow(clippy::too_many_arguments)]` in
@@ -179,7 +185,7 @@ pub async fn watch_pending_deliveries(
         // Deliver via outbound adapter (channel-agnostic), carrying any
         // attachments the agent recorded in the signal file.
         let attachments = read_signal_attachments(&signal_path, topic_path).await;
-        if let Err(e) = outbound
+        let delivery = outbound
             .send_reply(
                 message,
                 &reply_text,
@@ -187,26 +193,31 @@ pub async fn watch_pending_deliveries(
                 message_dir,
                 attachments.as_deref(),
             )
-            .await
-        {
-            tracing::error!(error = %e, "Failed to deliver pending message");
-        } else {
-            tracing::info!("Pending message delivered successfully");
-            // Fan out a ReplySent event so the dashboard can display the
-            // reply live. The main post-SSE delivery path does this too;
-            // when the watcher wins the race we must still emit it.
-            if let Some(bus) = &event_bus {
-                let event = TopicEvent::ReplySent {
-                    topic_name: topic_name.to_string(),
-                    text: reply_text.clone(),
-                    timestamp: Utc::now(),
-                };
-                if let Err(e) = bus.publish(event).await {
-                    tracing::warn!(
-                        error = %e,
-                        topic = %topic_name,
-                        "Failed to publish ReplySent event from pending delivery watcher"
-                    );
+            .await;
+        match delivery {
+            Err(e) => tracing::error!(error = %e, "Failed to deliver pending message"),
+            Ok(delivery) => {
+                tracing::info!("Pending message delivered successfully");
+                // Fan out a ReplySent event so the dashboard can display the
+                // reply live. The main post-SSE delivery path does this too;
+                // when the watcher wins the race we must still emit it.
+                if let Some(bus) = &event_bus {
+                    // Same number the adapter wrote into the chat log row, so a
+                    // later rehydrate does not draw the reply twice.
+                    let id = delivery.chat_seq;
+                    let event = TopicEvent::ReplySent {
+                        topic_name: topic_name.to_string(),
+                        id,
+                        text: reply_text.clone(),
+                        timestamp: Utc::now(),
+                    };
+                    if let Err(e) = bus.publish(event).await {
+                        tracing::warn!(
+                            error = %e,
+                            topic = %topic_name,
+                            "Failed to publish ReplySent event from pending delivery watcher"
+                        );
+                    }
                 }
             }
         }
@@ -295,6 +306,7 @@ mod tests {
             );
             Ok(SendResult {
                 message_id: "mock-id".to_string(),
+                chat_seq: 0,
             })
         }
 
@@ -306,6 +318,7 @@ mod tests {
         ) -> anyhow::Result<SendResult> {
             Ok(SendResult {
                 message_id: "mock-id".to_string(),
+                chat_seq: 0,
             })
         }
     }

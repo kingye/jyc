@@ -351,7 +351,8 @@ impl App {
                 // a fresh channel — the dedup state from the previous
                 // session would drop every incoming event until events
                 // catch up. Clear it and re-hydrate the current topic.
-                self.chat.last_seen_id.clear();
+                self.chat.last_seen_activity_id.clear();
+                self.chat.last_seen_chat_seq.clear();
                 if let (Some(channel), Some(topic)) =
                     (self.chat.channel.clone(), self.chat.topic.clone())
                 {
@@ -1196,8 +1197,9 @@ async fn hydrate_live(client: &InspectClient, app: &mut App, channel: &str, topi
         .await
     {
         Ok(activity) => {
-            // Chat second.
-            match client.get_topic_chat(channel, topic, None, Some(100)).await {
+            // Chat second. Ask for exactly what the buffer keeps: the pane caps
+            // its stack at `MAX_CHAT`, so a larger fetch is discarded anyway.
+            match client.get_topic_chat(channel, topic, None, Some(50)).await {
                 Ok(chat) => {
                     app.chat.seed_live(channel, topic, activity, chat);
                 }

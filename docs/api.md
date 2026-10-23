@@ -240,11 +240,22 @@ transcript).
 ```json
 [
   { "sender": "user", "text": "explain this diff",
-    "timestamp": "2026-07-31T08:00:11Z", "id": 3 },
+    "timestamp": "2026-07-31T08:00:11Z", "id": 3,
+    "client_msg_id": "4812-1" },
   { "sender": "ai",   "text": "This PR fixes ...",
     "timestamp": "2026-07-31T08:00:14Z", "id": 4 }
 ]
 ```
+
+`id` is the message's chat sequence number: one per topic, allocated where
+the message enters the system (the enqueue funnel for an inbound message,
+delivery for a reply), written into the log line, and carried by the live
+`chat_message` event for the same message — so a client dedups on it alone.
+Rows logged before the sequence existed have no `id` and read as `0`.
+`client_msg_id` is present only on messages a dashboard client sent with its
+own id (`metadata.jyc_client_msg_id` on the websocket message frame); it
+comes back here and on the live event so the client can replace its
+optimistic copy instead of drawing a second one.
 
 #### 2.4.5 `GET /api/channels/{channel}/patterns`
 
@@ -569,10 +580,10 @@ Server-pushed events are JSON text frames from a shared
 |----------------|--------------------------------------------------------------------|-------------------------------------------------------------------------------|
 | `topic_event`  | `{ "channel", "topic", "event": TopicEvent }`                     | Any typed `TopicEvent` fires on a topic — the raw event stream (`ProcessingStarted`, `Thinking`, `ToolStarted`, `ProcessingCompleted`, ...). The 1 Hz `LoopTick` heartbeat is excluded. Consumed by external pipe processes (`jyc-pipe`); dashboard clients can ignore it. |
 | `activity`     | `{ "channel", "topic", "id", "entry": ActivityEntry }`            | A new entry is appended to `.jyc/activity.jsonl`.                             |
-| `chat_message` | `{ "channel", "topic", "id", "entry": ChatMessageEntry }`         | An incoming message or a sent reply arrives.                                  |
+| `chat_message` | `{ "channel", "topic", "id", "entry": ChatMessageEntry }`         | An incoming message or a sent reply arrives. The row's `id` is its chat sequence number, from a different number space than `activity`'s. |
 | `thinking`     | `{ "channel", "topic", "text" }`                                  | The agent publishes a thinking chunk.                                         |
 | `processing`   | `{ "channel", "topic", "is_processing": bool, "has_error": bool }` | A topic enters / leaves the Processing state.                                |
-| `reply`        | `{ "topic": "<name>", "text": "..." }`                            | A websocket-channel `WebsocketOutboundAdapter` broadcasts an AI reply.        |
+| `reply`        | `{ "topic": "<name>", "text": "...", "id": u64 }`                 | A websocket-channel `WebsocketOutboundAdapter` broadcasts an AI reply; `id` is the chat sequence number of its log row (`0` for a proactive send, which logs none). |
 | `loop_tick`    | `{ "channel", "topic", "elapsed_ms": u64 }`                       | 1 Hz wall-clock tick during a processing cycle (first tick at `t=0`). Drives the dashboard's live-duration ticker. Not persisted. |
 | `resync`       | `{ "channel", "topic", "dropped": <n> }`                          | The client's broadcast receiver lagged and missed messages.                   |
 
@@ -767,7 +778,7 @@ from `cost`, which is this topic's own spend (`cost.today`).
 - `TopicStatus` — `queued` / `processing` / `idle` / `error`
 - `Severity` — `info` / `warning` / `error` (default `info`)
 - `ActivityEntry` — `text`, `timestamp?`, `severity`, `id`, `is_internal`
-- `ChatMessageEntry` — `sender`, `text`, `timestamp?`, `id`
+- `ChatMessageEntry` — `sender`, `text`, `timestamp?`, `id`, `client_msg_id?`
 - `ChannelInfo` — `name`, `channel_type`, `active_workers`, `max_concurrent`
 - `ChangedFileEntry` — `{path: string, uncommitted: bool, change: ChangeKind, lines: LineStats?}`. `uncommitted` is `true` when the working tree has changes vs HEAD (i.e. the file is currently dirty — staged or unstaged). A path present in both `main...HEAD` and the working-tree diff appears once with `uncommitted: true` (the more-noisy state wins) and the branch-side `change` / `lines`. `change` carries the status (`added` / `modified` / `deleted`); the chat info pane renders a one-column prefix glyph per row (`+`, `-`, two spaces). `lines` is `{insertions: u32, deletions: u32}` for that same diff, absent for a binary file. Resolved server-side from `git diff` invocations on the topic's working directory (`--name-status main...HEAD` ∪ `--name-status HEAD`, each joined with its `--numstat`); `None` when the path isn't a git repo or both invocations fail.
 - `ChangeKind` — `added` / `modified` / `deleted`. `Modified` is the default — old payloads missing the field deserialize as `Modified`. Renames, copies, type changes from `git diff --name-status` are normalized to `Modified` server-side (no separate variant for those).
@@ -801,7 +812,8 @@ from `cost`, which is this topic's own spend (`cost.today`).
 - Token comparison is constant-time. A trivial timing attack against
   the WS path's old `!=` comparison is fixed.
 - `ActivityEntry` / `ChatMessageEntry` missing `id` default to `0`;
-  missing `is_internal` defaults to `false`.
+  missing `is_internal` defaults to `false`; a `ChatMessageEntry` without
+  `client_msg_id` simply has none.
 
 ---
 

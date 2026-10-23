@@ -81,6 +81,12 @@ pub(super) struct ChatMessage {
     pub(super) sender: String,
     pub(super) text: String,
     pub(super) timestamp: Option<String>,
+    /// The topic's chat sequence number (`0` for a local echo the server has
+    /// not confirmed yet, and for rows logged before the sequence existed).
+    pub(super) id: u64,
+    /// Identifies this client's optimistic echo of a message it sent, so the
+    /// server's row replaces it instead of being appended as a second copy.
+    pub(super) client_id: Option<String>,
 }
 
 /// Aux-pane visibility snapshot taken when entering zen mode and restored
@@ -232,13 +238,14 @@ pub(super) struct ChatState {
     pub(super) live_tick_ms: std::collections::BTreeMap<(String, String), u64>,
     /// Last-seen monotonic id per (channel, topic) — used to drop duplicate
     /// WS events after reconnect / `resync`.
-    pub(super) last_seen_id: std::collections::BTreeMap<(String, String), u64>,
-    /// Highest `ChatMessageEntry::id` already pushed from `live_chat` into
-    /// `messages` for each (channel, topic). Used by `sync_live_chat` to skip
-    /// live entries that have already been pushed; without this, historical
-    /// `id = 0` rows from `chat_log_store.rs` JSONL hydrate would re-push on
-    /// every fold.
-    pub(super) last_pushed_chat_id: std::collections::BTreeMap<(String, String), u64>,
+    pub(super) last_seen_activity_id: std::collections::BTreeMap<(String, String), u64>,
+    /// Highest chat sequence number seen on the WS stream (and in a hydrate)
+    /// for each (channel, topic) — used to drop duplicate WS events after
+    /// reconnect / `resync`. The pane's own dedup does not use it: see
+    /// `sync_live_chat`.
+    pub(super) last_seen_chat_seq: std::collections::BTreeMap<(String, String), u64>,
+    /// Counter behind this client's own message ids (see `ChatMessage::client_id`).
+    pub(super) next_client_msg_seq: u64,
     /// Last (channel, topic) that was REST-hydrated by the poll loop.
     /// Used to avoid re-hydrating the same topic on every poll when the
     /// user is browsing the overview.
@@ -2648,8 +2655,9 @@ impl ChatState {
             minimal_progress: true,
             live_processing: std::collections::BTreeMap::new(),
             live_tick_ms: std::collections::BTreeMap::new(),
-            last_seen_id: std::collections::BTreeMap::new(),
-            last_pushed_chat_id: std::collections::BTreeMap::new(),
+            last_seen_activity_id: std::collections::BTreeMap::new(),
+            last_seen_chat_seq: std::collections::BTreeMap::new(),
+            next_client_msg_seq: 0,
             last_hydrated_key: None,
             open_addr: None,
             commands: vec![],
@@ -3294,11 +3302,17 @@ impl ChatState {
         self.history_pos = None;
 
         // WebSocket-only flow: echo user message locally, send via WebSocket.
+        // The echo carries an id of its own so the row the server broadcasts
+        // back replaces it in place rather than showing up beside it.
         let _ = self.topic.as_ref(); // topic must be set before send
+        self.next_client_msg_seq += 1;
+        let client_id = format!("{}-{}", std::process::id(), self.next_client_msg_seq);
         self.messages.push(ChatMessage {
             sender: "user".to_string(),
             text: text.clone(),
             timestamp: Some(chrono::Utc::now().to_rfc3339()),
+            id: 0,
+            client_id: Some(client_id.clone()),
         });
         // The /ws/<channel>/<topic> URL already carries the topic name.
         // Both ScopedWsHandler (websocket channel) and TopicProxyHandler
@@ -3307,6 +3321,7 @@ impl ChatState {
         let msg = serde_json::json!({
             "type": "message",
             "text": text,
+            "metadata": { "jyc_client_msg_id": client_id },
         })
         .to_string();
         if let Some(tx) = &self.ws_tx {
@@ -3712,8 +3727,8 @@ impl ChatState {
     }
 
     /// Seed the live activity/chat buffers with the result of a REST hydrate
-    /// (initial fetch on topic selection). Sets `last_seen_id` to the
-    /// highest id seen so duplicate WS events are dropped.
+    /// (initial fetch on topic selection). Sets the two seen-watermarks to the
+    /// highest ids seen so duplicate WS events are dropped.
     pub(super) fn seed_live(
         &mut self,
         channel: &str,
@@ -3722,24 +3737,14 @@ impl ChatState {
         chat: Vec<jyc_types::ChatMessageEntry>,
     ) {
         let key = (channel.to_string(), topic.to_string());
-        let mut max_id = 0u64;
-        let activity_buf: std::collections::VecDeque<_> = activity
-            .into_iter()
-            .inspect(|e| {
-                if e.id > max_id {
-                    max_id = e.id;
-                }
-            })
-            .collect();
-        let chat_buf: std::collections::VecDeque<_> = chat
-            .into_iter()
-            .inspect(|e| {
-                if e.id > max_id {
-                    max_id = e.id;
-                }
-            })
-            .collect();
-        // Cap buffer sizes to match the in-memory cap in jyc-inspect.
+        // Activities and chat rows are numbered by different owners and live
+        // in different number spaces, so they need separate watermarks.
+        let max_activity_id = activity.iter().map(|e| e.id).max().unwrap_or(0);
+        let max_chat_seq = chat.iter().map(|e| e.id).max().unwrap_or(0);
+        let activity_buf: std::collections::VecDeque<_> = activity.into_iter().collect();
+        let chat_buf: std::collections::VecDeque<_> = chat.into_iter().collect();
+        // Bound the buffers. The activity cap matches what `hydrate_live` asks
+        // for; the chat cap matches its request too (50 rows).
         const MAX_ACTIVITY: usize = 180;
         const MAX_CHAT: usize = 50;
         let mut activity_buf = activity_buf;
@@ -3752,19 +3757,13 @@ impl ChatState {
         }
         self.live_activity.insert(key.clone(), activity_buf);
         self.live_chat.insert(key.clone(), chat_buf);
-        self.last_seen_id.insert(key.clone(), max_id);
-        // A fresh `open()` cleared `messages` (via `reset_chat_state`), so the
-        // hydrated rows must be re-pushed in full — leaving the previous
-        // visit's max id would skip every historical row whose id ≤ old max.
-        // A resync hydrate is *not* that case: `messages` survives it, and
-        // zeroing the tracker would re-push rows already on screen.
-        if self.messages.is_empty() {
-            self.last_pushed_chat_id.insert(key, 0);
-        }
+        self.last_seen_activity_id
+            .insert(key.clone(), max_activity_id);
+        self.last_seen_chat_seq.insert(key.clone(), max_chat_seq);
     }
 
     /// Handle a parsed `{"type":"activity",...}` or similar WS payload.
-    /// Filters out duplicate / older events using `last_seen_id`.
+    /// Filters out duplicate / older events using the per-stream watermark.
     pub(super) fn handle_live_event(&mut self, payload: &serde_json::Value) {
         let channel = match payload.get("channel").and_then(|v| v.as_str()) {
             Some(c) => c.to_string(),
@@ -3775,18 +3774,18 @@ impl ChatState {
             None => return,
         };
         let key = (channel.clone(), topic.clone());
-        let id = payload.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
-        let last = self.last_seen_id.get(&key).copied().unwrap_or(0);
-        if id != 0 && id <= last {
-            return; // duplicate or older
-        }
-        if id != 0 {
-            self.last_seen_id.insert(key.clone(), id);
-        }
 
         let event_type = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
         match event_type {
             "activity" => {
+                let id = payload.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+                let last = self.last_seen_activity_id.get(&key).copied().unwrap_or(0);
+                if id != 0 && id <= last {
+                    return; // duplicate or older
+                }
+                if id != 0 {
+                    self.last_seen_activity_id.insert(key.clone(), id);
+                }
                 if let Some(entry) = payload.get("entry").and_then(|v| {
                     serde_json::from_value::<jyc_types::ActivityEntry>(v.clone()).ok()
                 }) {
@@ -3801,6 +3800,15 @@ impl ChatState {
                 if let Some(entry) = payload.get("entry").and_then(|v| {
                     serde_json::from_value::<jyc_types::ChatMessageEntry>(v.clone()).ok()
                 }) {
+                    // Chat rows are numbered by the chat log, not by the
+                    // activity stream, so they use their own watermark.
+                    let last = self.last_seen_chat_seq.get(&key).copied().unwrap_or(0);
+                    if entry.id != 0 && entry.id <= last {
+                        return; // duplicate or older
+                    }
+                    if entry.id != 0 {
+                        self.last_seen_chat_seq.insert(key.clone(), entry.id);
+                    }
                     // AI reply delivered — clear local waiting flag so the
                     // progress indicator disappears immediately instead of
                     // waiting for the next poll cycle.
@@ -3854,6 +3862,8 @@ impl ChatState {
                             sender: "thinking".to_string(),
                             text: blocks.join("\n\n"),
                             timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                            id: 0,
+                            client_id: None,
                         });
                     }
                     // Processing completed - the fold above already removed
@@ -3880,17 +3890,18 @@ impl ChatState {
             }
             "resync" => {
                 // Server fell behind (Lagged): the buffers are a cache of what
-                // the socket carried, so re-fetch them. `messages` and
-                // `last_pushed_chat_id` describe the *pane*, which the wipe
-                // does not touch — clearing the tracker would re-push every
-                // hydrated row already on screen. Rows missed while lagged
-                // stay missing until the next hydrate (a reconnect).
+                // the socket carried, so re-fetch them. `messages` describes
+                // the *pane*, which the wipe does not touch: the hydrate's
+                // rows match it by sequence number, so nothing already on
+                // screen is drawn twice. Rows missed while lagged stay
+                // missing until the next hydrate (a reconnect).
                 self.live_activity.remove(&key);
                 self.live_chat.remove(&key);
                 self.live_thinking.remove(&key);
                 self.live_processing.remove(&key);
                 self.live_tick_ms.remove(&key);
-                self.last_seen_id.remove(&key);
+                self.last_seen_activity_id.remove(&key);
+                self.last_seen_chat_seq.remove(&key);
             }
             _ => {}
         }
@@ -3991,71 +4002,63 @@ impl ChatState {
         true
     }
 
-    /// Append new chat messages from the live buffer to the rendered
-    /// message list. Returns `true` if at least one row was pushed.
+    /// Append the live buffer's rows the pane is not showing yet. Returns
+    /// `true` if the pane changed.
     ///
-    /// Three dedup rules apply:
-    /// - **Live entries** (`id != 0`): skipped if already pushed (`id <=
-    ///   last_pushed_chat_id`). This is what makes
-    ///   repeated `/`-commands (`/context`, `/exchange`, `/help`,
-    ///   `/model <x>`) emit byte-identical AI text every run but still
-    ///   show up — each event has a fresh monotonic per-topic id.
-    /// - **User echoes** (`sender == "user"`): dedup by `(sender, text)`
-    ///   because the local echo pushed by `send_message_inner` shares
-    ///   `(sender, text)` with the server's IncomingMessage echo (which
-    ///   has `id > 0`).
-    /// - **Historical rows** (`id == 0` from `chat_log_store.rs` JSONL
-    ///   hydrate): dedup by `(sender, text)`. All historical rows share
-    ///   `id = 0` so the id-tracker cannot distinguish them; without
-    ///   this fallback a repeated fold would re-push the same row every
-    ///   time and flood `self.messages`.
+    /// One rule: a row is appended unless the pane already holds a row with
+    /// its chat sequence number. The number is allocated once, where the
+    /// message entered the system, and the chat log stores the same value —
+    /// so the live row and the historical row are the same row, and no
+    /// comparison of message text is needed (or wanted: it silently dropped a
+    /// repeated message).
+    ///
+    /// Membership, not a high-water mark. Numbers are handed out in arrival
+    /// order but a row is written when it is delivered or injected, so a
+    /// message that arrived mid-turn is logged *after* replies that took
+    /// higher numbers: a hydrate hands its rows over out of id order, and
+    /// "greater than the highest drawn" would skip the out-of-order row for
+    /// the rest of the session.
+    ///
+    /// The one exception is the row this client is the author of: it already
+    /// drew an optimistic echo (`id == 0`, tagged with a client id). The
+    /// server's row carries that same client id back, and replaces the echo
+    /// in place instead of being appended beside it.
+    ///
+    /// Rows with `id == 0` and no matching echo were logged before the
+    /// sequence existed; they are not drawn.
     fn sync_live_chat(&mut self, channel: &str, topic: &str) -> bool {
         // Collect into a Vec first to release the immutable borrow on
-        // self.live_chat before mutating self.messages and last_pushed_chat_id.
+        // self.live_chat before mutating self.messages.
         let live_msgs: Vec<jyc_types::ChatMessageEntry> =
             self.live_chat_for(channel, topic).cloned().collect();
-        let push_key = (channel.to_string(), topic.to_string());
-        let last_pushed = self
-            .last_pushed_chat_id
-            .get(&push_key)
-            .copied()
-            .unwrap_or(0);
-        let mut new_msg = false;
-        let mut max_pushed = last_pushed;
+        let mut changed = false;
         for msg in &live_msgs {
-            if msg.id != 0 && msg.id <= last_pushed {
+            if msg.id == 0 {
                 continue;
             }
-            if msg.sender == "user"
-                && self
+            if let Some(client_id) = msg.client_msg_id.as_deref()
+                && let Some(echo) = self
                     .messages
-                    .iter()
-                    .any(|m| m.sender == "user" && m.text == msg.text)
+                    .iter_mut()
+                    .find(|m| m.id == 0 && m.client_id.as_deref() == Some(client_id))
             {
-                continue;
-            }
-            if msg.id == 0
-                && self
-                    .messages
-                    .iter()
-                    .any(|m| m.sender == msg.sender && m.text == msg.text)
-            {
-                continue;
-            }
-            self.messages.push(ChatMessage {
-                sender: msg.sender.clone(),
-                text: msg.text.clone(),
-                timestamp: msg.timestamp.clone(),
-            });
-            new_msg = true;
-            if msg.id > max_pushed {
-                max_pushed = msg.id;
+                // Confirm the optimistic echo: adopt the server's sequence
+                // number and timestamp, keep its place in the list.
+                echo.id = msg.id;
+                echo.timestamp = msg.timestamp.clone();
+                changed = true;
+            } else if !self.messages.iter().any(|m| m.id == msg.id) {
+                self.messages.push(ChatMessage {
+                    sender: msg.sender.clone(),
+                    text: msg.text.clone(),
+                    timestamp: msg.timestamp.clone(),
+                    id: msg.id,
+                    client_id: msg.client_msg_id.clone(),
+                });
+                changed = true;
             }
         }
-        if max_pushed > last_pushed {
-            self.last_pushed_chat_id.insert(push_key, max_pushed);
-        }
-        new_msg
+        changed
     }
 }
 

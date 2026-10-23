@@ -180,6 +180,11 @@ pub struct OutboundAttachment {
 #[derive(Debug)]
 pub struct SendResult {
     pub message_id: String,
+    /// Chat sequence number the adapter assigned to this reply's log row
+    /// (`0` when the channel logs no chat row). The caller publishes the
+    /// `ReplySent` event with it, so the live row and the logged row share
+    /// one number — see `jyc_core::chat_seq`.
+    pub chat_seq: u64,
 }
 
 /// A proactive (non-reply) message on its way out through a channel.

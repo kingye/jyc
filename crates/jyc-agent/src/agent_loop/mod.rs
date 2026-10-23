@@ -392,7 +392,8 @@ pub async fn run(
             match crate::tools::deliver_reply(&ctx, tools.hooks(), topic_name, &heartbeat).await {
                 Ok(delivery) => {
                     if delivery.direct {
-                        publish_reply_sent(event_bus, topic_name, &heartbeat).await;
+                        publish_reply_sent(event_bus, topic_name, &heartbeat, delivery.chat_seq)
+                            .await;
                     }
                 }
                 Err(e) => {
@@ -735,7 +736,13 @@ pub async fn run(
                     Ok(delivery) => {
                         reply_delivered = true;
                         if delivery.direct {
-                            publish_reply_sent(event_bus, topic_name, &final_text).await;
+                            publish_reply_sent(
+                                event_bus,
+                                topic_name,
+                                &final_text,
+                                delivery.chat_seq,
+                            )
+                            .await;
                         }
                     }
                     Err(e) => {
@@ -1183,7 +1190,7 @@ async fn deliver_progress_text(
     match crate::tools::deliver_reply(ctx, tools.hooks(), topic_name, text).await {
         Ok(delivery) => {
             if delivery.direct {
-                publish_reply_sent(event_bus, topic_name, text).await;
+                publish_reply_sent(event_bus, topic_name, text, delivery.chat_seq).await;
                 return true;
             }
         }
@@ -1402,11 +1409,13 @@ pub(crate) async fn publish_reply_sent(
     event_bus: Option<&TopicEventBusRef>,
     topic_name: &str,
     text: &str,
+    id: u64,
 ) {
     publish_event(
         event_bus,
         TopicEvent::ReplySent {
             topic_name: topic_name.to_string(),
+            id,
             text: text.to_string(),
             timestamp: Utc::now(),
         },

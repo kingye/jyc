@@ -283,7 +283,7 @@ pub(crate) async fn process_message(
         );
 
         // Outbound adapter handles formatting + sending + storing
-        outbound
+        let delivery = outbound
             .send_reply(
                 message,
                 &summary,
@@ -295,8 +295,11 @@ pub(crate) async fn process_message(
         // Publish a ReplySent event so the inspect server's ActivityTracker
         // fans it out as a chat_message to dashboard WS clients. Without
         // this, command results are persisted to disk (visible on re-enter)
-        // but never appear live in the chat pane.
-        topic_manager.publish_reply_sent(topic_name, &summary).await;
+        // but never appear live in the chat pane. The adapter that logged
+        // the row hands back the chat sequence number it used.
+        topic_manager
+            .publish_reply_sent(topic_name, &summary, delivery.chat_seq)
+            .await;
     }
 
     // ── 4. CHECK BODY ─────────────────────────────────────────────────
@@ -509,7 +512,7 @@ pub(crate) async fn process_message(
                                 Ok(output) => {
                                     if !output.results.is_empty() {
                                         let summary = output.results_summary();
-                                        if let Err(e) = outbound
+                                        let delivery = outbound
                                             .send_reply(
                                                 &qi.message,
                                                 &summary,
@@ -518,17 +521,22 @@ pub(crate) async fn process_message(
                                                 None,
                                             )
                                             .await
-                                        {
-                                            tracing::warn!(
-                                                error = %e,
-                                                "Failed to send command result during AI processing"
-                                            );
-                                        }
+                                            .map_err(|e| {
+                                                tracing::warn!(
+                                                    error = %e,
+                                                    "Failed to send command result during AI processing"
+                                                );
+                                            })
+                                            .ok();
                                         // Publish ReplySent so the dashboard
                                         // sees the command result live (same as
                                         // the main command-result path above).
                                         topic_manager
-                                            .publish_reply_sent(topic_name, &summary)
+                                            .publish_reply_sent(
+                                                topic_name,
+                                                &summary,
+                                                delivery.map(|d| d.chat_seq).unwrap_or(0),
+                                            )
                                             .await;
                                     }
 
@@ -667,7 +675,7 @@ pub(crate) async fn process_message(
                 err_display.chars().take(200).collect::<String>()
             );
             if store_result.topic_path.exists() {
-                if let Err(send_err) = outbound
+                match outbound
                     .send_reply(
                         &message,
                         &notice,
@@ -677,12 +685,17 @@ pub(crate) async fn process_message(
                     )
                     .await
                 {
-                    tracing::warn!(
-                        error = %send_err,
-                        "Failed to send processing-error notice"
-                    );
-                } else {
-                    topic_manager.publish_reply_sent(topic_name, &notice).await;
+                    Err(send_err) => {
+                        tracing::warn!(
+                            error = %send_err,
+                            "Failed to send processing-error notice"
+                        );
+                    }
+                    Ok(delivery) => {
+                        topic_manager
+                            .publish_reply_sent(topic_name, &notice, delivery.chat_seq)
+                            .await;
+                    }
                 }
             }
             return Err(e);
@@ -771,7 +784,7 @@ pub(crate) async fn process_message(
                     let attachments =
                         read_signal_attachments(&signal_path, &store_result.topic_path).await;
 
-                    outbound
+                    let delivery = outbound
                         .send_reply(
                             &message,
                             reply_text,
@@ -782,7 +795,7 @@ pub(crate) async fn process_message(
                         .await?;
                     tracing::info!("Reply delivered via outbound adapter");
                     topic_manager
-                        .publish_reply_sent(topic_name, reply_text)
+                        .publish_reply_sent(topic_name, reply_text, delivery.chat_seq)
                         .await;
                     // Clean up signal files after successful delivery to prevent re-delivery on restart
                     tokio::fs::remove_file(&signal_path).await.ok();
@@ -831,7 +844,7 @@ pub(crate) async fn process_message(
                 "reply_send hook suppressed reply"
             );
         } else {
-            outbound
+            let delivery = outbound
                 .send_reply(
                     &message,
                     text,
@@ -841,7 +854,9 @@ pub(crate) async fn process_message(
                 )
                 .await?;
             tracing::info!("Reply sent");
-            topic_manager.publish_reply_sent(topic_name, text).await;
+            topic_manager
+                .publish_reply_sent(topic_name, text, delivery.chat_seq)
+                .await;
             topic_manager.metrics.reply_by_fallback(topic_name);
         }
     } else {

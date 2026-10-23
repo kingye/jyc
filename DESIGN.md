@@ -3599,7 +3599,8 @@ TopicManager (crates/jyc-core/src/topic_manager.rs)
 
 TopicActivityState (crates/jyc-inspect/src/server.rs)
   ├── +recent_messages: VecDeque<ChatMessageEntry>  (capped at ~50)
-  └── +next_id: u64 (monotonic per-topic counter for dedup)
+  └── +next_id: u64 (monotonic per-topic counter, activity rows only —
+      chat rows carry the number the chat log allocated, see chat_seq)
 
 ActivityTracker (crates/jyc-inspect/src/server.rs)
   ├── subscriber loop: capture IncomingMessage/ReplySent → recent_messages
@@ -3634,7 +3635,8 @@ InspectOverview / TopicSummary (crates/jyc-types/src/inspect.rs)
 
 InspectState / TopicInfo (crates/jyc-types/src/inspect.rs)
   ├── ActivityEntry { id, text, timestamp, severity }
-  ├── ChatMessageEntry { id, sender, text, timestamp }
+  ├── ChatMessageEntry { id, sender, text, timestamp, client_msg_id? }
+  │   (id = the topic's chat sequence number, written into the log line)
   └── TopicInfo.{activity, recent_messages, thinking_text, ...} (full payload,
       retained for backward compat with any external clients)
 
@@ -3665,8 +3667,9 @@ Dashboard (crates/jyc-cli/src/cli/dashboard/)
   │   BTreeMap<(channel, topic), ...>; populated by hydrate + WS events
   ├── Activity pane + chat progress read from these live buffers
   │   (rendering logic unchanged from before the refactor)
-  └── handle_live_event() appends WS events to the live buffers with
-      last_seen_id dedup, and folds the chat pane on receipt
+  └── handle_live_event() appends WS events to the live buffers with a
+      per-stream watermark (activity ids and chat sequence numbers are
+      separate spaces), and folds the chat pane on receipt
       (`sync_live_if_visible`) — no timer between a reply and the screen
 ```
 
@@ -3681,6 +3684,8 @@ Dashboard (crates/jyc-cli/src/cli/dashboard/)
 | Single WebSocket endpoint for all channels (`/ws/<channel>/<topic>`) | Decouples dashboard from channel type; `TopicProxyHandler` handles non-WS channels uniformly |
 | Per-channel broadcast bus (`InspectContext.inspect_broadcast`) | One shared bus; handlers filter by `(channel, topic)` from each payload |
 | `id: u64` monotonic per-topic for dedup | Survives WS reconnect / Lagged recovery; small field, backward compat via `#[serde(default)]` |
+| Chat row ids allocated by `chat_seq` (one owner: `jyc-core`), not by the inspect counter | The live row and the logged row are the same row only if both carry the same number; the number has to exist before either consumer runs (enqueue for a message, delivery for a reply), so the log cannot mint it and the observer cannot either. Sharing the activity counter instead made one watermark describe two number spaces |
+| Chat dedup by membership on screen, not by a high-water mark | Numbers are handed out in arrival order, but a row is written when it is delivered or injected: a message that arrives mid-turn is logged *after* replies that took higher numbers, so neither the log nor a hydrate is in id order. A high-water mark skipped that row for the rest of the session, and seeding from the file's last line could hand out a number already used |
 | `resync` on `Lagged(n)` instead of panicking | Client re-hydrates via REST; same code path as cold start |
 | REST hydrate on selection + WS for live | Cold start from disk (authoritative); warm path push-based (low latency) |
 | `chat.progress` and `activity` pane read from the **same** `live_activity` buffer | Single source of truth; both panes show identical data |

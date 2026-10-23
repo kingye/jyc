@@ -691,14 +691,17 @@ focus on error handling",
 
     /// Marks its topic closed, the way `/close` does — so the *next* command
     /// in the same block runs against a topic that is already gone.
-    struct ClosingHandler;
+    struct ClosingHandler {
+        /// The state dir to register for the topic. Registration comes first
+        /// because `resolve_state_dir` deliberately panics on an unregistered
+        /// topic.
+        state_dir: PathBuf,
+    }
 
     #[async_trait]
     impl CommandHandler for ClosingHandler {
         async fn execute(&self, ctx: CommandContext) -> Result<CommandResult> {
-            let state_dir =
-                jyc_types::state_dir::resolve_state_dir(&ctx.topic_name, &ctx.topic_path);
-            jyc_types::state_dir::register_if_absent(&ctx.topic_name, &state_dir);
+            jyc_types::state_dir::register_if_absent(&ctx.topic_name, &self.state_dir);
             jyc_types::state_dir::mark_closed(&ctx.topic_name);
             Ok(CommandResult {
                 success: true,
@@ -714,11 +717,8 @@ focus on error handling",
     /// `/close --force` + `/model x` class, #992).
     #[tokio::test]
     async fn test_commands_stacked_behind_close_are_refused() {
-        let mut registry = CommandRegistry::new();
-        registry.register("/dummy", Arc::new(TestHandler));
-        registry.register("/close", Arc::new(ClosingHandler));
-
-        // Unique name per run: the closed set is process-global.
+        // Unique name per run: the closed set and the registry are
+        // process-global.
         let topic = format!(
             "registry-close-gate-{}",
             std::time::SystemTime::now()
@@ -726,9 +726,21 @@ focus on error handling",
                 .unwrap()
                 .as_nanos()
         );
+        let home = tempfile::tempdir().unwrap();
+        let state_dir = home.path().join(".jyc");
+
+        let mut registry = CommandRegistry::new();
+        registry.register("/dummy", Arc::new(TestHandler));
+        registry.register(
+            "/close",
+            Arc::new(ClosingHandler {
+                state_dir: state_dir.clone(),
+            }),
+        );
+
         let context = CommandContext {
             topic_name: topic.clone(),
-            topic_path: PathBuf::from("/tmp/none"),
+            topic_path: home.path().to_path_buf(),
             ..test_context()
         };
 
@@ -749,11 +761,12 @@ focus on error handling",
                 .contains("just closed")
         );
         assert!(
-            !jyc_types::state_dir::resolve_state_dir(&topic, &context.topic_path).exists(),
+            !state_dir.exists(),
             "the gate must not recreate the state dir"
         );
 
         jyc_types::state_dir::clear_closed(&topic);
+        jyc_types::state_dir::unregister(&topic);
     }
 
     /// Mixed form: tokens on the command line + continuation lines.

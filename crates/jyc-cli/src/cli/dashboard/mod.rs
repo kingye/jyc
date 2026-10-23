@@ -1223,9 +1223,9 @@ async fn hydrate_live(client: &InspectClient, app: &mut App, channel: &str, topi
         }
     }
     // The hydrate is a buffer write like a WS event, so the pane catches up
-    // here rather than on the next poll — this is what fills the chat pane on
-    // open, and what refills it after a resync wiped the buffers. No-op unless
-    // this is the topic on screen.
+    // here instead of on the next poll: this fills the chat pane on open, and
+    // on the reconnect that follows a resync it returns the rows the socket
+    // dropped. No-op unless this is the topic on screen.
     app.chat.sync_live_if_visible(channel, topic);
 }
 

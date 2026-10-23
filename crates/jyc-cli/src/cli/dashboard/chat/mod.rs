@@ -3879,15 +3879,18 @@ impl ChatState {
                 }
             }
             "resync" => {
-                // Server fell behind (Lagged); clear local state so the
-                // caller re-hydrates via REST.
+                // Server fell behind (Lagged): the buffers are a cache of what
+                // the socket carried, so re-fetch them. `messages` and
+                // `last_pushed_chat_id` describe the *pane*, which the wipe
+                // does not touch — clearing the tracker would re-push every
+                // hydrated row already on screen. Rows missed while lagged
+                // stay missing until the next hydrate (a reconnect).
                 self.live_activity.remove(&key);
                 self.live_chat.remove(&key);
                 self.live_thinking.remove(&key);
                 self.live_processing.remove(&key);
                 self.live_tick_ms.remove(&key);
                 self.last_seen_id.remove(&key);
-                self.last_pushed_chat_id.remove(&key);
             }
             _ => {}
         }
@@ -3960,10 +3963,14 @@ impl ChatState {
             .unwrap_or_else(|| EMPTY_CHAT_DEQUE.iter())
     }
 
-    /// Whether `(channel, topic)` is the topic open in the chat pane. WS
-    /// events for any other topic stay in their buffers until it is opened.
+    /// Whether `(channel, topic)` is the topic the *open* chat pane is bound
+    /// to. Events for anything else stay in their buffers. `close()` leaves
+    /// the binding in place, so `visible` is part of the test — otherwise a
+    /// hidden pane would keep folding rows nobody can see.
     fn is_visible_topic(&self, channel: &str, topic: &str) -> bool {
-        self.channel.as_deref() == Some(channel) && self.topic.as_deref() == Some(topic)
+        self.visible
+            && self.channel.as_deref() == Some(channel)
+            && self.topic.as_deref() == Some(topic)
     }
 
     /// Fold `(channel, topic)`'s live buffer into the pane, if it is the topic

@@ -3221,10 +3221,21 @@ fn resync_hydrate_does_not_repush_rows_already_on_screen() {
     assert!(app.chat.sync_live_if_visible("chan", "t1"));
     assert_eq!(app.chat.messages.len(), 3);
 
-    // Resync: buffers are wiped and re-hydrated with the same history.
-    app.chat
-        .live_chat
-        .remove(&("chan".to_string(), "t1".to_string()));
+    // Resync: the socket fell behind, so the buffers are dropped and the same
+    // history is re-hydrated.
+    app.chat.handle_live_event(&serde_json::json!({
+        "type": "resync",
+        "channel": "chan",
+        "topic": "t1",
+    }));
+    assert_eq!(app.chat.live_chat_for("chan", "t1").count(), 0);
+    assert_eq!(
+        app.chat
+            .last_pushed_chat_id
+            .get(&("chan".to_string(), "t1".to_string())),
+        Some(&3),
+        "the tracker describes the pane, so a buffer wipe must not clear it"
+    );
     app.chat.seed_live("chan", "t1", vec![], history.clone());
     app.chat.sync_live_if_visible("chan", "t1");
     assert_eq!(

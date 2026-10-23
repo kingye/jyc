@@ -285,6 +285,7 @@ mode = "agent"
         setup_session(&tmp).await;
         setup_chat_history(&tmp).await;
         crate::session_state::write_tasks_at(
+            topic,
             &tmp.path().join(".jyc"),
             &jyc_types::task::TaskList {
                 items: vec![jyc_types::task::TaskItem {

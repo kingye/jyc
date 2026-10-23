@@ -268,6 +268,7 @@ mode = "agent"
         .unwrap();
 
         crate::session_state::write_tasks_at(
+            topic,
             &state_dir,
             &jyc_types::task::TaskList {
                 items: vec![jyc_types::task::TaskItem {

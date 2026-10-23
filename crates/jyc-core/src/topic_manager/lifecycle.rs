@@ -157,6 +157,22 @@ impl TopicManager {
         // activity-log entries from event subscribers) are dropped instead of
         // recreating the directory. The topic-open path lifts the freeze.
         jyc_types::state_dir::mark_closed(topic_name);
+        let result = self
+            .close_one_topic_under_inner(topic_name, agents_dir)
+            .await;
+        if result.is_err() {
+            // The close failed, so the topic is still there and still being
+            // written to: lifting the freeze keeps it from silently dropping
+            // every state write until its worker exits and respawns.
+            jyc_types::state_dir::clear_closed(topic_name);
+        }
+        result
+    }
+
+    /// The deletion half of [`Self::close_one_topic_under`]: every `?` in here
+    /// leaves the topic alive, which is why the freeze is lifted by the caller
+    /// rather than here.
+    async fn close_one_topic_under_inner(&self, topic_name: &str, agents_dir: &Path) -> Result<()> {
         // The topic is gone: forget its live status, so the map does not
         // keep an entry for a topic that no longer exists.
         self.live_status.clear(topic_name);

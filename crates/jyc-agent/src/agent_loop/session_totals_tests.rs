@@ -21,12 +21,14 @@ use tempfile::TempDir;
 const CALL_INPUT: u64 = 700;
 const CALL_OUTPUT: u64 = 50;
 const CALL_CACHE_HIT: u64 = 300;
+const CALL_REASONING: u64 = 120;
 
 /// The totals the session has banked before this turn — the base the loop's
 /// running sums start from.
 const SEED_INPUT: u64 = 1_000;
 const SEED_OUTPUT: u64 = 200;
 const SEED_CACHE_HIT: u64 = 500;
+const SEED_REASONING: u64 = 60;
 
 /// A turn continues the session's counts: the loop adds this turn's call to
 /// the totals the session already holds, while the turn's own pair covers
@@ -44,7 +46,7 @@ async fn the_session_totals_continue_the_earlier_turns() {
                 output_tokens: CALL_OUTPUT,
                 cache_hit_tokens: CALL_CACHE_HIT,
                 cache_creation_tokens: 0,
-                reasoning_tokens: 0,
+                reasoning_tokens: CALL_REASONING,
             },
             StreamEvent::TextDelta("done.".to_string()),
             StreamEvent::Done,
@@ -74,15 +76,18 @@ async fn the_session_totals_continue_the_earlier_turns() {
         SEED_OUTPUT,
         SEED_CACHE_HIT,
         0,
-        0,
+        SEED_REASONING,
         None,
         0.0,
         10,
         60,
         70,
         0,
+        0,
     )
     .await;
+    // The seed's reasoning belongs to a turn that has ended: the session
+    // total keeps it, the turn figure starts at zero.
 
     // The turn starts: the turn-scoped pair is zeroed, the session's totals
     // are not — they answer a different question and outlive the turn.
@@ -128,6 +133,16 @@ async fn the_session_totals_continue_the_earlier_turns() {
         state.turn_output_tokens,
         Some(CALL_OUTPUT),
         "the turn's own output covers this turn's call alone"
+    );
+    assert_eq!(
+        state.total_reasoning_tokens,
+        Some(SEED_REASONING + CALL_REASONING),
+        "the loop adds the call's own reasoning tokens, not a literal zero"
+    );
+    assert_eq!(
+        state.turn_reasoning_tokens,
+        Some(CALL_REASONING),
+        "the turn's own reasoning covers this turn's call alone"
     );
     assert_eq!(
         state.context_input_tokens,

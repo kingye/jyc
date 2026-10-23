@@ -205,6 +205,20 @@ pub fn format_amount(amount: f64, currency: &str) -> String {
     }
 }
 
+/// Format the topic's cost row as one display string: `"$1.31 today ·
+/// $0.05 session"` — the durable day's total first, the session's second.
+///
+/// Takes the struct rather than the two amounts: they share a type and a
+/// currency, so swapped arguments would compile and print each figure
+/// under the other's label.
+pub fn format_cost_pair(cost: &TopicCost) -> String {
+    format!(
+        "{} today · {} session",
+        format_amount(cost.today, &cost.currency),
+        format_amount(cost.session, &cost.currency)
+    )
+}
+
 /// Format the day's per-currency totals as one display string: `"$12.34"`,
 /// or `"$12.34 · ¥3.20"` when the day spans two currencies — the sums
 /// cannot be added, so they stay apart.

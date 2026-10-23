@@ -206,7 +206,7 @@ body line.
 | `/template update` | Re-apply template, overwrite existing files |
 | `/context` | Show the context management strategy (`full` / `sliding_window`) |
 | `/context full` | Send the full conversation context to the LLM (default) |
-| `/context sliding [N] [M]` | Send the last N user/assistant turns from prior history plus the current turn verbatim (tool calls/results intact) to the LLM (default N=10); optional M limits tool-call history notes to the most recent M windowed turns (default: all N); `.jyc/agent-context.json` keeps the full history |
+| `/context sliding [N] [M]` | Send the last N user/assistant turns from prior history plus the current turn verbatim (tool calls/results intact) to the LLM (default N=10); optional M limits tool-call history notes to the most recent M windowed turns (default: all N); `.jyc/agent-context.jsonl` keeps the full history |
 | `/context reset` | Remove the runtime override and revert to the configured default |
 | `/skill` | Show this topic's runtime skill toggles (`on`/`off` lists) |
 | `/skill on <name>` | Force-enable a discoverable skill for this topic, even if excluded by config; takes effect from the next message, persists until `/skill reset` |
@@ -588,13 +588,13 @@ directly to `cache_read_tokens * cache_hit_per_million` and
 `cache_creation_tokens * cache_creation_per_million` in the cost formula.
 
 The dashboard and chat **Topic Info** panes then show
-`Cost: ¥0.0521 session · ¥1.3057 today`:
+`Cost: ¥1.3057 today · ¥0.0521 session`:
 
-- **session** -- resets when the agent session resets (`/reset`).
 - **today** -- durable UTC-day total, appended per call to
   the state dir's `bill-YYYY-MM-DD.jsonl` and never reset or truncated. Each
   line records the token counts alongside the cost, so the ledger stays
   auditable and a corrected rate can be replayed over past usage.
+- **session** -- resets when the agent session resets (`/reset`).
 
 Summarization overhead is billed too -- the cycle-boundary progress summary
 and the context-compression call on session reset each summarize the whole

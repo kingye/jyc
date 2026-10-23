@@ -388,6 +388,14 @@ jyc connect devbox -p ~/src/app    # open that remote directory as a topic
 jyc connect devbox --ssh-opt Compression=no   # extra ssh options, repeatable
 ```
 
+The token is read from the remote (`<bin> token show`) once per session;
+`--token` passes one outright, for a hub whose file this side cannot read.
+`$JYC_DASHBOARD_TOKEN` is deliberately *not* read here — it names a local
+dashboard's token, and forwarding it to another machine only produces a 401.
+When the token cannot be read at all, `jyc connect` says so first instead of
+blaming `[inspect]`: an unauthenticated probe answers the same 401 a wrong
+token does, so the read failure is the one fact that separates them.
+
 The tunnel runs `ssh -C`: the dashboard's traffic is repetitive JSON (a
 thinking event re-sends the whole reasoning, so a long turn would otherwise
 push its square), and compression is what keeps a thin uplink usable. On a fast

@@ -8,6 +8,10 @@
 
 - `jyc connect` compresses the ssh tunnel (`-C`) and takes `--ssh-opt KEY=VALUE` (repeatable): the dashboard's traffic is repetitive JSON — a thinking event re-sends the whole reasoning — so a thin uplink spent most of its bandwidth on bytes zlib collapses (#990)
 
+### Fixed
+
+- `jyc connect` reports a token it could not read instead of blaming `[inspect]`: reading the token on the remote (`<bin> token show`) failing — a dropped ssh, a `jyc` missing from the remote's non-login PATH — left the probe unauthenticated, and an unauthenticated probe against a working hub answers exactly the 401 a wrong token does, so the error text sent the user to look at a config that was fine. The read is retried once, and a failure that survives it now leads the message (`could not read the dashboard token from <host>: …`) with the probe error as evidence below; every 401 also names the token it tried (from `--token` / read with which command), because that is what separates "wrong token", "this hub uses another `--data-dir`" and "the token was rotated after it started". `jyc connect` no longer takes its token from `$JYC_DASHBOARD_TOKEN`: that variable holds a *local* dashboard's token, and using it for a remote hub silently sent the wrong secret
+
 ## [0.6.1] - 2026-10-23
 
 ### Added

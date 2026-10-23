@@ -117,6 +117,19 @@ pub async fn deliver_reply(
 
     // File relay: queue for the background delivery watcher / post-loop
     // worker delivery.
+    //
+    // A closed topic gets nothing: `/close` deletes the state dir, and a
+    // reply queued into a fresh copy of it would bring back the skeleton the
+    // topic list reads as an open topic (there is nowhere left to deliver to
+    // either — the topic is gone).
+    if jyc_types::state_dir::is_closed(topic_name) {
+        tracing::info!("Topic closed; reply not queued for delivery");
+        return Ok(ReplyDelivery {
+            direct: false,
+            message_id: None,
+            chat_seq: 0,
+        });
+    }
     let state_dir = resolve_state_dir(topic_name, ctx.working_dir);
     tokio::fs::create_dir_all(&state_dir).await.ok();
     tokio::fs::write(state_dir.join("reply.md"), text)

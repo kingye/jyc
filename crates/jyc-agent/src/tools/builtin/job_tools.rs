@@ -18,13 +18,17 @@ use super::super::{Tool, ToolContext, ToolOutput};
 const DEFAULT_MAX_JOBS: usize = 10;
 
 /// Helper to create a per-topic JobStore from the working directory.
+///
+/// A closed topic fails here rather than in `JobStore::new`: opening the store
+/// creates `<state dir>/jobs`, which would bring back the directory the close
+/// had just deleted — even for a read-only `job_list` from a turn that
+/// outlived its own topic.
 async fn store_from_ctx(ctx: &ToolContext<'_>) -> Result<JobStore> {
-    JobStore::new(
-        ctx.current_topic.as_deref().unwrap_or(""),
-        ctx.working_dir,
-        DEFAULT_MAX_JOBS,
-    )
-    .await
+    let topic = ctx.current_topic.as_deref().unwrap_or("");
+    if jyc_types::state_dir::is_closed(topic) {
+        anyhow::bail!("topic '{topic}' was closed; its scheduled jobs are gone");
+    }
+    JobStore::new(topic, ctx.working_dir, DEFAULT_MAX_JOBS).await
 }
 
 /// List all scheduled jobs in the current topic.

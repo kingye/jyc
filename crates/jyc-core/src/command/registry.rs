@@ -87,6 +87,30 @@ impl CommandRegistry {
                     let cmd_name = parts[0].to_lowercase();
 
                     if let Some(handler) = self.handlers.get(&cmd_name) {
+                        // One command block can stack several commands
+                        // (`/close --force` then `/thinking show`), and each
+                        // runs after the previous one has taken effect — so by
+                        // the time the second runs, its topic is gone and any
+                        // state write it does would recreate the directory the
+                        // close deleted. Refusing here (rather than trusting
+                        // every handler to consult the freeze) is what keeps
+                        // this from coming back with each new command; the
+                        // per-handler guards stay as defence in depth. `/close`
+                        // itself is still let through so a repeated close stays
+                        // an idempotent no-op.
+                        if cmd_name != "close"
+                            && jyc_types::state_dir::is_closed(&context.topic_name)
+                        {
+                            tracing::info!(
+                                command = %cmd_name,
+                                "Topic was closed; skipping command"
+                            );
+                            results.push(CommandResult::refusal(format!(
+                                "/{cmd_name}: this topic was just closed; the command was skipped"
+                            )));
+                            continue;
+                        }
+
                         let mut args: Vec<String> =
                             parts[1..].iter().map(|s| s.to_string()).collect();
 
@@ -663,6 +687,86 @@ focus on error handling",
             output.results[0].message,
             r#"args=["push", "This is a backlog issue"]"#
         );
+    }
+
+    /// Marks its topic closed, the way `/close` does — so the *next* command
+    /// in the same block runs against a topic that is already gone.
+    struct ClosingHandler {
+        /// The state dir to register for the topic. Registration comes first
+        /// because `resolve_state_dir` deliberately panics on an unregistered
+        /// topic.
+        state_dir: PathBuf,
+    }
+
+    #[async_trait]
+    impl CommandHandler for ClosingHandler {
+        async fn execute(&self, ctx: CommandContext) -> Result<CommandResult> {
+            jyc_types::state_dir::register_if_absent(&ctx.topic_name, &self.state_dir);
+            jyc_types::state_dir::mark_closed(&ctx.topic_name);
+            Ok(CommandResult {
+                success: true,
+                message: "closed".to_string(),
+                error: None,
+                append_body: None,
+            })
+        }
+    }
+
+    /// A command stacked behind a close must not run: the topic is gone, and
+    /// whatever the handler writes would recreate its state dir (the
+    /// `/close --force` + `/model x` class, #992).
+    #[tokio::test]
+    async fn test_commands_stacked_behind_close_are_refused() {
+        // Unique name per run: the closed set and the registry are
+        // process-global.
+        let topic = format!(
+            "registry-close-gate-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let home = tempfile::tempdir().unwrap();
+        let state_dir = home.path().join(".jyc");
+
+        let mut registry = CommandRegistry::new();
+        registry.register("/dummy", Arc::new(TestHandler));
+        registry.register(
+            "/close",
+            Arc::new(ClosingHandler {
+                state_dir: state_dir.clone(),
+            }),
+        );
+
+        let context = CommandContext {
+            topic_name: topic.clone(),
+            topic_path: home.path().to_path_buf(),
+            ..test_context()
+        };
+
+        let output = registry
+            .process_commands("/dummy before\n/close\n/dummy after", &context)
+            .await
+            .unwrap();
+
+        assert_eq!(output.results.len(), 3);
+        assert!(output.results[0].success, "runs before the close");
+        assert!(output.results[1].success, "`/close` itself is let through");
+        assert!(!output.results[2].success, "runs after the close");
+        assert!(
+            output.results[2]
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("just closed")
+        );
+        assert!(
+            !state_dir.exists(),
+            "the gate must not recreate the state dir"
+        );
+
+        jyc_types::state_dir::clear_closed(&topic);
+        jyc_types::state_dir::unregister(&topic);
     }
 
     /// Mixed form: tokens on the command line + continuation lines.

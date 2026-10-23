@@ -299,7 +299,17 @@ pub fn activate_workspace_state(topic_name: &str, topic_dir: &Path, workspace: &
         // Record which directory this topic works in, so a restart reads the
         // choice back instead of inferring it from the filesystem (see
         // `topic_work_dir_at`).
-        if let Err(e) = record_topic_work_dir(&state_dir, topic_dir) {
+        //
+        // Skipped while the topic is closed — which includes the enqueue that
+        // finds the queue still alive mid-close: the record would recreate the
+        // state dir the close is about to delete (or just deleted), and any
+        // message, a firing job, or the router is enough to get here. A
+        // legitimate reopen records the dir on its next enqueue, once the
+        // worker's start has lifted the freeze; in between, resolution falls
+        // back to inference, which is what a never-recorded topic does anyway.
+        if !jyc_types::state_dir::is_closed(topic_name)
+            && let Err(e) = record_topic_work_dir(&state_dir, topic_dir)
+        {
             tracing::debug!(
                 topic = %topic_name,
                 error = %e,

@@ -118,6 +118,14 @@ impl Tool for PublishFileTool {
             }
         };
 
+        // A publish from a turn that outlived its own `/close` must not
+        // recreate the state dir the close just deleted (exchange/ + token).
+        if jyc_types::state_dir::is_closed(&topic) {
+            return Ok(ToolOutput::error(
+                "This topic was just closed; there is no exchange directory to publish into.",
+            ));
+        }
+
         let state_dir =
             resolve_state_dir(ctx.current_topic.as_deref().unwrap_or(""), ctx.working_dir);
         let exchange_dir = state_dir.join(jyc_core::EXCHANGE_DIR_NAME);

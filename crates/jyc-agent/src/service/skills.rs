@@ -240,11 +240,18 @@ impl JycAgentService {
 /// Persist skill names to the topic's .jyc/skills.json file.
 ///
 /// This allows the dashboard to read the skills list without re-scanning directories.
+///
+/// A closed topic writes nothing: the prompt is also built for the turn of a
+/// message that stacked `/close --force` with body text, and recreating the
+/// state dir here would leave a topic behind that nothing owns.
 pub(crate) fn persist_skill_names(
     topic_name: &str,
     topic_path: &Path,
     skill_names: &[&str],
 ) -> Result<()> {
+    if jyc_types::state_dir::is_closed(topic_name) {
+        return Ok(());
+    }
     let state_dir = resolve_state_dir(topic_name, topic_path);
     std::fs::create_dir_all(&state_dir)
         .with_context(|| format!("Failed to create .jyc dir: {}", state_dir.display()))?;

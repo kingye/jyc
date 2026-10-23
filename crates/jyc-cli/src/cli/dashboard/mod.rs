@@ -39,9 +39,11 @@ mod chat;
 mod hyperlink;
 mod leader;
 mod local_commands;
+mod remote;
 mod token_render;
 mod ws;
 use chat::*;
+pub use remote::ConnectArgs;
 use ws::*;
 
 #[derive(Args, Debug)]
@@ -57,6 +59,19 @@ pub struct DashboardArgs {
     /// Subcommand for dashboard operations (defaults to opening the full dashboard)
     #[command(subcommand)]
     pub command: Option<DashboardCommand>,
+
+    /// Set by `jyc connect` only: message text is translated from the remote
+    /// hub's own loopback URL prefix to the tunnel's, so publish links open
+    /// here. `None` for every other entry point.
+    #[arg(skip)]
+    pub link_rewrite: Option<(String, String)>,
+
+    /// Set by `jyc connect` only: the hub behind `addr` is on another machine,
+    /// behind a tunnel this process already brought up. A failed probe must
+    /// then not auto-spawn a *local* `jyc serve` — it would try to bind the
+    /// port ssh is holding, and its failure would be the wrong story.
+    #[arg(skip)]
+    pub remote: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -624,15 +639,18 @@ pub async fn run(
     pipe: bool,
 ) -> Result<()> {
     // Auto-spawn jyc serve FIRST - it writes <data dir>/auth.token on
-    // startup, so the token file exists by the time we resolve it.
-    ensure_serve_running(&args.addr, data_dir, pipe)
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to connect to {}. Start jyc serve manually.",
-                args.addr
-            )
-        })?;
+    // startup, so the token file exists by the time we resolve it. A remote
+    // session has already done its own bring-up over ssh.
+    if !args.remote {
+        ensure_serve_running(&args.addr, data_dir, pipe)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to connect to {}. Start jyc serve manually.",
+                    args.addr
+                )
+            })?;
+    }
 
     // Resolve the auth token: explicit flag/env wins, otherwise read it
     // from `<data dir>/auth.token` (which `jyc serve` writes on startup).
@@ -676,6 +694,7 @@ pub async fn run(
         let (_, ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let mut app = App::new(ws_rx, token);
         app.link_regions = link_regions;
+        app.chat.link_rewrite = args.link_rewrite.clone();
         let mut mouse_frag_filter = MouseFragmentFilter::default();
         let mut last_poll = std::time::Instant::now() - POLL_INTERVAL; // Force immediate poll
         // Overview fetches run off-loop: each poll is spawned and its
@@ -993,9 +1012,37 @@ pub async fn run_open(
         "Opening directory as ad-hoc topic via dashboard CLI"
     );
 
-    // Register the ad-hoc topic via REST. Replaces the old WebSocket
-    // `create_topic` command.
-    match client.create_topic(&channel, &topic, &path).await {
+    register_topic(&client, &channel, &topic, &path).await?;
+
+    // Open dashboard directly in chat mode for the topic
+    run(
+        &DashboardArgs {
+            addr: addr.to_string(),
+            token,
+            command: None,
+            link_rewrite: None,
+            remote: false,
+        },
+        data_dir,
+        Some(&topic),
+        Some(&channel),
+        pipe,
+    )
+    .await
+}
+
+/// Register `path` as `topic` on the server and wait until it reports it.
+///
+/// Shared by the local `open` flow and `jyc connect`: the remote side is the
+/// same REST call, it just answers through a tunnel.
+async fn register_topic(
+    client: &InspectClient,
+    channel: &str,
+    topic: &str,
+    path: &str,
+) -> Result<()> {
+    // Replaces the old WebSocket `create_topic` command.
+    match client.create_topic(channel, topic, path).await {
         Ok((true, msg)) => {
             tracing::debug!(message = %msg, "Topic created via REST");
         }
@@ -1007,22 +1054,63 @@ pub async fn run_open(
         }
     }
 
-    // Wait for the inspect server to report the topic
-    wait_for_topic(&client, &topic, &channel).await?;
+    wait_for_topic(client, topic, channel).await
+}
 
-    // Open dashboard directly in chat mode for the topic
-    run(
-        &DashboardArgs {
-            addr: addr.to_string(),
-            token,
-            command: None,
-        },
-        data_dir,
-        Some(&topic),
-        Some(&channel),
-        pipe,
-    )
-    .await
+/// Run `jyc connect`: the hub is on another machine, the dashboard is here.
+///
+/// Everything after this point is the unchanged dashboard — it talks plain
+/// HTTP/WS to `127.0.0.1:<tunnel port>`, and ssh forwards that to the remote's
+/// own inspect bind. Only three things differ from a local run: the address,
+/// the token (read from the remote, never copied onto this disk), and the link
+/// rewrite that a differing local port makes necessary.
+///
+/// `pipe` is not forwarded to `run`: it only drives the *local* auto-spawn,
+/// and this process must never start a hub of its own.
+pub async fn run_connect(args: &ConnectArgs, data_dir: &std::path::Path, pipe: bool) -> Result<()> {
+    let remote = remote::Remote::from_args(args);
+    let remote_port = remote.bind_port()?;
+    let local_port = remote::choose_local_port(remote_port);
+    let tunnel = remote::Tunnel::open(&remote, local_port, remote_port).await?;
+    let token =
+        remote::bootstrap(&remote, &tunnel, args.token.as_deref(), args.serve, pipe).await?;
+
+    let dashboard = DashboardArgs {
+        addr: tunnel.addr.clone(),
+        token,
+        command: None,
+        link_rewrite: tunnel.rewrite.clone(),
+        remote: true,
+    };
+
+    // No `-p`/`-t`: plain dashboard against the remote.
+    if args.open.topic.is_none() && args.open.path.is_none() {
+        return run(&dashboard, data_dir, None, None, false).await;
+    }
+
+    // The server takes `-p` verbatim, so it has to be absolute already: this
+    // machine's cwd and home mean nothing on the other side. `~` is expanded
+    // against the *remote* home. `check_existing_topic_name` is deliberately
+    // not called — it reads the topic's own state dir, which lives over there,
+    // so the remote server's adoption rules are the authority for its paths.
+    let path = remote::resolve_remote_path(args.open.path.as_deref(), &remote.home().await?)?;
+    let topic = derive_topic_name(&path, args.open.topic.as_deref());
+    let client = match &dashboard.token {
+        Some(token) => InspectClient::with_token(&dashboard.addr, Some(token.as_str())),
+        None => InspectClient::new(&dashboard.addr),
+    };
+    let channel = resolve_websocket_channel(&client, args.open.channel.as_deref()).await?;
+    tracing::info!(
+        host = %args.host,
+        topic = %topic,
+        channel = %channel,
+        path = %path,
+        "Opening remote directory as ad-hoc topic via jyc connect"
+    );
+    register_topic(&client, &channel, &topic, &path).await?;
+
+    // `tunnel` stays alive for the whole run: it is the only route to the hub.
+    run(&dashboard, data_dir, Some(&topic), Some(&channel), false).await
 }
 
 /// Resolve the dashboard authorization token from explicit input or data_dir.

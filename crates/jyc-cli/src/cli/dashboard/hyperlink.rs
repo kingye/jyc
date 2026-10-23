@@ -1025,7 +1025,7 @@ mod tests {
                     Line::from("Model: kimi/k3-256k"),
                     Line::from("Tokens: 111780 / 249036 (44%)"),
                     Line::from("Cache hits: 2302720"),
-                    Line::from("Output: 19452"),
+                    Line::from("Output: 12 turn · 19.00K"),
                 ]),
                 Rect::new(91, 1, 28, 10),
             );

@@ -80,6 +80,7 @@ async fn the_session_totals_continue_the_earlier_turns() {
         10,
         60,
         70,
+        0,
     )
     .await;
 
@@ -122,6 +123,11 @@ async fn the_session_totals_continue_the_earlier_turns() {
         state.turn_cache_hit_tokens,
         Some(CALL_CACHE_HIT),
         "the turn's own cache pair covers this turn's call alone"
+    );
+    assert_eq!(
+        state.turn_output_tokens,
+        Some(CALL_OUTPUT),
+        "the turn's own output covers this turn's call alone"
     );
     assert_eq!(
         state.context_input_tokens,

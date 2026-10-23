@@ -527,6 +527,7 @@ mod session {
             0,
             0,
             0,
+            0,
         )
         .await;
         assert!(state_dir.join("agent-session.json").exists());
@@ -573,6 +574,7 @@ mod session {
             0,
             0,
             0,
+            0,
         )
         .await;
         // Second call — caller has accumulated locally. For output, the
@@ -590,6 +592,7 @@ mod session {
             0,
             Some(100000),
             0.0,
+            0,
             0,
             0,
             0,
@@ -663,6 +666,7 @@ mod session {
             0,
             0,
             0,
+            0,
         )
         .await;
 
@@ -711,6 +715,7 @@ mod session {
             0,
             0,
             0,
+            0,
         )
         .await;
         session::persist_tokens(
@@ -728,6 +733,7 @@ mod session {
             0,
             0,
             0,
+            0,
         )
         .await;
         session::persist_tokens(
@@ -742,6 +748,7 @@ mod session {
             0,
             None,
             0.0,
+            0,
             0,
             0,
             0,
@@ -787,6 +794,7 @@ mod session {
             0,
             0,
             0,
+            0,
         )
         .await;
         session::persist_tokens(
@@ -804,6 +812,7 @@ mod session {
             0,
             0,
             0,
+            0,
         )
         .await;
         session::persist_tokens(
@@ -818,6 +827,7 @@ mod session {
             0,
             None,
             0.0,
+            0,
             0,
             0,
             0,
@@ -860,6 +870,7 @@ mod session {
                 ms,
                 0,
                 0,
+                0,
             )
             .await;
         }
@@ -876,6 +887,7 @@ mod session {
             0,
             None,
             0.0,
+            0,
             0,
             0,
             0,
@@ -921,7 +933,7 @@ mod session {
 
         // Two calls in this turn: 600ms and 400ms.
         for ms in [600u64, 400u64] {
-            session::persist_tokens(topic, path, 100, 0, 100, 0, 0, 0, 0, None, 0.0, ms, 0, 0)
+            session::persist_tokens(topic, path, 100, 0, 100, 0, 0, 0, 0, None, 0.0, ms, 0, 0, 0)
                 .await;
         }
         let latency = jyc_core::session_state::read_call_latency(topic, path).await;
@@ -935,54 +947,60 @@ mod session {
         assert_eq!(latency.session, Some((500, 2)));
     }
 
-    /// The turn's cache pair accumulates per call, the way the latency
-    /// pair does: each call adds its own cache-hit and input tokens, so
-    /// the turn's rate covers exactly this turn's calls.
+    /// The turn's own figures accumulate per call, the way the latency
+    /// pair does: each call adds its own cache-hit, input and output
+    /// tokens, so the turn's rate and output cover exactly this turn's
+    /// calls.
     #[tokio::test]
-    async fn persist_tokens_accumulates_turn_cache_pair() {
+    async fn persist_tokens_accumulates_the_turns_own_figures() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "persist_tokens_accumulates_turn_cache_pair";
+        let topic = "persist_tokens_accumulates_the_turns_own_figures";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let path = tmp.path();
 
-        // Two calls of the turn: 300 cache hits over 1000 input tokens,
-        // then 500 over 1500.
+        // Two calls of the turn: 300 cache hits over 1000 input tokens
+        // and 100 output tokens, then 500 over 1500 with 250 out.
         session::persist_tokens(
-            topic, path, 1000, 0, 1000, 0, 300, 0, 0, None, 0.0, 0, 300, 1000,
+            topic, path, 1000, 0, 1000, 100, 300, 0, 0, None, 0.0, 0, 300, 1000, 100,
         )
         .await;
         session::persist_tokens(
-            topic, path, 1500, 0, 2500, 0, 800, 0, 0, None, 0.0, 0, 500, 1500,
+            topic, path, 1500, 0, 2500, 350, 800, 0, 0, None, 0.0, 0, 500, 1500, 250,
         )
         .await;
 
         let state = jyc_core::session_state::read_token_state(topic, path).await;
         assert_eq!(state.turn_cache_hit_tokens, Some(800));
         assert_eq!(state.turn_input_tokens, Some(2500));
+        assert_eq!(state.turn_output_tokens, Some(350));
+        assert_eq!(state.total_output_tokens, Some(350));
     }
 
-    /// A new turn clears the cache pair with the latency pair, so the
-    /// turn's rate never points at a turn that already ended — while the
-    /// session's own totals survive.
+    /// A new turn clears the turn figures with the latency pair, so the
+    /// turn's rate and output never point at a turn that already ended —
+    /// while the session's own totals survive.
     #[tokio::test]
-    async fn begin_turn_counters_clears_turn_cache_pair() {
+    async fn begin_turn_counters_clears_the_turns_own_figures() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "begin_turn_counters_clears_turn_cache_pair";
+        let topic = "begin_turn_counters_clears_the_turns_own_figures";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let path = tmp.path();
 
         session::persist_tokens(
-            topic, path, 1000, 0, 1000, 0, 300, 0, 0, None, 0.0, 0, 300, 1000,
+            topic, path, 1000, 0, 1000, 900, 300, 0, 0, None, 0.0, 0, 300, 1000, 900,
         )
         .await;
         let state = jyc_core::session_state::read_token_state(topic, path).await;
         assert_eq!(state.turn_cache_hit_tokens, Some(300));
+        assert_eq!(state.turn_output_tokens, Some(900));
 
         jyc_agent::session::begin_turn_counters(topic, path).await;
         let state = jyc_core::session_state::read_token_state(topic, path).await;
         assert_eq!(state.turn_cache_hit_tokens, None);
         assert_eq!(state.turn_input_tokens, None);
+        assert_eq!(state.turn_output_tokens, None);
         assert_eq!(state.total_cache_hit_tokens, Some(300));
+        assert_eq!(state.total_output_tokens, Some(900));
     }
 
     /// The agent loop's running totals start from the session's own: a
@@ -995,7 +1013,7 @@ mod session {
         let path = tmp.path();
 
         session::persist_tokens(
-            topic, path, 1000, 250, 4000, 900, 300, 40, 60, None, 0.0, 0, 0, 0,
+            topic, path, 1000, 250, 4000, 900, 300, 40, 60, None, 0.0, 0, 0, 0, 0,
         )
         .await;
 
@@ -1019,7 +1037,10 @@ mod session {
         let path = tmp.path();
 
         // One measured call, so there is a pair to lose.
-        session::persist_tokens(topic, path, 800, 0, 800, 40, 0, 0, 0, None, 0.0, 700, 0, 0).await;
+        session::persist_tokens(
+            topic, path, 800, 0, 800, 40, 0, 0, 0, None, 0.0, 700, 0, 0, 0,
+        )
+        .await;
         assert_eq!(
             jyc_core::session_state::read_call_latency(topic, path)
                 .await
@@ -1043,6 +1064,7 @@ mod session {
             0,
             Some(200_000),
             0.0,
+            0,
             0,
             0,
             0,
@@ -1094,6 +1116,7 @@ mod session {
                 0,
                 0,
                 0,
+                0,
             )
             .await;
         }
@@ -1135,6 +1158,7 @@ mod session {
             0,
             0,
             0,
+            0,
         )
         .await;
         session::persist_tokens(
@@ -1152,6 +1176,7 @@ mod session {
             0,
             0,
             0,
+            0,
         )
         .await;
         session::persist_tokens(
@@ -1166,6 +1191,7 @@ mod session {
             0,
             None,
             0.05,
+            0,
             0,
             0,
             0,
@@ -1205,6 +1231,7 @@ mod session {
             0,
             0,
             0,
+            0,
         )
         .await;
         session::persist_tokens(
@@ -1219,6 +1246,7 @@ mod session {
             0,
             None,
             0.0,
+            0,
             0,
             0,
             0,
@@ -1266,6 +1294,7 @@ mod session {
             0,
             None,
             0.30,
+            0,
             0,
             0,
             0,
@@ -2234,6 +2263,7 @@ mod billing_integration {
             0,
             0,
             0,
+            0,
         )
         .await;
         cost
@@ -2295,7 +2325,7 @@ mod billing_integration {
 
         // Reset semantics, matching `reset_session`: the session file is
         // deleted, then rebuilt with zeroed counters by the next
-        // `persist_tokens(.., 0.0, 0, 0)` call.
+        // `persist_tokens(.., 0.0, 0, 0, 0)` call.
         tokio::fs::remove_file(path.join(".jyc/agent-session.json"))
             .await
             .unwrap();
@@ -2311,6 +2341,7 @@ mod billing_integration {
             0,
             Some(200_000),
             0.0,
+            0,
             0,
             0,
             0,

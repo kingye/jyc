@@ -1694,6 +1694,7 @@ fn app_with_topic_summary() -> App {
         context_output_tokens: None,
         max_tokens: Some(10_000),
         output_tokens: None,
+        turn_output_tokens: None,
         total_input_tokens: None,
         total_cache_hit_tokens: None,
         total_cache_creation_tokens: None,

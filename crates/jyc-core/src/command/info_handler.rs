@@ -83,8 +83,8 @@ fn format_topic_info(t: &TopicInfo) -> String {
             jyc_types::format_token_count(max)
         ));
     }
-    if let Some(output) = t.output_tokens {
-        lines.push(format!("Output: {}", jyc_types::format_token_count(output)));
+    if let Some(figures) = jyc_types::format_output_pair(t.output_tokens, t.turn_output_tokens) {
+        lines.push(format!("Output: {figures}"));
     }
     // The cache group: the turn's rate, the session's rate and the cache's
     // write volume, under one header — the same grouping the pane draws.
@@ -237,6 +237,7 @@ mod tests {
             context_output_tokens: Some(2_048),
             max_tokens: Some(256_000),
             output_tokens: Some(12_345),
+            turn_output_tokens: Some(2_048),
             total_input_tokens: Some(1_234_567),
             total_cache_hit_tokens: Some(987_654),
             total_cache_creation_tokens: Some(111),
@@ -295,7 +296,7 @@ Mode: plan
 Branch: fix/issue-42-timeout
 Status: Idle
 Tokens: 104.96K / 250.00K (41%)
-Output: 12.06K
+Output: 2.00K turn · 12.06K session
 Cache:
   Session: 964.51K / 1.18M (80%)
   Create: 111
@@ -342,6 +343,9 @@ Files (2):
         t.context_input_tokens = None;
         t.max_tokens = None;
         t.output_tokens = None;
+        // A turn figure alone does not make the row: it is a share of the
+        // session's output, and with no session total there is no row.
+        t.turn_output_tokens = Some(2_048);
         t.total_input_tokens = None;
         t.total_cache_hit_tokens = None;
         t.total_cache_creation_tokens = None;

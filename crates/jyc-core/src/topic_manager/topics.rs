@@ -794,6 +794,7 @@ impl TopicManager {
                 // the totals above come from.
                 turn_cache_hit_tokens: token_state.turn_cache_hit_tokens,
                 turn_input_tokens: token_state.turn_input_tokens,
+                turn_output_tokens: token_state.turn_output_tokens,
                 // The day's spend across every topic, per currency — the
                 // same ledger the per-topic cost came from.
                 today_all: today_totals

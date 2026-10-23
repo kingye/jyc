@@ -575,9 +575,9 @@ pub async fn run(
         );
 
         // Persist latest token counts to disk so dashboard polls see fresh
-        // data mid-round. The last two are this call's own cache-hit and
-        // input tokens — the turn-scoped cache pair is accumulated per
-        // call, the way the latency pair is.
+        // data mid-round. The last three are this call's own cache-hit,
+        // input and output tokens — the turn-scoped figures are accumulated
+        // per call, the way the latency pair is.
         crate::session::persist_tokens(
             topic_name,
             topic_path,
@@ -593,6 +593,7 @@ pub async fn run(
             call_ms,
             response.cache_hit_tokens,
             response.input_tokens,
+            response.output_tokens,
         )
         .await;
 

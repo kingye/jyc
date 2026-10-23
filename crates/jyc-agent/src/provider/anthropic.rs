@@ -285,8 +285,14 @@ impl Provider for AnthropicProvider {
             })
             .collect();
 
+        // The journal is written in the active provider's wire format, so a
+        // topic that ran on an OpenAI-family model holds `tool_calls` /
+        // `role:"tool"` turns. Normalize them first — the Messages API
+        // rejects those fields (HTTP 400 at the first such message) and
+        // needs the `tool_use`/`tool_result` pairing instead.
+        let converted = super::chat_to_anthropic_messages(raw_messages);
         let filtered_messages =
-            merge_consecutive_user_messages(super::filter_valid_messages(raw_messages));
+            merge_consecutive_user_messages(super::filter_valid_messages(&converted));
 
         let mut body = serde_json::json!({
             "model": &self.model,
@@ -1635,5 +1641,110 @@ mod tests {
             events.is_empty(),
             "empty thinking block should produce no events, got {events:?}"
         );
+    }
+    /// A journal written on an OpenAI-family model is normalized before it
+    /// reaches `/messages`: the `tool_calls` / `role:"tool"` turns become
+    /// `tool_use` / `tool_result`. Before this, the API rejected the body
+    /// with `messages.1 ... INVALID_REQUEST_BODY`.
+    #[tokio::test]
+    async fn complete_raw_normalizes_a_gpt_written_history() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
+            )
+            .mount(&server)
+            .await;
+
+        let raw = vec![
+            json!({"role": "user", "content": "read file a"}),
+            json!({
+                "role": "assistant",
+                "content": null,
+                "reasoning_content": "the user wants a file read",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": "{\"path\":\"a\"}"},
+                }],
+            }),
+            json!({"role": "tool", "tool_call_id": "call_1", "content": "file body"}),
+            json!({"role": "assistant", "content": "it says hi"}),
+        ];
+
+        let provider = AnthropicProvider::new(
+            &server.uri(),
+            "claude-test",
+            Some("k"),
+            None,
+            false,
+            None,
+            false,
+        )
+        .unwrap();
+        let stream = provider.complete_raw(&raw, &[], "").await.expect("stream");
+        tokio::pin!(stream);
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        let body = String::from_utf8(requests[0].body.clone()).expect("utf8 body");
+        assert!(
+            !body.contains("tool_calls") && !body.contains("reasoning_content"),
+            "chat-only fields must not reach the Messages API: {body}"
+        );
+
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        let messages = sent["messages"].as_array().expect("messages array");
+        assert_eq!(messages.len(), 4, "{sent:#}");
+
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(
+            messages[1]["content"],
+            json!([{"type": "tool_use", "id": "call_1", "name": "read", "input": {"path": "a"}}]),
+            "the tool call travels as a tool_use block: {sent:#}"
+        );
+        assert_eq!(messages[2]["role"], "user");
+        assert_eq!(
+            messages[2]["content"],
+            json!([{"type": "tool_result", "tool_use_id": "call_1", "content": "file body"}])
+        );
+        for msg in messages {
+            let blocks = msg["content"].as_array().expect("content is a block array");
+            assert!(!blocks.is_empty(), "empty content is rejected: {sent:#}");
+        }
+    }
+
+    /// Two tool results in a row are one user turn on the wire — the
+    /// Messages API requires the roles to alternate.
+    #[test]
+    fn two_tool_results_merge_into_one_user_turn() {
+        let raw = vec![
+            json!({"role": "user", "content": "run both"}),
+            json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "a", "arguments": "{}"}},
+                    {"id": "c2", "type": "function", "function": {"name": "b", "arguments": "{}"}},
+                ],
+            }),
+            json!({"role": "tool", "tool_call_id": "c1", "content": "one"}),
+            json!({"role": "tool", "tool_call_id": "c2", "content": "two"}),
+        ];
+        let converted = super::super::chat_to_anthropic_messages(&raw);
+        let merged = merge_consecutive_user_messages(converted);
+
+        assert_eq!(
+            merged.len(),
+            3,
+            "one user turn for both results: {merged:#?}"
+        );
+        let blocks = merged[2]["content"].as_array().expect("content blocks");
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["tool_use_id"], "c1");
+        assert_eq!(blocks[1]["tool_use_id"], "c2");
     }
 }

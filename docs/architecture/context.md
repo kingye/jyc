@@ -304,6 +304,20 @@ sent.
 - **Empty text blocks are never emitted** — messages with no extractable
   text are skipped, because Anthropic rejects empty blocks, especially
   under `cache_control`.
+- **A journal written on another provider is normalized before it is
+  sent.** The journal stores the *active* provider's wire format, so after
+  a `/model` switch the history still holds the other family's messages.
+  Both send paths convert them: `openai_compat` / `openai_responses` call
+  `anthropic_to_chat_messages`, and `AnthropicProvider::complete_raw`
+  calls `chat_to_anthropic_messages` (`tool_calls` → `tool_use` blocks,
+  `role:"tool"` → a `tool_result` block in a user turn, chat text/image
+  parts → `text`/`image` blocks, `reasoning_content` dropped, empty
+  content dropped). Without the second direction a topic switched from an
+  OpenAI-family model could not answer at all: the Messages API rejects
+  `tool_calls` / `role:"tool"` outright (`messages.N … INVALID_REQUEST_BODY`).
+  Conversion is per request — the journal is never rewritten — and both
+  directions leave messages already in the target shape untouched, so a
+  journal that switched back and forth stays valid.
 
 ## Debug dump: `/context dump on|off`
 

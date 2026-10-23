@@ -325,6 +325,212 @@ pub(crate) fn anthropic_to_chat_messages(messages: &[serde_json::Value]) -> Vec<
     out
 }
 
+/// Convert OpenAI chat-format messages in a raw context to Anthropic
+/// Messages format.
+///
+/// The mirror of [`anthropic_to_chat_messages`]. Topics that previously ran
+/// on an OpenAI-family provider persist assistant messages as
+/// `{"content": "…", "tool_calls": [...]}` and tool results as
+/// `{"role": "tool", "tool_call_id": …}`. Replaying them verbatim against
+/// the Anthropic Messages API fails with HTTP 400: `content: null` is not a
+/// message content, `tool_calls` and `tool_call_id` are unknown fields,
+/// `role: "tool"` is not a valid role, and the `tool_use`/`tool_result`
+/// pairing the API requires is missing entirely. The Anthropic provider
+/// calls this on the raw context before filtering/sending, so a `/model`
+/// switch keeps the history instead of truncating it.
+///
+/// Conversion rules:
+/// - assistant `tool_calls` → `tool_use` blocks appended after the text
+///   (`arguments` is a JSON string and is parsed into the `input` object;
+///   `{}` when it does not parse)
+/// - `reasoning_content`/`reasoning` and any other non-Anthropic field are
+///   dropped — the API rejects replayed chain-of-thought and unknown fields
+/// - `role:"tool"` → a `user` message carrying one `tool_result` block.
+///   Consecutive results stay consecutive user messages on purpose: the
+///   caller's `merge_consecutive_user_messages` folds them into the single
+///   turn the API expects
+/// - user content arrays are normalized block by block: `text` parts become
+///   `text` blocks, chat `image_url` parts become `image` blocks (`data:`
+///   URLs as base64 sources, anything else as a url source), Anthropic
+///   blocks pass through
+/// - a message whose converted content would be empty is dropped, and empty
+///   text blocks are skipped: the API rejects both
+///
+/// Messages that are already Anthropic-shaped survive unchanged, so a mixed
+/// history (after switching back and forth) stays valid.
+pub(crate) fn chat_to_anthropic_messages(messages: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    let mut out = Vec::with_capacity(messages.len());
+
+    for msg in messages {
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+
+        let (api_role, blocks) = match role {
+            "assistant" => ("assistant", assistant_blocks(msg)),
+            // Tool results travel as user turns in the Messages API.
+            "tool" => ("user", vec![tool_result_block(msg)]),
+            "user" => ("user", user_blocks(msg.get("content"))),
+            // Anything else (a stray system message) is not part of a
+            // conversation turn; passing it through would be rejected.
+            _ => continue,
+        };
+
+        if blocks.is_empty() {
+            continue;
+        }
+
+        out.push(serde_json::json!({ "role": api_role, "content": blocks }));
+    }
+
+    out
+}
+
+/// Content blocks for an assistant message: its text followed by one
+/// `tool_use` block per chat `tool_calls` entry.
+///
+/// An array content keeps every block it holds — `text`, `tool_use`, and a
+/// Claude-written turn's `thinking` — dropping only empty text, so replaying
+/// a native turn is a no-op and an untouched topic's payload (and its prompt
+/// cache prefix) does not change.
+fn assistant_blocks(msg: &serde_json::Value) -> Vec<serde_json::Value> {
+    let mut blocks = Vec::new();
+
+    match msg.get("content") {
+        Some(serde_json::Value::String(text)) => {
+            if !text.is_empty() {
+                blocks.push(serde_json::json!({ "type": "text", "text": text }));
+            }
+        }
+        Some(serde_json::Value::Array(parts)) => {
+            for part in parts {
+                let empty_text = part.get("type").and_then(|t| t.as_str()) == Some("text")
+                    && part
+                        .get("text")
+                        .and_then(|t| t.as_str())
+                        .is_some_and(|t| t.is_empty());
+                if !empty_text {
+                    blocks.push(part.clone());
+                }
+            }
+        }
+        _ => {}
+    }
+
+    if let Some(tool_calls) = msg.get("tool_calls").and_then(|t| t.as_array()) {
+        for tc in tool_calls {
+            let function = tc.get("function");
+            // jyc persists `arguments` as the JSON string the API sent;
+            // tolerate histories that stored the object directly.
+            let input = match function.and_then(|f| f.get("arguments")) {
+                Some(serde_json::Value::String(s)) => serde_json::from_str(s).ok(),
+                Some(other @ serde_json::Value::Object(_)) => Some(other.clone()),
+                _ => None,
+            }
+            .filter(serde_json::Value::is_object)
+            .unwrap_or_else(|| serde_json::json!({}));
+
+            blocks.push(serde_json::json!({
+                "type": "tool_use",
+                "id": tc.get("id").and_then(|i| i.as_str()).unwrap_or(""),
+                "name": function
+                    .and_then(|f| f.get("name"))
+                    .and_then(|n| n.as_str())
+                    .unwrap_or(""),
+                "input": input,
+            }));
+        }
+    }
+
+    blocks
+}
+
+/// A `tool_result` block from a chat `role:"tool"` message.
+fn tool_result_block(msg: &serde_json::Value) -> serde_json::Value {
+    // Chat histories fold the success/error marker into the text itself
+    // (`[SUCCESS] …`), so the text is replayed as it is.
+    let text = match msg.get("content") {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    };
+
+    serde_json::json!({
+        "type": "tool_result",
+        "tool_use_id": msg.get("tool_call_id").and_then(|i| i.as_str()).unwrap_or(""),
+        "content": text,
+    })
+}
+
+/// Content blocks for a user message: chat parts normalized to Anthropic
+/// blocks, Anthropic blocks passed through.
+fn user_blocks(content: Option<&serde_json::Value>) -> Vec<serde_json::Value> {
+    let mut blocks = Vec::new();
+
+    match content {
+        Some(serde_json::Value::String(text)) => {
+            if !text.is_empty() {
+                blocks.push(serde_json::json!({ "type": "text", "text": text }));
+            }
+        }
+        Some(serde_json::Value::Array(parts)) => {
+            for part in parts {
+                match part.get("type").and_then(|t| t.as_str()) {
+                    // Chat image part → Anthropic image block.
+                    Some("image_url") => {
+                        if let Some(block) = image_block_from_chat(part) {
+                            blocks.push(block);
+                        }
+                    }
+                    Some("text") => {
+                        if let Some(text) = part.get("text").and_then(|t| t.as_str())
+                            && !text.is_empty()
+                        {
+                            blocks.push(serde_json::json!({ "type": "text", "text": text }));
+                        }
+                    }
+                    // Already Anthropic: text, image, tool_result.
+                    _ => blocks.push(part.clone()),
+                }
+            }
+        }
+        _ => {}
+    }
+
+    blocks
+}
+
+/// An Anthropic `image` block from a chat `image_url` part.
+fn image_block_from_chat(part: &serde_json::Value) -> Option<serde_json::Value> {
+    let url = match part.get("image_url") {
+        Some(serde_json::Value::String(url)) => url.as_str(),
+        Some(image_url) => image_url.get("url")?.as_str()?,
+        None => return None,
+    };
+
+    // `data:<media_type>;base64,<payload>` carries the bytes inline;
+    // anything else is a plain URL the API fetches itself.
+    if let Some(rest) = url.strip_prefix("data:") {
+        let (meta, data) = rest.split_once(',')?;
+        let media_type = meta.strip_suffix(";base64").unwrap_or(meta);
+        return Some(serde_json::json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": data,
+            },
+        }));
+    }
+
+    Some(serde_json::json!({
+        "type": "image",
+        "source": { "type": "url", "url": url },
+    }))
+}
+
 /// Extract tool call IDs from an assistant message (both OpenAI and
 /// Anthropic formats).
 fn extract_tool_call_ids(msg: &serde_json::Value) -> Vec<String> {
@@ -1423,5 +1629,173 @@ mod params_placeholder_tests {
             providers["openai"].params.as_ref().unwrap()["prompt_cache_key"],
             "no-placeholders"
         );
+    }
+}
+#[cfg(test)]
+mod chat_to_anthropic_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The shape a GPT-written journal has after a `/model` switch to
+    /// Claude — the one the Messages API rejected with
+    /// `messages.1 ... INVALID_REQUEST_BODY`.
+    fn gpt_history() -> Vec<serde_json::Value> {
+        vec![
+            json!({"role": "user", "content": "read file a"}),
+            json!({
+                "role": "assistant",
+                "content": null,
+                "reasoning_content": "the user wants a file read",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": "{\"path\":\"a\"}"},
+                }],
+            }),
+            json!({"role": "tool", "tool_call_id": "call_1", "content": "file body"}),
+            json!({"role": "assistant", "content": "it says hi"}),
+        ]
+    }
+
+    #[test]
+    fn chat_tool_calls_become_tool_use_and_tool_becomes_tool_result() {
+        let out = chat_to_anthropic_messages(&gpt_history());
+
+        assert_eq!(out.len(), 4, "one message out per message in: {out:#?}");
+        assert_eq!(
+            out[0],
+            json!({"role": "user", "content": [{"type": "text", "text": "read file a"}]})
+        );
+
+        // The former `messages.1`: null content + tool_calls.
+        assert_eq!(out[1]["role"], "assistant");
+        assert_eq!(out[1].get("tool_calls"), None, "no chat field on the wire");
+        assert_eq!(out[1].get("reasoning_content"), None, "no replayed CoT");
+        assert_eq!(
+            out[1]["content"],
+            json!([{"type": "tool_use", "id": "call_1", "name": "read", "input": {"path": "a"}}])
+        );
+
+        assert_eq!(out[2]["role"], "user", "tool results are user turns");
+        assert_eq!(
+            out[2]["content"],
+            json!([{"type": "tool_result", "tool_use_id": "call_1", "content": "file body"}])
+        );
+        assert_eq!(
+            out[3]["content"],
+            json!([{"type": "text", "text": "it says hi"}])
+        );
+    }
+
+    #[test]
+    fn every_converted_message_has_content() {
+        let out = chat_to_anthropic_messages(&gpt_history());
+        for msg in &out {
+            let blocks = msg["content"].as_array().expect("content is a block array");
+            assert!(!blocks.is_empty(), "empty content is rejected by the API");
+        }
+    }
+
+    #[test]
+    fn assistant_text_and_tool_calls_keep_their_order() {
+        let raw = vec![json!({
+            "role": "assistant",
+            "content": "Let me read it.",
+            "tool_calls": [{
+                "id": "c1", "type": "function",
+                "function": {"name": "read", "arguments": "{}"},
+            }],
+        })];
+        let out = chat_to_anthropic_messages(&raw);
+        let blocks = out[0]["content"].as_array().unwrap();
+        assert_eq!(
+            blocks[0],
+            json!({"type": "text", "text": "Let me read it."})
+        );
+        assert_eq!(blocks[1]["type"], "tool_use");
+    }
+
+    #[test]
+    fn unparseable_arguments_fall_back_to_an_empty_object() {
+        let raw = vec![json!({
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "c1", "type": "function",
+                "function": {"name": "read", "arguments": "not json"},
+            }],
+        })];
+        let out = chat_to_anthropic_messages(&raw);
+        assert_eq!(out[0]["content"][0]["input"], json!({}));
+    }
+
+    #[test]
+    fn object_arguments_are_accepted_as_is() {
+        let raw = vec![json!({
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "c1", "type": "function",
+                "function": {"name": "read", "arguments": {"path": "a"}},
+            }],
+        })];
+        let out = chat_to_anthropic_messages(&raw);
+        assert_eq!(out[0]["content"][0]["input"], json!({"path": "a"}));
+    }
+
+    /// A history written by Claude itself must survive untouched — down to
+    /// its `thinking` blocks — so a journal that switched back and forth
+    /// stays valid and an untouched topic's payload is unchanged.
+    #[test]
+    fn anthropic_format_passes_through() {
+        let raw = vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "hi"}]}),
+            json!({"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "hmm", "signature": "sig"},
+                {"type": "text", "text": "reading"},
+                {"type": "tool_use", "id": "tu_1", "name": "read", "input": {}},
+            ]}),
+            json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "tu_1", "content": "body"},
+                {"type": "text", "text": "thanks"},
+            ]}),
+        ];
+        assert_eq!(chat_to_anthropic_messages(&raw), raw);
+    }
+
+    #[test]
+    fn chat_image_parts_become_image_blocks() {
+        let raw = vec![json!({
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}},
+                {"type": "image_url", "image_url": {"url": "https://example.com/x.jpg"}},
+                {"type": "text", "text": "what are these?"},
+            ],
+        })];
+        let out = chat_to_anthropic_messages(&raw);
+        assert_eq!(
+            out[0]["content"],
+            json!([
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/png", "data": "QUJD"}},
+                {"type": "image", "source": {
+                    "type": "url", "url": "https://example.com/x.jpg"}},
+                {"type": "text", "text": "what are these?"},
+            ])
+        );
+    }
+
+    #[test]
+    fn empty_content_and_unknown_roles_are_dropped() {
+        let raw = vec![
+            json!({"role": "system", "content": "be nice"}),
+            json!({"role": "user", "content": ""}),
+            json!({"role": "assistant", "content": null}),
+            json!({"role": "user", "content": "kept"}),
+        ];
+        let out = chat_to_anthropic_messages(&raw);
+        assert_eq!(out.len(), 1, "{out:#?}");
+        assert_eq!(out[0]["content"][0]["text"], "kept");
     }
 }

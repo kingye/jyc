@@ -23,5 +23,13 @@ opt-level = "s"
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
-# NOTE: panic stays "unwind" — jyc-inspect/src/server.rs uses
-# AssertUnwindSafe(catch_unwind) for dashboard event-forwarding tasks.
+# Abort on panic: the shipped binary carries no landing pads nor panic-unwind
+# tables of its own, worth 1.80 MB — 14.4% of the 12.49 MB it used to be. The
+# trade is that a panic in any task ends the process instead of unwinding out of
+# that task, so a deployment must restart it
+# (docker `restart:`, systemd `Restart=`). Nothing in the tree catches a panic
+# to keep going — the one `catch_unwind` in the dashboard's event forwarder was
+# removed when this was turned on, and the dashboard's panic hook still restores
+# the terminal before the abort, so a crash leaves a usable shell behind.
+# `cargo test` is unaffected: Cargo ignores this setting for the test profile.
+panic = "abort"

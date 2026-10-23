@@ -402,25 +402,25 @@ fn parse_block(prev: Option<u8>, bytes: &[u8], carry: Option<Vec<u8>>) -> BlockP
 
     let mut stop = false;
     let mut joined: Option<Value> = None;
-    if let Some(line) = spanning {
-        if !line.is_empty() {
-            match serde_json::from_slice::<Value>(&line) {
-                Ok(v) => {
-                    // An assistant message with neither content nor tool
-                    // calls carries nothing — it is dropped here, before
-                    // the turn counting, so the slice holds the same
-                    // turns the strategies would have seen.
-                    if crate::provider::is_valid_message(&v) {
-                        joined = Some(v);
-                    }
+    if let Some(line) = spanning
+        && !line.is_empty()
+    {
+        match serde_json::from_slice::<Value>(&line) {
+            Ok(v) => {
+                // An assistant message with neither content nor tool
+                // calls carries nothing — it is dropped here, before
+                // the turn counting, so the slice holds the same
+                // turns the strategies would have seen.
+                if crate::provider::is_valid_message(&v) {
+                    joined = Some(v);
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "agent-context.jsonl: unparseable line, keeping the newer turns"
-                    );
-                    stop = true;
-                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "agent-context.jsonl: unparseable line, keeping the newer turns"
+                );
+                stop = true;
             }
         }
     }

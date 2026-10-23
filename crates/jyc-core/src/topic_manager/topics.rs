@@ -785,16 +785,13 @@ impl TopicManager {
                 total_input_tokens,
                 total_cache_hit_tokens,
                 total_cache_creation_tokens,
-                total_reasoning_tokens: crate::session_state::read_total_reasoning_tokens(
-                    name,
-                    &topic_path,
-                )
-                .await,
-                // The turn's own cache figures, from the same session file
-                // the totals above come from.
+                total_reasoning_tokens: token_state.total_reasoning_tokens,
+                // The turn's own figures, from the same session file the
+                // totals above come from.
                 turn_cache_hit_tokens: token_state.turn_cache_hit_tokens,
                 turn_input_tokens: token_state.turn_input_tokens,
                 turn_output_tokens: token_state.turn_output_tokens,
+                turn_reasoning_tokens: token_state.turn_reasoning_tokens,
                 // The day's spend across every topic, per currency — the
                 // same ledger the per-topic cost came from.
                 today_all: today_totals

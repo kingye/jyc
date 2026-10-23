@@ -162,6 +162,16 @@ pub struct SessionState {
     /// deserialize as `0`.
     #[serde(default)]
     pub turn_output_tokens: u64,
+    /// The reasoning (thinking) tokens of the LLM calls in the latest
+    /// turn — the turn-scoped twin of `total_reasoning_tokens`. Each
+    /// call's own `reasoning_tokens` is added via `+=` as the call
+    /// completes, so the info pane can show the turn's hidden
+    /// chain-of-thought beside the session total, as it already does for
+    /// output. Zeroed by [`begin_turn_counters`] at every turn start.
+    /// `serde(default)` so session files written before the field existed
+    /// deserialize as `0`.
+    #[serde(default)]
+    pub turn_reasoning_tokens: u64,
     /// The model's context window, in tokens — the whole budget the next
     /// call has to fit into.
     ///
@@ -527,7 +537,7 @@ pub async fn ensure_session_file(topic_name: &str, topic_path: &Path, context_wi
 /// clear.
 ///
 /// Zeroes the turn-scoped counters — the latency pair, the cache pair,
-/// and the output figure — and nothing else. The session-wide counters
+/// the output and reasoning figures — and nothing else. The session-wide counters
 /// (`total_call_duration_ms` / `call_count`, the session's token totals)
 /// answer a different question and outlive the turn. Session reset does
 /// clear them as a side effect of rebuilding the file — a reset session
@@ -541,6 +551,7 @@ pub async fn begin_turn_counters(topic_name: &str, topic_path: &Path) {
         && state.turn_cache_hit_tokens == 0
         && state.turn_input_tokens == 0
         && state.turn_output_tokens == 0
+        && state.turn_reasoning_tokens == 0
     {
         return;
     }
@@ -549,6 +560,7 @@ pub async fn begin_turn_counters(topic_name: &str, topic_path: &Path) {
     state.turn_cache_hit_tokens = 0;
     state.turn_input_tokens = 0;
     state.turn_output_tokens = 0;
+    state.turn_reasoning_tokens = 0;
     save_session_state(&session_path, &state).await;
 }
 
@@ -620,6 +632,11 @@ pub async fn session_token_totals(topic_name: &str, topic_path: &Path) -> TokenT
 /// to `turn_output_tokens` — the turn's share of `total_output_tokens`.
 /// Pass `0` for it on the same terms as the cache pair: a call that is
 /// not part of the main loop has already been banked.
+///
+/// `call_reasoning_tokens` is that same call's own reasoning tokens,
+/// **added** to `turn_reasoning_tokens` — the turn's share of
+/// `total_reasoning_tokens`, which already contains it. `0` on the same
+/// terms again.
 #[allow(clippy::too_many_arguments)]
 pub async fn persist_tokens(
     topic_name: &str,
@@ -637,6 +654,7 @@ pub async fn persist_tokens(
     call_cache_hit_tokens: u64,
     call_input_tokens: u64,
     call_output_tokens: u64,
+    call_reasoning_tokens: u64,
 ) {
     let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
@@ -671,9 +689,11 @@ pub async fn persist_tokens(
     // that completed spent tokens even when no duration was recorded.
     state.turn_cache_hit_tokens += call_cache_hit_tokens;
     state.turn_input_tokens += call_input_tokens;
-    // The turn's own output, accumulated the same way — the figure the
-    // info pane pairs with the session's `total_output_tokens`.
+    // The turn's own output and reasoning, accumulated the same way — the
+    // figures the info pane pairs with the session's `total_output_tokens`
+    // and `total_reasoning_tokens`.
     state.turn_output_tokens += call_output_tokens;
+    state.turn_reasoning_tokens += call_reasoning_tokens;
 
     if let Some(cw) = context_window {
         state.context_window = cw;

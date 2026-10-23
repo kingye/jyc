@@ -595,6 +595,7 @@ pub async fn run(
             response.cache_hit_tokens,
             response.input_tokens,
             response.output_tokens,
+            response.reasoning_tokens,
         )
         .await;
 

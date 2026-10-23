@@ -297,6 +297,12 @@ pub struct TopicInfo {
     /// has produced nothing.
     #[serde(default)]
     pub turn_output_tokens: Option<u64>,
+    /// Reasoning (thinking) tokens of the LLM calls in the latest turn —
+    /// the turn-scoped twin of `total_reasoning_tokens`, so the info pane
+    /// can print the turn beside the session total the way it already
+    /// does for output. `None` while the current turn has produced none.
+    #[serde(default)]
+    pub turn_reasoning_tokens: Option<u64>,
     /// Accumulated input tokens across all LLM calls in this session.
     /// See `TopicSummary::total_input_tokens` for the full description.
     #[serde(default)]
@@ -686,6 +692,7 @@ mod tests {
                 max_tokens: Some(120000),
                 output_tokens: Some(12345),
                 turn_output_tokens: None,
+                turn_reasoning_tokens: None,
                 total_input_tokens: Some(45000),
                 total_cache_hit_tokens: None,
                 total_cache_creation_tokens: None,

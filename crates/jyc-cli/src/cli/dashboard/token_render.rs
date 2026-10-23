@@ -328,15 +328,20 @@ pub(super) fn push_session_cache_span(
     )
 }
 
-/// Append the "Reasoning: N" row to `spans`. Pushes nothing when the
-/// provider reports no reasoning tokens — the hidden chain-of-thought
-/// share of the output, already counted in the output tokens.
+/// Append the "Reasoning: N turn · M session" row to `spans`. Pushes
+/// nothing when the provider reports no reasoning tokens — the hidden
+/// chain-of-thought share of the output, already counted in the output
+/// tokens.
+///
+/// The figures are spelled by the same helper the Output row uses, turn
+/// first and session second, so the two rows read alike and `/info`
+/// prints the same string.
 pub(super) fn push_reasoning_span(spans: &mut Vec<Span>, t: &TopicInfo) {
-    if let Some(reasoning) = t.total_reasoning_tokens
-        && reasoning > 0
+    if let Some(pair) =
+        jyc_types::format_output_pair(t.total_reasoning_tokens, t.turn_reasoning_tokens)
     {
         spans.push(label_span("Reasoning: "));
-        spans.push(Span::raw(jyc_types::format_token_count(reasoning)));
+        spans.push(Span::raw(pair));
     }
 }
 
@@ -450,6 +455,7 @@ mod tests {
             total_cache_hit_tokens: cache_hit,
             total_cache_creation_tokens: cache_creation,
             total_reasoning_tokens: None,
+            turn_reasoning_tokens: None,
             turn_cache_hit_tokens: None,
             turn_input_tokens: None,
             today_all: Vec::new(),
@@ -715,6 +721,45 @@ mod tests {
         let mut spans = Vec::new();
         push_output_span(&mut spans, &t);
         assert_eq!(spans[1].content, "0 turn · 420 session");
+    }
+
+    #[test]
+    fn push_reasoning_span_omits_when_missing() {
+        let t = info_with(Some(100), Some(10000), None, None, None, None);
+        let mut spans = Vec::new();
+        push_reasoning_span(&mut spans, &t);
+        assert!(spans.is_empty());
+    }
+
+    /// The figures are turn first, session second -- the same order the
+    /// Output row prints, from the same formatter.
+    #[test]
+    fn push_reasoning_span_writes_turn_then_session() {
+        let mut t = info_with(Some(100), Some(10000), Some(420), None, None, None);
+        t.total_reasoning_tokens = Some(4096);
+        t.turn_reasoning_tokens = Some(512);
+        let mut spans = Vec::new();
+        push_reasoning_span(&mut spans, &t);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].content, padded("Reasoning: "));
+        assert_eq!(spans[1].content, "512 turn · 4.00K session");
+    }
+
+    /// A turn that has not called yet still gets its zero, and a topic
+    /// whose provider reports no reasoning stays rowless.
+    #[test]
+    fn push_reasoning_span_counts_a_turn_without_calls_as_zero() {
+        let mut t = info_with(Some(100), Some(10000), Some(420), None, None, None);
+        t.total_reasoning_tokens = Some(4096);
+        let mut spans = Vec::new();
+        push_reasoning_span(&mut spans, &t);
+        assert_eq!(spans[1].content, "0 turn · 4.00K session");
+
+        let mut t = info_with(Some(100), Some(10000), Some(420), None, None, None);
+        t.turn_reasoning_tokens = Some(512);
+        let mut spans = Vec::new();
+        push_reasoning_span(&mut spans, &t);
+        assert!(spans.is_empty(), "no session total, no row");
     }
 
     /// The session's cache row: the cache-hit tokens, the input tokens

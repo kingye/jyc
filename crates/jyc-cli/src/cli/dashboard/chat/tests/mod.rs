@@ -1705,6 +1705,7 @@ fn app_with_topic_summary() -> App {
         total_cache_hit_tokens: None,
         total_cache_creation_tokens: None,
         total_reasoning_tokens: None,
+        turn_reasoning_tokens: None,
         turn_cache_hit_tokens: None,
         turn_input_tokens: None,
         today_all: Vec::new(),

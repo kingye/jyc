@@ -75,22 +75,6 @@ pub async fn read_total_cache_creation_tokens(topic_name: &str, topic_path: &Pat
         .total_cache_creation_tokens
 }
 
-/// Read accumulated reasoning (thinking) tokens from the agent session
-/// state file. Returns `None` when the file is missing, malformed, or the
-/// accumulated value is zero — zero covers both "no calls yet" and
-/// "provider doesn't break out reasoning tokens".
-///
-/// Kept separate from `read_token_state` rather than widening its tuple,
-/// mirroring `read_session_cost`: one extra read of an already
-/// page-cached file is cheaper than threading a seventh element through
-/// every tuple consumer.
-pub async fn read_total_reasoning_tokens(topic_name: &str, topic_path: &Path) -> Option<u64> {
-    let agent_path = resolve_state_dir(topic_name, topic_path).join("agent-session.json");
-    let content = tokio::fs::read_to_string(&agent_path).await.ok()?;
-    let state = serde_json::from_str::<AgentSessionState>(&content).ok()?;
-    (state.total_reasoning_tokens > 0).then_some(state.total_reasoning_tokens)
-}
-
 /// Read the accumulated cost of the current session.
 ///
 /// Returns `None` when the file is missing, malformed, or the cost is
@@ -189,6 +173,13 @@ pub struct TokenState {
     /// The output tokens of the LLM calls in the latest turn — the
     /// turn-scoped twin of `total_output_tokens`.
     pub turn_output_tokens: Option<u64>,
+    /// Accumulated reasoning (thinking) tokens across the session. Zero
+    /// (hence `None`) both when no call has reported any and when the
+    /// provider does not break reasoning tokens out.
+    pub total_reasoning_tokens: Option<u64>,
+    /// The reasoning tokens of the LLM calls in the latest turn — the
+    /// turn-scoped twin of `total_reasoning_tokens`.
+    pub turn_reasoning_tokens: Option<u64>,
 }
 
 /// Read every token field of a session in a single file read.
@@ -220,6 +211,10 @@ pub async fn read_token_state(topic_name: &str, topic_path: &Path) -> TokenState
             .then_some(state.turn_cache_hit_tokens),
         turn_input_tokens: (state.turn_input_tokens > 0).then_some(state.turn_input_tokens),
         turn_output_tokens: (state.turn_output_tokens > 0).then_some(state.turn_output_tokens),
+        total_reasoning_tokens: (state.total_reasoning_tokens > 0)
+            .then_some(state.total_reasoning_tokens),
+        turn_reasoning_tokens: (state.turn_reasoning_tokens > 0)
+            .then_some(state.turn_reasoning_tokens),
     }
 }
 
@@ -242,6 +237,8 @@ struct AgentSessionState {
     total_cache_creation_tokens: u64,
     #[serde(default)]
     total_reasoning_tokens: u64,
+    #[serde(default)]
+    turn_reasoning_tokens: u64,
     #[serde(default)]
     session_cost: f64,
     #[serde(default)]

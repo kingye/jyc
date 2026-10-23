@@ -3162,6 +3162,20 @@ What the design buys, and what it deliberately does not:
   down), prefixed with `setsid` where that exists to also drop the controlling
   terminal — macOS ships no `setsid`, and `nohup` plus redirected stdio is
   enough there — and waits up to 60 s.
+- **Compression is on by default (`ssh -C`).** The traffic is JSON that barely
+  changes between frames, and the worst case is structural: a `Thinking` event
+  re-sends the whole reasoning every 500 ms, so a long turn puts O(n²) bytes on
+  the wire if nothing compresses them. zlib sees each frame as a prefix of the
+  one before it and collapses the repeated prefix to near nothing — the option
+  that decides whether a thin uplink is usable or smeared (how much it buys on
+  a given link is a measurement, not a number claimed here). It costs CPU on
+  both ends and is overridable with `--ssh-opt Compression=no`.
+- **`--ssh-opt KEY=VALUE` (repeatable) for everything else.** Ciphers,
+  keepalives, `Compression=no`: what fits a link is something only the user can
+  see, and the option is appended after the defaults here, so it wins —
+  including over the survival options (`BatchMode`, `ConnectTimeout`), which
+  guard against a password prompt with nowhere to appear. Overriding those is
+  permitted and self-inflicted.
 - **Exiting ends the tunnel only.** The hub may be serving other dashboards,
   channels and scheduled jobs; `jyc connect` owns the forward, not the server.
   (A dashboard killed with SIGKILL never runs its `Drop`, so the `ssh -N` it

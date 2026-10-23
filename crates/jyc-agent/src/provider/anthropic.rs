@@ -1747,4 +1747,75 @@ mod tests {
         assert_eq!(blocks[0]["tool_use_id"], "c1");
         assert_eq!(blocks[1]["tool_use_id"], "c2");
     }
+    /// A journal that switched provider and stayed: the chat turns convert, the
+    /// Claude turns keep their blocks — `thinking` and its signature included
+    /// — so the two halves coexist on the wire.
+    #[tokio::test]
+    async fn complete_raw_keeps_a_mixed_journal_valid() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
+            )
+            .mount(&server)
+            .await;
+
+        let raw = vec![
+            json!({"role": "user", "content": "read file a"}),
+            json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": "{\"path\":\"a\"}"},
+                }],
+            }),
+            json!({"role": "tool", "tool_call_id": "call_1", "content": "file body"}),
+            json!({"role": "assistant", "content": "it says hi"}),
+            json!({"role": "user", "content": "and now write b"}),
+            json!({"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "write it", "signature": "sig-1"},
+                {"type": "text", "text": "writing"},
+                {"type": "tool_use", "id": "tu_9", "name": "write", "input": {"path": "b"}},
+            ]}),
+            json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "tu_9", "content": "written"},
+            ]}),
+        ];
+
+        let provider = AnthropicProvider::new(
+            &server.uri(),
+            "claude-test",
+            Some("k"),
+            None,
+            false,
+            None,
+            false,
+        )
+        .unwrap();
+        let stream = provider.complete_raw(&raw, &[], "").await.expect("stream");
+        tokio::pin!(stream);
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        let body = String::from_utf8(requests[0].body.clone()).expect("utf8 body");
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        let messages = sent["messages"].as_array().expect("messages array");
+
+        assert_eq!(messages.len(), 7, "{sent:#}");
+        assert!(!body.contains("tool_calls"), "{body}");
+        assert_eq!(
+            messages[1]["content"],
+            json!([{"type": "tool_use", "id": "call_1", "name": "read", "input": {"path": "a"}}])
+        );
+        assert_eq!(
+            messages[5]["content"], raw[5]["content"],
+            "a Claude-written turn travels as recorded: {sent:#}"
+        );
+        assert_eq!(messages[6]["content"], raw[6]["content"]);
+    }
 }

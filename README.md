@@ -385,7 +385,13 @@ jobs may be using it). Starting that hub is opt-in:
 jyc connect devbox                 # dashboard against an existing hub
 jyc connect devbox -s              # start `jyc serve` there first
 jyc connect devbox -p ~/src/app    # open that remote directory as a topic
+jyc connect devbox --ssh-opt Compression=no   # extra ssh options, repeatable
 ```
+
+The tunnel runs `ssh -C`: the dashboard's traffic is repetitive JSON (a
+thinking event re-sends the whole reasoning, so a long turn would otherwise
+push its square), and compression is what keeps a thin uplink usable. On a fast
+link where that CPU matters, `--ssh-opt Compression=no` turns it off.
 
 Requires `[inspect] enabled = true` on the remote, non-interactive ssh auth
 (`ssh devbox true` must not prompt): the bootstrap and the tunnel both run

@@ -64,6 +64,10 @@ pub struct ConnectArgs {
     #[arg(long, env = "JYC_DASHBOARD_TOKEN")]
     pub token: Option<String>,
 
+    /// Extra ssh option, `KEY=VALUE` (repeatable), e.g. `--ssh-opt Compression=no`
+    #[arg(long = "ssh-opt", value_name = "KEY=VALUE")]
+    pub ssh_opts: Vec<String>,
+
     /// Open a directory on the remote host as a topic and go straight to chat
     #[command(flatten)]
     pub open: OpenArgs,
@@ -76,6 +80,8 @@ pub(super) struct Remote {
     data_dir: Option<String>,
     /// `host:port` the remote inspect server listens on.
     bind: String,
+    /// Extra `-o KEY=VALUE` options for every ssh invocation.
+    ssh_opts: Vec<String>,
 }
 
 impl Remote {
@@ -85,6 +91,7 @@ impl Remote {
             bin: args.bin.clone(),
             data_dir: args.remote_data_dir.clone(),
             bind: args.remote_bind.clone(),
+            ssh_opts: args.ssh_opts.clone(),
         }
     }
 
@@ -132,9 +139,21 @@ impl Remote {
             .arg("BatchMode=yes")
             .arg("-o")
             .arg("ConnectTimeout=10")
+            .args(self.ssh_opt_args())
             .arg(&self.host)
             .arg(remote_cmd);
         cmd
+    }
+
+    /// `--ssh-opt` values as `-o KEY=VALUE` pairs.
+    ///
+    /// Appended after the defaults everywhere, so a user option wins over one
+    /// this module sets: ssh honours the last `-o` for a given key.
+    fn ssh_opt_args(&self) -> Vec<OsString> {
+        self.ssh_opts
+            .iter()
+            .flat_map(|opt| [OsString::from("-o"), OsString::from(opt)])
+            .collect()
     }
 
     /// Run a command over ssh and return its trimmed stdout.
@@ -242,6 +261,43 @@ pub(super) fn shell_quote(arg: &str) -> String {
     format!("'{}'", arg.replace('\'', r"'\''"))
 }
 
+/// The ssh invocation that carries the forward.
+///
+/// `-C` (compression) is on by default, and it is the one option here that is
+/// about throughput rather than survival: the dashboard's traffic is JSON that
+/// barely changes between frames — above all `Thinking` events, which re-send
+/// the whole reasoning every 500 ms — and zlib collapses such a frame to a few
+/// dozen bytes because it is a prefix of the one before it. On a thin uplink
+/// that is the difference between a usable session and a smeared one; it costs
+/// CPU on both ends and `--ssh-opt Compression=no` turns it off.
+fn tunnel_args(remote: &Remote, local_port: u16) -> Vec<OsString> {
+    let mut args: Vec<OsString> = vec![
+        "-N".into(),
+        "-C".into(),
+        "-o".into(),
+        "BatchMode=yes".into(),
+        "-o".into(),
+        "ConnectTimeout=10".into(),
+        // A local port we cannot bind is a failure worth reporting, not a
+        // silent "tunnel that forwards nothing".
+        "-o".into(),
+        "ExitOnForwardFailure=yes".into(),
+        // Let ssh notice a dead peer instead of forwarding into a black
+        // hole for as long as the dashboard lives.
+        "-o".into(),
+        "ServerAliveInterval=15".into(),
+        "-o".into(),
+        "ServerAliveCountMax=3".into(),
+    ];
+    args.extend(remote.ssh_opt_args());
+    args.push("-L".into());
+    // The forward targets the address the server actually listens on, not
+    // loopback: `--remote-bind` may name another interface of the remote host.
+    args.push(format!("127.0.0.1:{local_port}:{}", remote.bind).into());
+    args.push(remote.host.clone().into());
+    args
+}
+
 /// A live `ssh -N -L` forward.
 ///
 /// Dropping it ends the tunnel; the remote hub keeps running — it may have
@@ -261,26 +317,7 @@ impl Tunnel {
     /// Open the forward and wait until ssh accepts connections on it.
     pub(super) async fn open(remote: &Remote, local_port: u16, remote_port: u16) -> Result<Self> {
         let addr = format!("127.0.0.1:{local_port}");
-        let args: Vec<OsString> = vec![
-            "-N".into(),
-            "-o".into(),
-            "BatchMode=yes".into(),
-            "-o".into(),
-            "ConnectTimeout=10".into(),
-            // A local port we cannot bind is a failure worth reporting, not a
-            // silent "tunnel that forwards nothing".
-            "-o".into(),
-            "ExitOnForwardFailure=yes".into(),
-            // Let ssh notice a dead peer instead of forwarding into a black
-            // hole for as long as the dashboard lives.
-            "-o".into(),
-            "ServerAliveInterval=15".into(),
-            "-o".into(),
-            "ServerAliveCountMax=3".into(),
-            "-L".into(),
-            format!("127.0.0.1:{local_port}:{}", remote.bind).into(),
-            remote.host.clone().into(),
-        ];
+        let args = tunnel_args(remote, local_port);
 
         let mut child = Command::new("ssh")
             .args(args)
@@ -506,6 +543,7 @@ mod tests {
             bin: "jyc".into(),
             data_dir: None,
             bind: "127.0.0.1:9876".into(),
+            ssh_opts: Vec::new(),
         }
     }
 
@@ -621,5 +659,47 @@ mod tests {
         // machine cannot know: no rewrite to offer.
         assert_eq!(rewrite_pair(41234, 9876, "0.0.0.0"), None);
         assert_eq!(rewrite_pair(41234, 9876, "[::]"), None);
+    }
+
+    fn args_of(args: &[OsString]) -> Vec<String> {
+        args.iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn tunnel_args_compress_and_forward_to_the_remote_bind() {
+        let remote = remote();
+        let args = args_of(&tunnel_args(&remote, 41234));
+        assert!(args.iter().any(|a| a == "-C"), "{args:?}");
+        assert!(args.iter().any(|a| a == "-N"), "{args:?}");
+        let forward = args.iter().position(|a| a == "-L").expect("no -L");
+        assert_eq!(args[forward + 1], "127.0.0.1:41234:127.0.0.1:9876");
+        // Target last, after every option.
+        assert_eq!(args.last().unwrap(), "devbox");
+    }
+
+    #[test]
+    fn ssh_opt_wins_by_coming_after_the_defaults() {
+        let mut remote = remote();
+        remote.ssh_opts = vec!["Compression=no".into()];
+        let args = args_of(&tunnel_args(&remote, 41234));
+        let last_o = args
+            .iter()
+            .rposition(|a| a == "Compression=no")
+            .expect("missing user option");
+        let default_c = args.iter().position(|a| a == "-C").unwrap();
+        assert!(last_o > default_c, "{args:?}");
+        // And they reach one-shot ssh commands too.
+        let one_shot: Vec<String> = remote
+            .ssh("token show")
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            one_shot.contains(&"Compression=no".to_string()),
+            "{one_shot:?}"
+        );
     }
 }

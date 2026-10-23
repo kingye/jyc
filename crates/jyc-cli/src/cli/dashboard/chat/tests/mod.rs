@@ -2848,8 +2848,8 @@ fn is_user_visible_activity_filters_heartbeats() {
 }
 
 // ---------------------------------------------------------------------------
-// Regression tests for the chat-pane poll-sync dedup
-// (`ChatState::poll_sync_live_chat`).
+// Regression tests for the chat-pane fold
+// (`ChatState::sync_live_chat`).
 //
 // Bug history: the original `(sender, text)` dedup silently dropped repeated
 // runs of `/context` and similar deterministic-output commands. Fixing that
@@ -2858,13 +2858,13 @@ fn is_user_visible_activity_filters_heartbeats() {
 // treated them as never-pushed and re-appended them on every 500 ms poll
 // cycle, flooding `self.messages` and pushing the live content off-screen.
 //
-// `poll_sync_live_chat` implements three dedup rules:
+// `sync_live_chat` implements three dedup rules:
 //   1. Live entries (`id != 0`): skip if already pushed (`id <= last_pushed`).
 //   2. User echoes (`sender == "user"`): dedup by `(sender, text)` so the
 //      server's IncomingMessage echo is dropped against the local echo from
 //      `send_message_inner`.
-//   3. Historical rows (`id == 0`): dedup by `(sender, text)` so the poll
-//      loop does not re-push them forever.
+//   3. Historical rows (`id == 0`): dedup by `(sender, text)` so a repeated
+//      fold does not re-push them forever.
 // ---------------------------------------------------------------------------
 
 fn push_live_chat(
@@ -2905,10 +2905,10 @@ fn poll_sync_appends_each_live_entry_by_unique_id() {
             },
         ],
     );
-    assert!(app.chat.poll_sync_live_chat("agents", "t"));
+    assert!(app.chat.sync_live_chat("agents", "t"));
     assert_eq!(app.chat.messages.len(), 2);
     // Second sync: nothing new; tracker stays at id 4.
-    assert!(!app.chat.poll_sync_live_chat("agents", "t"));
+    assert!(!app.chat.sync_live_chat("agents", "t"));
     assert_eq!(app.chat.messages.len(), 2);
 }
 
@@ -2930,7 +2930,7 @@ fn poll_sync_does_not_repush_historical_id_zero_rows_across_polls() {
         .collect();
     push_live_chat(&mut app, "agents", "t", rows);
     for _ in 0..10 {
-        app.chat.poll_sync_live_chat("agents", "t");
+        app.chat.sync_live_chat("agents", "t");
     }
     assert_eq!(
         app.chat.messages.len(),
@@ -2970,9 +2970,9 @@ fn poll_sync_keeps_distinct_historical_texts() {
             },
         ],
     );
-    assert!(app.chat.poll_sync_live_chat("agents", "t"));
+    assert!(app.chat.sync_live_chat("agents", "t"));
     assert_eq!(app.chat.messages.len(), 3);
-    assert!(!app.chat.poll_sync_live_chat("agents", "t"));
+    assert!(!app.chat.sync_live_chat("agents", "t"));
     assert_eq!(app.chat.messages.len(), 3);
 }
 
@@ -2997,7 +2997,7 @@ fn poll_sync_local_user_echo_and_server_echo_are_deduped() {
             id: 7,
         }],
     );
-    app.chat.poll_sync_live_chat("agents", "t");
+    app.chat.sync_live_chat("agents", "t");
     let user_msgs: Vec<&ChatMessage> = app
         .chat
         .messages
@@ -3064,10 +3064,10 @@ fn poll_sync_command_repeats_with_historical_backdrop() {
         app.chat.live_chat.insert(key, VecDeque::from(hist.clone()));
     }
     // One more sync to pick up the last batch.
-    app.chat.poll_sync_live_chat("agents", "t");
+    app.chat.sync_live_chat("agents", "t");
     // Two extra sync cycles must not change the message count.
-    app.chat.poll_sync_live_chat("agents", "t");
-    app.chat.poll_sync_live_chat("agents", "t");
+    app.chat.sync_live_chat("agents", "t");
+    app.chat.sync_live_chat("agents", "t");
 
     let user_msgs: Vec<&ChatMessage> = app
         .chat
@@ -3118,7 +3118,7 @@ fn seed_live_resets_last_pushed_chat_id_so_revisit_rehydrates() {
     // First visit: seed + sync.
     app.chat
         .seed_live("agents", "t", vec![], historical.clone());
-    app.chat.poll_sync_live_chat("agents", "t");
+    app.chat.sync_live_chat("agents", "t");
     assert_eq!(app.chat.messages.len(), 10);
     // The egress tracker now sits at the max historical id (10).
     assert_eq!(
@@ -3142,12 +3142,115 @@ fn seed_live_resets_last_pushed_chat_id_so_revisit_rehydrates() {
         Some(0),
         "seed_live must reset the egress tracker so the freshly hydrated rows are not skipped"
     );
-    app.chat.poll_sync_live_chat("agents", "t");
+    app.chat.sync_live_chat("agents", "t");
     assert_eq!(
         app.chat.messages.len(),
         10,
         "all 10 hydrated historical rows must be re-pushed on revisit"
     );
+}
+
+fn history_row(sender: &str, text: &str, id: u64) -> jyc_types::ChatMessageEntry {
+    jyc_types::ChatMessageEntry {
+        sender: sender.to_string(),
+        text: text.to_string(),
+        timestamp: Some(format!("2026-01-01T00:00:{id:02}Z")),
+        id,
+    }
+}
+
+#[test]
+fn ws_chat_message_reaches_the_pane_without_a_poll() {
+    // The pane is fed where the buffer is written, not by a timer: a reply
+    // shows up at websocket speed rather than at the poll interval.
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.visible = true;
+    app.chat.channel = Some("chan".to_string());
+    app.chat.topic = Some("t1".to_string());
+
+    app.chat.handle_live_event(&serde_json::json!({
+        "type": "chat_message",
+        "channel": "chan",
+        "topic": "t1",
+        "id": 7,
+        "entry": {"sender": "ai", "text": "hello", "timestamp": "2026-01-01T00:00:07Z", "id": 7},
+    }));
+
+    assert_eq!(app.chat.messages.len(), 1);
+    assert_eq!(app.chat.messages[0].text, "hello");
+}
+
+#[test]
+fn ws_chat_message_for_another_topic_stays_in_its_buffer() {
+    // A background topic streams too; its rows must not land in the pane the
+    // user is reading.
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.visible = true;
+    app.chat.channel = Some("chan".to_string());
+    app.chat.topic = Some("t1".to_string());
+
+    app.chat.handle_live_event(&serde_json::json!({
+        "type": "chat_message",
+        "channel": "chan",
+        "topic": "other",
+        "id": 3,
+        "entry": {"sender": "ai", "text": "elsewhere", "timestamp": "2026-01-01T00:00:03Z", "id": 3},
+    }));
+
+    assert!(app.chat.messages.is_empty());
+    assert_eq!(app.chat.live_chat_for("chan", "other").count(), 1);
+}
+
+#[test]
+fn resync_hydrate_does_not_repush_rows_already_on_screen() {
+    // `seed_live` zeroes the egress tracker only when `messages` is empty
+    // (a fresh `open()`). A resync hydrate leaves `messages` in place, so
+    // zeroing it there re-pushed up to 50 rows the user was already looking at.
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.visible = true;
+    app.chat.channel = Some("chan".to_string());
+    app.chat.topic = Some("t1".to_string());
+    let history: Vec<_> = (1..=3)
+        .map(|i| history_row("ai", &format!("history-{i}"), i))
+        .collect();
+
+    app.chat.seed_live("chan", "t1", vec![], history.clone());
+    assert!(app.chat.sync_live_if_visible("chan", "t1"));
+    assert_eq!(app.chat.messages.len(), 3);
+
+    // Resync: the socket fell behind, so the buffers are dropped and the same
+    // history is re-hydrated.
+    app.chat.handle_live_event(&serde_json::json!({
+        "type": "resync",
+        "channel": "chan",
+        "topic": "t1",
+    }));
+    assert_eq!(app.chat.live_chat_for("chan", "t1").count(), 0);
+    assert_eq!(
+        app.chat
+            .last_pushed_chat_id
+            .get(&("chan".to_string(), "t1".to_string())),
+        Some(&3),
+        "the tracker describes the pane, so a buffer wipe must not clear it"
+    );
+    app.chat.seed_live("chan", "t1", vec![], history.clone());
+    app.chat.sync_live_if_visible("chan", "t1");
+    assert_eq!(
+        app.chat.messages.len(),
+        3,
+        "a resync hydrate must not re-push rows already on screen"
+    );
+
+    // Rows newer than the tracker still land after the resync.
+    let mut with_new = history;
+    with_new.push(history_row("ai", "fresh", 4));
+    app.chat.seed_live("chan", "t1", vec![], with_new);
+    app.chat.sync_live_if_visible("chan", "t1");
+    assert_eq!(app.chat.messages.len(), 4);
+    assert_eq!(app.chat.messages[3].text, "fresh");
 }
 
 // ── Message-pane cursor ───────────────────────────────────────────────────

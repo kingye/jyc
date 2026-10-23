@@ -524,6 +524,12 @@ async fn read_log_tail(path: &std::path::Path, n: usize) -> String {
 /// head of a split mouse escape sequence.
 const ESC_FRAGMENT_WINDOW: Duration = Duration::from_millis(20);
 
+/// How often the dashboard re-fetches the overview (topic rows and status
+/// line). Chat messages do not ride this clock: they are folded into the pane
+/// as the websocket delivers them, and after a hydrated fetch — see
+/// `ChatState::sync_live_if_visible`.
+const POLL_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Outcome of feeding one key through [`MouseFragmentFilter`].
 enum Filtered {
     /// Dispatch the key normally.
@@ -670,8 +676,7 @@ pub async fn run(
         let mut app = App::new(ws_rx, token);
         app.link_regions = link_regions;
         let mut mouse_frag_filter = MouseFragmentFilter::default();
-        let poll_interval = Duration::from_millis(500);
-        let mut last_poll = std::time::Instant::now() - poll_interval; // Force immediate poll
+        let mut last_poll = std::time::Instant::now() - POLL_INTERVAL; // Force immediate poll
         // Overview fetches run off-loop: each poll is spawned and its
         // result arrives on this channel, so the HTTP round-trip never
         // blocks keystroke handling. (The old inline `await` froze input
@@ -708,7 +713,7 @@ pub async fn run(
         loop {
             // Poll for new state (slim overview — no activity/messages/thinking).
             // Spawn the fetch off-loop; handle the result below when it arrives.
-            if !poll_in_flight && last_poll.elapsed() >= poll_interval {
+            if !poll_in_flight && last_poll.elapsed() >= POLL_INTERVAL {
                 poll_in_flight = true;
                 let client = client.clone();
                 let tx = poll_tx.clone();
@@ -773,23 +778,6 @@ pub async fn run(
                                 && ct.status != TopicStatus::Processing
                             {
                                 app.chat.awaiting_response = false;
-                            }
-                        }
-
-                        // Append new chat messages from the live buffer to the
-                        // dashboard's `chat.messages` vec. The live buffer is
-                        // populated by REST hydrate on selection and updated by
-                        // WS `chat_message` events.
-                        if let Some(channel) = app.chat.channel.as_deref()
-                            && let Some(topic) = app.chat.topic.as_deref()
-                        {
-                            // Clone to release the borrows on
-                            // `app.chat.channel` / `.topic` before the
-                            // mutable call into `poll_sync_live_chat`.
-                            let channel = channel.to_string();
-                            let topic = topic.to_string();
-                            if app.chat.poll_sync_live_chat(&channel, &topic) {
-                                app.chat.scroll = 0;
                             }
                         }
 
@@ -1234,6 +1222,11 @@ async fn hydrate_live(client: &InspectClient, app: &mut App, channel: &str, topi
             );
         }
     }
+    // The hydrate is a buffer write like a WS event, so the pane catches up
+    // here instead of on the next poll: this fills the chat pane on open, and
+    // on the reconnect that follows a resync it returns the rows the socket
+    // dropped. No-op unless this is the topic on screen.
+    app.chat.sync_live_if_visible(channel, topic);
 }
 
 /// Open the chat screen for the table-selected topic. All channel types
@@ -1269,7 +1262,7 @@ async fn reload_server_config(
     match client.reload_config().await {
         Ok((true, msg)) => {
             app.set_status(format!("Config reloaded: {msg}"));
-            *last_poll = std::time::Instant::now() - Duration::from_millis(500);
+            *last_poll = std::time::Instant::now() - POLL_INTERVAL;
         }
         Ok((false, msg)) => {
             app.set_status(format!("Reload failed: {msg}"));

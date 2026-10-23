@@ -234,10 +234,10 @@ pub(super) struct ChatState {
     /// WS events after reconnect / `resync`.
     pub(super) last_seen_id: std::collections::BTreeMap<(String, String), u64>,
     /// Highest `ChatMessageEntry::id` already pushed from `live_chat` into
-    /// `messages` for each (channel, topic). Used by the poll-driven sync
-    /// to skip live entries that have already been pushed; without this,
-    /// historical `id = 0` rows from `chat_log_store.rs` JSONL hydrate
-    /// would re-push on every 500 ms poll cycle.
+    /// `messages` for each (channel, topic). Used by `sync_live_chat` to skip
+    /// live entries that have already been pushed; without this, historical
+    /// `id = 0` rows from `chat_log_store.rs` JSONL hydrate would re-push on
+    /// every fold.
     pub(super) last_pushed_chat_id: std::collections::BTreeMap<(String, String), u64>,
     /// Last (channel, topic) that was REST-hydrated by the poll loop.
     /// Used to avoid re-hydrating the same topic on every poll when the
@@ -3753,12 +3753,14 @@ impl ChatState {
         self.live_activity.insert(key.clone(), activity_buf);
         self.live_chat.insert(key.clone(), chat_buf);
         self.last_seen_id.insert(key.clone(), max_id);
-        // Reset the egress tracker for the freshly-seeded topic. `messages`
-        // was cleared by `open()` (via `reset_chat_state`) and the
-        // freshly-hydrated `live_chat` must be re-pushed in full — leaving
-        // the previous visit's max id here would skip every hydrated
-        // historical row whose id ≤ old max.
-        self.last_pushed_chat_id.insert(key, 0);
+        // A fresh `open()` cleared `messages` (via `reset_chat_state`), so the
+        // hydrated rows must be re-pushed in full — leaving the previous
+        // visit's max id would skip every historical row whose id ≤ old max.
+        // A resync hydrate is *not* that case: `messages` survives it, and
+        // zeroing the tracker would re-push rows already on screen.
+        if self.messages.is_empty() {
+            self.last_pushed_chat_id.insert(key, 0);
+        }
     }
 
     /// Handle a parsed `{"type":"activity",...}` or similar WS payload.
@@ -3810,6 +3812,9 @@ impl ChatState {
                     if buf.len() > 50 {
                         buf.pop_front();
                     }
+                    // Fold while the pane is open rather than waiting for a
+                    // timer: this is what makes a reply show up at WS speed.
+                    self.sync_live_if_visible(&channel, &topic);
                 }
             }
             "thinking" => {
@@ -3843,8 +3848,7 @@ impl ChatState {
                     // the one open in the chat pane.
                     if let Some(blocks) = self.live_thinking.remove(&key)
                         && !blocks.is_empty()
-                        && self.channel.as_deref() == Some(key.0.as_str())
-                        && self.topic.as_deref() == Some(key.1.as_str())
+                        && self.is_visible_topic(&key.0, &key.1)
                     {
                         self.messages.push(ChatMessage {
                             sender: "thinking".to_string(),
@@ -3875,15 +3879,18 @@ impl ChatState {
                 }
             }
             "resync" => {
-                // Server fell behind (Lagged); clear local state so the
-                // caller re-hydrates via REST.
+                // Server fell behind (Lagged): the buffers are a cache of what
+                // the socket carried, so re-fetch them. `messages` and
+                // `last_pushed_chat_id` describe the *pane*, which the wipe
+                // does not touch — clearing the tracker would re-push every
+                // hydrated row already on screen. Rows missed while lagged
+                // stay missing until the next hydrate (a reconnect).
                 self.live_activity.remove(&key);
                 self.live_chat.remove(&key);
                 self.live_thinking.remove(&key);
                 self.live_processing.remove(&key);
                 self.live_tick_ms.remove(&key);
                 self.last_seen_id.remove(&key);
-                self.last_pushed_chat_id.remove(&key);
             }
             _ => {}
         }
@@ -3944,8 +3951,7 @@ impl ChatState {
             .copied()
     }
     /// Iterate over the live chat messages for the given (channel, topic).
-    /// Used by the dashboard's poll loop to append new messages to the
-    /// `chat.messages` vec shown in the chat pane.
+    /// The pane's copy comes from `sync_live_if_visible`, which folds this.
     pub(super) fn live_chat_for(
         &self,
         channel: &str,
@@ -3957,12 +3963,40 @@ impl ChatState {
             .unwrap_or_else(|| EMPTY_CHAT_DEQUE.iter())
     }
 
+    /// Whether `(channel, topic)` is the topic the *open* chat pane is bound
+    /// to. Events for anything else stay in their buffers. `close()` leaves
+    /// the binding in place, so `visible` is part of the test — otherwise a
+    /// hidden pane would keep folding rows nobody can see.
+    fn is_visible_topic(&self, channel: &str, topic: &str) -> bool {
+        self.visible
+            && self.channel.as_deref() == Some(channel)
+            && self.topic.as_deref() == Some(topic)
+    }
+
+    /// Fold `(channel, topic)`'s live buffer into the pane, if it is the topic
+    /// on screen, and keep the pane pinned to the newest row. Returns whether
+    /// anything was appended.
+    ///
+    /// This is the single entry point for "show what arrived": the buffer is
+    /// written by the WS handler and by `hydrate_live`, and both call this
+    /// instead of leaving the pane to a poll timer.
+    pub(super) fn sync_live_if_visible(&mut self, channel: &str, topic: &str) -> bool {
+        if !self.is_visible_topic(channel, topic) {
+            return false;
+        }
+        if !self.sync_live_chat(channel, topic) {
+            return false;
+        }
+        self.scroll = 0;
+        true
+    }
+
     /// Append new chat messages from the live buffer to the rendered
     /// message list. Returns `true` if at least one row was pushed.
     ///
     /// Three dedup rules apply:
-    /// - **Live entries** (`id != 0`): skipped if already pushed in an
-    ///   earlier poll (`id <= last_pushed_chat_id`). This is what makes
+    /// - **Live entries** (`id != 0`): skipped if already pushed (`id <=
+    ///   last_pushed_chat_id`). This is what makes
     ///   repeated `/`-commands (`/context`, `/exchange`, `/help`,
     ///   `/model <x>`) emit byte-identical AI text every run but still
     ///   show up — each event has a fresh monotonic per-topic id.
@@ -3973,9 +4007,9 @@ impl ChatState {
     /// - **Historical rows** (`id == 0` from `chat_log_store.rs` JSONL
     ///   hydrate): dedup by `(sender, text)`. All historical rows share
     ///   `id = 0` so the id-tracker cannot distinguish them; without
-    ///   this fallback the 500 ms poll loop would re-push the same row
-    ///   every cycle and flood `self.messages`.
-    pub(super) fn poll_sync_live_chat(&mut self, channel: &str, topic: &str) -> bool {
+    ///   this fallback a repeated fold would re-push the same row every
+    ///   time and flood `self.messages`.
+    fn sync_live_chat(&mut self, channel: &str, topic: &str) -> bool {
         // Collect into a Vec first to release the immutable borrow on
         // self.live_chat before mutating self.messages and last_pushed_chat_id.
         let live_msgs: Vec<jyc_types::ChatMessageEntry> =

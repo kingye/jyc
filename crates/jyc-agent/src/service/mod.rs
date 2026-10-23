@@ -719,8 +719,8 @@ impl AgentService for JycAgentService {
 
         // 9. Update session token tracking. The loop already persisted
         // these figures after every LLM call; this is the turn's final
-        // write, with no cost, duration or cache figure to add (all were
-        // banked per call).
+        // write, with no cost, duration, cache or output figure to add
+        // (all were banked per call).
         session::persist_tokens(
             topic_name,
             topic_path,
@@ -733,6 +733,7 @@ impl AgentService for JycAgentService {
             result.total_reasoning_tokens,
             context_window,
             0.0,
+            0,
             0,
             0,
             0,

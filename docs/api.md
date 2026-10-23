@@ -705,6 +705,7 @@ for each.
 | `model`                      | string?               | ✓               | —                  |
 | `mode`                       | string?               | ✓               | —                  |
 | `output_tokens`              | u64?                  | ✓               | —                  |
+| `turn_output_tokens`        | u64?                  | ✓               | —                  |
 | `total_input_tokens`         | u64?                  | ✓               | —                  |
 | `total_cache_hit_tokens`     | u64?                  | ✓               | —                  |
 | `total_cache_creation_tokens`| u64?                  | ✓               | —                  |
@@ -750,6 +751,12 @@ latest turn's — the pair is zeroed at every turn start, so it is `None` until
 the turn makes its first call. Both scopes feed the info surfaces' cache
 rows: `Turn` and `Session` under the info surfaces' `Cache:` header, each
 showing the hits, the input they are a share of, and that share in percent.
+
+The output figures come in the same two scopes, and print on one row:
+`output_tokens` is the session's and `turn_output_tokens` the latest turn's
+(also zeroed at every turn start, so `None` until the turn makes its first
+call). Both surfaces print them as `12.00K turn · 1.18M session` from one
+shared formatter.
 
 `today_all` is the day's spend across *every* topic, per currency — the
 ledger's own day total, the same figure `/bill` reports. It is kept apart

@@ -206,12 +206,13 @@ pub(super) fn push_tokens_span(
     }
 }
 
-/// Append the "Output: N" row to `spans`. Pushes nothing when
-/// `output_tokens` is missing.
+/// Append the "Output: ..." row to `spans` — the session total and the
+/// latest turn, from the shared formatter. Pushes nothing when the session
+/// has produced no output at all.
 pub(super) fn push_output_span(spans: &mut Vec<Span>, t: &TopicInfo) {
-    if let Some(out) = t.output_tokens {
+    if let Some(figures) = jyc_types::format_output_pair(t.output_tokens, t.turn_output_tokens) {
         spans.push(label_span("Output: "));
-        spans.push(Span::raw(jyc_types::format_token_count(out)));
+        spans.push(Span::raw(figures));
     }
 }
 
@@ -447,6 +448,7 @@ mod tests {
             context_output_tokens: context_output,
             max_tokens: max,
             output_tokens: output,
+            turn_output_tokens: None,
             total_input_tokens: total_input,
             total_cache_hit_tokens: cache_hit,
             total_cache_creation_tokens: cache_creation,
@@ -699,12 +701,23 @@ mod tests {
 
     #[test]
     fn push_output_span_writes_label_and_value() {
-        let t = info_with(Some(100), Some(10000), Some(420), None, None, None);
+        let mut t = info_with(Some(100), Some(10000), Some(420), None, None, None);
+        t.turn_output_tokens = Some(128);
         let mut spans = Vec::new();
         push_output_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content, padded("Output: "));
-        assert_eq!(spans[1].content, "420");
+        assert_eq!(spans[1].content, "128 turn · 420 session");
+    }
+
+    /// A turn that has not called yet still gets its zero — the row reads
+    /// as the session total plus a genuine zero, like the cache rows.
+    #[test]
+    fn push_output_span_counts_a_turn_without_calls_as_zero() {
+        let t = info_with(Some(100), Some(10000), Some(420), None, None, None);
+        let mut spans = Vec::new();
+        push_output_span(&mut spans, &t);
+        assert_eq!(spans[1].content, "0 turn · 420 session");
     }
 
     /// The session's cache row: the cache-hit tokens, the input tokens

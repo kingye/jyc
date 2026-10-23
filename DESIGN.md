@@ -3019,7 +3019,7 @@ resolver**), every step keyed by the mode the topic is in:
 └── agents/<agent>/<topic>/                 # Topic home (agents dir)
     ├── .jyc/                               # State dir — never inside the working dir
     │   ├── agent-session.json              # AI session state
-    │   ├── agent-context.jsonl             # Raw context journal, one message per line (legacy .json auto-migrates)
+    │   ├── agent-context.jsonl             # Raw context journal, one message per line (a pre-journal .json array is not read)
     │   ├── chat_history_2026-03-19.jsonl   # Daily chat log (messages + replies)
     │   ├── model-override                  # /model command override
     │   └── mode-override                   # /plan command override

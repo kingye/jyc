@@ -721,8 +721,9 @@ pub async fn add_session_cost(topic_name: &str, topic_path: &Path, cost: f64) {
 pub async fn reset_session(topic_name: &str, topic_path: &Path) {
     let state_dir = resolve_state_dir(topic_name, topic_path);
 
-    // Delete everything — session file and raw context store (journal +
-    // legacy).
+    // Session file and the context journal go; a pre-journal
+    // `agent-context.json` array is never read, so it is left alone —
+    // nothing replaced it, and it is the user's data.
     jyc_core::session_state::remove_raw_context_files(&state_dir).await;
     // The reader's parsed tail describes a journal that is gone.
     ContextReader::new(topic_name, &state_dir).invalidate();

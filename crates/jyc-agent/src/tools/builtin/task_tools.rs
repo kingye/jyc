@@ -147,7 +147,12 @@ impl Tool for TaskCreateTool {
                 })
                 .collect(),
         };
-        write_tasks_at(&tasks_dir(ctx), &list).await?;
+        write_tasks_at(
+            ctx.current_topic.as_deref().unwrap_or(""),
+            &tasks_dir(ctx),
+            &list,
+        )
+        .await?;
         Ok(ToolOutput::success(render(&list)))
     }
 }
@@ -215,7 +220,12 @@ impl Tool for TaskUpdateTool {
             )));
         };
         item.status = status;
-        write_tasks_at(&tasks_dir(ctx), &list).await?;
+        write_tasks_at(
+            ctx.current_topic.as_deref().unwrap_or(""),
+            &tasks_dir(ctx),
+            &list,
+        )
+        .await?;
         Ok(ToolOutput::success(render(&list)))
     }
 }

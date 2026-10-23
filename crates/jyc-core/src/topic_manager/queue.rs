@@ -329,6 +329,18 @@ impl TopicManager {
                     },
                 };
 
+                // A close can land while this worker sits in the `select!`
+                // above: the message and `topic_cancel` are both ready and,
+                // unbiased, the select may hand over the message. The
+                // preamble below recreates the state dir the close just
+                // removed, so the freeze is re-checked before it runs — the
+                // message belongs to a topic that is gone, and `clear_closed`
+                // only runs for a worker that starts *after* the close.
+                if jyc_types::state_dir::is_closed(&topic_name) {
+                    tracing::info!("Worker cancelled (topic closed, message dropped)");
+                    break;
+                }
+
                 // Compute the effective topic path (custom override or default)
                 let workspace = storage.workspace();
                 let topic_path = item

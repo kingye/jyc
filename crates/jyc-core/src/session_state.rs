@@ -365,12 +365,20 @@ pub async fn read_mcp_override(topic_name: &str, topic_path: &Path) -> Option<To
 
 /// Write a toggle override; removes the file when empty so the absence of
 /// the file always means "no override".
+///
+/// A closed topic writes nothing: a `/model`, `/mode`, `/plan`, `/skill` or
+/// `/mcp` stacked behind a `/close` in the same message still runs (commands
+/// are executed one after another), and recreating the state dir here would
+/// leave a topic behind that nothing owns.
 pub async fn write_toggle_override(
     topic_name: &str,
     topic_path: &Path,
     file: &str,
     ovr: &ToggleOverride,
 ) -> anyhow::Result<()> {
+    if jyc_types::state_dir::is_closed(topic_name) {
+        return Ok(());
+    }
     let dir = resolve_state_dir(topic_name, topic_path);
     let path = dir.join(file);
     if ovr.is_empty() {
@@ -420,7 +428,17 @@ pub async fn read_tasks_at(state_dir: &Path) -> Option<TaskList> {
 
 /// Write a topic's task list (creating the `.jyc` dir); deletes the file when
 /// the list is empty so a missing file always means "no list".
-pub async fn write_tasks_at(state_dir: &Path, tasks: &TaskList) -> anyhow::Result<()> {
+///
+/// A closed topic writes nothing — see [`write_toggle_override`]: a tool call
+/// that lands after the turn closed its own topic must not recreate the dir.
+pub async fn write_tasks_at(
+    topic_name: &str,
+    state_dir: &Path,
+    tasks: &TaskList,
+) -> anyhow::Result<()> {
+    if jyc_types::state_dir::is_closed(topic_name) {
+        return Ok(());
+    }
     let path = state_dir.join(TASKS_FILE);
     if tasks.is_empty() {
         tokio::fs::remove_file(&path).await.ok();
@@ -507,7 +525,13 @@ pub async fn resolve_active_context_window(
 /// so leaving both in the file would make it fail to deserialize. The key
 /// goes even when the window itself does not change — otherwise a file
 /// carrying both keys would keep failing to deserialize forever.
+///
+/// A closed topic is skipped: its state dir is gone on purpose, and
+/// recreating it here would leave a topic behind that nothing owns.
 pub async fn write_context_window(topic_name: &str, topic_path: &Path, new_window: u64) {
+    if jyc_types::state_dir::is_closed(topic_name) {
+        return;
+    }
     let session_path = resolve_state_dir(topic_name, topic_path).join("agent-session.json");
     let content = tokio::fs::read_to_string(&session_path)
         .await
@@ -1551,6 +1575,23 @@ model = "provider/first-pattern"
         );
     }
 
+    /// A closed topic's state dir is gone on purpose; wiring the window
+    /// (which happens mid-turn, when the agent learns the model's limit)
+    /// must not bring it back.
+    #[tokio::test]
+    async fn write_context_window_skips_a_closed_topic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "write_context_window_skips_a_closed_topic";
+        let state_dir = tmp.path().join(".jyc");
+        jyc_types::state_dir::register(topic, &state_dir);
+        jyc_types::state_dir::mark_closed(topic);
+
+        write_context_window(topic, tmp.path(), 12345).await;
+
+        assert!(!state_dir.exists(), "a closed topic's state dir stays gone");
+        jyc_types::state_dir::clear_closed(topic);
+    }
+
     // ── resolve_context_strategy ──────────────────────────────────────
 
     use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
@@ -1893,7 +1934,7 @@ mode = "agent"
         let topic = "write_then_read_tasks_roundtrips";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let list = tasks(&[("a", TaskStatus::Pending), ("b", TaskStatus::Completed)]);
-        write_tasks_at(&jyc_of(&tmp), &list).await.unwrap();
+        write_tasks_at(topic, &jyc_of(&tmp), &list).await.unwrap();
         assert_eq!(read_tasks_at(&jyc_of(&tmp)).await, Some(list));
     }
 
@@ -1925,10 +1966,10 @@ mode = "agent"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "write_empty_tasks_deletes_file";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        write_tasks_at(&jyc_of(&tmp), &tasks(&[("a", TaskStatus::Pending)]))
+        write_tasks_at(topic, &jyc_of(&tmp), &tasks(&[("a", TaskStatus::Pending)]))
             .await
             .unwrap();
-        write_tasks_at(&jyc_of(&tmp), &TaskList::default())
+        write_tasks_at(topic, &jyc_of(&tmp), &TaskList::default())
             .await
             .unwrap();
         assert!(
@@ -1944,11 +1985,50 @@ mode = "agent"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "clear_tasks_removes_file_and_is_idempotent";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        write_tasks_at(&jyc_of(&tmp), &tasks(&[("a", TaskStatus::Pending)]))
+        write_tasks_at(topic, &jyc_of(&tmp), &tasks(&[("a", TaskStatus::Pending)]))
             .await
             .unwrap();
         clear_tasks_at(&jyc_of(&tmp)).await;
         assert_eq!(read_tasks_at(&jyc_of(&tmp)).await, None);
         clear_tasks_at(&jyc_of(&tmp)).await;
+    }
+
+    /// A tool call or a stacked command that lands after the turn closed its
+    /// own topic must not recreate the state dir — the same skeleton the
+    /// session writers were fixed to stop producing.
+    #[tokio::test]
+    async fn closed_topic_writes_no_task_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "closed_topic_writes_no_task_list";
+        let state_dir = tmp.path().join(".jyc");
+        jyc_types::state_dir::register(topic, &state_dir);
+        jyc_types::state_dir::mark_closed(topic);
+        write_tasks_at(topic, &state_dir, &tasks(&[("a", TaskStatus::Pending)]))
+            .await
+            .unwrap();
+        assert!(!state_dir.exists(), "a closed topic's state dir stays gone");
+        jyc_types::state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn closed_topic_writes_no_toggle_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "closed_topic_writes_no_toggle_override";
+        let state_dir = tmp.path().join(".jyc");
+        jyc_types::state_dir::register(topic, &state_dir);
+        jyc_types::state_dir::mark_closed(topic);
+        write_toggle_override(
+            topic,
+            tmp.path(),
+            "model-override",
+            &ToggleOverride {
+                on: vec!["x".to_string()],
+                off: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!state_dir.exists(), "a closed topic's state dir stays gone");
+        jyc_types::state_dir::clear_closed(topic);
     }
 }

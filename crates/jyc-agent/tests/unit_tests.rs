@@ -1391,6 +1391,65 @@ mod session {
         assert_eq!(state["total_output_tokens"], 0);
         assert_eq!(state["context_window"], 0);
     }
+
+    /// A turn can run `/close` on its own topic and then finish: the close has
+    /// already deleted the state dir, and the turn's last write must not
+    /// recreate it — a dir that exists again is what `list_topic_names` counts
+    /// as an open topic, leaving a parentless, config-less topic behind.
+    #[tokio::test]
+    async fn save_raw_context_writes_nothing_for_a_closed_topic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "save_raw_context_writes_nothing_for_a_closed_topic";
+        let state_dir = tmp.path().join(".jyc");
+        jyc_types::state_dir::register(topic, &state_dir);
+        jyc_types::state_dir::mark_closed(topic);
+
+        session::save_raw_context(
+            topic,
+            tmp.path(),
+            vec![serde_json::json!({"role": "user", "content": "in flight"})],
+        )
+        .await;
+
+        assert!(!state_dir.exists(), "a closed topic's state dir stays gone");
+        jyc_types::state_dir::clear_closed(topic);
+    }
+
+    /// The same for the session file, which the loop writes after every call.
+    #[tokio::test]
+    async fn persist_tokens_writes_nothing_for_a_closed_topic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "persist_tokens_writes_nothing_for_a_closed_topic";
+        let state_dir = tmp.path().join(".jyc");
+        jyc_types::state_dir::register(topic, &state_dir);
+        jyc_types::state_dir::mark_closed(topic);
+
+        session::persist_tokens(
+            topic,
+            tmp.path(),
+            9,
+            4,
+            9,
+            4,
+            0,
+            0,
+            0,
+            None,
+            0.0,
+            0,
+            0,
+            9,
+            4,
+            0,
+        )
+        .await;
+
+        assert!(
+            !state_dir.join("agent-session.json").exists(),
+            "a closed topic gets no session file"
+        );
+        jyc_types::state_dir::clear_closed(topic);
+    }
 }
 
 mod tool_registry {

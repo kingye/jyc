@@ -62,6 +62,14 @@ const MAX_HISTORY_TOKENS: usize = 4_000_000;
 #[async_trait]
 impl CommandHandler for ContextCommandHandler {
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
+        // Defence in depth: the dispatcher refuses commands for a topic closed
+        // earlier in the same command block, but both the dump flag and the
+        // strategy override create the state dir the close just deleted.
+        if jyc_types::state_dir::is_closed(&context.topic_name) {
+            return Ok(CommandResult::refusal(
+                "/context: this topic was just closed; nothing to change".to_string(),
+            ));
+        }
         let state_dir = resolve_state_dir(&context.topic_name, &context.topic_path);
         let override_path = state_dir.join(crate::session_state::CONTEXT_STRATEGY_FILE);
 

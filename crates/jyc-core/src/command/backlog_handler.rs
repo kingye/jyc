@@ -180,6 +180,14 @@ impl CommandHandler for BacklogCommandHandler {
         // earlier items would be lost. Topic state is single-user, so
         // simultaneous push/pop is extremely unlikely. If races are ever
         // observed, add `fs2` file locking around the read-modify-write.
+        // Defence in depth: the dispatcher refuses commands for a topic closed
+        // earlier in the same command block, but `write_items` creates the
+        // state dir the close just deleted.
+        if jyc_types::state_dir::is_closed(&context.topic_name) {
+            return Ok(CommandResult::refusal(
+                "/backlog: this topic was just closed; the item was not saved".to_string(),
+            ));
+        }
         let args = &context.args;
         let path = Self::backlog_path(&context.topic_name, &context.topic_path);
 

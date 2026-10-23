@@ -13,6 +13,13 @@ use crate::session_state;
 ///
 /// Shared by `/plan`, `/build`, and user-defined commands that declare a mode.
 pub async fn set_mode(context: &CommandContext, mode: &str) -> Result<()> {
+    // A `/plan` (or a mode-declaring custom command) stacked behind a `/close`
+    // in the same message still runs; changing the mode of a topic that is
+    // gone is a no-op, and the `create_dir_all` below would bring back the
+    // state dir the close just deleted.
+    if jyc_types::state_dir::is_closed(&context.topic_name) {
+        return Ok(());
+    }
     let state_dir = resolve_state_dir(&context.topic_name, &context.topic_path);
     let override_path = state_dir.join("mode-override");
 

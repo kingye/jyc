@@ -43,6 +43,15 @@ pub fn list_available_models(providers: &HashMap<String, ProviderDef>) -> Vec<Mo
 impl CommandHandler for ModelCommandHandler {
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         let state_dir = resolve_state_dir(&context.topic_name, &context.topic_path);
+        // A `/model` stacked behind a `/close` in the same message still runs
+        // (commands execute one after another), and this eager create would
+        // bring back the state dir the close just deleted — before any of the
+        // writes below gets a chance to consult the freeze.
+        if jyc_types::state_dir::is_closed(&context.topic_name) {
+            return Ok(CommandResult::refusal(
+                "/model: this topic was just closed; no model change".into(),
+            ));
+        }
         tokio::fs::create_dir_all(&state_dir).await?;
 
         let providers = &context.config.ai.providers;

@@ -1,3 +1,9 @@
+## [Unreleased]
+
+### Added
+
+- `jyc connect <host>` runs the dashboard here against a `jyc serve` that lives on another machine: the hub keeps the channels, topics and state where the work is, the TUI stays local, and an `ssh -N -L` child joins them — same port when it is free locally, so the links the server generates still resolve; the token is read from the remote per session instead of being copied onto this disk; the remote keeps its loopback bind, so nothing is exposed that the tunnel does not already tunnel. Starting the remote hub is opt-in (`-s/--serve`) — connecting never mutates the other machine by default — and quitting closes the tunnel while leaving the hub running, because other dashboards, channels and scheduled jobs may be using it (#989)
+
 ## [0.6.1] - 2026-10-23
 
 ### Added

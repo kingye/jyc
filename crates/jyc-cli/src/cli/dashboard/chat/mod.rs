@@ -283,6 +283,11 @@ pub(super) struct ChatState {
     pub(super) history_pos: Option<usize>,
     /// Authorization token to attach to WebSocket upgrade requests.
     pub(super) token: Option<String>,
+    /// `(from, to)` set by `jyc connect` when the tunnel's local port differs
+    /// from the remote hub's: the hub's publish links carry its own loopback
+    /// URL, which does not resolve here. Applied to message text on the way
+    /// in, so the pane shows (and copies) links that open.
+    pub(super) link_rewrite: Option<(String, String)>,
 }
 
 /// Creates a chat input editor containing `text` (possibly multi-line),
@@ -2669,7 +2674,19 @@ impl ChatState {
             question_typing: false,
             history_pos: None,
             token: None,
+            link_rewrite: None,
         }
+    }
+
+    /// Append a message the pane shows, translating tunnel-side link prefixes
+    /// first. Every push goes through here so the rewrite has one owner.
+    fn push_message(&mut self, mut msg: ChatMessage) {
+        if let Some((from, to)) = &self.link_rewrite
+            && msg.text.contains(from.as_str())
+        {
+            msg.text = msg.text.replace(from.as_str(), to);
+        }
+        self.messages.push(msg);
     }
 
     pub(super) fn open(
@@ -3307,7 +3324,7 @@ impl ChatState {
         let _ = self.topic.as_ref(); // topic must be set before send
         self.next_client_msg_seq += 1;
         let client_id = format!("{}-{}", std::process::id(), self.next_client_msg_seq);
-        self.messages.push(ChatMessage {
+        self.push_message(ChatMessage {
             sender: "user".to_string(),
             text: text.clone(),
             timestamp: Some(chrono::Utc::now().to_rfc3339()),
@@ -3858,7 +3875,7 @@ impl ChatState {
                         && !blocks.is_empty()
                         && self.is_visible_topic(&key.0, &key.1)
                     {
-                        self.messages.push(ChatMessage {
+                        self.push_message(ChatMessage {
                             sender: "thinking".to_string(),
                             text: blocks.join("\n\n"),
                             timestamp: Some(chrono::Utc::now().to_rfc3339()),
@@ -4048,7 +4065,7 @@ impl ChatState {
                 echo.timestamp = msg.timestamp.clone();
                 changed = true;
             } else if !self.messages.iter().any(|m| m.id == msg.id) {
-                self.messages.push(ChatMessage {
+                self.push_message(ChatMessage {
                     sender: msg.sender.clone(),
                     text: msg.text.clone(),
                     timestamp: msg.timestamp.clone(),

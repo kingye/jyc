@@ -336,6 +336,18 @@ jyc open                 # Create a new ad-hoc websocket topic and open chat
                          #   -p, --path <PATH>     Topic working directory (default: CWD)
                          #   -c, --channel <NAME>  Websocket channel (auto-detected if only one)
                          #   --addr <ADDR>        Inspect server address (default: 127.0.0.1:9876)
+jyc connect <host>       # Run the dashboard against a hub on another machine,
+                         #   over SSH (see "Remote hub over SSH" below)
+                         #   HOST                 [user@]host, or an ~/.ssh/config alias
+                         #   -s, --serve          Start `jyc serve` there if it is not
+                         #                        running (default: only connect)
+                         #   --bin <PATH>         jyc executable on the remote
+                         #                        (default: jyc)
+                         #   --remote-data-dir    Data dir on the remote (default: its own)
+                         #   --remote-bind        Inspect bind on the remote
+                         #                        (default: 127.0.0.1:9876)
+                         #   --token <TOKEN>      Auth token (default: read from the remote)
+                         #   -t/-p/-c             As `jyc open`, on the remote host
 jyc config init        # Generate config template (in <config dir>, or --data-dir)
 jyc config validate    # Validate config file (layered: global + data dir)
                        #   --config <FILE>   Config file path (default: as serve)
@@ -360,6 +372,30 @@ jyc plugins install <archive>   # Install a plugin bundle into the config dir
 ```
 
 The `dashboard` command requires the `[inspect]` section to be enabled in config.
+
+**Remote hub over SSH**: `jyc connect <host>` points the dashboard at a
+`jyc serve` on another machine. The remote keeps its loopback `[inspect] bind`
+— `jyc connect` opens an `ssh -N -L` forward on the same port when it is free
+locally (so `jyc_publish_file` links resolve unchanged), reads the token from
+the remote once per session and never writes it to this disk, and leaves the
+remote hub running when it quits (other dashboards, channels and scheduled
+jobs may be using it). Starting that hub is opt-in:
+
+```bash
+jyc connect devbox                 # dashboard against an existing hub
+jyc connect devbox -s              # start `jyc serve` there first
+jyc connect devbox -p ~/src/app    # open that remote directory as a topic
+```
+
+Requires `[inspect] enabled = true` on the remote, non-interactive ssh auth
+(`ssh devbox true` must not prompt): the bootstrap and the tunnel both run
+before the TUI takes the terminal, so a password prompt would have nowhere to
+appear. The remote login shell must be POSIX-ish (`sh`/`bash`/`zsh`/`dash`) —
+the bootstrap expands `$HOME` and probes for `setsid` through it. That probe is
+also why `-s` works on macOS: `setsid` is used when present, `nohup` alone
+otherwise. Link rewriting covers a concrete `--remote-bind` host; with a
+wildcard bind or a configured `[inspect] base_url` the tunnel still works, but
+the links the server generates then keep their remote URL.
 
 **Plugins**: a *plugin bundle* is a gzipped tar with `skills/`, `subagents/`,
 `hooks/` and `templates/` at its root — the four user-editable collections this

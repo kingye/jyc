@@ -3113,6 +3113,71 @@ bind = "127.0.0.1:9876"            # Default: 127.0.0.1:9876
 
 For Docker (Podman Machine on macOS), use `bind = "0.0.0.0:9876"` and the SSH tunnel script `scripts/jyc-podman-tunnel.sh`.
 
+### Remote Serve over SSH
+
+`jyc connect <[user@]host>` keeps the hub where the work is and the TUI where
+the user is: `jyc serve` runs on the remote machine, `jyc dashboard` runs
+locally, and the two are joined by an `ssh -N -L` child process.
+
+```
+local                                            remote
+  jyc dashboard ──HTTP/WS──► 127.0.0.1:9876 ~~ssh -L~~► 127.0.0.1:9876 ──► jyc serve
+```
+
+What the design buys, and what it deliberately does not:
+
+- **A tunnel child, not a new transport.** ssh owns authentication — keys,
+  agent, `~/.ssh/config`, jump hosts, `ProxyCommand` — and the dashboard keeps
+  speaking the plain loopback HTTP/WS it already spoke. No TLS, no new client
+  code, no change to the server.
+- **The remote keeps its loopback bind.** `jyc connect` adds no exposed port:
+  the tunnel is local on both ends. That is strictly safer than
+  `bind = "0.0.0.0"` with a bearer token over plaintext HTTP, and it is why
+  the `.ssh/config` alias of a bastion is enough to reach a hub behind it.
+- **Same port first.** Links the server generates are absolute
+  (`http://127.0.0.1:<port>/exchange/<channel>/<topic>/<name>?token=…`, from
+  `jyc_publish_file` and `/exchange`) and carry a per-topic token, so the port
+  in them is part of the answer. The tunnel prefers the remote's own port when
+  it is free locally, and leaves those links untouched. When the port is taken
+  here, an ephemeral port is used and message text is translated from the
+  remote prefix to the tunnel's as it enters the pane — the rewrite is applied
+  in one place (`ChatState::push_message`), so every ingestion path gets it.
+  The prefix that gets rewritten is the one the *server* builds links from
+  (`effective_base_url`): `http://<--remote-bind host>:<port>`. Two setups are
+  out of its reach and rely on the same-port preference alone — a wildcard
+  bind (the server substitutes its LAN IP, which this machine cannot know) and
+  a configured `[inspect] base_url` (which may name anything, including a
+  proxy). `jyc connect` emits no rewrite in those two cases rather than one
+  that cannot match.
+- **The token is read per session, never copied.** `jyc connect` runs
+  `jyc token show` on the remote and keeps the result in memory. A copy in the
+  local data dir would be a second secret to keep in sync, and the dashboard
+  would silently keep sending a stale one after a `jyc token reset` there.
+- **Starting the hub is opt-in (`-s/--serve`).** Connecting never mutates the
+  remote by default: the dashboard probes `GET /api/state/overview` through
+  the tunnel and, when nothing answers, fails with that probe's error — which
+  names a 401 when the server is up but the token is stale, and a transport
+  error when nothing is listening — plus the two remedies. With `-s` it starts
+  `nohup jyc serve` (SIGHUP ignored, so the closed session cannot take the hub
+  down), prefixed with `setsid` where that exists to also drop the controlling
+  terminal — macOS ships no `setsid`, and `nohup` plus redirected stdio is
+  enough there — and waits up to 60 s.
+- **Exiting ends the tunnel only.** The hub may be serving other dashboards,
+  channels and scheduled jobs; `jyc connect` owns the forward, not the server.
+  (A dashboard killed with SIGKILL never runs its `Drop`, so the `ssh -N` it
+  leaves behind holds the local port until it is killed by hand.)
+- **Non-interactive ssh is a requirement, not a preference.** Bootstrap and
+  tunnel both run before the TUI takes the terminal, so a password prompt
+  nobody can answer would hang in raw mode; `BatchMode=yes` turns that into a
+  fast failure whose text says to check `ssh <host> true` and the agent.
+  Every ssh command also carries an overall deadline (30 s), because
+  `ConnectTimeout` bounds only the TCP connect — name resolution, a
+  `ProxyCommand`, an sshd that never sends a banner, or a remote command that
+  never exits would otherwise hang the same way.
+- **A POSIX-ish remote login shell.** The bootstrap runs `printf '%s' "$HOME"`
+  and a `command -v setsid` test, and quoting assumes POSIX single-quote rules
+  — `sh`, `bash`, `zsh`, `dash` all fine, `csh`/`fish` not.
+
 ### Protocol
 
 HTTP/1.1 REST over TCP, with WebSocket upgrades on the same port. One

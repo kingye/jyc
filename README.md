@@ -588,13 +588,13 @@ directly to `cache_read_tokens * cache_hit_per_million` and
 `cache_creation_tokens * cache_creation_per_million` in the cost formula.
 
 The dashboard and chat **Topic Info** panes then show
-`Cost: ¥0.0521 session · ¥1.3057 today`:
+`Cost: ¥1.3057 today · ¥0.0521 session`:
 
-- **session** -- resets when the agent session resets (`/reset`).
 - **today** -- durable UTC-day total, appended per call to
   the state dir's `bill-YYYY-MM-DD.jsonl` and never reset or truncated. Each
   line records the token counts alongside the cost, so the ledger stays
   auditable and a corrected rate can be replayed over past usage.
+- **session** -- resets when the agent session resets (`/reset`).
 
 Summarization overhead is billed too -- the cycle-boundary progress summary
 and the context-compression call on session reset each summarize the whole

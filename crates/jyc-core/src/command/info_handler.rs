@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
 
-use jyc_types::{ChangeKind, TopicInfo, format_amount};
+use jyc_types::{ChangeKind, TopicInfo};
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use crate::duration::format_latency;
@@ -120,11 +120,7 @@ fn format_topic_info(t: &TopicInfo) -> String {
         ));
     }
     if let Some(cost) = &t.cost {
-        lines.push(format!(
-            "Cost: {} session · {} today",
-            format_amount(cost.session, &cost.currency),
-            format_amount(cost.today, &cost.currency)
-        ));
+        lines.push(format!("Cost: {}", jyc_types::format_cost_pair(cost)));
     }
     // The day's spend across every topic, per currency — the same figure
     // `/bill` reports.
@@ -301,7 +297,7 @@ Cache:
   Session: 964.51K / 1.18M (80%)
   Create: 111
 Reasoning: 4.00K
-Cost: $0.42 session · $1.23 today
+Cost: $1.23 today · $0.42 session
 Latency: 1.10s/call (3) · 820ms/call (37)
 Tasks (1/3):
   [✓] 1. inspect list_topics

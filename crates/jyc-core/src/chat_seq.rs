@@ -21,8 +21,6 @@
 //! [`ChatLogStore`]: crate::chat_log_store::ChatLogStore
 
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
 use std::sync::{LazyLock, Mutex};
 
 use jyc_types::InboundMessage;
@@ -61,12 +59,20 @@ pub fn next(topic_name: &str) -> u64 {
 
 /// The highest id already written to the topic's chat log, or `0` when none.
 ///
-/// Reads the tail of the newest `chat_history_*.jsonl` file: files roll over
-/// by date, and only the newest one can hold numbers allocated since. The
-/// highest number is taken over every whole record in the window, not over
-/// the last line, because a reordered write (see the module comment) can put
-/// a lower number last — and because a half-written last line is the common
-/// shape of a crash, and it must not reset the sequence.
+/// Reads the newest `chat_history_*.jsonl` file whole — files roll over by
+/// date, and a number allocated before a restart can only have been written to
+/// the file that was current at the time. The whole file, not its tail: a
+/// reordered write (see the module comment) can put a lower number last, and a
+/// window opened from the end cannot tell whether the record it cut open holds
+/// a higher one.
+///
+/// Only seeding reads it, once per topic per process, and a day's chat rows
+/// are small — a few hundred lines.
+///
+/// The previous day's file is not read: a row written after midnight for a
+/// number allocated before it can leave a higher number behind there, and a
+/// restart in that window could hand it out twice. That needs a restart, a
+/// midnight and a message injected mid-turn at once.
 fn max_on_disk(topic_name: &str) -> u64 {
     // Only the state dir can hold numbered rows: the legacy topic-root
     // location is where pre-sequence rows live, and they carry no id.
@@ -83,60 +89,17 @@ fn max_on_disk(topic_name: &str) -> u64 {
     else {
         return 0;
     };
-    let Ok(len) = std::fs::metadata(&newest).map(|m| m.len()) else {
+    let Ok(bytes) = std::fs::read(&newest) else {
         return 0;
     };
-
-    // The last record can be longer than the window (a long message); widen
-    // until the window opens on a line boundary and holds a number, or covers
-    // the whole file. A window that opens mid-record hides that record's id,
-    // and the id could be exactly the one a reordered write left behind it.
-    let mut window = 64 * 1024;
-    loop {
-        let start = len.saturating_sub(window);
-        let Ok(mut file) = std::fs::File::open(&newest) else {
-            return 0;
-        };
-        if file.seek(SeekFrom::Start(start)).is_err() {
-            return 0;
-        }
-        let mut bytes = Vec::new();
-        if file.read_to_end(&mut bytes).is_err() {
-            return 0;
-        }
-        // Lossy: a crash can split a multi-byte character. The torn line does
-        // not parse and is skipped, like any other partial record.
-        let buf = String::from_utf8_lossy(&bytes);
-        let max = buf
-            .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .filter_map(|row| row.get("id").and_then(|id| id.as_u64()))
-            .max();
-        if let Some(id) = max
-            && (start == 0 || opens_on_a_line(&newest, start))
-        {
-            return id;
-        }
-        if start == 0 {
-            return 0;
-        }
-        window = window.saturating_mul(2);
-    }
-}
-
-/// Whether `offset` begins a line, i.e. the byte before it is a newline.
-fn opens_on_a_line(path: &Path, offset: u64) -> bool {
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return false;
-    };
-    if file
-        .seek(SeekFrom::Start(offset.saturating_sub(1)))
-        .is_err()
-    {
-        return false;
-    }
-    let mut byte = [0u8; 1];
-    matches!(file.read_exact(&mut byte), Ok(()) if byte[0] == b'\n')
+    // Lossy: a crash can split a multi-byte character. The torn line does not
+    // parse and is skipped, like any other half-written record.
+    String::from_utf8_lossy(&bytes)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|row| row.get("id").and_then(|id| id.as_u64()))
+        .max()
+        .unwrap_or(0)
 }
 
 /// The chat sequence number an inbound message was tagged with, if any.
@@ -255,28 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_past_a_record_the_window_opens_inside() {
-        // The record before a reordered one is longer than the window, so the
-        // window opens mid-record and the highest id sits in the hidden part.
-        // The window must widen until it opens on a line boundary.
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "chat-seq-mid-record";
-        let state_dir_path = tmp.path().join(".jyc");
-        state_dir::register(topic, &state_dir_path);
-        let long = "x".repeat(200 * 1024);
-        write_log(
-            &state_dir_path,
-            &[
-                &format!(r#"{{"id":21,"type":"reply","content":"{long}"}}"#),
-                r#"{"id":20,"type":"received","content":"typed mid-turn"}"#,
-            ],
-        );
-
-        assert_eq!(next(topic), 22);
-    }
-
-    #[test]
-    fn reads_a_record_longer_than_the_first_window() {
+    fn reads_a_record_that_does_not_fit_one_line() {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "chat-seq-long-record";
         let state_dir_path = tmp.path().join(".jyc");

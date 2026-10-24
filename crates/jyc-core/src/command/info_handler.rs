@@ -71,7 +71,7 @@ fn format_topic_info(t: &TopicInfo) -> String {
         lines.push(format!("Branch: {branch}"));
     }
     lines.push(format!("Status: {}", t.status));
-    // The topic's backlog: the messages waiting for a turn of their own,
+    // The topic's backlog: the messages the model has not read yet,
     // against the queue's capacity. Omitted when the source reports no
     // capacity — there is no queue to report then.
     if t.queue_capacity > 0 {

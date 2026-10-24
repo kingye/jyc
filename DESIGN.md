@@ -1915,6 +1915,8 @@ When a user sends a follow-up message while the AI is still processing the first
 
 **The flag:** `live_injection`, per channel pattern, default `true`. With `false` the follow-up waits in the queue for a turn of its own — the behavior every release had before the flag was wired up.
 
+**The backlog:** the messages the turn took in and the model has not read yet are part of the topic's backlog — the user sent them and the model has not seen them — so the surfaces that report the backlog (the info pane's **Queue** row, `/info`) report them too. The turn ends the count with itself.
+
 **How it works (in-process agent):**
 
 1. The worker owns the topic's queue receiver and selects on it while the turn runs. A slash command is executed immediately through the command registry (`/cancel`, `/model` — instant feedback even during a 429 retry). A plain message is handed to the agent through a per-turn injection channel.
@@ -3388,11 +3390,12 @@ Not connected: connection refused
   and the room it has left; the blocks are a quarter short of a cell, so
   they keep a gap between them and read as blocks rather than as a solid
   bar. The figures (`2 / 10`) follow on the row under the blocks, in the
-  same column. The backlog is counted where the messages wait: the ones
-  still in the queue are the channel's own depth, the ones the running
-  turn pulled aside for a turn of their own are that turn's buffer; a
-  message that joined the running turn is not waiting and is not
-  counted. The two halves are read at different moments, so a poll that
+  same column. The backlog is what the model has not read yet, counted
+  where the messages wait: the ones still in the queue are the channel's
+  own depth, the ones the running turn pulled aside for a turn of their
+  own are that turn's buffer, and the ones the running turn took in and
+  the model has not read yet are that turn's injection channel. The
+  three are read at different moments, so a poll that
   lands while a turn hands its messages back can count one of them twice
   or not at all — the gap is one poll wide, and the next poll has it
   right. The backlog can exceed the capacity — the running turn holds

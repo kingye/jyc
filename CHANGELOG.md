@@ -2,7 +2,7 @@
 
 ### Added
 
-- The topic info pane and `/info` report how many messages are waiting for the topic: a `Queue:` row draws the backlog as one block per message the topic's queue can hold — `▊` in yellow for a message waiting for a turn of its own, `▊` in gray for a free slot — with the counts (`2 / 10`) under the blocks. The backlog is counted where the messages wait: the ones still in the queue are the channel's own depth, the ones the running turn pulled aside for a turn of their own are that turn's buffer; a message that joined the running turn is not waiting and is not counted. The row is left out when the source reports no capacity, and a column too narrow for a bar keeps the counts alone (#993)
+- The topic info pane and `/info` report how many of the topic's messages the model has not read yet: a `Queue:` row draws the backlog as one block per message the topic's queue can hold — `▊` in yellow for a message waiting for a turn of its own, `▊` in gray for a free slot — with the counts (`2 / 10`) under the blocks. The backlog is counted where the messages wait: the ones still in the queue are the channel's own depth, the ones the running turn pulled aside for a turn of their own are that turn's buffer, and the ones the running turn took in and the model has not read yet are that turn's injection channel — a message the user sent while the agent was working is waiting like any other, and the row says so. The row is left out when the source reports no capacity, and a column too narrow for a bar keeps the counts alone (#993, #994)
 
 ### Changed
 

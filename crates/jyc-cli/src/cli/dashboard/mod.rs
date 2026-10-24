@@ -1758,7 +1758,7 @@ fn close_overview_ws(app: &mut App) {
 /// Pack whole chips into rows of at most `width` cells.
 ///
 /// Each chip carries the separator that joins it to the one before it (empty for
-/// the first), so `2 active / 5 thread` keeps its slash while ` · ` separates the
+/// the first), so `2 active / 5 topic` keeps its slash while ` · ` separates the
 /// rest — a chip that has to start a new row drops its separator rather than
 /// leading a row with it.
 ///
@@ -1805,7 +1805,7 @@ fn chat_status_block(app: &App, width: u16) -> Vec<Line<'_>> {
     let rows = pack_chips(
         &[
             ("", format!("{} active", stats.active_workers)),
-            (" / ", format!("{} thread", stats.total_topics)),
+            (" / ", format!("{} topic", stats.total_topics)),
             (" · ", format!("{} recv", stats.messages_received)),
             (" · ", format!("{} err", stats.errors)),
             (

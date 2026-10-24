@@ -16,6 +16,15 @@ use jyc_types::TopicStatus;
 
 use super::TopicManager;
 
+/// The messages a queue holds: its capacity minus the room it has left.
+///
+/// Tokio's own numbers — the sender knows how much room the channel has
+/// left, and how much room it had at most — so the count cannot drift
+/// from the channel the way a counter of our own would.
+fn queue_depth<T>(tx: &tokio::sync::mpsc::Sender<T>) -> usize {
+    tx.max_capacity() - tx.capacity()
+}
+
 /// A topic's live status.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LiveStatus {
@@ -27,6 +36,14 @@ pub struct LiveStatus {
     /// Cleared when the next turn starts — a topic that failed once and
     /// then took a new message is working again, not still broken.
     pub has_error: bool,
+    /// The messages the running turn pulled aside for a turn of their
+    /// own: the ones that arrived while it was working and could not
+    /// join it.
+    ///
+    /// The queue's own backlog — the messages still waiting in the
+    /// channel — is counted by the channel itself; this half is the part
+    /// the channel cannot see.
+    pub queued: usize,
 }
 
 impl LiveStatus {
@@ -59,14 +76,28 @@ impl LiveStatusStore {
 
     /// A turn started: the topic is processing, and whatever went wrong
     /// before it is over.
+    ///
+    /// The write touches the two status flags and leaves the backlog
+    /// alone: a turn that starts finds the queue as it was, and a
+    /// backlog that survived the previous turn is still there.
     pub fn set_processing(&self, topic: &str) {
-        self.statuses().insert(
-            topic.to_string(),
-            LiveStatus {
-                is_processing: true,
-                has_error: false,
-            },
-        );
+        let mut statuses = self.statuses();
+        let entry = statuses.entry(topic.to_string()).or_default();
+        entry.is_processing = true;
+        entry.has_error = false;
+    }
+
+    /// The running turn's own backlog: the messages it pulled aside for a
+    /// turn of their own.
+    ///
+    /// The write is an overwrite, not a counter: the turn knows how many
+    /// messages it holds, so it says so — a counter would have to be
+    /// right about every way a message leaves the buffer, and a drift
+    /// there would show a topic a backlog it does not have.
+    pub fn set_queued(&self, topic: &str, queued: usize) {
+        let mut statuses = self.statuses();
+        let entry = statuses.entry(topic.to_string()).or_default();
+        entry.queued = queued;
     }
 
     /// The turn ended. A turn that did not succeed leaves the topic in
@@ -147,6 +178,30 @@ impl TopicManager {
     pub fn set_topic_tool_error_if_known(&self, topic_name: &str) {
         self.live_status.set_tool_error_if_known(topic_name);
     }
+
+    /// The backlog of every topic of this channel, read under one lock.
+    ///
+    /// The channel's queue depths for every topic at once: the messages
+    /// each topic's queue holds, waiting for a turn of their own. The
+    /// other half of the backlog — the messages the running turn pulled
+    /// aside — is the store's `queued`, read per topic.
+    ///
+    /// One lock for the whole channel: the overview asks for every topic
+    /// at once, and a lock per topic would serialize the poll it is
+    /// answering.
+    pub(crate) async fn channel_queued(&self) -> HashMap<String, usize> {
+        let queues = self.topic_queues.lock().await;
+        queues
+            .iter()
+            .map(|(name, tx)| (name.clone(), queue_depth(tx)))
+            .collect()
+    }
+
+    /// The running turn's own backlog — the messages it holds for a turn
+    /// of their own.
+    pub(crate) fn set_topic_queued(&self, topic_name: &str, queued: usize) {
+        self.live_status.set_queued(topic_name, queued);
+    }
 }
 
 /// Closes a topic's "processing" flag when a turn ends without saying so.
@@ -189,6 +244,49 @@ mod tests {
 
     fn store() -> Arc<LiveStatusStore> {
         Arc::new(LiveStatusStore::default())
+    }
+
+    /// The queue's depth is the channel's own count: the messages it
+    /// holds, not the room it has left.
+    #[test]
+    fn the_queue_depth_counts_the_messages_the_channel_holds() {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<u8>(4);
+        assert_eq!(queue_depth(&tx), 0);
+        tx.try_send(1).unwrap();
+        tx.try_send(2).unwrap();
+        assert_eq!(queue_depth(&tx), 2, "the two messages in the channel");
+        tx.try_send(3).unwrap();
+        tx.try_send(4).unwrap();
+        assert_eq!(queue_depth(&tx), 4, "the channel is full");
+        assert!(tx.try_send(5).is_err(), "a full channel takes no more");
+    }
+
+    /// The turn's backlog survives the next turn's start: a turn that
+    /// begins finds the queue as it was.
+    #[test]
+    fn the_backlog_survives_the_next_turn() {
+        let store = store();
+        store.set_queued("t", 3);
+        assert_eq!(store.get("t").queued, 3);
+        store.set_processing("t");
+        assert_eq!(
+            store.get("t").queued,
+            3,
+            "the turn's start wiped the backlog"
+        );
+        store.set_queued("t", 0);
+        assert_eq!(store.get("t").queued, 0, "the turn let its backlog go");
+    }
+
+    /// A closed topic has no backlog: the close clears the entry, and a
+    /// name reused later starts empty.
+    #[test]
+    fn a_closed_topic_has_no_backlog() {
+        let store = store();
+        store.set_queued("t", 3);
+        store.clear("t");
+        assert_eq!(store.get("t").queued, 0);
+        assert!(!store.get("t").is_processing, "the close cleared it");
     }
 
     /// The guard is what keeps "Processing" from outliving the turn: a turn

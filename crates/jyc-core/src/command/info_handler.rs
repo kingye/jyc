@@ -71,6 +71,12 @@ fn format_topic_info(t: &TopicInfo) -> String {
         lines.push(format!("Branch: {branch}"));
     }
     lines.push(format!("Status: {}", t.status));
+    // The topic's backlog: the messages waiting for a turn of their own,
+    // against the queue's capacity. Omitted when the source reports no
+    // capacity — there is no queue to report then.
+    if t.queue_capacity > 0 {
+        lines.push(format!("Queue: {} / {}", t.queued, t.queue_capacity));
+    }
     if let (Some(cur), Some(max)) = (t.context_input_tokens, t.max_tokens) {
         // The context size: the last call's input plus its output, against
         // the model's context window.
@@ -223,6 +229,8 @@ mod tests {
             channel: "feishu".into(),
             pattern: Some("gh-issue".into()),
             status: TopicStatus::Idle,
+            queued: 2,
+            queue_capacity: 10,
             parent: None,
             model: Some("kimi/k3-256k".into()),
             mode: Some("plan".into()),
@@ -289,6 +297,7 @@ Model: kimi/k3-256k
 Mode: plan
 Branch: fix/issue-42-timeout
 Status: Idle
+Queue: 2 / 10
 Tokens: 104.96K / 250.00K (41%)
 Output: 2.00K turn · 12.06K session
 Cache:
@@ -353,11 +362,28 @@ Files (2):
         t.turn_call_count = None;
         t.pattern = None;
         t.tasks = TaskList::default();
+        t.queue_capacity = 0;
         let text = format_topic_info(&t);
         assert_eq!(
             text,
             "Topic: issue-42\nPattern: -\nMode: build\nStatus: Idle"
         );
+    }
+
+    /// The queue's backlog, against the queue's capacity.
+    #[test]
+    fn formats_the_queue_row() {
+        let text = format_topic_info(&full_info());
+        assert!(text.contains("Queue: 2 / 10"), "{text}");
+    }
+
+    /// A topic whose source reports no capacity has no queue to report:
+    /// the row is left out rather than showing a queue of nothing.
+    #[test]
+    fn omits_the_queue_row_without_a_capacity() {
+        let mut t = full_info();
+        t.queue_capacity = 0;
+        assert!(!format_topic_info(&t).contains("Queue:"));
     }
 
     /// The session-only fallback through the real wiring: a turn that has

@@ -13,6 +13,7 @@ use jyc_core::duration::format_latency;
 use jyc_types::TopicInfo;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
+use unicode_width::UnicodeWidthStr;
 
 /// The label of the token-usage row.
 const TOKENS_LABEL: &str = "Tokens: ";
@@ -34,7 +35,7 @@ const TODAY_ALL_LABEL: &str = "Today (all): ";
 /// The width every label of the info pane is padded to, so that every
 /// value in the pane starts in the same column and the pane reads as one
 /// table instead of a ragged list. The longest label sets it: a longer
-/// one would leave less room for the values than [`BAR_LABEL_ROOM`]
+/// one would leave less room for the values than the value column
 /// allows, and the wrapping would cut them.
 ///
 /// A label longer than this pushes its own value out of the column —
@@ -45,14 +46,6 @@ pub(super) const LABEL_WIDTH: usize = TODAY_ALL_LABEL.len();
 /// cells short of the edge, so it never touches the border and the pane
 /// keeps a margin of its own.
 const BAR_EDGE_ROOM: usize = 2;
-
-/// The room a bar leaves for its row: the padded label, plus the cells
-/// the bar keeps to the pane's edge. The figures need no room here —
-/// they have a row of their own under the bar, so the bar does not have
-/// to leave space for them beside it and can reach for the edge. Only
-/// the table layout has to leave the label's room: in the stacked one
-/// the bar has the row to itself.
-const BAR_LABEL_ROOM: usize = LABEL_WIDTH + BAR_EDGE_ROOM;
 
 /// The narrowest bar worth drawing. The fill rounds to the nearest cell, so
 /// a bar of five cells is within ten points of the share; below that the
@@ -98,6 +91,16 @@ pub(super) fn layout_for(inner_width: u16) -> PaneLayout {
     }
 }
 
+/// The width of the pane's value column: what the label leaves in the
+/// table layout, the whole row in the stacked one. Every value of the
+/// pane starts in that column, so a row that fills it fills the pane.
+pub(super) fn value_width(inner_width: u16, layout: PaneLayout) -> usize {
+    match layout {
+        PaneLayout::Table => (inner_width as usize).saturating_sub(LABEL_WIDTH).max(1),
+        PaneLayout::Stacked => inner_width as usize,
+    }
+}
+
 /// The bar width for a pane of the given inner width, laid out as
 /// `layout` says: as wide as the pane allows, stopping
 /// [`BAR_EDGE_ROOM`] cells short of its right edge. A bar wider than the
@@ -110,11 +113,7 @@ pub(super) fn layout_for(inner_width: u16) -> PaneLayout {
 /// the room is what the label leaves; in the stacked layout the bar has
 /// the row to itself.
 pub(super) fn bar_width(inner_width: u16, layout: PaneLayout) -> usize {
-    let width = inner_width as usize;
-    let room = match layout {
-        PaneLayout::Table => width.saturating_sub(BAR_LABEL_ROOM),
-        PaneLayout::Stacked => width.saturating_sub(BAR_EDGE_ROOM),
-    };
+    let room = value_width(inner_width, layout).saturating_sub(BAR_EDGE_ROOM);
     if room < MIN_BAR_WIDTH {
         return 0;
     }
@@ -392,8 +391,13 @@ pub(super) fn push_latency_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     }
 }
 
-/// The label of the queue row.
-const QUEUE_LABEL: &str = "Queue: ";
+/// The word that names the blocks on the status row. It says what the
+/// blocks count — the queue's occupancy — so they cannot be read as the
+/// progress of the turn the status word names.
+const QUEUE_WORD: &str = "queue ";
+
+/// The separator between the status word and the queue's part of the row.
+const QUEUE_SEPARATOR: &str = " · ";
 
 /// The block that stands for one message of the topic's queue.
 ///
@@ -403,13 +407,19 @@ const QUEUE_LABEL: &str = "Queue: ";
 /// ambiguous, and a CJK font would stretch them.
 const QUEUE_BLOCK: &str = "▊";
 
-/// Append the "Queue: <blocks>" row to `spans` — the topic's backlog,
-/// one block per message its queue can hold: the queued ones yellow, the
-/// free slots dark gray.
+/// Append the status row to `spans` — the topic's live status and the
+/// backlog its queue holds, on one row: `Processing · queue ▊▊▊ 2 / 10`.
 ///
-/// The row is the queue's capacity wide, so it shows the room the topic
-/// has left as well as what it holds; the figures on the row under it
-/// carry the exact counts.
+/// The blocks say how much of the queue is taken (the queued ones yellow,
+/// the free slots dark gray), the figures carry the exact counts, and
+/// the word `queue` is what tells the reader that the blocks count the
+/// queue and not the progress of the turn the status word names.
+///
+/// The row gives way as the pane narrows, in this order: the figures
+/// move to the row under it, then the blocks go (and the word with them
+/// — it names blocks that are no longer there), then the figures move
+/// under the status word. Nothing is dropped: every figure is still on
+/// the pane.
 ///
 /// The backlog is what the model has not read yet: the messages still in
 /// the queue, the ones the running turn pulled aside for a turn of their
@@ -418,34 +428,73 @@ const QUEUE_BLOCK: &str = "▊";
 /// messages the queue gave up room for — and the blocks then fill the row
 /// without covering it: the figures say what is really waiting.
 ///
-/// Returns the row's figures — "2 / 10" — for the caller to lay out on
-/// the row under the bar, where they line up with it. A pane too narrow
-/// for a bar keeps the figures in the row itself and gets `None` back.
-/// Pushes nothing when the topic reports no capacity: there is no queue
-/// to draw then.
-pub(super) fn push_queue_span(
+/// Returns the figures when they belong on the row under the status
+/// word, for the caller to lay out there; `None` when they share the
+/// row. A topic whose source reports no capacity has no queue to draw:
+/// the row is then the status word alone.
+pub(super) fn push_status_span(
     spans: &mut Vec<Span>,
     t: &TopicInfo,
-    bar_cells: usize,
+    value_cells: usize,
 ) -> Option<Span<'static>> {
+    spans.push(label_span("Status: "));
+    let status = format!("{}", t.status);
+    let status_cells = status.width();
+    spans.push(Span::raw(status));
     let capacity = t.queue_capacity;
     if capacity == 0 {
         return None;
     }
     let figures = format!("{} / {}", t.queued, capacity);
-    spans.push(label_span(QUEUE_LABEL));
-    if bar_cells == 0 {
+    // The row with the figures on it: status · queue <blocks> <figures>.
+    let with_figures =
+        status_cells + QUEUE_SEPARATOR.width() + QUEUE_WORD.width() + 1 + figures.width();
+    let blocks = value_cells.saturating_sub(with_figures);
+    if blocks >= MIN_BAR_WIDTH {
+        spans.push(Span::raw(QUEUE_SEPARATOR));
+        spans.push(Span::raw(QUEUE_WORD));
+        push_queue_blocks(spans, t, blocks);
+        spans.push(Span::raw(" "));
         spans.push(Span::raw(figures));
         return None;
     }
-    // A capacity wider than the row: the blocks would be cut in half by
-    // the wrapping, so the queue is drawn as a share of the row instead
-    // of one block per message. The figures below carry the counts.
-    let (cells, filled) = if capacity <= bar_cells {
+    // The row without them: status · queue <blocks>, the figures on the
+    // row under it. The blocks keep two cells to the pane's edge, so they
+    // never touch the border.
+    let blocks = value_cells.saturating_sub(
+        status_cells + QUEUE_SEPARATOR.width() + QUEUE_WORD.width() + BAR_EDGE_ROOM,
+    );
+    if blocks >= MIN_BAR_WIDTH {
+        spans.push(Span::raw(QUEUE_SEPARATOR));
+        spans.push(Span::raw(QUEUE_WORD));
+        push_queue_blocks(spans, t, blocks);
+        return Some(Span::raw(figures));
+    }
+    // No blocks: the word names blocks that are no longer there, so it
+    // goes with them.
+    if value_cells >= status_cells + QUEUE_SEPARATOR.width() + figures.width() {
+        spans.push(Span::raw(QUEUE_SEPARATOR));
+        spans.push(Span::raw(figures));
+        return None;
+    }
+    Some(Span::raw(figures))
+}
+
+/// Append the queue's blocks to `spans` — one block per message the
+/// queue can hold, the queued ones yellow and the free slots dark gray,
+/// in at most `room` cells of room.
+///
+/// A capacity wider than the room is drawn as a share of it: the blocks
+/// would be cut in half by the wrapping, so the row shows how much of the
+/// queue is taken, rounded to the nearest cell. The figures beside the
+/// blocks carry the exact counts.
+fn push_queue_blocks(spans: &mut Vec<Span>, t: &TopicInfo, room: usize) {
+    let capacity = t.queue_capacity;
+    let (cells, filled) = if capacity <= room {
         (capacity, t.queued.min(capacity))
     } else {
-        let filled = ((t.queued.min(capacity) * bar_cells) + capacity / 2) / capacity;
-        (bar_cells, filled.min(bar_cells))
+        let filled = ((t.queued.min(capacity) * room) + capacity / 2) / capacity;
+        (room, filled.min(room))
     };
     if filled > 0 {
         spans.push(Span::styled(
@@ -461,7 +510,6 @@ pub(super) fn push_queue_span(
             Style::default().fg(Color::DarkGray),
         ));
     }
-    Some(Span::raw(figures))
 }
 
 #[cfg(test)]
@@ -622,26 +670,85 @@ mod tests {
         assert!(figures.is_none());
     }
 
-    /// A queue wider than the row is drawn as a share of it: the blocks
-    /// would be cut in half by the wrapping, so the row shows how much of
-    /// the queue is taken, rounded to the nearest cell. The figures keep
-    /// the exact counts.
+    /// The status row carries the queue's backlog: the blocks say how much
+    /// of the queue is taken, the figures carry the exact counts, and the
+    /// word `queue` says what the blocks count — so they cannot be read as
+    /// the progress of the turn the status word names.
     #[test]
-    fn a_queue_wider_than_the_row_is_drawn_as_a_share_of_it() {
+    fn the_status_row_carries_the_queue_as_blocks() {
         let mut t = info_with(None, None, None, None, None, None);
         t.queued = 3;
         t.queue_capacity = 10;
         let mut spans = Vec::new();
-        // A row of five cells for a queue of ten: three of ten messages
-        // waiting is a tenth and a half of the row, which rounds to two
-        // cells.
-        let figures = push_queue_span(&mut spans, &t, 5);
-        assert_eq!(spans.len(), 3, "the label, the filled cells, the rest");
-        assert_eq!(spans[0].content, padded(QUEUE_LABEL));
-        assert_eq!(spans[1].content, QUEUE_BLOCK.repeat(2));
-        assert_eq!(spans[1].style.fg, Some(Color::Yellow));
-        assert_eq!(spans[2].content, QUEUE_BLOCK.repeat(3));
-        assert_eq!(spans[2].style.fg, Some(Color::DarkGray));
+        // A value column of twenty-five cells: the status word, the
+        // separator, the word, the figures and five cells of blocks.
+        let figures = push_status_span(&mut spans, &t, 25);
+        assert_eq!(spans.len(), 8, "{spans:?}");
+        assert_eq!(spans[0].content, padded("Status: "));
+        assert_eq!(spans[1].content, "Idle");
+        assert_eq!(spans[2].content, QUEUE_SEPARATOR);
+        assert_eq!(spans[3].content, QUEUE_WORD);
+        // Three of ten messages waiting in five cells is a tenth and a
+        // half of the row, which rounds to two cells.
+        assert_eq!(spans[4].content, QUEUE_BLOCK.repeat(2));
+        assert_eq!(spans[4].style.fg, Some(Color::Yellow));
+        assert_eq!(spans[5].content, QUEUE_BLOCK.repeat(3));
+        assert_eq!(spans[5].style.fg, Some(Color::DarkGray));
+        assert_eq!(spans[6].content, " ");
+        assert_eq!(spans[7].content, "3 / 10");
+        assert!(figures.is_none(), "the figures share the row");
+    }
+
+    /// A row too narrow for the figures beside the blocks gives them the
+    /// row under it — nothing is dropped, and the blocks keep their word.
+    #[test]
+    fn the_status_row_gives_the_figures_the_row_under_it() {
+        let mut t = info_with(None, None, None, None, None, None);
+        t.queued = 3;
+        t.queue_capacity = 10;
+        let mut spans = Vec::new();
+        // One cell short of the figures fitting beside the blocks: the
+        // blocks take the room the figures would have had.
+        let figures = push_status_span(&mut spans, &t, 24);
+        assert_eq!(spans.len(), 6, "{spans:?}");
+        assert_eq!(spans[4].content, QUEUE_BLOCK.repeat(3));
+        assert_eq!(spans[4].style.fg, Some(Color::Yellow));
+        assert_eq!(spans[5].content, QUEUE_BLOCK.repeat(6));
+        assert_eq!(spans[5].style.fg, Some(Color::DarkGray));
+        assert_eq!(figures.unwrap().content, "3 / 10");
+    }
+
+    /// A row too narrow for honest blocks drops them — and the word that
+    /// named them — and keeps the figures.
+    #[test]
+    fn the_status_row_drops_the_blocks_when_the_row_cannot_carry_them() {
+        let mut t = info_with(None, None, None, None, None, None);
+        t.queued = 3;
+        t.queue_capacity = 10;
+        let mut spans = Vec::new();
+        // Nineteen cells: too narrow for five blocks beside the word,
+        // wide enough for the figures.
+        let figures = push_status_span(&mut spans, &t, 19);
+        assert_eq!(spans.len(), 4, "{spans:?}");
+        assert_eq!(spans[0].content, padded("Status: "));
+        assert_eq!(spans[1].content, "Idle");
+        assert_eq!(spans[2].content, QUEUE_SEPARATOR);
+        assert_eq!(spans[3].content, "3 / 10");
+        assert!(figures.is_none(), "the figures stay in the row");
+    }
+
+    /// A row too narrow for the figures as well puts them under the status
+    /// word: the count still reads.
+    #[test]
+    fn the_status_row_puts_the_figures_under_a_narrow_status() {
+        let mut t = info_with(None, None, None, None, None, None);
+        t.queued = 3;
+        t.queue_capacity = 10;
+        let mut spans = Vec::new();
+        // Ten cells: the status word alone, the figures under it.
+        let figures = push_status_span(&mut spans, &t, 10);
+        assert_eq!(spans.len(), 2, "{spans:?}");
+        assert_eq!(spans[1].content, "Idle");
         assert_eq!(figures.unwrap().content, "3 / 10");
     }
 
@@ -654,11 +761,15 @@ mod tests {
         t.queued = 30;
         t.queue_capacity = 10;
         let mut spans = Vec::new();
-        let figures = push_queue_span(&mut spans, &t, 5);
-        assert_eq!(spans.len(), 2, "the label and the full row");
-        assert_eq!(spans[1].content, QUEUE_BLOCK.repeat(5));
-        assert_eq!(spans[1].style.fg, Some(Color::Yellow));
-        assert_eq!(figures.unwrap().content, "30 / 10");
+        // Twenty-six cells: the status word, the separator, the word, a
+        // space and the figures — `30 / 10` is seven cells, one more than
+        // a single-digit count — leave five for the blocks.
+        let figures = push_status_span(&mut spans, &t, 26);
+        assert_eq!(spans.len(), 7, "{spans:?}");
+        assert_eq!(spans[4].content, QUEUE_BLOCK.repeat(5));
+        assert_eq!(spans[4].style.fg, Some(Color::Yellow));
+        assert_eq!(spans[6].content, "30 / 10");
+        assert!(figures.is_none());
     }
 
     /// An empty queue of a wide one draws the row in free slots only.
@@ -668,11 +779,27 @@ mod tests {
         t.queued = 0;
         t.queue_capacity = 10;
         let mut spans = Vec::new();
-        let figures = push_queue_span(&mut spans, &t, 5);
-        assert_eq!(spans.len(), 2, "the label and the free row");
-        assert_eq!(spans[1].content, QUEUE_BLOCK.repeat(5));
-        assert_eq!(spans[1].style.fg, Some(Color::DarkGray));
-        assert_eq!(figures.unwrap().content, "0 / 10");
+        let figures = push_status_span(&mut spans, &t, 25);
+        assert_eq!(spans.len(), 7, "{spans:?}");
+        assert_eq!(spans[4].content, QUEUE_BLOCK.repeat(5));
+        assert_eq!(spans[4].style.fg, Some(Color::DarkGray));
+        assert_eq!(spans[6].content, "0 / 10");
+        assert!(figures.is_none());
+    }
+
+    /// A topic whose source reports no capacity has no queue to draw: the
+    /// row is the status word alone.
+    #[test]
+    fn the_status_row_without_a_capacity_is_the_status_alone() {
+        let mut t = info_with(None, None, None, None, None, None);
+        t.queued = 0;
+        t.queue_capacity = 0;
+        let mut spans = Vec::new();
+        let figures = push_status_span(&mut spans, &t, 25);
+        assert_eq!(spans.len(), 2, "{spans:?}");
+        assert_eq!(spans[0].content, padded("Status: "));
+        assert_eq!(spans[1].content, "Idle");
+        assert!(figures.is_none());
     }
 
     /// The two cache rows share one bar width and one label width, so

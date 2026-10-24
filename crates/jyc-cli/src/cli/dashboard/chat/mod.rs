@@ -3,9 +3,9 @@
 
 use super::token_render::{
     LABEL_WIDTH, PaneLayout, bar_width, context_pct, label_span, layout_for,
-    push_cache_creation_span, push_cost_span, push_latency_span, push_output_span, push_queue_span,
-    push_reasoning_span, push_session_cache_span, push_today_all_span, push_tokens_span,
-    push_turn_cache_span,
+    push_cache_creation_span, push_cost_span, push_latency_span, push_output_span,
+    push_reasoning_span, push_session_cache_span, push_status_span, push_today_all_span,
+    push_tokens_span, push_turn_cache_span, value_width,
 };
 use super::*;
 use jyc_core::duration::{DurationStyle, format_duration_ms, format_duration_secs};
@@ -1826,28 +1826,25 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
                 Span::raw(branch),
             ]));
         }
-        // Status row — the topic's live status, the same value `/info`
-        // reports and the overview table shows.
-        rows.push(InfoRow::Field(vec![
-            label_span("Status: "),
-            Span::raw(format!("{}", t.status)),
-        ]));
+        // The width the pane's values get: what the label leaves in the
+        // table layout, the whole row in the stacked one. The status row
+        // lays its backlog out in it.
+        let value_cells = value_width(topic_inner.width, layout);
+        // Status row — the topic's live status and the backlog its queue
+        // holds, on one row: `Processing · queue ▊▊▊ 2 / 10`. The figures
+        // move to the row under it when the pane is too narrow for them
+        // beside the blocks.
+        let mut status_spans = Vec::with_capacity(8);
+        let status_figures = push_status_span(&mut status_spans, t, value_cells);
+        rows.push(InfoRow::Field(status_spans));
+        if let Some(figures) = status_figures {
+            rows.push(InfoRow::Value(figures));
+        }
         // The two percentage rows draw their bar as wide as this pane
         // allows — never wider, or the wrapping would cut it in half, and
         // never narrower than a bar can carry the share honestly: a pane
         // too narrow for that gets the figures alone.
         let bar_cells = bar_width(topic_inner.width, layout);
-        // Queue row — the topic's backlog, one block per message its
-        // queue can hold, with the figures on the row under the blocks.
-        // The same value `/info` reports.
-        let mut queue_spans = Vec::with_capacity(3);
-        let queue_figures = push_queue_span(&mut queue_spans, t, bar_cells);
-        if !queue_spans.is_empty() {
-            rows.push(InfoRow::Field(queue_spans));
-        }
-        if let Some(figures) = queue_figures {
-            rows.push(InfoRow::Value(figures));
-        }
         // Tokens row — the label and the bar, with the figures on the row
         // under them: the bar has the row to itself, so it can reach for
         // the pane's edge, and the figures line up with it.

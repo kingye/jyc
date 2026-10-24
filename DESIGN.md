@@ -1915,7 +1915,7 @@ When a user sends a follow-up message while the AI is still processing the first
 
 **The flag:** `live_injection`, per channel pattern, default `true`. With `false` the follow-up waits in the queue for a turn of its own — the behavior every release had before the flag was wired up.
 
-**The backlog:** the messages the turn took in and the model has not read yet are part of the topic's backlog — the user sent them and the model has not seen them — so the surfaces that report the backlog (the info pane's **Queue** row, `/info`) report them too. The turn ends the count with itself.
+**The backlog:** the messages the turn took in and the model has not read yet are part of the topic's backlog — the user sent them and the model has not seen them — so the surfaces that report the backlog (the info pane's **Status** row, `/info`) report them too. The turn ends the count with itself.
 
 **How it works (in-process agent):**
 
@@ -3309,8 +3309,8 @@ Not connected: connection refused
                                                                                            │ Model:       claude-opus-4-8         
                                                                                            │ Mode:        build                   
                                                                                            │ Branch:      feat/issue-42           
-                                                                                           │ Queue:       ▊▊▊▊▊▊▊▊▊▊              
-                                                                                           │              2 / 10                  
+                                                                                           │ Status:      Processing · queue ▊▊▊▊▊
+                                                                                           │              2 / 10
                                                                                            │ Tokens:      ────────··············  
                                                                                            │              44.17K / 117.19K (38%)  
                                                                                            │ Cache:                               
@@ -3383,14 +3383,21 @@ Not connected: connection refused
   label, in the stacked one it has the row to itself — either way it stops
   two cells short of the column's edge — so a bar appears wherever the
   column can carry an
-  honest one, not only in a wide terminal. The **Queue** row draws the
-  topic's backlog: one block per message the topic's queue can hold —
-  `▊` for a message waiting for a turn of its own (bold yellow), `▊` in
-  dim gray for a free slot — so the row shows both what the topic holds
-  and the room it has left; the blocks are a quarter short of a cell, so
-  they keep a gap between them and read as blocks rather than as a solid
-  bar. The figures (`2 / 10`) follow on the row under the blocks, in the
-  same column. The backlog is what the model has not read yet, counted
+  honest one, not only in a wide terminal. The **Status** row carries the
+  topic's status and its backlog: the status word, then the blocks that
+  say how much of the topic's queue is taken — one block per message the
+  queue can hold, `▊` for a message waiting for a turn of its own (bold
+  yellow), `▊` in dim gray for a free slot — so the row shows both what
+  the topic holds and the room it has left; the blocks are a quarter
+  short of a cell, so they keep a gap between them and read as blocks
+  rather than as a solid bar. The word `queue` names them, so they
+  cannot be read as the progress of the turn the status word names:
+  `Status: Processing · queue ▊▊▊ 2 / 10`. The word and the blocks are
+  what the row gives up as the column narrows: first the figures (`2 /
+  10`) move to the row under it, then the blocks go — and the word with
+  them, for it names blocks that are no longer there — then the figures
+  move under the status word; nothing is dropped. The backlog is what the
+  model has not read yet, counted
   where the messages wait: the ones still in the queue are the channel's
   own depth, the ones the running turn pulled aside for a turn of their
   own are that turn's buffer, and the ones the running turn took in and
@@ -3400,8 +3407,8 @@ Not connected: connection refused
   or not at all — the gap is one poll wide, and the next poll has it
   right. The backlog can exceed the capacity — the running turn holds
   messages the queue gave up room for — and the blocks then fill the row
-  without covering it; the figures say what is really waiting. The row is
-  left out when the topic reports no capacity — an
+  without covering it; the figures say what is really waiting. The
+  backlog is left out when the topic reports no capacity — an
   older peer, or a source that does not know the queue. The pane's other
   sections — the
   task list, the changed files — are not `label: value` rows and keep their

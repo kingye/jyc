@@ -1875,11 +1875,12 @@ fn info_pane_app(tasks: jyc_types::task::TaskList) -> App {
     app
 }
 
-/// The queue row draws the topic's backlog: one block per message the
-/// queue can hold — the queued ones yellow, the free slots gray — with
-/// the figures under them.
+/// The status row carries the topic's backlog: the blocks say how much of
+/// the queue is taken — the queued ones yellow, the free slots gray — and
+/// the word `queue` says what they count, so they cannot be read as the
+/// progress of the turn the status names. The figures share the row.
 #[test]
-fn info_pane_draws_the_queue_as_blocks() {
+fn info_pane_draws_the_queue_on_the_status_row() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     let mut app = info_pane_app(jyc_types::task::TaskList::default());
@@ -1899,61 +1900,68 @@ fn info_pane_draws_the_queue_as_blocks() {
     // The row that carries the blocks.
     let row = (0..height)
         .find(|y| (0..width).any(|x| buffer[(x, *y)].symbol() == "▊"))
-        .expect("the queue row");
+        .expect("the status row");
     let blocks: Vec<(u16, Color)> = (0..width)
         .filter_map(|x| {
             let cell = &buffer[(x, row)];
             (cell.symbol() == "▊").then_some((x, cell.fg))
         })
         .collect();
-    assert_eq!(blocks.len(), 10, "one block per message the queue can hold");
+    assert_eq!(blocks.len(), 6, "the blocks fill the room the row has");
     let queued = blocks.iter().filter(|(_, fg)| *fg == Color::Yellow).count();
     let free = blocks
         .iter()
         .filter(|(_, fg)| *fg == Color::DarkGray)
         .count();
-    assert_eq!(queued, 2, "the two messages waiting are yellow");
-    assert_eq!(free, 8, "the eight free slots are gray");
+    assert_eq!(queued, 1, "the two messages waiting are yellow");
+    assert_eq!(free, 5, "the free slots are gray");
     // The queued blocks come first: the row reads as a queue filling up.
     let first_gray = blocks
         .iter()
         .position(|(_, fg)| *fg == Color::DarkGray)
         .expect("the free slots");
-    assert_eq!(first_gray, 2, "the yellow blocks lead the row");
+    assert_eq!(first_gray, 1, "the yellow blocks lead the row");
 
-    // The figures, on the row under the blocks.
-    let figures: String = (0..width)
-        .map(|x| buffer[(x, row + 1)].symbol().to_string())
+    // The figures and the word share the row with the blocks.
+    let line: String = (0..width)
+        .map(|x| buffer[(x, row)].symbol().to_string())
         .collect();
-    assert!(figures.contains("2 / 10"), "{figures}");
+    assert!(line.contains("2 / 10"), "{line}");
+    assert!(line.contains("queue"), "{line}");
 }
 
 /// A topic whose source reports no capacity has no queue to draw: the
-/// row is left out rather than showing a queue of nothing.
+/// status row is the status word alone.
 #[test]
-fn info_pane_omits_the_queue_row_without_a_capacity() {
+fn info_pane_omits_the_queue_without_a_capacity() {
     let mut app = info_pane_app(jyc_types::task::TaskList::default());
     let detail = app.topic_detail.as_mut().expect("the detail");
     detail.queued = 0;
     detail.queue_capacity = 0;
     let pane = info_pane_text(&mut app, 40, 24);
-    assert!(!pane.contains("Queue:"), "{pane}");
+    assert!(!pane.contains("queue"), "{pane}");
+    assert!(!pane.contains('▊'), "{pane}");
+    assert!(pane.contains("Status:"), "{pane}");
 }
 
-/// The figures on their own when the pane is too narrow for a bar: the
-/// count still reads, and the row keeps its place.
+/// A pane too narrow for the blocks puts the figures under the status
+/// word: the count still reads, and the row keeps its place.
 #[test]
-fn info_pane_shows_the_queue_figures_alone_in_a_narrow_pane() {
+fn info_pane_puts_the_queue_figures_under_the_status_in_a_narrow_pane() {
     let mut app = info_pane_app(jyc_types::task::TaskList::default());
     let detail = app.topic_detail.as_mut().expect("the detail");
     detail.queued = 2;
     detail.queue_capacity = 10;
-    // Six cells of pane: too narrow for a bar of five.
+    // Six cells of pane: too narrow for a block of five.
     let pane = info_pane_text(&mut app, 7, 24);
     assert!(pane.contains("2 / 10"), "{pane}");
     assert!(
         !pane.contains('▊'),
         "a narrow pane draws no blocks:\n{pane}"
+    );
+    assert!(
+        !pane.contains("queue"),
+        "a narrow pane drops the word with the blocks:\n{pane}"
     );
 }
 

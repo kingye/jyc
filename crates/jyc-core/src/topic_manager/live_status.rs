@@ -246,6 +246,12 @@ impl TopicManager {
 /// them — they died with it. Either way the turn holds none when the guard
 /// drops, and a count that outlived it would be a backlog the topic does
 /// not have, inherited by the next turn.
+///
+/// The guard's writes name the topic, not the turn: a topic closed and
+/// reopened under this guard can have the new turn's count cleared by this
+/// one. The window is the guard's own drop — nothing awaits between the
+/// two writes — and the new turn rewrites the count the next time it takes
+/// a message in.
 pub(crate) struct TurnStatusGuard {
     store: Arc<LiveStatusStore>,
     topic_name: String,
@@ -304,7 +310,7 @@ mod tests {
     /// the running turn, and the turn's first poll can land after the
     /// worker already pulled a message aside for it.
     #[test]
-    fn the_turns_start_leaves_the_backlog_alone() {
+    fn the_turn_start_leaves_the_backlog_alone() {
         let store = store();
         store.set_queued("t", 3);
         assert_eq!(store.get("t").queued, 3);

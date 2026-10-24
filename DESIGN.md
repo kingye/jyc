@@ -3392,7 +3392,10 @@ Not connected: connection refused
   still in the queue are the channel's own depth, the ones the running
   turn pulled aside for a turn of their own are that turn's buffer; a
   message that joined the running turn is not waiting and is not
-  counted. The backlog can exceed the capacity — the running turn holds
+  counted. The two halves are read at different moments, so a poll that
+  lands while a turn hands its messages back can count one of them twice
+  or not at all — the gap is one poll wide, and the next poll has it
+  right. The backlog can exceed the capacity — the running turn holds
   messages the queue gave up room for — and the blocks then fill the row
   without covering it; the figures say what is really waiting. The row is
   left out when the topic reports no capacity — an

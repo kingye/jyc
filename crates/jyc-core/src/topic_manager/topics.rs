@@ -781,8 +781,11 @@ impl TopicManager {
                 status,
                 // The topic's backlog: the messages its queue holds, plus
                 // the ones the running turn pulled aside for a turn of
-                // their own. Both halves are counted where they live —
-                // the channel's queue and the turn's buffer.
+                // their own. Each half is counted where it lives — the
+                // channel's queue and the turn's buffer — but the two are
+                // read at different moments, so a poll that lands while a
+                // turn hands its messages back can count one of them
+                // twice or not at all. The gap is one poll wide.
                 queued: queued.get(name).copied().unwrap_or(0) + self.live_status.get(name).queued,
                 // The queue's capacity — how many messages it holds before
                 // new ones are dropped. Every topic of a channel shares

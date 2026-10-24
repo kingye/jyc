@@ -21,6 +21,11 @@ use super::TopicManager;
 /// Tokio's own numbers — the sender knows how much room the channel has
 /// left, and how much room it had at most — so the count cannot drift
 /// from the channel the way a counter of our own would.
+///
+/// A channel whose receiver is gone reports no depth: dropping the
+/// receiver drains what it held and hands the permits back, so a queue
+/// nobody reads counts as empty rather than as full of messages that
+/// were thrown away with it.
 fn queue_depth<T>(tx: &tokio::sync::mpsc::Sender<T>) -> usize {
     tx.max_capacity() - tx.capacity()
 }
@@ -78,8 +83,13 @@ impl LiveStatusStore {
     /// before it is over.
     ///
     /// The write touches the two status flags and leaves the backlog
-    /// alone: a turn that starts finds the queue as it was, and a
-    /// backlog that survived the previous turn is still there.
+    /// alone: a turn that starts finds the queue as it was.
+    ///
+    /// The backlog belongs to the running turn, and the turn's first poll
+    /// can land after the worker already pulled a message aside for it —
+    /// clearing the count here would hide that message for the whole
+    /// first call. The count is ended with the turn instead (see
+    /// [`TurnStatusGuard`]).
     pub fn set_processing(&self, topic: &str) {
         let mut statuses = self.statuses();
         let entry = statuses.entry(topic.to_string()).or_default();
@@ -98,6 +108,18 @@ impl LiveStatusStore {
         let mut statuses = self.statuses();
         let entry = statuses.entry(topic.to_string()).or_default();
         entry.queued = queued;
+    }
+
+    /// The turn died with the messages it held: they went with it.
+    ///
+    /// The write follows the "if known" rule: a topic closed mid-turn has
+    /// no entry any more — the close clears it — and re-creating it here
+    /// would report a closed topic as waiting for a turn it never gets.
+    pub fn clear_queued_if_known(&self, topic: &str) {
+        let mut statuses = self.statuses();
+        if let Some(entry) = statuses.get_mut(topic) {
+            entry.queued = 0;
+        }
     }
 
     /// The turn ended. A turn that did not succeed leaves the topic in
@@ -189,6 +211,12 @@ impl TopicManager {
     /// One lock for the whole channel: the overview asks for every topic
     /// at once, and a lock per topic would serialize the poll it is
     /// answering.
+    ///
+    /// The two halves are read at different moments — the depths here, the
+    /// store's per topic — so a poll that lands while a turn hands its
+    /// messages back to the queue can count one message twice or not at
+    /// all. The gap is one message and one poll wide, and the next poll
+    /// has it right.
     pub(crate) async fn channel_queued(&self) -> HashMap<String, usize> {
         let queues = self.topic_queues.lock().await;
         queues
@@ -212,6 +240,12 @@ impl TopicManager {
 /// nothing, and the topic would keep reporting "Processing" forever. This
 /// guard drops on every path out of the turn and closes the flag on the
 /// ones the turn did not close itself.
+///
+/// The guard also ends the turn's backlog. A turn that ended on its own
+/// gave its messages back to the queue and said so; a turn that died kept
+/// them — they died with it. Either way the turn holds none when the guard
+/// drops, and a count that outlived it would be a backlog the topic does
+/// not have, inherited by the next turn.
 pub(crate) struct TurnStatusGuard {
     store: Arc<LiveStatusStore>,
     topic_name: String,
@@ -235,6 +269,11 @@ impl Drop for TurnStatusGuard {
             // here would report it as failed (see `end_turn_if_known`).
             self.store.end_turn_if_known(&self.topic_name, false);
         }
+        // The turn holds no messages any more. The write follows the "if
+        // known" rule: a topic closed mid-turn has no entry, and one made
+        // here would report a closed topic as waiting for a turn it never
+        // gets.
+        self.store.clear_queued_if_known(&self.topic_name);
     }
 }
 
@@ -261,10 +300,11 @@ mod tests {
         assert!(tx.try_send(5).is_err(), "a full channel takes no more");
     }
 
-    /// The turn's backlog survives the next turn's start: a turn that
-    /// begins finds the queue as it was.
+    /// The turn's start does not touch the backlog: the count belongs to
+    /// the running turn, and the turn's first poll can land after the
+    /// worker already pulled a message aside for it.
     #[test]
-    fn the_backlog_survives_the_next_turn() {
+    fn the_turns_start_leaves_the_backlog_alone() {
         let store = store();
         store.set_queued("t", 3);
         assert_eq!(store.get("t").queued, 3);
@@ -276,6 +316,44 @@ mod tests {
         );
         store.set_queued("t", 0);
         assert_eq!(store.get("t").queued, 0, "the turn let its backlog go");
+    }
+
+    /// A turn that dies without saying so takes its backlog with it: the
+    /// messages it held went with the task, so the count must not outlive
+    /// them — a topic would report a backlog it does not have, and the
+    /// next turn would inherit it.
+    #[test]
+    fn a_turn_that_dies_leaves_no_backlog_behind() {
+        let store = store();
+        store.set_queued("t", 3);
+        store.set_processing("t");
+        {
+            let _guard = TurnStatusGuard::new(store.clone(), "t".to_string());
+        }
+        assert_eq!(
+            store.get("t").queued,
+            0,
+            "the dead turn's backlog is still counted"
+        );
+    }
+
+    /// The guard ends the backlog of a turn that ended on its own too: the
+    /// turn gave its messages back to the queue, so it holds none, and the
+    /// count must not outlive it.
+    #[test]
+    fn a_turn_that_ended_leaves_no_backlog_behind() {
+        let store = store();
+        store.set_queued("t", 3);
+        store.set_processing("t");
+        store.end_turn_if_known("t", true);
+        {
+            let _guard = TurnStatusGuard::new(store.clone(), "t".to_string());
+        }
+        assert_eq!(
+            store.get("t").queued,
+            0,
+            "the finished turn's backlog is still counted"
+        );
     }
 
     /// A closed topic has no backlog: the close clears the entry, and a

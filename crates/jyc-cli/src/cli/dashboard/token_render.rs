@@ -619,6 +619,59 @@ mod tests {
         assert!(figures.is_none());
     }
 
+    /// A queue wider than the row is drawn as a share of it: the blocks
+    /// would be cut in half by the wrapping, so the row shows how much of
+    /// the queue is taken, rounded to the nearest cell. The figures keep
+    /// the exact counts.
+    #[test]
+    fn a_queue_wider_than_the_row_is_drawn_as_a_share_of_it() {
+        let mut t = info_with(None, None, None, None, None, None);
+        t.queued = 3;
+        t.queue_capacity = 10;
+        let mut spans = Vec::new();
+        // A row of five cells for a queue of ten: three of ten messages
+        // waiting is a tenth and a half of the row, which rounds to two
+        // cells.
+        let figures = push_queue_span(&mut spans, &t, 5);
+        assert_eq!(spans.len(), 3, "the label, the filled cells, the rest");
+        assert_eq!(spans[0].content, padded(QUEUE_LABEL));
+        assert_eq!(spans[1].content, QUEUE_BLOCK.repeat(2));
+        assert_eq!(spans[1].style.fg, Some(Color::Yellow));
+        assert_eq!(spans[2].content, QUEUE_BLOCK.repeat(3));
+        assert_eq!(spans[2].style.fg, Some(Color::DarkGray));
+        assert_eq!(figures.unwrap().content, "3 / 10");
+    }
+
+    /// A queue that holds more than its capacity fills the row without
+    /// covering it: the blocks stop at the row's width, and the figures
+    /// carry the real count.
+    #[test]
+    fn a_queue_over_its_capacity_fills_the_row_and_no_more() {
+        let mut t = info_with(None, None, None, None, None, None);
+        t.queued = 30;
+        t.queue_capacity = 10;
+        let mut spans = Vec::new();
+        let figures = push_queue_span(&mut spans, &t, 5);
+        assert_eq!(spans.len(), 2, "the label and the full row");
+        assert_eq!(spans[1].content, QUEUE_BLOCK.repeat(5));
+        assert_eq!(spans[1].style.fg, Some(Color::Yellow));
+        assert_eq!(figures.unwrap().content, "30 / 10");
+    }
+
+    /// An empty queue of a wide one draws the row in free slots only.
+    #[test]
+    fn an_empty_queue_wider_than_the_row_draws_free_slots_only() {
+        let mut t = info_with(None, None, None, None, None, None);
+        t.queued = 0;
+        t.queue_capacity = 10;
+        let mut spans = Vec::new();
+        let figures = push_queue_span(&mut spans, &t, 5);
+        assert_eq!(spans.len(), 2, "the label and the free row");
+        assert_eq!(spans[1].content, QUEUE_BLOCK.repeat(5));
+        assert_eq!(spans[1].style.fg, Some(Color::DarkGray));
+        assert_eq!(figures.unwrap().content, "0 / 10");
+    }
+
     /// The two cache rows share one bar width and one label width, so
     /// their bars start in the same column and their shares can be compared
     /// by eye.

@@ -666,8 +666,8 @@ pub(crate) async fn process_message(
     }
     // The turn's own backlog is empty again: the messages it held went
     // back to the queue, and the queue counts them from here on. A
-    // message the queue could not take is dropped, and the count says
-    // so.
+    // message the queue could not take is dropped — the warning above is
+    // where that shows; the count does not carry it.
     topic_manager.set_topic_queued(topic_name, 0);
 
     // Stop the delivery watcher

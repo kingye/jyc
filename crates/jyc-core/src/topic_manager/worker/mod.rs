@@ -61,6 +61,27 @@ fn is_injectable(item: &QueueItem, topic_path: &Path, workspace: &Path) -> bool 
             .is_some_and(|t| !t.trim().is_empty())
 }
 
+/// Ends the turn's injection count when the turn ends — the messages the
+/// model had not read are gone with the turn, and a count that outlived
+/// them would report a backlog the topic does not have.
+///
+/// The count belongs to the turn that took the messages in, and this guard
+/// holds that turn's id: a turn that ends late (its topic was closed and
+/// reopened while it was still running) finds the next turn's id in the
+/// store and leaves it alone. Clearing the next turn's count would hide
+/// its unread messages for the rest of that turn.
+struct InTurnGuard {
+    manager: Arc<TopicManager>,
+    topic: String,
+    turn_id: u64,
+}
+
+impl Drop for InTurnGuard {
+    fn drop(&mut self) {
+        self.manager.clear_topic_in_turn(&self.topic, self.turn_id);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn process_message(
     item: &mut QueueItem,
@@ -437,6 +458,19 @@ pub(crate) async fn process_message(
     // conversation at its next drain point. Otherwise it is re-enqueued
     // and processed after the current AI call completes.
     let (inject_tx, mut inject_rx) = mpsc::channel::<QueueItem>(INJECTION_CHANNEL_CAPACITY);
+
+    // The store counts what the turn takes in, so the topic's backlog says
+    // how much of the user's input the model has not seen yet. The count
+    // ends with the turn, and only with that turn: the guard holds the
+    // turn's id, so a turn that ends late — its topic was closed and
+    // reopened while it was still running — cannot clear the next turn's
+    // channel.
+    let turn_id = topic_manager.track_topic_in_turn(topic_name, inject_tx.clone());
+    let _in_turn_guard = InTurnGuard {
+        manager: topic_manager.clone(),
+        topic: topic_name.to_string(),
+        turn_id,
+    };
 
     let t_dispatch = std::time::Instant::now();
     tracing::info!(

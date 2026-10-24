@@ -10,6 +10,7 @@
 //! was never retried successfully — is `Error`, anything else is `Idle`.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use jyc_types::{QueueItem, TopicStatus};
@@ -75,7 +76,19 @@ pub struct LiveStatusStore {
     statuses: Mutex<HashMap<String, LiveStatus>>,
     /// The injection channel of the running turn, per topic: the messages
     /// the turn took in and the model has not read yet.
-    in_turn: Mutex<HashMap<String, tokio::sync::mpsc::Sender<QueueItem>>>,
+    in_turn: Mutex<HashMap<String, InTurn>>,
+    /// Which turn each channel belongs to. A turn that ends late — its
+    /// topic was closed and reopened while it was still running — must
+    /// not clear the next turn's channel, so the count carries the turn's
+    /// id and only that turn may end it.
+    next_turn_id: AtomicU64,
+}
+
+/// A running turn's injection channel, and the turn that owns it.
+#[derive(Debug)]
+struct InTurn {
+    id: u64,
+    tx: tokio::sync::mpsc::Sender<QueueItem>,
 }
 
 impl LiveStatusStore {
@@ -133,24 +146,36 @@ impl LiveStatusStore {
     /// The store holds the channel, not a count of it: the depth is read
     /// where the messages are, so it cannot drift from the channel the way
     /// a counter of our own would (see [`queue_depth`]).
-    pub fn track_in_turn(&self, topic: &str, tx: tokio::sync::mpsc::Sender<QueueItem>) {
-        self.in_turn().insert(topic.to_string(), tx);
+    ///
+    /// Returns the turn's id: pass it to [`Self::clear_in_turn`] to end
+    /// this turn's count — and only this turn's.
+    pub fn track_in_turn(&self, topic: &str, tx: tokio::sync::mpsc::Sender<QueueItem>) -> u64 {
+        let id = self.next_turn_id.fetch_add(1, Ordering::Relaxed);
+        self.in_turn().insert(topic.to_string(), InTurn { id, tx });
+        id
     }
 
     /// How many messages the running turn has taken in and the model has
     /// not read yet — the third place a message waits, and the one the
     /// queue and the turn's buffer cannot see.
     pub fn in_turn_depth(&self, topic: &str) -> usize {
-        self.in_turn().get(topic).map_or(0, queue_depth)
+        self.in_turn()
+            .get(topic)
+            .map_or(0, |turn| queue_depth(&turn.tx))
     }
 
     /// The turn is over: it holds no messages any more.
     ///
-    /// A channel whose receiver is gone reports no depth — the messages
-    /// it held died with the turn — so the count is right even if this
-    /// write is late.
-    pub fn clear_in_turn(&self, topic: &str) {
-        self.in_turn().remove(topic);
+    /// Only the turn that owns the count may end it. A turn that ends
+    /// late — its topic was closed and reopened while it was still
+    /// running — finds the next turn's id in the store and leaves it
+    /// alone: the next turn's messages are its own, and clearing them
+    /// would hide them for the rest of that turn.
+    pub fn clear_in_turn(&self, topic: &str, turn_id: u64) {
+        let mut in_turn = self.in_turn();
+        if in_turn.get(topic).is_some_and(|turn| turn.id == turn_id) {
+            in_turn.remove(topic);
+        }
     }
 
     /// The turn ended. A turn that did not succeed leaves the topic in
@@ -198,7 +223,7 @@ impl LiveStatusStore {
         self.statuses.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn in_turn(&self) -> MutexGuard<'_, HashMap<String, tokio::sync::mpsc::Sender<QueueItem>>> {
+    fn in_turn(&self) -> MutexGuard<'_, HashMap<String, InTurn>> {
         // A poisoned lock means a panic while the map was held; the map
         // itself is still consistent, so take the data anyway.
         self.in_turn.lock().unwrap_or_else(|e| e.into_inner())
@@ -270,13 +295,19 @@ impl TopicManager {
     }
 
     /// The running turn's injection channel — the messages it took in and
-    /// the model has not read yet.
+    /// the model has not read yet. Returns the turn's id.
     pub(crate) fn track_topic_in_turn(
         &self,
         topic_name: &str,
         tx: tokio::sync::mpsc::Sender<QueueItem>,
-    ) {
-        self.live_status.track_in_turn(topic_name, tx);
+    ) -> u64 {
+        self.live_status.track_in_turn(topic_name, tx)
+    }
+
+    /// End one turn's injection count — that turn's alone, so a turn that
+    /// ends late cannot clear the next turn's channel.
+    pub(crate) fn clear_topic_in_turn(&self, topic_name: &str, turn_id: u64) {
+        self.live_status.clear_in_turn(topic_name, turn_id);
     }
 }
 
@@ -293,10 +324,13 @@ impl TopicManager {
 /// gave its messages back to the queue and said so; a turn that died kept
 /// them — they died with it. Either way the turn holds none when the guard
 /// drops, and a count that outlived it would be a backlog the topic does
-/// not have, inherited by the next turn. The turn's injection channel goes
-/// with it, for the same reason: the messages the model had not read yet
-/// died with the turn, and a channel left behind would count them as
-/// waiting.
+/// not have, inherited by the next turn.
+///
+/// The turn's injection channel goes with it, but not from here: the
+/// channel belongs to the turn that created it, and this guard does not
+/// know which turn that was — a topic closed and reopened under it can
+/// already have a new turn running. The turn ends its own count, by id
+/// (see `InTurnGuard` in the worker).
 ///
 /// The guard's writes name the topic, not the turn: a topic closed and
 /// reopened under this guard can have the new turn's count cleared by this
@@ -331,11 +365,6 @@ impl Drop for TurnStatusGuard {
         // here would report a closed topic as waiting for a turn it never
         // gets.
         self.store.clear_queued_if_known(&self.topic_name);
-        // The turn's injection channel goes with it: the messages the
-        // model had not read yet died with the turn, and a channel left
-        // behind would count a backlog the topic does not have — the
-        // next turn's messages counted twice.
-        self.store.clear_in_turn(&self.topic_name);
     }
 }
 
@@ -564,22 +593,50 @@ mod tests {
         assert_eq!(store.in_turn_depth("t"), 0, "the model read them");
     }
 
-    /// The turn ends with its messages: the guard leaves no channel
-    /// behind, or the next turn's messages would be counted twice.
+    /// The turn ends with its messages: the count ends with the turn, so
+    /// the next turn's messages are not counted as the old turn's.
     #[test]
-    fn the_guard_ends_the_turns_injection_channel() {
+    fn a_turn_ends_its_own_count() {
         let store = store();
         let (tx, _rx) = tokio::sync::mpsc::channel::<QueueItem>(4);
-        store.track_in_turn("t", tx.clone());
+        let turn_id = store.track_in_turn("t", tx.clone());
         tx.try_send(queue_item("one")).unwrap();
-        {
-            let _guard = TurnStatusGuard::new(store.clone(), "t".to_string());
-        }
+        store.clear_in_turn("t", turn_id);
         assert_eq!(
             store.in_turn_depth("t"),
             0,
-            "the turn left its injection channel behind"
+            "the turn left its injection count behind"
         );
+    }
+
+    /// A turn that ends late — its topic was closed and reopened while it
+    /// was still running — must not clear the next turn's count: the next
+    /// turn's unread messages are its own, and hiding them for the rest of
+    /// that turn is the undercount this count exists to avoid.
+    #[test]
+    fn a_late_turn_leaves_the_next_turns_count_alone() {
+        let store = store();
+        let (old_tx, _old_rx) = tokio::sync::mpsc::channel::<QueueItem>(4);
+        let old_turn = store.track_in_turn("t", old_tx.clone());
+        old_tx.try_send(queue_item("the old turn's")).unwrap();
+
+        // The topic is closed and reopened: a new turn takes over.
+        store.clear("t");
+        let (new_tx, _new_rx) = tokio::sync::mpsc::channel::<QueueItem>(4);
+        let new_turn = store.track_in_turn("t", new_tx.clone());
+        new_tx.try_send(queue_item("the new turn's")).unwrap();
+
+        // The old turn ends, late.
+        store.clear_in_turn("t", old_turn);
+
+        assert_eq!(
+            store.in_turn_depth("t"),
+            1,
+            "the late turn cleared the new turn's count"
+        );
+        // And the new turn still ends its own count.
+        store.clear_in_turn("t", new_turn);
+        assert_eq!(store.in_turn_depth("t"), 0, "the new turn kept its count");
     }
 
     /// A closed topic leaves nothing behind: the topic is gone, and a

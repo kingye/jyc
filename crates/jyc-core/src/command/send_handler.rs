@@ -666,6 +666,7 @@ mod tests {
     use crate::message_storage::MessageStorage;
     use crate::metrics::MetricsCollector;
     use crate::static_agent::StaticAgentService;
+    use crate::test_support::NoopOutbound;
     use arc_swap::ArcSwap;
     use tempfile::tempdir;
     use tokio_util::sync::CancellationToken;
@@ -1461,6 +1462,4 @@ mode = "agent"
             None,
         ))
     }
-
-    use crate::test_support::NoopOutbound;
 }

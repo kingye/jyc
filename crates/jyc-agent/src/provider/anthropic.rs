@@ -90,8 +90,6 @@ impl AnthropicProvider {
         // Create SSE stream
         let es = stream_sse(req);
 
-        tracing::debug!(url = %url, model = %self.model, "Sending Anthropic request");
-
         // Transform SSE events into our StreamEvent type
         let stream = futures::stream::unfold(
             (es, StreamState::default()),
@@ -1003,6 +1001,43 @@ mod tests {
             msg.contains("invalid_request_error"),
             "expected upstream error type in captured body, got: {msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn complete_raw_error_includes_response_body_on_4xx() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("bad request"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = AnthropicProvider::new(
+            &server.uri(),
+            "claude-test-model",
+            Some("test-key"),
+            None,
+            false,
+            None,
+            false,
+        )
+        .expect("provider construction");
+        let raw = [json!({"role": "user", "content": "hello"})];
+        let mut stream = provider
+            .complete_raw(&raw, &[], "")
+            .await
+            .expect("complete_raw should return a stream");
+
+        let err = stream
+            .next()
+            .await
+            .expect("expected an error from the SSE stream")
+            .expect_err("a 400 response must not produce a stream event");
+        let msg = format!("{err:#}");
+        assert!(msg.starts_with("SSE error: "), "{msg}");
+        assert!(msg.contains("400"), "{msg}");
+        assert!(msg.contains("bad request"), "{msg}");
     }
 
     #[tokio::test]

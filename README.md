@@ -398,6 +398,29 @@ jyc connect devbox -p ~/src/app    # open that remote directory as a topic
 jyc connect devbox --ssh-opt Compression=no   # extra ssh options, repeatable
 ```
 
+**Multiple connects**: each `jyc connect` process opens its own `ssh -L`
+forward — there is no tunnel discovery or reuse. When the remote's port is
+already taken locally (by another connect's tunnel, or anything else), the
+forward falls back to an OS-assigned port and the dashboard resolves it
+automatically. Either way, every tunnel to a machine shares its single
+`jyc serve`; the serve never starts on its own, and `-s` probes first and
+starts one only when nothing answers.
+
+```text
+this machine                                      remote machine
+------------                                      --------------
+
+  jyc connect A
+      ssh -L 127.0.0.1:9876 ----------------------------+
+                                                         v
+                                                      jyc serve
+                                                         ^
+  jyc connect B                                          |
+      ssh -L 127.0.0.1:52443  (ephemeral fallback) ------+
+```
+
+Run `pgrep -af 'ssh.*-L'` to list the forwards.
+
 The token is read from the remote (`<bin> token show`) once per session;
 `--token` passes one outright, for a hub whose file this side cannot read.
 `$JYC_DASHBOARD_TOKEN` is deliberately *not* read here — it names a local

@@ -325,7 +325,8 @@ jyc serve              # Start the agent (main command)
                        #   --config <FILE>    Config file path (default:
                        #     <config dir>/config.toml, or config.toml in --data-dir)
 jyc dashboard            # Live TUI dashboard (connects via inspect server)
-                         #   --addr <ADDR>     Inspect server address (default: 127.0.0.1:9876)
+                         #   --addr <ADDR>     Inspect server address (default:
+                         #     [inspect].bind from config, else 127.0.0.1:9876)
                          #                     Also used for WebSocket chat on /ws
 #   --token <TOKEN>   Auth token. Falls back to $JYC_DASHBOARD_TOKEN,
 #                     then to <data dir>/auth.token
@@ -335,7 +336,8 @@ jyc open                 # Create a new ad-hoc websocket topic and open chat
                          #   -t, --topic <NAME>   Topic name (default: folder name of -p or CWD)
                          #   -p, --path <PATH>     Topic working directory (default: CWD)
                          #   -c, --channel <NAME>  Websocket channel (auto-detected if only one)
-                         #   --addr <ADDR>        Inspect server address (default: 127.0.0.1:9876)
+                         #   --addr <ADDR>        Inspect server address (default:
+                         #     [inspect].bind from config, else 127.0.0.1:9876)
 jyc connect <host>       # Run the dashboard against a hub on another machine,
                          #   over SSH (see "Remote hub over SSH" below)
                          #   HOST                 [user@]host, or an ~/.ssh/config alias
@@ -344,13 +346,14 @@ jyc connect <host>       # Run the dashboard against a hub on another machine,
                          #   --bin <PATH>         jyc executable on the remote
                          #                        (default: jyc)
                          #   --remote-data-dir    Data dir on the remote (default: its own)
-                         #   --remote-bind        Inspect bind on the remote
-                         #                        (default: 127.0.0.1:9876)
+                         #   --remote-bind        Inspect bind on the remote (default:
+                         #                        read from the remote's effective config)
                          #   --token <TOKEN>      Auth token (default: read from the remote)
                          #   -t/-p/-c             As `jyc open`, on the remote host
 jyc config init        # Generate config template (in <config dir>, or --data-dir)
 jyc config validate    # Validate config file (layered: global + data dir)
                        #   --config <FILE>   Config file path (default: as serve)
+jyc config inspect-bind # Print the effective [inspect].bind address
 jyc-pipe               # Peripheral pipe process (separate binary, not a `jyc`
                        # subcommand): hosts the pipe-only channels
                        # (feishu, github, gitee, wecom_bot, wecom, wecomkf, email),
@@ -374,12 +377,14 @@ jyc plugins install <archive>   # Install a plugin bundle into the config dir
 The `dashboard` command requires the `[inspect]` section to be enabled in config.
 
 **Remote hub over SSH**: `jyc connect <host>` points the dashboard at a
-`jyc serve` on another machine. The remote keeps its loopback `[inspect] bind`
-— `jyc connect` opens an `ssh -N -L` forward on the same port when it is free
-locally (so `jyc_publish_file` links resolve unchanged), reads the token from
-the remote once per session and never writes it to this disk, and leaves the
-remote hub running when it quits (other dashboards, channels and scheduled
-jobs may be using it). Starting that hub is opt-in:
+`jyc serve` on another machine. Unless `--remote-bind` says otherwise, the
+remote bind is read from that install's own effective config with
+`jyc config inspect-bind`; older remote versions fall back to
+`127.0.0.1:9876`. `jyc connect` opens an `ssh -N -L` forward on the same port
+when it is free locally (so `jyc_publish_file` links resolve unchanged), reads
+the token from the remote once per session and never writes it to this disk,
+and leaves the remote hub running when it quits (other dashboards, channels
+and scheduled jobs may be using it). Starting that hub is opt-in:
 
 ```bash
 jyc connect devbox                 # dashboard against an existing hub
@@ -410,7 +415,7 @@ before the TUI takes the terminal, so a password prompt would have nowhere to
 appear. The remote login shell must be POSIX-ish (`sh`/`bash`/`zsh`/`dash`) —
 the bootstrap expands `$HOME` and probes for `setsid` through it. That probe is
 also why `-s` works on macOS: `setsid` is used when present, `nohup` alone
-otherwise. Link rewriting covers a concrete `--remote-bind` host; with a
+otherwise. Link rewriting covers a concrete non-wildcard bind host; with a
 wildcard bind or a configured `[inspect] base_url` the tunnel still works, but
 the links the server generates then keep their remote URL.
 

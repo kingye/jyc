@@ -1,5 +1,19 @@
 ## [Unreleased]
 
+### Added
+
+- `jyc config inspect-bind` prints the effective `[inspect].bind` address using the same layered config resolution as `jyc serve`; `jyc connect` uses it on the remote to discover a non-default inspect port
+
+### Changed
+
+- `jyc`, `jyc open`, and `jyc dashboard` resolve a missing `--addr` from the local `[inspect].bind` (falling back to `127.0.0.1:9876`), so a config that changes the inspect port no longer requires a matching manual `--addr`
+- `jyc connect` resolves a missing `--remote-bind` from the remote hub's effective config instead of assuming `127.0.0.1:9876`; older remote versions that lack `config inspect-bind` keep the previous default behavior
+
+### Fixed
+
+- `jyc connect` re-reads an automatically fetched remote token once when the first authenticated probe is answered with 401, covering token rotation between the read and the probe
+- A local dashboard/open startup now detects that an existing inspect port belongs to a different hub when its token is rejected, and reports the port collision with `--addr` / `[inspect].bind` guidance instead of surfacing a bare request 401 later
+
 ## [0.7.1] - 2026-10-24
 
 ### Added

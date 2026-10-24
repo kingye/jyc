@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use jyc_types::TopicStatus;
+use jyc_types::{QueueItem, TopicStatus};
 
 use super::TopicManager;
 
@@ -47,7 +47,9 @@ pub struct LiveStatus {
     ///
     /// The queue's own backlog — the messages still waiting in the
     /// channel — is counted by the channel itself; this half is the part
-    /// the channel cannot see.
+    /// the channel cannot see. The third place a message waits — the
+    /// running turn's injection channel, holding the messages the model
+    /// has not read yet — is counted by the store's `in_turn`.
     pub queued: usize,
 }
 
@@ -71,6 +73,9 @@ impl LiveStatus {
 #[derive(Debug, Default)]
 pub struct LiveStatusStore {
     statuses: Mutex<HashMap<String, LiveStatus>>,
+    /// The injection channel of the running turn, per topic: the messages
+    /// the turn took in and the model has not read yet.
+    in_turn: Mutex<HashMap<String, tokio::sync::mpsc::Sender<QueueItem>>>,
 }
 
 impl LiveStatusStore {
@@ -122,6 +127,32 @@ impl LiveStatusStore {
         }
     }
 
+    /// The running turn's injection channel: the messages it took in and
+    /// the model has not read yet.
+    ///
+    /// The store holds the channel, not a count of it: the depth is read
+    /// where the messages are, so it cannot drift from the channel the way
+    /// a counter of our own would (see [`queue_depth`]).
+    pub fn track_in_turn(&self, topic: &str, tx: tokio::sync::mpsc::Sender<QueueItem>) {
+        self.in_turn().insert(topic.to_string(), tx);
+    }
+
+    /// How many messages the running turn has taken in and the model has
+    /// not read yet — the third place a message waits, and the one the
+    /// queue and the turn's buffer cannot see.
+    pub fn in_turn_depth(&self, topic: &str) -> usize {
+        self.in_turn().get(topic).map_or(0, queue_depth)
+    }
+
+    /// The turn is over: it holds no messages any more.
+    ///
+    /// A channel whose receiver is gone reports no depth — the messages
+    /// it held died with the turn — so the count is right even if this
+    /// write is late.
+    pub fn clear_in_turn(&self, topic: &str) {
+        self.in_turn().remove(topic);
+    }
+
     /// The turn ended. A turn that did not succeed leaves the topic in
     /// error; one that did keeps the error an unrecovered tool failure left
     /// behind, so the topic still reports what went wrong.
@@ -158,12 +189,19 @@ impl LiveStatusStore {
     /// a word.
     pub fn clear(&self, topic: &str) {
         self.statuses().remove(topic);
+        self.in_turn().remove(topic);
     }
 
     fn statuses(&self) -> MutexGuard<'_, HashMap<String, LiveStatus>> {
         // A poisoned lock means a panic while the map was held; the map
         // itself is still consistent, so take the data anyway.
         self.statuses.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn in_turn(&self) -> MutexGuard<'_, HashMap<String, tokio::sync::mpsc::Sender<QueueItem>>> {
+        // A poisoned lock means a panic while the map was held; the map
+        // itself is still consistent, so take the data anyway.
+        self.in_turn.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -230,6 +268,16 @@ impl TopicManager {
     pub(crate) fn set_topic_queued(&self, topic_name: &str, queued: usize) {
         self.live_status.set_queued(topic_name, queued);
     }
+
+    /// The running turn's injection channel — the messages it took in and
+    /// the model has not read yet.
+    pub(crate) fn track_topic_in_turn(
+        &self,
+        topic_name: &str,
+        tx: tokio::sync::mpsc::Sender<QueueItem>,
+    ) {
+        self.live_status.track_in_turn(topic_name, tx);
+    }
 }
 
 /// Closes a topic's "processing" flag when a turn ends without saying so.
@@ -245,7 +293,10 @@ impl TopicManager {
 /// gave its messages back to the queue and said so; a turn that died kept
 /// them — they died with it. Either way the turn holds none when the guard
 /// drops, and a count that outlived it would be a backlog the topic does
-/// not have, inherited by the next turn.
+/// not have, inherited by the next turn. The turn's injection channel goes
+/// with it, for the same reason: the messages the model had not read yet
+/// died with the turn, and a channel left behind would count them as
+/// waiting.
 ///
 /// The guard's writes name the topic, not the turn: a topic closed and
 /// reopened under this guard can have the new turn's count cleared by this
@@ -280,6 +331,52 @@ impl Drop for TurnStatusGuard {
         // here would report a closed topic as waiting for a turn it never
         // gets.
         self.store.clear_queued_if_known(&self.topic_name);
+        // The turn's injection channel goes with it: the messages the
+        // model had not read yet died with the turn, and a channel left
+        // behind would count a backlog the topic does not have — the
+        // next turn's messages counted twice.
+        self.store.clear_in_turn(&self.topic_name);
+    }
+}
+
+#[cfg(test)]
+/// A queue item carrying a plain text body — the test's stand-in for a
+/// message on its way to the model.
+pub(crate) fn queue_item(text: &str) -> QueueItem {
+    use jyc_types::{InboundMessage, MessageContent, PatternMatch};
+
+    QueueItem {
+        topic_name: "live-status".to_string(),
+        message: InboundMessage {
+            id: format!("id-{text}"),
+            channel: "test".to_string(),
+            channel_uid: "test".to_string(),
+            sender: "user".to_string(),
+            sender_address: "user".to_string(),
+            recipients: vec![],
+            topic: "live-status".to_string(),
+            content: MessageContent {
+                text: Some(text.to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            references: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: HashMap::new(),
+            matched_pattern: None,
+        },
+        pattern_match: PatternMatch {
+            pattern_name: "test".to_string(),
+            channel: "test".to_string(),
+            matches: HashMap::new(),
+        },
+        attachment_config: None,
+        template: None,
+        live_injection: true,
+        topic_path_override: None,
     }
 }
 
@@ -443,5 +540,62 @@ mod tests {
         }));
         assert!(result.is_err(), "the panic must not be swallowed");
         assert!(!store.get("t").is_processing, "the flag stayed open");
+    }
+
+    /// The messages the running turn took in and the model has not read
+    /// yet are the topic's backlog too: the user sent them and the model
+    /// has not seen them.
+    #[test]
+    fn the_injection_channel_counts_as_backlog() {
+        let store = store();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<QueueItem>(4);
+        store.track_in_turn("t", tx.clone());
+        assert_eq!(store.in_turn_depth("t"), 0, "the turn took nothing in yet");
+        tx.try_send(queue_item("one")).unwrap();
+        tx.try_send(queue_item("two")).unwrap();
+        assert_eq!(
+            store.in_turn_depth("t"),
+            2,
+            "the two messages the model has not read"
+        );
+        // The model reads them: the channel is empty again.
+        rx.try_recv().unwrap();
+        rx.try_recv().unwrap();
+        assert_eq!(store.in_turn_depth("t"), 0, "the model read them");
+    }
+
+    /// The turn ends with its messages: the guard leaves no channel
+    /// behind, or the next turn's messages would be counted twice.
+    #[test]
+    fn the_guard_ends_the_turns_injection_channel() {
+        let store = store();
+        let (tx, _rx) = tokio::sync::mpsc::channel::<QueueItem>(4);
+        store.track_in_turn("t", tx.clone());
+        tx.try_send(queue_item("one")).unwrap();
+        {
+            let _guard = TurnStatusGuard::new(store.clone(), "t".to_string());
+        }
+        assert_eq!(
+            store.in_turn_depth("t"),
+            0,
+            "the turn left its injection channel behind"
+        );
+    }
+
+    /// A closed topic leaves nothing behind: the topic is gone, and a
+    /// channel left in the store would count messages for a topic that
+    /// no longer exists.
+    #[test]
+    fn a_closed_topic_leaves_no_injection_channel() {
+        let store = store();
+        let (tx, _rx) = tokio::sync::mpsc::channel::<QueueItem>(4);
+        store.track_in_turn("t", tx.clone());
+        tx.try_send(queue_item("one")).unwrap();
+        store.clear("t");
+        assert_eq!(
+            store.in_turn_depth("t"),
+            0,
+            "the closed topic kept its injection channel"
+        );
     }
 }

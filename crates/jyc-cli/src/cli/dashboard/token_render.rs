@@ -411,9 +411,12 @@ const QUEUE_BLOCK: &str = "▊";
 /// has left as well as what it holds; the figures on the row under it
 /// carry the exact counts.
 ///
-/// The backlog can exceed the capacity — the running turn holds messages
-/// the queue gave up room for — and the blocks then fill the row without
-/// covering it: the figures say what is really waiting.
+/// The backlog is what the model has not read yet: the messages still in
+/// the queue, the ones the running turn pulled aside for a turn of their
+/// own, and the ones the running turn has taken in and the model has not
+/// read yet. It can exceed the capacity — the running turn holds
+/// messages the queue gave up room for — and the blocks then fill the row
+/// without covering it: the figures say what is really waiting.
 ///
 /// Returns the row's figures — "2 / 10" — for the caller to lay out on
 /// the row under the bar, where they line up with it. A pane too narrow

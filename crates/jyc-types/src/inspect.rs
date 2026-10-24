@@ -263,10 +263,10 @@ pub struct TopicInfo {
     pub pattern: Option<String>,
     /// Current processing status
     pub status: TopicStatus,
-    /// Messages accepted for this topic that have not started a turn of
-    /// their own yet — the topic's backlog. The ones still in the queue
-    /// plus the ones the running turn pulled aside for a turn of their
-    /// own.
+    /// Messages accepted for this topic that the model has not read yet —
+    /// the topic's backlog. The ones still in the queue, the ones the
+    /// running turn pulled aside for a turn of their own, and the ones
+    /// the running turn has taken in and the model has not read yet.
     ///
     /// Zero when the source does not report a backlog.
     #[serde(default)]

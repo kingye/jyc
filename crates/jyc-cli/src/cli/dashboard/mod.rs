@@ -34,6 +34,7 @@ use jyc_inspect::client::InspectClient;
 use jyc_types::{CommandInfo, InspectOverview, Severity, TopicStatus};
 
 use super::command_popup::*;
+use super::resolve::resolve_inspect_client_addr;
 
 mod chat;
 mod hyperlink;
@@ -48,9 +49,9 @@ use ws::*;
 
 #[derive(Args, Debug)]
 pub struct DashboardArgs {
-    /// Inspect server address (also used for WebSocket chat)
-    #[arg(long, default_value = "127.0.0.1:9876", global = true)]
-    pub addr: String,
+    /// Inspect server address (default: [inspect].bind from config, else 127.0.0.1:9876)
+    #[arg(long, global = true)]
+    pub addr: Option<String>,
 
     /// Authorization token (defaults to `<data dir>/auth.token`)
     #[arg(long, env = "JYC_DASHBOARD_TOKEN", global = true)]
@@ -418,11 +419,18 @@ fn serve_spawn_args(
 /// The spawned `serve` writes its tracing logs to `<data dir>/jyc.log`
 /// (same file as `/deploy`-started servers). Only works for localhost
 /// addresses (the default).
-async fn ensure_serve_running(addr: &str, data_dir: &std::path::Path, pipe: bool) -> Result<()> {
+async fn ensure_serve_running(
+    addr: &str,
+    data_dir: &std::path::Path,
+    explicit_token: Option<&str>,
+    pipe: bool,
+) -> Result<()> {
     // Only try to spawn once per dashboard session.
     static SPAWNED: AtomicBool = AtomicBool::new(false);
 
-    // Quick check: server already up?
+    // Quick check: server already up? A TCP accept alone is not enough: a
+    // `jyc connect` tunnel can hold the same local port while answering for a
+    // different hub, which otherwise surfaces later as a bare 401.
     if TcpStream::connect(addr).await.is_ok() {
         if pipe {
             // Someone else started this hub (systemd, compose, another
@@ -433,11 +441,16 @@ async fn ensure_serve_running(addr: &str, data_dir: &std::path::Path, pipe: bool
                  `--pipe`; its pipe-only channels need a separate jyc-pipe process"
             );
         }
+        reject_foreign_hub(addr, data_dir, explicit_token).await?;
         return Ok(());
     }
     if SPAWNED.swap(true, Ordering::SeqCst) {
         // Already tried spawning — server is still down, fail.
-        anyhow::bail!("Could not connect to {addr}; jyc serve already attempted to start");
+        anyhow::bail!(
+            "Could not connect to {addr}; jyc serve was already auto-started once and is \
+             still not answering. Start jyc serve manually and check its log at {}",
+            data_dir.join("jyc.log").display()
+        );
     }
 
     // Only auto-spawn for localhost addresses.
@@ -516,6 +529,38 @@ async fn ensure_serve_running(addr: &str, data_dir: &std::path::Path, pipe: bool
         "jyc serve did not start in time. See full log: {}",
         log_path.display()
     );
+}
+
+/// Refuse to adopt an existing listener whose inspect token belongs elsewhere.
+///
+/// Only 401 is diagnosed here: other probe failures are left to the existing
+/// startup path so this preflight does not change how a still-booting server
+/// behaves.
+async fn reject_foreign_hub(
+    addr: &str,
+    data_dir: &std::path::Path,
+    explicit_token: Option<&str>,
+) -> Result<()> {
+    let Some(token) = resolve_dashboard_token(explicit_token, data_dir)? else {
+        // Without a token, a 401 is what any authenticated hub answers; it is
+        // not evidence that this listener belongs to another hub.
+        return Ok(());
+    };
+    let client = InspectClient::with_token(addr, Some(token.as_str()));
+    if let Err(err) = client.get_overview().await
+        && remote::is_unauthorized(&err)
+    {
+        let fix = if explicit_token.is_some() {
+            "the --token you passed was rejected; pass the correct one with --token <TOKEN>"
+        } else {
+            "use --addr to choose another hub, or set [inspect].bind to a free port"
+        };
+        anyhow::bail!(
+            "{addr} is already serving a different jyc hub (possibly a `jyc connect` \
+             tunnel), and its inspect token was rejected: {fix}."
+        );
+    }
+    Ok(())
 }
 
 /// Read the last `n` lines from a log file (stripping ANSI codes).
@@ -634,22 +679,22 @@ impl MouseFragmentFilter {
 pub async fn run(
     args: &DashboardArgs,
     data_dir: &std::path::Path,
+    data_dir_explicit: bool,
     initial_topic: Option<&str>,
     initial_channel: Option<&str>,
     pipe: bool,
 ) -> Result<()> {
+    let addr = resolve_inspect_client_addr(args.addr.as_deref(), data_dir, data_dir_explicit)?;
+
     // Auto-spawn jyc serve FIRST - it writes <data dir>/auth.token on
     // startup, so the token file exists by the time we resolve it. A remote
     // session has already done its own bring-up over ssh.
     if !args.remote {
-        ensure_serve_running(&args.addr, data_dir, pipe)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to connect to {}. Start jyc serve manually.",
-                    args.addr
-                )
-            })?;
+        // No blanket "Start jyc serve manually" context here: the errors from
+        // `ensure_serve_running` already carry their own actionable advice
+        // (including the port-collision diagnosis), and a blanket wrapper would
+        // contradict it.
+        ensure_serve_running(&addr, data_dir, args.token.as_deref(), pipe).await?;
     }
 
     // Resolve the auth token: explicit flag/env wins, otherwise read it
@@ -664,8 +709,8 @@ pub async fn run(
     };
 
     let client = match &token {
-        Some(t) => InspectClient::with_token(&args.addr, Some(t.as_str())),
-        None => InspectClient::new(&args.addr),
+        Some(t) => InspectClient::with_token(&addr, Some(t.as_str())),
+        None => InspectClient::new(&addr),
     };
 
     // Setup terminal
@@ -733,7 +778,7 @@ pub async fn run(
         if let Some(topic) = initial_topic {
             let channel = initial_channel.unwrap_or("");
             app.chat
-                .open(&args.addr, initial_channel, topic, app.token.clone());
+                .open(&addr, initial_channel, topic, app.token.clone());
             hydrate_live(&client, &mut app, channel, topic).await;
         }
 
@@ -844,7 +889,7 @@ pub async fn run(
                                 if needs_hydrate {
                                     hydrate_live(&client, &mut app, &channel, &topic).await;
                                 }
-                                ensure_overview_ws(&mut app, &args.addr, &channel, &topic);
+                                ensure_overview_ws(&mut app, &addr, &channel, &topic);
                             }
                         }
                         app.error = None;
@@ -886,7 +931,7 @@ pub async fn run(
                 if app.chat.visible {
                     handle_chat_keys(&mut app, esc, &mut terminal);
                 } else {
-                    handle_normal_keys(&mut app, esc, &client, &mut last_poll, &args.addr).await;
+                    handle_normal_keys(&mut app, esc, &client, &mut last_poll, &addr).await;
                 }
             }
 
@@ -937,7 +982,7 @@ pub async fn run(
                                         key,
                                         &client,
                                         &mut last_poll,
-                                        &args.addr,
+                                        &addr,
                                     )
                                     .await;
                                 }
@@ -980,17 +1025,23 @@ pub async fn run(
 /// The target directory may be brand new or already contain a `.jyc`
 /// subdirectory; in either case the path is registered as the topic's
 /// working directory.
+// The CLI flags map one-to-one onto parameters; bundling them would add a
+// struct for no behavioral gain (same pattern as the other `#[allow]`s below).
+#[allow(clippy::too_many_arguments)]
 pub async fn run_open(
-    addr: &str,
+    explicit_addr: Option<&str>,
     data_dir: &std::path::Path,
+    data_dir_explicit: bool,
     topic: Option<&str>,
     channel: Option<&str>,
     path: Option<&str>,
     explicit_token: Option<&str>,
     pipe: bool,
 ) -> Result<()> {
+    let addr = resolve_inspect_client_addr(explicit_addr, data_dir, data_dir_explicit)?;
+
     // Auto-spawn jyc serve FIRST (writes <data dir>/auth.token on startup).
-    ensure_serve_running(addr, data_dir, pipe)
+    ensure_serve_running(&addr, data_dir, explicit_token, pipe)
         .await
         .with_context(|| format!("Failed to connect to {addr}. Start jyc serve manually."))?;
 
@@ -1007,8 +1058,8 @@ pub async fn run_open(
 
     // Resolve websocket channel using inspect state
     let client = match &token {
-        Some(t) => InspectClient::with_token(addr, Some(t.as_str())),
-        None => InspectClient::new(addr),
+        Some(t) => InspectClient::with_token(&addr, Some(t.as_str())),
+        None => InspectClient::new(&addr),
     };
     let channel = resolve_websocket_channel(&client, channel).await?;
 
@@ -1024,13 +1075,14 @@ pub async fn run_open(
     // Open dashboard directly in chat mode for the topic
     run(
         &DashboardArgs {
-            addr: addr.to_string(),
+            addr: Some(addr),
             token,
             command: None,
             link_rewrite: None,
             remote: false,
         },
         data_dir,
+        data_dir_explicit,
         Some(&topic),
         Some(&channel),
         pipe,
@@ -1075,7 +1127,7 @@ async fn register_topic(
 /// `pipe` is not forwarded to `run`: it only drives the *local* auto-spawn,
 /// and this process must never start a hub of its own.
 pub async fn run_connect(args: &ConnectArgs, data_dir: &std::path::Path, pipe: bool) -> Result<()> {
-    let remote = remote::Remote::from_args(args);
+    let remote = remote::Remote::from_args(args).await?;
     let remote_port = remote.bind_port()?;
     let local_port = remote::choose_local_port(remote_port);
     let tunnel = remote::Tunnel::open(&remote, local_port, remote_port).await?;
@@ -1083,7 +1135,7 @@ pub async fn run_connect(args: &ConnectArgs, data_dir: &std::path::Path, pipe: b
         remote::bootstrap(&remote, &tunnel, args.token.as_deref(), args.serve, pipe).await?;
 
     let dashboard = DashboardArgs {
-        addr: tunnel.addr.clone(),
+        addr: Some(tunnel.addr.clone()),
         token,
         command: None,
         link_rewrite: tunnel.rewrite.clone(),
@@ -1092,7 +1144,7 @@ pub async fn run_connect(args: &ConnectArgs, data_dir: &std::path::Path, pipe: b
 
     // No `-p`/`-t`: plain dashboard against the remote.
     if args.open.topic.is_none() && args.open.path.is_none() {
-        return run(&dashboard, data_dir, None, None, false).await;
+        return run(&dashboard, data_dir, false, None, None, false).await;
     }
 
     // The server takes `-p` verbatim, so it has to be absolute already: this
@@ -1103,8 +1155,8 @@ pub async fn run_connect(args: &ConnectArgs, data_dir: &std::path::Path, pipe: b
     let path = remote::resolve_remote_path(args.open.path.as_deref(), &remote.home().await?)?;
     let topic = derive_topic_name(&path, args.open.topic.as_deref());
     let client = match &dashboard.token {
-        Some(token) => InspectClient::with_token(&dashboard.addr, Some(token.as_str())),
-        None => InspectClient::new(&dashboard.addr),
+        Some(token) => InspectClient::with_token(&tunnel.addr, Some(token.as_str())),
+        None => InspectClient::new(&tunnel.addr),
     };
     let channel = resolve_websocket_channel(&client, args.open.channel.as_deref()).await?;
     tracing::info!(
@@ -1117,7 +1169,15 @@ pub async fn run_connect(args: &ConnectArgs, data_dir: &std::path::Path, pipe: b
     register_topic(&client, &channel, &topic, &path).await?;
 
     // `tunnel` stays alive for the whole run: it is the only route to the hub.
-    run(&dashboard, data_dir, Some(&topic), Some(&channel), false).await
+    run(
+        &dashboard,
+        data_dir,
+        false,
+        Some(&topic),
+        Some(&channel),
+        false,
+    )
+    .await
 }
 
 /// Resolve the dashboard authorization token from explicit input or data_dir.
@@ -1886,6 +1946,41 @@ mod tests {
                 "--pipe"
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn existing_foreign_hub_is_rejected_with_actionable_error() {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let answer = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+        let data_dir = tempfile::tempdir().unwrap();
+        let token_path = jyc_utils::auth_token::token_path(data_dir.path());
+        std::fs::create_dir_all(token_path.parent().unwrap()).unwrap();
+        std::fs::write(&token_path, "local-token").unwrap();
+
+        let err = reject_foreign_hub(&addr, data_dir.path(), None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("different jyc hub"), "{err:#}");
+        assert!(
+            err.to_string().contains("possibly a `jyc connect` tunnel"),
+            "{err:#}"
+        );
+        assert!(err.to_string().contains("--addr"), "{err:#}");
+        answer.await.unwrap();
     }
 
     fn char_key(c: char) -> KeyEvent {

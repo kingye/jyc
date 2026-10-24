@@ -5,7 +5,7 @@ use std::path::Path;
 use jyc_types::{load_config_layered, validation};
 use jyc_utils::constants::DEFAULT_CONFIG_FILENAME;
 
-use super::resolve::resolve_config;
+use super::resolve::{resolve_config, resolve_inspect_bind};
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigAction {
@@ -18,6 +18,8 @@ pub enum ConfigAction {
         #[arg(short, long)]
         config: Option<String>,
     },
+    /// Print the effective inspect bind address (used by `jyc connect`)
+    InspectBind,
 }
 
 pub async fn run(action: &ConfigAction, data_dir: &Path, data_dir_explicit: bool) -> Result<()> {
@@ -25,6 +27,10 @@ pub async fn run(action: &ConfigAction, data_dir: &Path, data_dir_explicit: bool
         ConfigAction::Init => run_init(data_dir, data_dir_explicit).await,
         ConfigAction::Validate { config } => {
             run_validate(data_dir, config.as_deref(), data_dir_explicit).await
+        }
+        ConfigAction::InspectBind => {
+            println!("{}", resolve_inspect_bind(data_dir, data_dir_explicit)?);
+            Ok(())
         }
     }
 }

@@ -439,13 +439,13 @@ pub(super) fn push_status_span(
 ) -> Option<Span<'static>> {
     spans.push(label_span("Status: "));
     let status = format!("{}", t.status);
-    spans.push(Span::raw(status.clone()));
+    let status_cells = status.width();
+    spans.push(Span::raw(status));
     let capacity = t.queue_capacity;
     if capacity == 0 {
         return None;
     }
     let figures = format!("{} / {}", t.queued, capacity);
-    let status_cells = status.width();
     // The row with the figures on it: status · queue <blocks> <figures>.
     let with_figures =
         status_cells + QUEUE_SEPARATOR.width() + QUEUE_WORD.width() + 1 + figures.width();
@@ -761,7 +761,10 @@ mod tests {
         t.queued = 30;
         t.queue_capacity = 10;
         let mut spans = Vec::new();
-        let figures = push_status_span(&mut spans, &t, 25);
+        // Twenty-six cells: the status word, the separator, the word, a
+        // space and the figures — `30 / 10` is seven cells, one more than
+        // a single-digit count — leave five for the blocks.
+        let figures = push_status_span(&mut spans, &t, 26);
         assert_eq!(spans.len(), 7, "{spans:?}");
         assert_eq!(spans[4].content, QUEUE_BLOCK.repeat(5));
         assert_eq!(spans[4].style.fg, Some(Color::Yellow));

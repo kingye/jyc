@@ -85,6 +85,11 @@ pub struct LiveStatusStore {
 }
 
 /// A running turn's injection channel, and the turn that owns it.
+///
+/// One per topic: a topic that is closed and reopened while its old turn
+/// is still running has two turns live at once, and the newest one's
+/// channel is the one counted. The old turn's messages died with the
+/// closed topic, so nothing is lost by counting the new turn alone.
 #[derive(Debug)]
 struct InTurn {
     id: u64,

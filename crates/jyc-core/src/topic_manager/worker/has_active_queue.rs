@@ -1718,10 +1718,10 @@ async fn topic_info_picks_the_topic_by_name_when_paths_are_shared() {
     tm.shutdown().await;
 }
 
-/// The topic's backlog: the messages waiting for a turn of their own —
-/// the ones the queue holds, the ones the running turn pulled aside and
-/// the ones the model has not read yet. The snapshot reports all of them,
-/// and the queue's capacity beside them.
+/// The topic's backlog: the messages the model has not read yet — the
+/// ones the queue holds, the ones the running turn pulled aside and the
+/// ones the running turn took in. The snapshot reports all of them, and
+/// the queue's capacity beside them.
 #[tokio::test]
 async fn topic_snapshots_report_the_backlog() {
     let tmp = tempdir().unwrap();

@@ -24,7 +24,7 @@
 //! wire boundary in [`chat_messages_to_responses_input`].
 
 use super::sse::{Event, stream_sse};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use futures::StreamExt;
 use std::collections::VecDeque;
@@ -59,14 +59,7 @@ impl OpenAiResponsesProvider {
         supports_images: bool,
         user_agent: Option<&str>,
     ) -> Result<Self> {
-        // Same connection-pool hygiene as openai_compat: short idle timeout
-        // avoids reusing connections silently dropped by NAT/load-balancers.
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
-            .pool_idle_timeout(std::time::Duration::from_secs(30))
-            .pool_max_idle_per_host(2)
-            .build()
-            .context("Failed to build HTTP client")?;
+        let client = super::http_client()?;
 
         Ok(Self {
             client,

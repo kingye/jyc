@@ -1693,6 +1693,8 @@ fn app_with_topic_summary() -> App {
         channel: "agents".to_string(),
         pattern: None,
         status: jyc_types::TopicStatus::Idle,
+        queued: 0,
+        queue_capacity: 0,
         parent: None,
         model: Some("kimi/kimi-for-coding".to_string()),
         mode: Some("plan".to_string()),

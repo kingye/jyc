@@ -1718,6 +1718,51 @@ async fn topic_info_picks_the_topic_by_name_when_paths_are_shared() {
     tm.shutdown().await;
 }
 
+/// The topic's backlog: the messages waiting for a turn of their own —
+/// the ones the queue holds and the ones the running turn pulled aside.
+/// The snapshot reports both, and the queue's capacity beside them.
+#[tokio::test]
+async fn topic_snapshots_report_the_backlog() {
+    let tmp = tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+    let topic = workspace.join("queue-topic");
+    std::fs::create_dir_all(state_dir("queue-topic", &topic)).unwrap();
+
+    let tm = make_test_tm(&workspace);
+
+    // Nothing waiting yet.
+    let idle = tm
+        .topic_info("queue-topic", true)
+        .await
+        .expect("the topic resolves");
+    assert_eq!(idle.queued, 0, "an idle topic has no backlog");
+    assert_eq!(idle.queue_capacity, 10, "the queue holds ten messages");
+
+    // The running turn pulled two messages aside for a turn of their own.
+    tm.set_topic_queued("queue-topic", 2);
+    let busy = tm
+        .topic_info("queue-topic", true)
+        .await
+        .expect("the topic resolves");
+    assert_eq!(busy.queued, 2, "the turn's backlog is the topic's backlog");
+    assert_eq!(
+        tm.list_topics_without_git().await[0].queued,
+        2,
+        "the list reports the same backlog as the detail"
+    );
+
+    // A turn that ends lets its backlog go: the messages it held went
+    // back to the queue, and the queue counts them from there.
+    tm.set_topic_queued("queue-topic", 0);
+    let done = tm
+        .topic_info("queue-topic", true)
+        .await
+        .expect("the topic resolves");
+    assert_eq!(done.queued, 0);
+
+    tm.shutdown().await;
+}
+
 /// The live status is the one source of truth for `TopicStatus`: what the
 /// runtime writes as a turn runs is what every snapshot reports, and the
 /// list and the detail agree.

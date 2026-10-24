@@ -263,6 +263,22 @@ pub struct TopicInfo {
     pub pattern: Option<String>,
     /// Current processing status
     pub status: TopicStatus,
+    /// Messages accepted for this topic that have not started a turn of
+    /// their own yet — the topic's backlog. The ones still in the queue
+    /// plus the ones the running turn pulled aside for a turn of their
+    /// own.
+    ///
+    /// Zero when the source does not report a backlog.
+    #[serde(default)]
+    pub queued: usize,
+    /// How many messages the topic's queue holds before new ones are
+    /// dropped — the queue's capacity, one slot per message the bar
+    /// draws.
+    ///
+    /// Zero when the source does not report a capacity: the surfaces
+    /// then omit the queue row rather than draw a bar of no slots.
+    #[serde(default)]
+    pub queue_capacity: usize,
     /// Name of the topic that spawned this one — read from the
     /// `spawned-from` breadcrumb in the topic's state dir. See
     /// `TopicSummary::parent` for the full semantics.
@@ -684,6 +700,8 @@ mod tests {
                 channel: "emf".to_string(),
                 pattern: Some("planner".to_string()),
                 status: TopicStatus::Processing,
+                queued: 2,
+                queue_capacity: 10,
                 parent: None,
                 model: Some("anthropic/claude-opus-4-6".to_string()),
                 mode: Some("build".to_string()),
@@ -746,6 +764,19 @@ mod tests {
         assert_eq!(parsed.topics.len(), 1);
         assert_eq!(parsed.topics[0].status, TopicStatus::Processing);
         assert_eq!(parsed.stats.active_workers, 2);
+    }
+
+    /// A payload from an older peer carries no queue figures: the fields
+    /// default, so the row is omitted rather than drawn wrong.
+    #[test]
+    fn test_topic_info_without_queue_figures_parses() {
+        let parsed: TopicInfo = serde_json::from_str(
+            r#"{"name":"t","channel":"c","pattern":null,"status":"idle","model":null,
+                "mode":null,"context_input_tokens":null,"max_tokens":null,"output_tokens":null}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.queued, 0);
+        assert_eq!(parsed.queue_capacity, 0);
     }
 
     #[test]

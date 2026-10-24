@@ -3,7 +3,7 @@
 
 use super::token_render::{
     LABEL_WIDTH, PaneLayout, bar_width, context_pct, label_span, layout_for,
-    push_cache_creation_span, push_cost_span, push_latency_span, push_output_span,
+    push_cache_creation_span, push_cost_span, push_latency_span, push_output_span, push_queue_span,
     push_reasoning_span, push_session_cache_span, push_today_all_span, push_tokens_span,
     push_turn_cache_span,
 };
@@ -1837,6 +1837,17 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         // never narrower than a bar can carry the share honestly: a pane
         // too narrow for that gets the figures alone.
         let bar_cells = bar_width(topic_inner.width, layout);
+        // Queue row — the topic's backlog, one block per message its
+        // queue can hold, with the figures on the row under the blocks.
+        // The same value `/info` reports.
+        let mut queue_spans = Vec::with_capacity(3);
+        let queue_figures = push_queue_span(&mut queue_spans, t, bar_cells);
+        if !queue_spans.is_empty() {
+            rows.push(InfoRow::Field(queue_spans));
+        }
+        if let Some(figures) = queue_figures {
+            rows.push(InfoRow::Value(figures));
+        }
         // Tokens row — the label and the bar, with the figures on the row
         // under them: the bar has the row to itself, so it can reach for
         // the pane's edge, and the figures line up with it.

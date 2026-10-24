@@ -392,6 +392,75 @@ pub(super) fn push_latency_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     }
 }
 
+/// The label of the queue row.
+const QUEUE_LABEL: &str = "Queue: ";
+
+/// The block that stands for one message of the topic's queue.
+///
+/// A quarter short of a cell, so the blocks keep a gap between them and
+/// the row reads as a row of blocks rather than a solid bar. The block
+/// elements are one cell wide in every font — the wider box glyphs are
+/// ambiguous, and a CJK font would stretch them.
+const QUEUE_BLOCK: &str = "▊";
+
+/// Append the "Queue: <blocks>" row to `spans` — the topic's backlog,
+/// one block per message its queue can hold: the queued ones yellow, the
+/// free slots dark gray.
+///
+/// The row is the queue's capacity wide, so it shows the room the topic
+/// has left as well as what it holds; the figures on the row under it
+/// carry the exact counts.
+///
+/// The backlog can exceed the capacity — the running turn holds messages
+/// the queue gave up room for — and the blocks then fill the row without
+/// covering it: the figures say what is really waiting.
+///
+/// Returns the row's figures — "2 / 10" — for the caller to lay out on
+/// the row under the bar, where they line up with it. A pane too narrow
+/// for a bar keeps the figures in the row itself and gets `None` back.
+/// Pushes nothing when the topic reports no capacity: there is no queue
+/// to draw then.
+pub(super) fn push_queue_span(
+    spans: &mut Vec<Span>,
+    t: &TopicInfo,
+    bar_cells: usize,
+) -> Option<Span<'static>> {
+    let capacity = t.queue_capacity;
+    if capacity == 0 {
+        return None;
+    }
+    let figures = format!("{} / {}", t.queued, capacity);
+    spans.push(label_span(QUEUE_LABEL));
+    if bar_cells == 0 {
+        spans.push(Span::raw(figures));
+        return None;
+    }
+    // A capacity wider than the row: the blocks would be cut in half by
+    // the wrapping, so the queue is drawn as a share of the row instead
+    // of one block per message. The figures below carry the counts.
+    let (cells, filled) = if capacity <= bar_cells {
+        (capacity, t.queued.min(capacity))
+    } else {
+        let filled = ((t.queued.min(capacity) * bar_cells) + capacity / 2) / capacity;
+        (bar_cells, filled.min(bar_cells))
+    };
+    if filled > 0 {
+        spans.push(Span::styled(
+            QUEUE_BLOCK.repeat(filled),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    if filled < cells {
+        spans.push(Span::styled(
+            QUEUE_BLOCK.repeat(cells - filled),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    Some(Span::raw(figures))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,6 +512,8 @@ mod tests {
             channel: "c".into(),
             pattern: None,
             status: jyc_types::TopicStatus::Idle,
+            queued: 0,
+            queue_capacity: 0,
             parent: None,
             model: None,
             mode: None,
@@ -546,6 +617,59 @@ mod tests {
         assert_eq!(spans[0].content, padded(TOKENS_LABEL));
         assert_eq!(spans[1].content, "4.64K / 9.77K (47%)");
         assert!(figures.is_none());
+    }
+
+    /// A queue wider than the row is drawn as a share of it: the blocks
+    /// would be cut in half by the wrapping, so the row shows how much of
+    /// the queue is taken, rounded to the nearest cell. The figures keep
+    /// the exact counts.
+    #[test]
+    fn a_queue_wider_than_the_row_is_drawn_as_a_share_of_it() {
+        let mut t = info_with(None, None, None, None, None, None);
+        t.queued = 3;
+        t.queue_capacity = 10;
+        let mut spans = Vec::new();
+        // A row of five cells for a queue of ten: three of ten messages
+        // waiting is a tenth and a half of the row, which rounds to two
+        // cells.
+        let figures = push_queue_span(&mut spans, &t, 5);
+        assert_eq!(spans.len(), 3, "the label, the filled cells, the rest");
+        assert_eq!(spans[0].content, padded(QUEUE_LABEL));
+        assert_eq!(spans[1].content, QUEUE_BLOCK.repeat(2));
+        assert_eq!(spans[1].style.fg, Some(Color::Yellow));
+        assert_eq!(spans[2].content, QUEUE_BLOCK.repeat(3));
+        assert_eq!(spans[2].style.fg, Some(Color::DarkGray));
+        assert_eq!(figures.unwrap().content, "3 / 10");
+    }
+
+    /// A queue that holds more than its capacity fills the row without
+    /// covering it: the blocks stop at the row's width, and the figures
+    /// carry the real count.
+    #[test]
+    fn a_queue_over_its_capacity_fills_the_row_and_no_more() {
+        let mut t = info_with(None, None, None, None, None, None);
+        t.queued = 30;
+        t.queue_capacity = 10;
+        let mut spans = Vec::new();
+        let figures = push_queue_span(&mut spans, &t, 5);
+        assert_eq!(spans.len(), 2, "the label and the full row");
+        assert_eq!(spans[1].content, QUEUE_BLOCK.repeat(5));
+        assert_eq!(spans[1].style.fg, Some(Color::Yellow));
+        assert_eq!(figures.unwrap().content, "30 / 10");
+    }
+
+    /// An empty queue of a wide one draws the row in free slots only.
+    #[test]
+    fn an_empty_queue_wider_than_the_row_draws_free_slots_only() {
+        let mut t = info_with(None, None, None, None, None, None);
+        t.queued = 0;
+        t.queue_capacity = 10;
+        let mut spans = Vec::new();
+        let figures = push_queue_span(&mut spans, &t, 5);
+        assert_eq!(spans.len(), 2, "the label and the free row");
+        assert_eq!(spans[1].content, QUEUE_BLOCK.repeat(5));
+        assert_eq!(spans[1].style.fg, Some(Color::DarkGray));
+        assert_eq!(figures.unwrap().content, "0 / 10");
     }
 
     /// The two cache rows share one bar width and one label width, so

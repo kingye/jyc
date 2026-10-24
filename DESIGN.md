@@ -468,6 +468,11 @@ Readings this table exists to rule out:
    tokens as a share of the total input tokens. The UI says "Turn" and
    "Session" under the info pane's "Cache:" header; the code keeps the
    older name (`cache_util_pct`).
+6. **thread** is the older name for a **topic** and is gone from the
+   user-facing surfaces: the dashboard's status chip counts topics
+   (`2 active / 5 topic`), and the config layer rejects the older keys
+   (`max_concurrent_threads`, `max_queue_size_per_thread`) instead of
+   accepting them silently.
 
 ## Topic State Directory (.jyc)
 
@@ -3302,6 +3307,8 @@ Not connected: connection refused
                                                                                            │ Model:       claude-opus-4-8         
                                                                                            │ Mode:        build                   
                                                                                            │ Branch:      feat/issue-42           
+                                                                                           │ Queue:       ▊▊▊▊▊▊▊▊▊▊              
+                                                                                           │              2 / 10                  
                                                                                            │ Tokens:      ────────··············  
                                                                                            │              44.17K / 117.19K (38%)  
                                                                                            │ Cache:                               
@@ -3313,7 +3320,7 @@ Not connected: connection refused
                                                                                            │   crates/…/mod.rs                    
                                                                                            │ ──────────────────────────────────── 
                                                                                            │ JYC AI v0.7.0                        
-                                                                                           │ 2 active / 4 thread                  
+                                                                                           │ 2 active / 4 topic                   
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 2m  reply sent · emf
 2m  err  ·  emf  ·  unhandled
@@ -3374,7 +3381,26 @@ Not connected: connection refused
   label, in the stacked one it has the row to itself — either way it stops
   two cells short of the column's edge — so a bar appears wherever the
   column can carry an
-  honest one, not only in a wide terminal. The pane's other sections — the
+  honest one, not only in a wide terminal. The **Queue** row draws the
+  topic's backlog: one block per message the topic's queue can hold —
+  `▊` for a message waiting for a turn of its own (bold yellow), `▊` in
+  dim gray for a free slot — so the row shows both what the topic holds
+  and the room it has left; the blocks are a quarter short of a cell, so
+  they keep a gap between them and read as blocks rather than as a solid
+  bar. The figures (`2 / 10`) follow on the row under the blocks, in the
+  same column. The backlog is counted where the messages wait: the ones
+  still in the queue are the channel's own depth, the ones the running
+  turn pulled aside for a turn of their own are that turn's buffer; a
+  message that joined the running turn is not waiting and is not
+  counted. The two halves are read at different moments, so a poll that
+  lands while a turn hands its messages back can count one of them twice
+  or not at all — the gap is one poll wide, and the next poll has it
+  right. The backlog can exceed the capacity — the running turn holds
+  messages the queue gave up room for — and the blocks then fill the row
+  without covering it; the figures say what is really waiting. The row is
+  left out when the topic reports no capacity — an
+  older peer, or a source that does not know the queue. The pane's other
+  sections — the
   task list, the changed files — are not `label: value` rows and keep their
   own shape. A value too long for its column wraps *inside* it: the lines
   that continue it are indented to the column, so the column keeps the

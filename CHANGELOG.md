@@ -1,3 +1,13 @@
+## [Unreleased]
+
+### Added
+
+- The topic info pane and `/info` report how many messages are waiting for the topic: a `Queue:` row draws the backlog as one block per message the topic's queue can hold — `▊` in yellow for a message waiting for a turn of its own, `▊` in gray for a free slot — with the counts (`2 / 10`) under the blocks. The backlog is counted where the messages wait: the ones still in the queue are the channel's own depth, the ones the running turn pulled aside for a turn of their own are that turn's buffer; a message that joined the running turn is not waiting and is not counted. The row is left out when the source reports no capacity, and a column too narrow for a bar keeps the counts alone (#993)
+
+### Changed
+
+- The dashboard's status chip counts topics, not "threads": `2 active / 5 topic`. "Thread" was the older name for a topic and is gone from the user-facing surfaces — the config layer already refuses the older keys (`max_concurrent_threads`, `max_queue_size_per_thread`) instead of accepting them silently, and the chip was the last place the old word showed (#993)
+
 ## [0.7.0] - 2026-10-24
 
 ### Added

@@ -637,6 +637,12 @@ pub(crate) async fn process_message(
                     }
                 },
             }
+
+            // The turn's own backlog, for the surfaces that report it: the
+            // messages this turn holds for a turn of their own. Written
+            // once per message the turn takes in, so the count follows
+            // the buffer while the turn runs.
+            topic_manager.set_topic_queued(topic_name, buffered.len());
         }
     };
 
@@ -647,6 +653,7 @@ pub(crate) async fn process_message(
     while let Ok(qi) = inject_rx.try_recv() {
         buffered.push(qi);
     }
+    topic_manager.set_topic_queued(topic_name, buffered.len());
 
     // Re-enqueue buffered messages so they are processed after the current AI call.
     // Uses direct try_send to the original mpsc channel rather than going
@@ -657,6 +664,11 @@ pub(crate) async fn process_message(
             tracing::warn!(topic = %topic_name, error = %e, "Failed to re-enqueue buffered message");
         }
     }
+    // The turn's own backlog is empty again: the messages it held went
+    // back to the queue, and the queue counts them from here on. A
+    // message the queue could not take is dropped — the warning above is
+    // where that shows; the count does not carry it.
+    topic_manager.set_topic_queued(topic_name, 0);
 
     // Stop the delivery watcher
     delivery_cancel.cancel();

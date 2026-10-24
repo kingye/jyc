@@ -35,7 +35,6 @@ pub use topics::TopicDisplayState;
 pub struct QueueStats {
     pub active_workers: usize,
     pub total_topics: usize,
-    pub pending_messages: usize,
 }
 
 /// Manages per-topic message queues with bounded concurrency.
@@ -227,7 +226,6 @@ impl TopicManager {
         QueueStats {
             active_workers,
             total_topics,
-            pending_messages: 0,
         }
     }
 

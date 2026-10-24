@@ -652,6 +652,12 @@ impl TopicManager {
                 .collect()
         };
 
+        // The channel's queue depths, read once for the whole list: how
+        // many messages each topic's queue holds, waiting for a turn of
+        // their own. One lock for the channel — the list asks for every
+        // topic at once.
+        let queued = self.channel_queued().await;
+
         // The channel's lineage, resolved once: who spawned whom, read from
         // the `spawned-from` breadcrumb in each topic's state dir. It fills
         // the list's `parent` and — for the detail shape — the topic's own
@@ -773,6 +779,18 @@ impl TopicManager {
                 channel: self.channel_name.clone(),
                 pattern,
                 status,
+                // The topic's backlog: the messages its queue holds, plus
+                // the ones the running turn pulled aside for a turn of
+                // their own. Each half is counted where it lives — the
+                // channel's queue and the turn's buffer — but the two are
+                // read at different moments, so a poll that lands while a
+                // turn hands its messages back can count one of them
+                // twice or not at all. The gap is one poll wide.
+                queued: queued.get(name).copied().unwrap_or(0) + self.live_status.get(name).queued,
+                // The queue's capacity — how many messages it holds before
+                // new ones are dropped. Every topic of a channel shares
+                // the channel's queue size.
+                queue_capacity: self.max_queue_size,
                 // The topic that spawned this one, from the channel's
                 // lineage — the one answer the list and the detail share.
                 parent: entry.parent.clone(),

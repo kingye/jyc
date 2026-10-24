@@ -566,6 +566,8 @@ fn topic_detail_for(name: &str, channel: &str) -> jyc_types::TopicInfo {
         channel: channel.to_string(),
         pattern: None,
         status: jyc_types::TopicStatus::Idle,
+        queued: 0,
+        queue_capacity: 0,
         parent: None,
         model: None,
         mode: None,
@@ -674,6 +676,8 @@ fn files_section_colors_uncommitted_paths_yellow() {
         channel: "local_dev".to_string(),
         pattern: Some("jyc".to_string()),
         status: jyc_types::TopicStatus::Idle,
+        queued: 0,
+        queue_capacity: 0,
         parent: None,
         model: None,
         mode: None,
@@ -933,6 +937,8 @@ fn info_scroll_is_clamped_after_render() {
         channel: "local_dev".to_string(),
         pattern: Some("jyc".to_string()),
         status: jyc_types::TopicStatus::Idle,
+        queued: 0,
+        queue_capacity: 0,
         parent: None,
         model: None,
         mode: None,
@@ -1823,6 +1829,8 @@ fn info_pane_app(tasks: jyc_types::task::TaskList) -> App {
         channel: "local_dev".to_string(),
         pattern: Some("jyc".to_string()),
         status: jyc_types::TopicStatus::Idle,
+        queued: 0,
+        queue_capacity: 0,
         parent: None,
         model: None,
         mode: None,
@@ -1865,6 +1873,88 @@ fn info_pane_app(tasks: jyc_types::task::TaskList) -> App {
     });
     app.table_state.select(Some(0));
     app
+}
+
+/// The queue row draws the topic's backlog: one block per message the
+/// queue can hold — the queued ones yellow, the free slots gray — with
+/// the figures under them.
+#[test]
+fn info_pane_draws_the_queue_as_blocks() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let mut app = info_pane_app(jyc_types::task::TaskList::default());
+    let detail = app.topic_detail.as_mut().expect("the detail");
+    detail.queued = 2;
+    detail.queue_capacity = 10;
+
+    let width = 40;
+    let height = 24;
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| render_topic_info_pane(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+
+    // The row that carries the blocks.
+    let row = (0..height)
+        .find(|y| (0..width).any(|x| buffer[(x, *y)].symbol() == "▊"))
+        .expect("the queue row");
+    let blocks: Vec<(u16, Color)> = (0..width)
+        .filter_map(|x| {
+            let cell = &buffer[(x, row)];
+            (cell.symbol() == "▊").then_some((x, cell.fg))
+        })
+        .collect();
+    assert_eq!(blocks.len(), 10, "one block per message the queue can hold");
+    let queued = blocks.iter().filter(|(_, fg)| *fg == Color::Yellow).count();
+    let free = blocks
+        .iter()
+        .filter(|(_, fg)| *fg == Color::DarkGray)
+        .count();
+    assert_eq!(queued, 2, "the two messages waiting are yellow");
+    assert_eq!(free, 8, "the eight free slots are gray");
+    // The queued blocks come first: the row reads as a queue filling up.
+    let first_gray = blocks
+        .iter()
+        .position(|(_, fg)| *fg == Color::DarkGray)
+        .expect("the free slots");
+    assert_eq!(first_gray, 2, "the yellow blocks lead the row");
+
+    // The figures, on the row under the blocks.
+    let figures: String = (0..width)
+        .map(|x| buffer[(x, row + 1)].symbol().to_string())
+        .collect();
+    assert!(figures.contains("2 / 10"), "{figures}");
+}
+
+/// A topic whose source reports no capacity has no queue to draw: the
+/// row is left out rather than showing a queue of nothing.
+#[test]
+fn info_pane_omits_the_queue_row_without_a_capacity() {
+    let mut app = info_pane_app(jyc_types::task::TaskList::default());
+    let detail = app.topic_detail.as_mut().expect("the detail");
+    detail.queued = 0;
+    detail.queue_capacity = 0;
+    let pane = info_pane_text(&mut app, 40, 24);
+    assert!(!pane.contains("Queue:"), "{pane}");
+}
+
+/// The figures on their own when the pane is too narrow for a bar: the
+/// count still reads, and the row keeps its place.
+#[test]
+fn info_pane_shows_the_queue_figures_alone_in_a_narrow_pane() {
+    let mut app = info_pane_app(jyc_types::task::TaskList::default());
+    let detail = app.topic_detail.as_mut().expect("the detail");
+    detail.queued = 2;
+    detail.queue_capacity = 10;
+    // Six cells of pane: too narrow for a bar of five.
+    let pane = info_pane_text(&mut app, 7, 24);
+    assert!(pane.contains("2 / 10"), "{pane}");
+    assert!(
+        !pane.contains('▊'),
+        "a narrow pane draws no blocks:\n{pane}"
+    );
 }
 
 /// The task list has to sit where it was asked for — below the cost row, above
@@ -2001,7 +2091,7 @@ fn info_pane_status_block_stays_when_topic_info_scrolls() {
         "scrolling the topic info must not move the status block:\n{pane}"
     );
     assert!(
-        pane.contains("2 active / 5 thread · 12 recv · 0 err · up 38m"),
+        pane.contains("2 active / 5 topic · 12 recv · 0 err · up 38m"),
         "stats line must stay pinned with the version line:\n{pane}"
     );
 }
@@ -2032,7 +2122,7 @@ fn info_pane_hides_status_block_when_status_toggled() {
 
 /// A narrow info column wraps the stats across rows instead of cutting a chip
 /// mid-word: at 19 usable cells the old single row showed `2 active / 5 t`, now
-/// the five chips spread over three whole-chip rows — and the `active / thread`
+/// the five chips spread over three whole-chip rows — and the `active / topic`
 /// pair keeps its slash while the two share a row.
 #[test]
 fn status_block_wraps_chips_instead_of_clipping_them() {
@@ -2041,7 +2131,7 @@ fn status_block_wraps_chips_instead_of_clipping_them() {
     let rows: Vec<&str> = pane.split('\n').collect();
     // The greedy rows themselves, not just "the text appears somewhere": a
     // chip that had to move down must sit on a row of its own.
-    for row in ["2 active / 5 thread", "12 recv · 0 err", "up 38m"] {
+    for row in ["2 active / 5 topic", "12 recv · 0 err", "up 38m"] {
         assert!(
             rows.iter().any(|r| r.contains(row)),
             "expected a stats row {row:?}:\n{pane}"
@@ -2105,13 +2195,10 @@ fn pack_chips_is_greedy_and_atomic() {
         vec!["aa · bbbbbbbbbb".to_string(), "cc".to_string()]
     );
     // A chip pushed onto a new row does not lead that row with its separator.
-    let pair = vec![
-        ("", "2 active".to_string()),
-        (" / ", "5 thread".to_string()),
-    ];
+    let pair = vec![("", "2 active".to_string()), (" / ", "5 topic".to_string())];
     assert_eq!(
         pack_chips(&pair, 6),
-        vec!["2 active".to_string(), "5 thread".to_string()]
+        vec!["2 active".to_string(), "5 topic".to_string()]
     );
     assert_eq!(pack_chips(&[], 12), Vec::<String>::new());
 }
@@ -2321,6 +2408,8 @@ fn info_pane_end_reaches_the_last_wrapped_row() {
         channel: "test".to_string(),
         pattern: None,
         status: jyc_types::TopicStatus::Idle,
+        queued: 0,
+        queue_capacity: 0,
         parent: None,
         model: None,
         mode: None,

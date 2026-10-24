@@ -70,12 +70,17 @@ fn format_topic_info(t: &TopicInfo) -> String {
     if let Some(branch) = &t.branch {
         lines.push(format!("Branch: {branch}"));
     }
-    lines.push(format!("Status: {}", t.status));
-    // The topic's backlog: the messages the model has not read yet,
-    // against the queue's capacity. Omitted when the source reports no
-    // capacity — there is no queue to report then.
+    // The topic's live status, with the backlog its queue holds: the
+    // figures the pane's status row carries beside the blocks. Omitted
+    // when the source reports no capacity — there is no queue to report
+    // then.
     if t.queue_capacity > 0 {
-        lines.push(format!("Queue: {} / {}", t.queued, t.queue_capacity));
+        lines.push(format!(
+            "Status: {} · queue {} / {}",
+            t.status, t.queued, t.queue_capacity
+        ));
+    } else {
+        lines.push(format!("Status: {}", t.status));
     }
     if let (Some(cur), Some(max)) = (t.context_input_tokens, t.max_tokens) {
         // The context size: the last call's input plus its output, against
@@ -296,8 +301,7 @@ Pattern: gh-issue
 Model: kimi/k3-256k
 Mode: plan
 Branch: fix/issue-42-timeout
-Status: Idle
-Queue: 2 / 10
+Status: Idle · queue 2 / 10
 Tokens: 104.96K / 250.00K (41%)
 Output: 2.00K turn · 12.06K session
 Cache:
@@ -370,20 +374,24 @@ Files (2):
         );
     }
 
-    /// The queue's backlog, against the queue's capacity.
+    /// The queue's backlog, against the queue's capacity, on the status
+    /// row — the same row the pane's status row carries it on.
     #[test]
-    fn formats_the_queue_row() {
+    fn formats_the_queue_figures_on_the_status_row() {
         let text = format_topic_info(&full_info());
-        assert!(text.contains("Queue: 2 / 10"), "{text}");
+        assert!(text.contains("Status: Idle · queue 2 / 10"), "{text}");
+        assert!(!text.contains("Queue:"), "{text}");
     }
 
     /// A topic whose source reports no capacity has no queue to report:
-    /// the row is left out rather than showing a queue of nothing.
+    /// the status row is the status word alone.
     #[test]
-    fn omits_the_queue_row_without_a_capacity() {
+    fn omits_the_queue_without_a_capacity() {
         let mut t = full_info();
         t.queue_capacity = 0;
-        assert!(!format_topic_info(&t).contains("Queue:"));
+        let text = format_topic_info(&t);
+        assert!(!text.contains("queue"), "{text}");
+        assert!(text.contains("Status: Idle\n"), "{text}");
     }
 
     /// The session-only fallback through the real wiring: a turn that has

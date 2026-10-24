@@ -543,14 +543,14 @@ async fn reject_foreign_hub(
         return Ok(());
     };
     let client = InspectClient::with_token(addr, Some(token.as_str()));
-    if let Err(err) = client.get_overview().await {
-        if remote::is_unauthorized(&err) {
-            anyhow::bail!(
-                "{addr} is already serving a different jyc hub (possibly a `jyc connect` \
-                 tunnel), and its inspect token was rejected. Use --addr to choose another \
-                 hub, or set [inspect].bind to a free port."
-            );
-        }
+    if let Err(err) = client.get_overview().await
+        && remote::is_unauthorized(&err)
+    {
+        anyhow::bail!(
+            "{addr} is already serving a different jyc hub (possibly a `jyc connect` \
+             tunnel), and its inspect token was rejected. Use --addr to choose another \
+             hub, or set [inspect].bind to a free port."
+        );
     }
     Ok(())
 }
@@ -1015,6 +1015,9 @@ pub async fn run(
 /// The target directory may be brand new or already contain a `.jyc`
 /// subdirectory; in either case the path is registered as the topic's
 /// working directory.
+// The CLI flags map one-to-one onto parameters; bundling them would add a
+// struct for no behavioral gain (same pattern as the other `#[allow]`s below).
+#[allow(clippy::too_many_arguments)]
 pub async fn run_open(
     explicit_addr: Option<&str>,
     data_dir: &std::path::Path,

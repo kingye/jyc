@@ -217,13 +217,10 @@ mod tests {
 
     fn test_context(topic_name: &str, topic_path: &std::path::Path) -> CommandContext {
         jyc_types::state_dir::register(topic_name, &topic_path.join(".jyc"));
-        CommandContext {
-            topic_name: topic_name.to_string(),
-            args: vec![],
-            topic_path: topic_path.to_path_buf(),
-            config: Arc::new(
-                jyc_types::load_config_from_str(
-                    r#"
+        crate::test_support::test_context_with_config(
+            topic_name,
+            topic_path,
+            r#"
 [general]
 [channels.test]
 type = "email"
@@ -260,17 +257,7 @@ api_key_env = "ANTHROPIC_API_KEY"
 [agent.providers.anthropic.models.claude-opus-4-6]
 context_window = 200000
 "#,
-                )
-                .unwrap(),
-            ),
-            channel: "test".into(),
-            agent: None,
-            template_dirs: PathBuf::from("/tmp/test/templates").into(),
-            channel_type: "websocket".to_string(),
-            config_path: None,
-            per_agent_commands: vec![],
-            hooks: Default::default(),
-        }
+        )
     }
 
     #[tokio::test]

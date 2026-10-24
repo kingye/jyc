@@ -239,102 +239,10 @@ fn normalize_path_line(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message_storage::MessageStorage;
-    use crate::metrics::MetricsCollector;
-    use crate::static_agent::StaticAgentService;
-    use arc_swap::ArcSwap;
     use std::sync::Arc;
 
     fn make_topic_manager(workspace: &std::path::Path) -> Arc<TopicManager> {
-        let storage = Arc::new(MessageStorage::new(workspace));
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let metrics_cancel = tokio_util::sync::CancellationToken::new();
-        let (metrics, _stats, _metrics_task) = MetricsCollector::new(metrics_cancel).start();
-        let config = Arc::new(ArcSwap::from_pointee(
-            jyc_types::load_config_from_str(
-                r#"
-[general]
-[channels.test]
-type = "email"
-[channels.test.inbound]
-host = "h"
-port = 993
-username = "u"
-password = "p"
-[channels.test.outbound]
-host = "h"
-port = 465
-username = "u"
-password = "p"
-[agent]
-enabled = true
-mode = "agent"
-"#,
-            )
-            .unwrap(),
-        ));
-
-        Arc::new(TopicManager::new_with_options(
-            1,
-            10,
-            storage,
-            Arc::new(NoopOutbound),
-            Arc::new(StaticAgentService::new("ok")),
-            cancel,
-            false,
-            workspace.join("templates"),
-            config,
-            "test".to_string(),
-            "websocket".to_string(),
-            workspace.parent().unwrap_or(workspace).to_path_buf(),
-            workspace.to_path_buf(),
-            metrics,
-            None,
-        ))
-    }
-
-    /// Minimal outbound adapter that does nothing — build_pin_context never
-    /// sends replies.
-    struct NoopOutbound;
-
-    #[async_trait::async_trait]
-    impl jyc_types::OutboundAdapter for NoopOutbound {
-        fn channel_type(&self) -> &str {
-            "test"
-        }
-        async fn connect(&self) -> Result<()> {
-            Ok(())
-        }
-        async fn disconnect(&self) -> Result<()> {
-            Ok(())
-        }
-        fn clean_body(&self, raw_body: &str) -> String {
-            raw_body.to_string()
-        }
-        async fn send_reply(
-            &self,
-            _original: &jyc_types::InboundMessage,
-            _reply_text: &str,
-            _topic_path: &std::path::Path,
-            _message_dir: &str,
-            _attachments: Option<&[jyc_types::OutboundAttachment]>,
-        ) -> Result<jyc_types::SendResult> {
-            Ok(jyc_types::SendResult {
-                message_id: "noop".to_string(),
-                chat_seq: 0,
-            })
-        }
-        async fn send_message(
-            &self,
-            _recipient: &str,
-            _subject: &str,
-            _body: &str,
-        ) -> Result<jyc_types::SendResult> {
-            Ok(jyc_types::SendResult {
-                message_id: "noop".to_string(),
-                chat_seq: 0,
-            })
-        }
+        crate::test_support::make_topic_manager(workspace, crate::test_support::TEST_CONFIG_STR)
     }
 
     /// Fork shape: the topic name differs from the shared workspace dir, and

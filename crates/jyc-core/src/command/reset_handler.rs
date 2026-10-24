@@ -97,7 +97,7 @@ impl CommandHandler for ResetCommandHandler {
 mod tests {
     use super::*;
     use crate::agent::{AgentResult, AgentService};
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::sync::Arc;
 
     /// `-f` is the same guard `--force` is, off the declaration `/close` and
@@ -185,43 +185,11 @@ mod tests {
 
     fn test_context(topic_name: &str, topic_path: &Path) -> CommandContext {
         jyc_types::state_dir::register(topic_name, &topic_path.join(".jyc"));
-        CommandContext {
-            topic_name: topic_name.to_string(),
-            // Pass --force by default so the reset tests exercise the real
-            // path; guard tests override `args`.
-            args: vec!["--force".to_string()],
-            topic_path: topic_path.to_path_buf(),
-            config: Arc::new(
-                jyc_types::load_config_from_str(
-                    r#"
-[general]
-[channels.test]
-type = "email"
-[channels.test.inbound]
-host = "h"
-port = 993
-username = "u"
-password = "p"
-[channels.test.outbound]
-host = "h"
-port = 465
-username = "u"
-password = "p"
-[agent]
-enabled = true
-mode = "agent"
-"#,
-                )
-                .unwrap(),
-            ),
-            channel: "test".into(),
-            agent: None,
-            template_dirs: PathBuf::from("/tmp/test/templates").into(),
-            channel_type: "websocket".to_string(),
-            config_path: None,
-            per_agent_commands: vec![],
-            hooks: Default::default(),
-        }
+        let mut context = crate::test_support::test_context(topic_name, topic_path);
+        // Pass --force by default so the destructive-action tests exercise the
+        // real path; guard tests override `args`.
+        context.args = vec!["--force".to_string()];
+        context
     }
 
     #[tokio::test]

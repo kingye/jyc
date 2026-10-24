@@ -438,6 +438,11 @@ pub(crate) async fn process_message(
     // and processed after the current AI call completes.
     let (inject_tx, mut inject_rx) = mpsc::channel::<QueueItem>(INJECTION_CHANNEL_CAPACITY);
 
+    // The store counts what the turn takes in, so the topic's backlog says
+    // how much of the user's input the model has not seen yet. The turn
+    // ends the count with itself (see `TurnStatusGuard`).
+    topic_manager.track_topic_in_turn(topic_name, inject_tx.clone());
+
     let t_dispatch = std::time::Instant::now();
     tracing::info!(
         topic = %topic_name,

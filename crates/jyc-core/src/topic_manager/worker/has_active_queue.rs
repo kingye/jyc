@@ -1719,8 +1719,9 @@ async fn topic_info_picks_the_topic_by_name_when_paths_are_shared() {
 }
 
 /// The topic's backlog: the messages waiting for a turn of their own —
-/// the ones the queue holds and the ones the running turn pulled aside.
-/// The snapshot reports both, and the queue's capacity beside them.
+/// the ones the queue holds, the ones the running turn pulled aside and
+/// the ones the model has not read yet. The snapshot reports all of them,
+/// and the queue's capacity beside them.
 #[tokio::test]
 async fn topic_snapshots_report_the_backlog() {
     let tmp = tempdir().unwrap();
@@ -1751,14 +1752,38 @@ async fn topic_snapshots_report_the_backlog() {
         "the list reports the same backlog as the detail"
     );
 
-    // A turn that ends lets its backlog go: the messages it held went
-    // back to the queue, and the queue counts them from there.
+    // A message the running turn took in and the model has not read yet
+    // is the topic's backlog too: the user sent it and the model has not
+    // seen it.
+    let (inject_tx, _inject_rx) = tokio::sync::mpsc::channel::<jyc_types::QueueItem>(4);
+    tm.track_topic_in_turn("queue-topic", inject_tx.clone());
+    inject_tx
+        .try_send(crate::topic_manager::live_status::queue_item(
+            "not read yet",
+        ))
+        .unwrap();
+    let in_turn = tm
+        .topic_info("queue-topic", true)
+        .await
+        .expect("the topic resolves");
+    assert_eq!(
+        in_turn.queued, 3,
+        "the message the model has not read is part of the backlog"
+    );
+
+    // A turn that ends lets its buffer go: the messages it held went
+    // back to the queue, and the queue counts them from there. The
+    // message the model has not read yet is still waiting — it waits for
+    // the model, not for a turn of its own.
     tm.set_topic_queued("queue-topic", 0);
     let done = tm
         .topic_info("queue-topic", true)
         .await
         .expect("the topic resolves");
-    assert_eq!(done.queued, 0);
+    assert_eq!(
+        done.queued, 1,
+        "the message the model has not read is still waiting"
+    );
 
     tm.shutdown().await;
 }

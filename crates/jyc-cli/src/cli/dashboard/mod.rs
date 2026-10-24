@@ -446,7 +446,11 @@ async fn ensure_serve_running(
     }
     if SPAWNED.swap(true, Ordering::SeqCst) {
         // Already tried spawning — server is still down, fail.
-        anyhow::bail!("Could not connect to {addr}; jyc serve already attempted to start");
+        anyhow::bail!(
+            "Could not connect to {addr}; jyc serve was already auto-started once and is \
+             still not answering. Start jyc serve manually and check its log at {}",
+            data_dir.join("jyc.log").display()
+        );
     }
 
     // Only auto-spawn for localhost addresses.
@@ -546,10 +550,14 @@ async fn reject_foreign_hub(
     if let Err(err) = client.get_overview().await
         && remote::is_unauthorized(&err)
     {
+        let fix = if explicit_token.is_some() {
+            "the --token you passed was rejected; pass the correct one with --token <TOKEN>"
+        } else {
+            "use --addr to choose another hub, or set [inspect].bind to a free port"
+        };
         anyhow::bail!(
             "{addr} is already serving a different jyc hub (possibly a `jyc connect` \
-             tunnel), and its inspect token was rejected. Use --addr to choose another \
-             hub, or set [inspect].bind to a free port."
+             tunnel), and its inspect token was rejected: {fix}."
         );
     }
     Ok(())
@@ -682,9 +690,11 @@ pub async fn run(
     // startup, so the token file exists by the time we resolve it. A remote
     // session has already done its own bring-up over ssh.
     if !args.remote {
-        ensure_serve_running(&addr, data_dir, args.token.as_deref(), pipe)
-            .await
-            .with_context(|| format!("Failed to connect to {addr}. Start jyc serve manually."))?;
+        // No blanket "Start jyc serve manually" context here: the errors from
+        // `ensure_serve_running` already carry their own actionable advice
+        // (including the port-collision diagnosis), and a blanket wrapper would
+        // contradict it.
+        ensure_serve_running(&addr, data_dir, args.token.as_deref(), pipe).await?;
     }
 
     // Resolve the auth token: explicit flag/env wins, otherwise read it

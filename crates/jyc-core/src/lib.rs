@@ -17,6 +17,8 @@ pub mod session_state;
 pub mod static_agent;
 pub mod template_dirs;
 pub mod template_utils;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod topic_event;
 pub mod topic_event_bus;
 pub mod topic_manager;

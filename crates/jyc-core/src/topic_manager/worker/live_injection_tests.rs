@@ -13,48 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tempfile::tempdir;
 
-/// Minimal outbound adapter that does nothing.
-struct NoopOutbound;
-
-#[async_trait::async_trait]
-impl jyc_types::OutboundAdapter for NoopOutbound {
-    fn channel_type(&self) -> &str {
-        "test"
-    }
-    async fn connect(&self) -> Result<()> {
-        Ok(())
-    }
-    async fn disconnect(&self) -> Result<()> {
-        Ok(())
-    }
-    fn clean_body(&self, raw_body: &str) -> String {
-        raw_body.to_string()
-    }
-    async fn send_reply(
-        &self,
-        _original: &InboundMessage,
-        _reply_text: &str,
-        _topic_path: &Path,
-        _message_dir: &str,
-        _attachments: Option<&[jyc_types::OutboundAttachment]>,
-    ) -> Result<jyc_types::SendResult> {
-        Ok(jyc_types::SendResult {
-            message_id: "test".to_string(),
-            chat_seq: 0,
-        })
-    }
-    async fn send_message(
-        &self,
-        _recipient: &str,
-        _subject: &str,
-        _body: &str,
-    ) -> Result<jyc_types::SendResult> {
-        Ok(jyc_types::SendResult {
-            message_id: "test".to_string(),
-            chat_seq: 0,
-        })
-    }
-}
+use crate::test_support::NoopOutbound;
 
 /// An agent that records the messages it was asked to process (turns) and
 /// the ones it received live (injected).

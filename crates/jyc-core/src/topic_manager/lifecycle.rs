@@ -669,47 +669,7 @@ mod tests {
     use tempfile::tempdir;
     use tokio_util::sync::CancellationToken;
 
-    struct NoopOutbound;
-
-    #[async_trait::async_trait]
-    impl jyc_types::OutboundAdapter for NoopOutbound {
-        fn channel_type(&self) -> &str {
-            "test"
-        }
-        async fn connect(&self) -> Result<()> {
-            Ok(())
-        }
-        async fn disconnect(&self) -> Result<()> {
-            Ok(())
-        }
-        fn clean_body(&self, raw_body: &str) -> String {
-            raw_body.to_string()
-        }
-        async fn send_reply(
-            &self,
-            _original: &jyc_types::InboundMessage,
-            _reply_text: &str,
-            _topic_path: &std::path::Path,
-            _message_dir: &str,
-            _attachments: Option<&[jyc_types::OutboundAttachment]>,
-        ) -> Result<jyc_types::SendResult> {
-            Ok(jyc_types::SendResult {
-                message_id: "noop".to_string(),
-                chat_seq: 0,
-            })
-        }
-        async fn send_message(
-            &self,
-            _recipient: &str,
-            _subject: &str,
-            _body: &str,
-        ) -> Result<jyc_types::SendResult> {
-            Ok(jyc_types::SendResult {
-                message_id: "noop".to_string(),
-                chat_seq: 0,
-            })
-        }
-    }
+    use crate::test_support::NoopOutbound;
 
     fn make_tm(workspace: &Path) -> Arc<TopicManager> {
         let storage = Arc::new(MessageStorage::new(workspace));

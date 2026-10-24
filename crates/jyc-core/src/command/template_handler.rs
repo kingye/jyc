@@ -189,20 +189,16 @@ impl TemplateCommandHandler {
 mod tests {
     use super::*;
     use std::path::Path;
-    use std::sync::Arc;
 
     fn test_context(tmp_dir: &Path) -> CommandContext {
         // Unique-per-tmpdir topic name: parallel tests must not share a
         // registry key, and repeated calls in one test must agree (#825).
         let topic_name = format!("template-test-{}", tmp_dir.display());
         jyc_types::state_dir::register(&topic_name, &tmp_dir.join(".jyc"));
-        CommandContext {
-            topic_name,
-            args: vec![],
-            topic_path: tmp_dir.to_path_buf(),
-            config: Arc::new(
-                jyc_types::load_config_from_str(
-                    r#"
+        let mut context = crate::test_support::test_context_with_config(
+            &topic_name,
+            tmp_dir,
+            r#"
 [general]
 [channels.test]
 type = "email"
@@ -216,17 +212,9 @@ sender = { email = "test@example.com" }
 enabled = true
 mode = "agent"
 "#,
-                )
-                .unwrap(),
-            ),
-            channel: "test".into(),
-            agent: None,
-            template_dirs: tmp_dir.join("templates").into(),
-            channel_type: "websocket".to_string(),
-            config_path: None,
-            per_agent_commands: vec![],
-            hooks: Default::default(),
-        }
+        );
+        context.template_dirs = tmp_dir.join("templates").into();
+        context
     }
 
     #[tokio::test]

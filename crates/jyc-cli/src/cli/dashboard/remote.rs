@@ -8,7 +8,7 @@
 //! TLS is needed), and the SSH config, keys, agent and jump hosts the user
 //! already has apply unchanged.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
 use jyc_inspect::client::InspectClient;
 use std::ffi::OsString;
@@ -147,19 +147,8 @@ impl Remote {
     /// Bracketed IPv6 is accepted (`[::1]:9876`); a bare v6 literal is not,
     /// because `host:port` then has no unambiguous port.
     fn bind_parts(&self) -> Result<(&str, u16)> {
-        let invalid = || format!("invalid --remote-bind '{}': expected host:port", self.bind);
-        let (host, port) = self.bind.rsplit_once(':').with_context(invalid)?;
-        if host.is_empty() {
-            bail!("invalid --remote-bind '{}': missing host", self.bind);
-        }
-        if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
-            bail!(
-                "invalid --remote-bind '{}': bracket IPv6 literals, e.g. '[::1]:9876'",
-                self.bind
-            );
-        }
-        let port = port.parse::<u16>().with_context(invalid)?;
-        Ok((host, port))
+        split_bind_host_port(&self.bind)
+            .map_err(|err| anyhow!("invalid --remote-bind '{}': {err}", self.bind))
     }
 
     /// The port the remote inspect server listens on — the port the tunnel
@@ -298,12 +287,39 @@ impl Remote {
 
 /// First line of `config inspect-bind` output is the effective bind.
 fn parse_inspect_bind_output(output: &str) -> Result<String> {
-    output
+    let bind = output
         .lines()
         .find(|line| !line.trim().is_empty())
         .map(str::trim)
-        .map(str::to_string)
-        .context("remote `jyc config inspect-bind` returned no bind address")
+        .context("remote `jyc config inspect-bind` returned no bind address")?;
+    // Validate here, not in `bind_parts`: a malformed remote `[inspect].bind`
+    // would otherwise surface as "invalid --remote-bind", a flag the user
+    // never passed.
+    split_bind_host_port(bind).map_err(|err| {
+        anyhow!(
+            "remote `jyc config inspect-bind` returned an invalid bind '{bind}': {err}. \
+             Check [inspect].bind in the remote's config."
+        )
+    })?;
+    Ok(bind.to_string())
+}
+
+/// Split a `host:port` bind string, bracketed IPv6 accepted.
+///
+/// Shared by the `--remote-bind` flag parser and the remote
+/// `config inspect-bind` output parser; each caller words the error for its
+/// own source.
+fn split_bind_host_port(bind: &str) -> Result<(&str, u16)> {
+    let invalid = || format!("expected host:port, got '{bind}'");
+    let (host, port) = bind.rsplit_once(':').with_context(invalid)?;
+    if host.is_empty() {
+        bail!("missing host in '{bind}'");
+    }
+    if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
+        bail!("bracket IPv6 literals, e.g. '[::1]:9876'");
+    }
+    let port = port.parse::<u16>().with_context(invalid)?;
+    Ok((host, port))
 }
 
 /// Whether a remote command failure is an old jyc not knowing the subcommand.

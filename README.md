@@ -376,6 +376,11 @@ jyc plugins install <archive>   # Install a plugin bundle into the config dir
 
 The `dashboard` command requires the `[inspect]` section to be enabled in config.
 
+Address resolution reads the same layered config as `jyc serve` (the platform
+`<config dir>/config.toml`, plus `config.toml` in `--data-dir` when given). A
+hub started with `jyc serve --config <custom file>` is not covered by that
+lookup — pass the matching `--addr` explicitly.
+
 **Remote hub over SSH**: `jyc connect <host>` points the dashboard at a
 `jyc serve` on another machine. Unless `--remote-bind` says otherwise, the
 remote bind is read from that install's own effective config with

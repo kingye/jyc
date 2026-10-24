@@ -57,7 +57,17 @@ pub async fn provision_default_config(res: &ConfigResolution) -> Result<bool> {
 /// lets `ensure_serve_running` start `jyc serve`, which then provisions the
 /// config and stops for editing.
 pub fn resolve_inspect_bind(data_dir: &Path, data_dir_explicit: bool) -> Result<String> {
-    let resolution = resolve_config(data_dir, None, data_dir_explicit)?;
+    // `resolve_config` fails only when the platform config dir is
+    // undeterminable (and no data-dir-local config exists), and its advice —
+    // "pass --config explicitly" — is a dead end here: dashboard clients have
+    // no --config flag. The default bind is the only sensible answer.
+    let resolution = match resolve_config(data_dir, None, data_dir_explicit) {
+        Ok(resolution) => resolution,
+        Err(err) => {
+            tracing::debug!("config resolution failed, using default inspect bind: {err:#}");
+            return Ok(DEFAULT_INSPECT_BIND.to_string());
+        }
+    };
     inspect_bind_from_resolution(&resolution)
 }
 
@@ -181,6 +191,29 @@ mode = "agent"
         };
         assert_eq!(
             inspect_bind_from_resolution(&resolution).unwrap(),
+            DEFAULT_INSPECT_BIND
+        );
+    }
+
+    #[test]
+    fn client_addr_resolves_through_the_real_config_path() {
+        // Goes through `resolve_config` + `inspect_bind_from_resolution`
+        // against a config on disk, so a swapped `data_dir_explicit` plumbing
+        // in main.rs cannot pass unnoticed.
+        let tmp = tempfile::tempdir().unwrap();
+        write_config(&tmp.path().join("config.toml"), Some("0.0.0.0:9816"));
+        assert_eq!(
+            resolve_inspect_client_addr(None, tmp.path(), true).unwrap(),
+            "127.0.0.1:9816"
+        );
+    }
+
+    #[test]
+    fn config_without_an_inspect_section_uses_the_default_bind() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_config(&tmp.path().join("config.toml"), None);
+        assert_eq!(
+            resolve_inspect_client_addr(None, tmp.path(), true).unwrap(),
             DEFAULT_INSPECT_BIND
         );
     }

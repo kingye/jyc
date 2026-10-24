@@ -55,9 +55,9 @@ enum Commands {
 
     /// Open a directory as an ad-hoc topic and launch chat (shortcut for `dashboard open`)
     Open {
-        /// Inspect server address (also used for WebSocket chat)
-        #[arg(long, default_value = "127.0.0.1:9876")]
-        addr: String,
+        /// Inspect server address (default: [inspect].bind from config, else 127.0.0.1:9876)
+        #[arg(long)]
+        addr: Option<String>,
 
         #[command(flatten)]
         args: cli::dashboard::OpenArgs,
@@ -193,8 +193,9 @@ async fn main() -> Result<()> {
         Commands::Dashboard(args) => match &args.command {
             Some(cli::dashboard::DashboardCommand::Open(open)) => {
                 cli::dashboard::run_open(
-                    &args.addr,
+                    args.addr.as_deref(),
                     &data_dir,
+                    cli.data_dir.is_some(),
                     open.topic.as_deref(),
                     open.channel.as_deref(),
                     open.path.as_deref(),
@@ -203,12 +204,23 @@ async fn main() -> Result<()> {
                 )
                 .await
             }
-            None => cli::dashboard::run(args, &data_dir, None, None, cli.pipe).await,
+            None => {
+                cli::dashboard::run(
+                    args,
+                    &data_dir,
+                    cli.data_dir.is_some(),
+                    None,
+                    None,
+                    cli.pipe,
+                )
+                .await
+            }
         },
         Commands::Open { addr, args } => {
             cli::dashboard::run_open(
-                addr,
+                addr.as_deref(),
                 &data_dir,
+                cli.data_dir.is_some(),
                 args.topic.as_deref(),
                 args.channel.as_deref(),
                 args.path.as_deref(),
@@ -249,6 +261,18 @@ mod tests {
         assert!(matches!(parse(&["jyc"]).command, Commands::Open { .. }));
     }
 
+    #[test]
+    fn open_addr_defaults_to_config_resolution_and_explicit_addr_wins() {
+        match parse(&["jyc", "open"]).command {
+            Commands::Open { addr, .. } => assert!(addr.is_none()),
+            _ => panic!("expected `jyc open`"),
+        }
+        match parse(&["jyc", "open", "--addr", "127.0.0.1:9816"]).command {
+            Commands::Open { addr, .. } => assert_eq!(addr.as_deref(), Some("127.0.0.1:9816")),
+            _ => panic!("expected `jyc open`"),
+        }
+    }
+
     /// Global flags without a subcommand must not break the bare-invocation
     /// rewrite (`jyc --pipe` used to exit with a missing-subcommand error).
     #[test]
@@ -268,7 +292,7 @@ mod tests {
     }
 
     /// `jyc connect` takes the host positionally and needs nothing else: the
-    /// remote flags default to the remote's own loopback bind and to `jyc`.
+    /// remote bind defaults to the remote's effective config and `bin` to `jyc`.
     #[test]
     fn connect_takes_a_host_and_defaults_the_rest() {
         let cli = parse(&["jyc", "connect", "devbox"]);
@@ -277,9 +301,26 @@ mod tests {
                 assert_eq!(args.host, "devbox");
                 assert!(!args.serve);
                 assert_eq!(args.bin, "jyc");
-                assert_eq!(args.remote_bind, "127.0.0.1:9876");
+                assert!(args.remote_bind.is_none());
                 assert!(args.remote_data_dir.is_none());
                 assert!(args.open.topic.is_none() && args.open.path.is_none());
+            }
+            _ => panic!("expected `jyc connect`"),
+        }
+    }
+
+    #[test]
+    fn connect_accepts_an_explicit_remote_bind() {
+        let cli = parse(&[
+            "jyc",
+            "connect",
+            "devbox",
+            "--remote-bind",
+            "127.0.0.1:9816",
+        ]);
+        match cli.command {
+            Commands::Connect(args) => {
+                assert_eq!(args.remote_bind.as_deref(), Some("127.0.0.1:9816"));
             }
             _ => panic!("expected `jyc connect`"),
         }

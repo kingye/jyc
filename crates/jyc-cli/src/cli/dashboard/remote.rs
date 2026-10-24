@@ -19,6 +19,7 @@ use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
 
 use super::OpenArgs;
+use crate::cli::resolve::normalize_inspect_client_addr;
 
 /// How long the local end of the tunnel may take to accept connections.
 const TUNNEL_READY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -56,9 +57,9 @@ pub struct ConnectArgs {
     #[arg(long)]
     pub remote_data_dir: Option<String>,
 
-    /// Inspect server address on the remote host
-    #[arg(long, default_value = "127.0.0.1:9876")]
-    pub remote_bind: String,
+    /// Inspect server address on the remote host (default: read from the remote config)
+    #[arg(long)]
+    pub remote_bind: Option<String>,
 
     /// Token of the remote hub (default: read on the remote host)
     ///
@@ -82,20 +83,62 @@ pub(super) struct Remote {
     host: String,
     bin: String,
     data_dir: Option<String>,
-    /// `host:port` the remote inspect server listens on.
+    /// Effective `[inspect].bind` on the remote. Kept verbatim for messages and
+    /// link rewriting; wildcard hosts are not usable link hosts either.
     bind: String,
+    /// Connectable tunnel target: a wildcard bind host replaced with loopback.
+    tunnel_bind: String,
+    /// The remote jyc predates `config inspect-bind`, so `bind` is the default.
+    bind_fallback: bool,
     /// Extra `-o KEY=VALUE` options for every ssh invocation.
     ssh_opts: Vec<String>,
 }
 
 impl Remote {
-    pub(super) fn from_args(args: &ConnectArgs) -> Self {
-        Self {
+    pub(super) async fn from_args(args: &ConnectArgs) -> Result<Self> {
+        let probe = Self {
             host: args.host.clone(),
             bin: args.bin.clone(),
             data_dir: args.remote_data_dir.clone(),
-            bind: args.remote_bind.clone(),
+            bind: jyc_types::DEFAULT_INSPECT_BIND.to_string(),
+            tunnel_bind: jyc_types::DEFAULT_INSPECT_BIND.to_string(),
+            bind_fallback: false,
             ssh_opts: args.ssh_opts.clone(),
+        };
+        let (bind, bind_fallback) = match &args.remote_bind {
+            Some(bind) => (bind.clone(), false),
+            None => probe.discover_bind().await?,
+        };
+        Ok(Self {
+            tunnel_bind: normalize_inspect_client_addr(&bind),
+            bind,
+            bind_fallback,
+            ..probe
+        })
+    }
+
+    /// Ask the remote jyc for its effective inspect bind.
+    ///
+    /// The query runs on the remote because config layering belongs to that
+    /// install (`--remote-data-dir`, its platform config dir, and defaults).
+    /// An old jyc without `config inspect-bind` falls back to the historical
+    /// default so default-port remotes keep working across versions.
+    async fn discover_bind(&self) -> Result<(String, bool)> {
+        let query = command_line(&self.argv(&["config", "inspect-bind"]));
+        match self.capture(&query).await {
+            Ok(output) => Ok((parse_inspect_bind_output(&output)?, false)),
+            Err(err) if remote_lacks_inspect_bind(&err) => {
+                tracing::warn!(
+                    host = %self.host,
+                    error = %err,
+                    "remote jyc does not support `config inspect-bind`; using the default remote bind"
+                );
+                Ok((jyc_types::DEFAULT_INSPECT_BIND.to_string(), true))
+            }
+            Err(err) => Err(err).context(
+                "could not query the remote inspect bind with `jyc config inspect-bind`; \
+                 pass --remote-bind explicitly or upgrade the remote jyc",
+            ),
         }
     }
 
@@ -253,6 +296,22 @@ impl Remote {
     }
 }
 
+/// First line of `config inspect-bind` output is the effective bind.
+fn parse_inspect_bind_output(output: &str) -> Result<String> {
+    output
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .map(str::to_string)
+        .context("remote `jyc config inspect-bind` returned no bind address")
+}
+
+/// Whether a remote command failure is an old jyc not knowing the subcommand.
+fn remote_lacks_inspect_bind(err: &anyhow::Error) -> bool {
+    let text = err.to_string();
+    text.contains("unrecognized subcommand") || text.contains("unexpected argument")
+}
+
 /// The shell line for an argv, every argument quoted.
 fn command_line(argv: &[String]) -> String {
     argv.iter()
@@ -296,9 +355,9 @@ fn tunnel_args(remote: &Remote, local_port: u16) -> Vec<OsString> {
     ];
     args.extend(remote.ssh_opt_args());
     args.push("-L".into());
-    // The forward targets the address the server actually listens on, not
-    // loopback: `--remote-bind` may name another interface of the remote host.
-    args.push(format!("127.0.0.1:{local_port}:{}", remote.bind).into());
+    // The forward targets the effective remote bind. A configured wildcard is
+    // represented here by loopback (the connectable form of that listener).
+    args.push(format!("127.0.0.1:{local_port}:{}", remote.tunnel_bind).into());
     args.push(remote.host.clone().into());
     args
 }
@@ -443,7 +502,21 @@ pub(super) async fn bootstrap(
             }
         },
     };
+    let mut source = token_source(explicit_token, token_error.as_ref());
     let mut last = probe(tunnel, token.as_deref()).await;
+    if should_retry_rejected_auto_token(explicit_token, token_error.as_ref(), &last) {
+        match read_token(remote).await {
+            Ok(new_token) => {
+                token = Some(new_token);
+                source = token_source(None, None);
+                last = probe(tunnel, token.as_deref()).await;
+            }
+            Err(err) => {
+                token_error = Some(err);
+                source = token_source(explicit_token, token_error.as_ref());
+            }
+        }
+    }
     if last.is_ok() {
         return Ok(token);
     }
@@ -452,7 +525,6 @@ pub(super) async fn bootstrap(
         // up but the token is stale, and a transport error when nothing is
         // listening behind the tunnel. A token that could not be read at all
         // explains a 401 on its own, so it leads the text.
-        let source = token_source(explicit_token, token_error.as_ref());
         bail!("{}", no_answer(remote, last.as_ref().unwrap_err(), source));
     }
 
@@ -547,13 +619,27 @@ fn token_source<'a>(
     }
 }
 
+/// Whether a freshly auto-read token was rejected and one re-read may fix it.
+///
+/// An explicit token is the user's assertion: retrying would hide a real
+/// mismatch. An unreadable token was already retried by [`read_token`].
+fn should_retry_rejected_auto_token(
+    explicit_token: Option<&str>,
+    token_error: Option<&anyhow::Error>,
+    probe: &Result<()>,
+) -> bool {
+    explicit_token.is_none()
+        && token_error.is_none()
+        && probe.as_ref().err().is_some_and(is_unauthorized)
+}
+
 /// Whether the probe was answered with 401.
 ///
 /// [`InspectClient`] flattens the status into its message
 /// (`GET … returned 401 Unauthorized: …`), so this reads the text; the advice
 /// [`no_answer`] gives about a rejected token is only worth printing when a
 /// token was actually rejected.
-fn is_unauthorized(err: &anyhow::Error) -> bool {
+pub(super) fn is_unauthorized(err: &anyhow::Error) -> bool {
     err.chain()
         .any(|cause| cause.to_string().contains("returned 401"))
 }
@@ -587,6 +673,12 @@ fn no_answer(remote: &Remote, probe_err: &anyhow::Error, token: TokenSource<'_>)
         "\n  start it there (`{} serve`), or pass -s/--serve to start one for you",
         remote.bin
     ));
+    if remote.bind_fallback {
+        text.push_str(
+            "\n  note: the remote jyc does not support `config inspect-bind`, so the default \
+             remote bind was assumed; pass --remote-bind if its [inspect].bind differs",
+        );
+    }
     match token {
         TokenSource::Unreadable(_) => text.push_str(
             "\n  if one is running, fix the read first (`--bin`, `--remote-data-dir`, or \
@@ -649,6 +741,8 @@ mod tests {
             bin: "jyc".into(),
             data_dir: None,
             bind: "127.0.0.1:9876".into(),
+            tunnel_bind: "127.0.0.1:9876".into(),
+            bind_fallback: false,
             ssh_opts: Vec::new(),
         }
     }
@@ -666,6 +760,49 @@ mod tests {
 
     fn refused() -> anyhow::Error {
         anyhow::anyhow!("GET /api/state/overview request failed: connection refused")
+    }
+
+    #[test]
+    fn inspect_bind_output_uses_the_first_nonempty_line() {
+        assert_eq!(
+            parse_inspect_bind_output("\n0.0.0.0:9816\n").unwrap(),
+            "0.0.0.0:9816"
+        );
+        assert!(parse_inspect_bind_output("  \n").is_err());
+    }
+
+    #[test]
+    fn old_remote_jyc_is_recognized_for_the_bind_fallback() {
+        let old = anyhow::anyhow!(
+            "`ssh devbox jyc config inspect-bind` failed: error: unrecognized subcommand 'inspect-bind'"
+        );
+        assert!(remote_lacks_inspect_bind(&old));
+        let other =
+            anyhow::anyhow!("`ssh devbox jyc config inspect-bind` failed: config parse error");
+        assert!(!remote_lacks_inspect_bind(&other));
+    }
+
+    #[test]
+    fn only_an_auto_read_token_is_re_read_after_a_401() {
+        let rejected = || Err::<(), _>(probe_error());
+
+        assert!(should_retry_rejected_auto_token(None, None, &rejected()));
+        assert!(!should_retry_rejected_auto_token(
+            Some("t"),
+            None,
+            &rejected()
+        ));
+        let read_err = anyhow::anyhow!("token read failed");
+        assert!(!should_retry_rejected_auto_token(
+            None,
+            Some(&read_err),
+            &rejected()
+        ));
+        assert!(!should_retry_rejected_auto_token(
+            None,
+            None,
+            &Err::<(), _>(refused())
+        ));
     }
 
     #[test]
@@ -712,6 +849,18 @@ mod tests {
         assert!(text.contains("[inspect] enabled = true"), "{text}");
         assert!(!text.contains("was rejected"), "{text}");
         assert!(!text.contains("rotated"), "{text}");
+    }
+
+    #[test]
+    fn the_bind_fallback_tells_the_user_about_the_old_remote_command() {
+        let mut old_remote = remote();
+        old_remote.bind_fallback = true;
+        let text = no_answer(&old_remote, &refused(), TokenSource::Read);
+        assert!(
+            text.contains("does not support `config inspect-bind`"),
+            "{text}"
+        );
+        assert!(text.contains("--remote-bind"), "{text}");
     }
 
     #[test]
@@ -850,6 +999,17 @@ mod tests {
         assert_eq!(args[forward + 1], "127.0.0.1:41234:127.0.0.1:9876");
         // Target last, after every option.
         assert_eq!(args.last().unwrap(), "devbox");
+    }
+
+    #[test]
+    fn tunnel_targets_loopback_for_a_wildcard_remote_bind() {
+        let mut remote = remote();
+        remote.bind = "0.0.0.0:9816".into();
+        remote.tunnel_bind = normalize_inspect_client_addr(&remote.bind);
+        assert_eq!(remote.bind_host().unwrap(), "0.0.0.0");
+        let args = args_of(&tunnel_args(&remote, 41234));
+        let forward = args.iter().position(|a| a == "-L").expect("no -L");
+        assert_eq!(args[forward + 1], "127.0.0.1:41234:127.0.0.1:9816");
     }
 
     #[test]

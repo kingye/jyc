@@ -953,6 +953,41 @@ mod tests {
         // diagnostic re-POST (the SSE client embeds the body directly).
     }
 
+    #[tokio::test]
+    async fn complete_error_embeds_response_body_on_4xx() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("bad request"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = OpenAiCompatProvider::new(
+            &server.uri(),
+            "test-model",
+            Some("test-key"),
+            None,
+            false,
+            None,
+        )
+        .expect("provider construction");
+        let mut stream = provider
+            .complete(&[Message::user("hello")], &[], "")
+            .await
+            .expect("complete should return a stream");
+
+        let err = stream
+            .next()
+            .await
+            .expect("expected an error from the SSE stream")
+            .expect_err("a 400 response must not produce a stream event");
+        let msg = format!("{err:#}");
+        assert!(msg.starts_with("SSE stream error: "), "{msg}");
+        assert!(msg.contains("400"), "{msg}");
+        assert!(msg.contains("bad request"), "{msg}");
+    }
+
     #[test]
     fn parse_tool_call_string_arguments() {
         let mut state = OpenAiStreamState::default();

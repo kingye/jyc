@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-24
+
 ### Added
 
 - The topic info pane and `/info` report how many of the topic's messages the model has not read yet: the status row carries the backlog as one block per message the topic's queue can hold — `▊` in yellow for a message waiting for a turn of its own, `▊` in gray for a free slot — with the counts (`2 / 10`) beside it, under the word `queue` so the blocks cannot be read as the progress of the turn: `Status: Processing · queue ▊▊▊ 2 / 10`. The backlog is counted where the messages wait: the ones still in the queue are the channel's own depth, the ones the running turn pulled aside for a turn of their own are that turn's buffer, and the ones the running turn took in and the model has not read yet are that turn's injection channel — a message the user sent while the agent was working is waiting like any other, and the row says so. A topic whose source reports no capacity has no backlog to report, and a column too narrow for the blocks keeps the counts alone (#993, #994)

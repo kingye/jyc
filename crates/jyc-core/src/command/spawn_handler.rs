@@ -1143,14 +1143,9 @@ fn apply_subagent_type(state_dir: &Path, subagent_type: &SubagentType) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message_storage::MessageStorage;
-    use crate::metrics::MetricsCollector;
     use crate::session_state;
-    use crate::static_agent::StaticAgentService;
-    use arc_swap::ArcSwap;
     use std::path::PathBuf;
     use tempfile::tempdir;
-    use tokio_util::sync::CancellationToken;
 
     /// A role file's prose with its line wrapping collapsed, for asserting on a
     /// phrase: the assertion is about the instruction, and a role file that
@@ -1164,70 +1159,7 @@ mod tests {
     /// handlers' tests use, so every dir a spawn creates stays in the test's
     /// `TempDir`.
     fn make_topic_manager(workspace: &Path) -> Arc<TopicManager> {
-        let storage = Arc::new(MessageStorage::new(workspace));
-        let (metrics, _stats, _task) = MetricsCollector::new(CancellationToken::new()).start();
-        let config = Arc::new(ArcSwap::from_pointee(
-            jyc_types::load_config_from_str("[general]\n[agent]\nenabled = true\n").unwrap(),
-        ));
-        Arc::new(TopicManager::new_with_options(
-            1,
-            10,
-            storage,
-            Arc::new(NoopOutbound),
-            Arc::new(StaticAgentService::new("ok")),
-            CancellationToken::new(),
-            false,
-            workspace.join("templates"),
-            config,
-            "test".to_string(),
-            "websocket".to_string(),
-            workspace.parent().unwrap_or(workspace).to_path_buf(),
-            workspace.to_path_buf(),
-            metrics,
-            None,
-        ))
-    }
-
-    struct NoopOutbound;
-
-    #[async_trait::async_trait]
-    impl jyc_types::OutboundAdapter for NoopOutbound {
-        fn channel_type(&self) -> &str {
-            "test"
-        }
-        async fn connect(&self) -> Result<()> {
-            Ok(())
-        }
-        async fn disconnect(&self) -> Result<()> {
-            Ok(())
-        }
-        fn clean_body(&self, raw_body: &str) -> String {
-            raw_body.to_string()
-        }
-        async fn send_reply(
-            &self,
-            _original: &jyc_types::InboundMessage,
-            _reply_text: &str,
-            _topic_path: &Path,
-            _message_dir: &str,
-            _attachments: Option<&[jyc_types::OutboundAttachment]>,
-        ) -> Result<jyc_types::SendResult> {
-            Ok(jyc_types::SendResult {
-                message_id: "noop".to_string(),
-                chat_seq: 0,
-            })
-        }
-        async fn send_message(
-            &self,
-            _channel: &str,
-            _topic: &str,
-            _text: &str,
-        ) -> Result<jyc_types::SendResult> {
-            Ok(jyc_types::SendResult {
-                message_id: "noop".to_string(),
-                chat_seq: 0,
-            })
-        }
+        crate::test_support::make_topic_manager(workspace, "[general]\n[agent]\nenabled = true\n")
     }
 
     /// A parent topic: a dir with workspace content, and an in-dir `.jyc`

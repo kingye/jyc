@@ -4,7 +4,7 @@
 //! Supports custom base_url (for proxies) and API key authentication.
 
 use super::sse::{Event, stream_sse};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde::Serialize;
@@ -41,15 +41,7 @@ impl AnthropicProvider {
         user_agent: Option<&str>,
         cache_ttl_1h: bool,
     ) -> Result<Self> {
-        // See `openai_compat::OpenAiCompatProvider::new` for the full
-        // rationale on connection-pool hygiene. Same defaults are
-        // applied here for consistency across providers.
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
-            .pool_idle_timeout(std::time::Duration::from_secs(30))
-            .pool_max_idle_per_host(2)
-            .build()
-            .context("Failed to build HTTP client")?;
+        let client = super::http_client()?;
 
         Ok(Self {
             client,
@@ -61,6 +53,70 @@ impl AnthropicProvider {
             user_agent: user_agent.map(|s| s.to_string()),
             cache_ttl_1h,
         })
+    }
+
+    /// Send one Messages API request and decode its SSE stream.
+    ///
+    /// `complete` and `complete_raw` differ only in how the request body is
+    /// built (typed messages vs. the journal wire format); everything from
+    /// the POST onwards is the same, so it lives here once.
+    ///
+    /// The parser yields at most one event per SSE message, so the stream
+    /// needs no buffering of its own.
+    fn send(&self, body: serde_json::Value) -> Result<EventStream> {
+        let url = format!("{}/messages", self.base_url);
+
+        // Build request
+        let mut req = self
+            .client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("anthropic-version", "2023-06-01");
+
+        if self.cache_ttl_1h {
+            req = req.header("anthropic-beta", "extended-cache-ttl-2025-04-11");
+        }
+
+        if let Some(ref key) = self.api_key {
+            req = req.header("x-api-key", key);
+        }
+
+        if let Some(ref ua) = self.user_agent {
+            req = req.header("user-agent", ua.as_str());
+        }
+
+        req = req.json(&body);
+
+        // Create SSE stream
+        let es = stream_sse(req);
+
+        // Transform SSE events into our StreamEvent type
+        let stream = futures::stream::unfold(
+            (es, StreamState::default()),
+            |(mut es, mut state)| async move {
+                loop {
+                    match es.next().await {
+                        Some(Ok(Event::Open)) => continue,
+                        Some(Ok(Event::Message(msg))) => {
+                            match parse_anthropic_sse(&msg.data, &mut state) {
+                                Some(event) => return Some((Ok(event), (es, state))),
+                                None => continue,
+                            }
+                        }
+                        Some(Err(e)) => {
+                            let err_msg = format!("{e}");
+                            if err_msg.contains("Stream ended") {
+                                return None;
+                            }
+                            return Some((Err(anyhow::anyhow!("SSE error: {e}")), (es, state)));
+                        }
+                        None => return None,
+                    }
+                }
+            },
+        );
+
+        Ok(Box::pin(stream))
     }
 }
 
@@ -84,8 +140,6 @@ impl Provider for AnthropicProvider {
         tools: &[ToolDefinition],
         system: &str,
     ) -> Result<EventStream> {
-        let url = format!("{}/messages", self.base_url);
-
         // Convert messages to Anthropic format
         let api_messages = merge_consecutive_user_messages(
             messages
@@ -127,75 +181,7 @@ impl Provider for AnthropicProvider {
         // runs after the params merge.
         apply_cache_breakpoints(&mut body, self.cache_ttl_1h);
 
-        // Build request
-        let mut req = self
-            .client
-            .post(&url)
-            .header("content-type", "application/json")
-            .header("anthropic-version", "2023-06-01");
-
-        if self.cache_ttl_1h {
-            req = req.header("anthropic-beta", "extended-cache-ttl-2025-04-11");
-        }
-
-        if let Some(ref key) = self.api_key {
-            req = req.header("x-api-key", key);
-        }
-
-        if let Some(ref ua) = self.user_agent {
-            req = req.header("user-agent", ua.as_str());
-        }
-
-        req = req.json(&body);
-
-        // Create SSE stream
-        let es = stream_sse(req);
-
-        // Transform SSE events into our StreamEvent type
-        let stream = futures::stream::unfold(
-            (es, StreamState::default()),
-            |(mut es, mut state)| async move {
-                loop {
-                    match es.next().await {
-                        Some(Ok(Event::Open)) => continue,
-                        Some(Ok(Event::Message(msg))) => {
-                            match parse_anthropic_sse(&msg.data, &mut state) {
-                                Some(events) => {
-                                    // Return the first event, buffer the rest
-                                    let mut iter = events.into_iter();
-                                    if let Some(first) = iter.next() {
-                                        state.buffered_events.extend(iter);
-                                        return Some((Ok(first), (es, state)));
-                                    }
-                                    continue;
-                                }
-                                None => continue,
-                            }
-                        }
-                        Some(Err(e)) => {
-                            // Check if we have buffered events to drain first
-                            if let Some(event) = state.buffered_events.pop() {
-                                return Some((Ok(event), (es, state)));
-                            }
-                            let err_msg = format!("{e}");
-                            if err_msg.contains("Stream ended") {
-                                return None;
-                            }
-                            return Some((Err(anyhow::anyhow!("SSE error: {e}")), (es, state)));
-                        }
-                        None => {
-                            // Drain buffered events
-                            if let Some(event) = state.buffered_events.pop() {
-                                return Some((Ok(event), (es, state)));
-                            }
-                            return None;
-                        }
-                    }
-                }
-            },
-        );
-
-        Ok(Box::pin(stream))
+        self.send(body)
     }
 
     fn format_user_message(&self, blocks: &[ContentBlock]) -> serde_json::Value {
@@ -274,8 +260,6 @@ impl Provider for AnthropicProvider {
         tools: &[ToolDefinition],
         system: &str,
     ) -> Result<EventStream> {
-        let url = format!("{}/messages", self.base_url);
-
         let api_tools: Vec<AnthropicTool> = tools
             .iter()
             .map(|t| AnthropicTool {
@@ -317,69 +301,7 @@ impl Provider for AnthropicProvider {
         // the markers by being merged over them.
         apply_cache_breakpoints(&mut body, self.cache_ttl_1h);
 
-        let mut req = self
-            .client
-            .post(&url)
-            .header("content-type", "application/json")
-            .header("anthropic-version", "2023-06-01");
-
-        if self.cache_ttl_1h {
-            req = req.header("anthropic-beta", "extended-cache-ttl-2025-04-11");
-        }
-
-        if let Some(ref key) = self.api_key {
-            req = req.header("x-api-key", key);
-        }
-
-        if let Some(ref ua) = self.user_agent {
-            req = req.header("user-agent", ua.as_str());
-        }
-
-        req = req.json(&body);
-
-        let es = stream_sse(req);
-
-        let stream = futures::stream::unfold(
-            (es, StreamState::default()),
-            |(mut es, mut state)| async move {
-                loop {
-                    match es.next().await {
-                        Some(Ok(Event::Open)) => continue,
-                        Some(Ok(Event::Message(msg))) => {
-                            match parse_anthropic_sse(&msg.data, &mut state) {
-                                Some(events) => {
-                                    let mut iter = events.into_iter();
-                                    if let Some(first) = iter.next() {
-                                        state.buffered_events.extend(iter);
-                                        return Some((Ok(first), (es, state)));
-                                    }
-                                    continue;
-                                }
-                                None => continue,
-                            }
-                        }
-                        Some(Err(e)) => {
-                            if let Some(event) = state.buffered_events.pop() {
-                                return Some((Ok(event), (es, state)));
-                            }
-                            let err_msg = format!("{e}");
-                            if err_msg.contains("Stream ended") {
-                                return None;
-                            }
-                            return Some((Err(anyhow::anyhow!("SSE error: {e}")), (es, state)));
-                        }
-                        None => {
-                            if let Some(event) = state.buffered_events.pop() {
-                                return Some((Ok(event), (es, state)));
-                            }
-                            return None;
-                        }
-                    }
-                }
-            },
-        );
-
-        Ok(Box::pin(stream))
+        self.send(body)
     }
 }
 
@@ -389,11 +311,10 @@ struct StreamState {
     current_tool_id: Option<String>,
     current_tool_name: Option<String>,
     tool_input_buffer: String,
-    buffered_events: Vec<StreamEvent>,
 }
 
-/// Parse a single Anthropic SSE event into StreamEvents.
-fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<StreamEvent>> {
+/// Parse a single Anthropic SSE event into at most one StreamEvent.
+fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<StreamEvent> {
     let value: serde_json::Value = serde_json::from_str(data).ok()?;
     let event_type = value.get("type")?.as_str()?;
 
@@ -407,7 +328,7 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
                 state.current_tool_id = Some(id.clone());
                 state.current_tool_name = Some(name.clone());
                 state.tool_input_buffer.clear();
-                return Some(vec![StreamEvent::ToolUseStart { id, name }]);
+                return Some(StreamEvent::ToolUseStart { id, name });
             }
             if block_type == "thinking" {
                 // Anthropic extended thinking: the block may carry initial
@@ -417,7 +338,7 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
                 if let Some(text) = block.get("thinking").and_then(|t| t.as_str())
                     && !text.is_empty()
                 {
-                    return Some(vec![StreamEvent::ReasoningDelta(text.to_string())]);
+                    return Some(StreamEvent::ReasoningDelta(text.to_string()));
                 }
                 return None;
             }
@@ -429,19 +350,19 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
             match delta_type {
                 "text_delta" => {
                     let text = delta.get("text")?.as_str()?.to_string();
-                    Some(vec![StreamEvent::TextDelta(text)])
+                    Some(StreamEvent::TextDelta(text))
                 }
                 "input_json_delta" => {
                     let partial = delta.get("partial_json")?.as_str()?.to_string();
                     state.tool_input_buffer.push_str(&partial);
-                    Some(vec![StreamEvent::ToolInputDelta(partial)])
+                    Some(StreamEvent::ToolInputDelta(partial))
                 }
                 "thinking_delta" => {
                     // Anthropic extended thinking: incremental thinking text.
                     // Without this arm, the thinking content is silently dropped
                     // (falls to `_ => None`) and never reaches the chat pane.
                     let text = delta.get("thinking")?.as_str()?.to_string();
-                    Some(vec![StreamEvent::ReasoningDelta(text)])
+                    Some(StreamEvent::ReasoningDelta(text))
                 }
                 _ => None,
             }
@@ -451,7 +372,7 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
                 state.current_tool_id = None;
                 state.current_tool_name = None;
                 state.tool_input_buffer.clear();
-                return Some(vec![StreamEvent::ToolUseEnd]);
+                return Some(StreamEvent::ToolUseEnd);
             }
             None
         }
@@ -476,14 +397,14 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
                     // bucket via `extract_cache_hit_tokens` and
                     // `cache_creation_tokens = 0`.
                     let (cache_read, cache_creation) = extract_anthropic_cache_split(usage);
-                    return Some(vec![StreamEvent::Usage {
+                    return Some(StreamEvent::Usage {
                         input_tokens: input,
                         output_tokens: output,
                         cache_hit_tokens: cache_read,
                         cache_creation_tokens: cache_creation,
                         // Anthropic does not break out reasoning tokens.
                         reasoning_tokens: 0,
-                    }]);
+                    });
                 }
             }
             None
@@ -498,19 +419,19 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
                     .unwrap_or(0);
                 if input > 0 {
                     let (cache_read, cache_creation) = extract_anthropic_cache_split(usage);
-                    return Some(vec![StreamEvent::Usage {
+                    return Some(StreamEvent::Usage {
                         input_tokens: input,
                         output_tokens: output,
                         cache_hit_tokens: cache_read,
                         cache_creation_tokens: cache_creation,
                         // Anthropic does not break out reasoning tokens.
                         reasoning_tokens: 0,
-                    }]);
+                    });
                 }
             }
             None
         }
-        "message_stop" => Some(vec![StreamEvent::Done]),
+        "message_stop" => Some(StreamEvent::Done),
         "error" => {
             let error_msg = value
                 .get("error")
@@ -518,7 +439,7 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
                 .and_then(|m| m.as_str())
                 .unwrap_or("Unknown error")
                 .to_string();
-            Some(vec![StreamEvent::Error(error_msg)])
+            Some(StreamEvent::Error(error_msg))
         }
         _ => None,
     }
@@ -1083,6 +1004,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn complete_raw_error_includes_response_body_on_4xx() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("bad request"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = AnthropicProvider::new(
+            &server.uri(),
+            "claude-test-model",
+            Some("test-key"),
+            None,
+            false,
+            None,
+            false,
+        )
+        .expect("provider construction");
+        let raw = [json!({"role": "user", "content": "hello"})];
+        let mut stream = provider
+            .complete_raw(&raw, &[], "")
+            .await
+            .expect("complete_raw should return a stream");
+
+        let err = stream
+            .next()
+            .await
+            .expect("expected an error from the SSE stream")
+            .expect_err("a 400 response must not produce a stream event");
+        let msg = format!("{err:#}");
+        assert!(msg.starts_with("SSE error: "), "{msg}");
+        assert!(msg.contains("400"), "{msg}");
+        assert!(msg.contains("bad request"), "{msg}");
+    }
+
+    #[tokio::test]
     async fn complete_sends_custom_user_agent() {
         let server = MockServer::start().await;
 
@@ -1532,7 +1490,9 @@ mod tests {
         })
         .to_string();
 
-        let events = parse_anthropic_sse(&data, &mut state).unwrap_or_default();
+        let events = parse_anthropic_sse(&data, &mut state)
+            .map(|e| vec![e])
+            .unwrap_or_default();
         match &events[0] {
             StreamEvent::Usage {
                 input_tokens,
@@ -1566,7 +1526,9 @@ mod tests {
             }
         })
         .to_string();
-        let events = parse_anthropic_sse(&data, &mut state).unwrap_or_default();
+        let events = parse_anthropic_sse(&data, &mut state)
+            .map(|e| vec![e])
+            .unwrap_or_default();
         assert_eq!(events.len(), 1, "one ReasoningDelta expected");
         match &events[0] {
             StreamEvent::ReasoningDelta(text) => {
@@ -1591,7 +1553,9 @@ mod tests {
             }
         })
         .to_string();
-        let events = parse_anthropic_sse(&data, &mut state).unwrap_or_default();
+        let events = parse_anthropic_sse(&data, &mut state)
+            .map(|e| vec![e])
+            .unwrap_or_default();
         assert_eq!(events.len(), 1, "one ReasoningDelta expected");
         match &events[0] {
             StreamEvent::ReasoningDelta(text) => {
@@ -1615,7 +1579,9 @@ mod tests {
             }
         })
         .to_string();
-        let events = parse_anthropic_sse(&data, &mut state).unwrap_or_default();
+        let events = parse_anthropic_sse(&data, &mut state)
+            .map(|e| vec![e])
+            .unwrap_or_default();
         assert!(
             events.is_empty(),
             "signature_delta should produce no events, got {events:?}"
@@ -1636,7 +1602,9 @@ mod tests {
             }
         })
         .to_string();
-        let events = parse_anthropic_sse(&data, &mut state).unwrap_or_default();
+        let events = parse_anthropic_sse(&data, &mut state)
+            .map(|e| vec![e])
+            .unwrap_or_default();
         assert!(
             events.is_empty(),
             "empty thinking block should produce no events, got {events:?}"

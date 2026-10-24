@@ -93,46 +93,11 @@ async fn refresh_context_window(context: &CommandContext) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use std::sync::Arc;
 
     fn test_context(topic_name: &str, topic_path: &std::path::Path) -> CommandContext {
         jyc_types::state_dir::register(topic_name, &topic_path.join(".jyc"));
-        CommandContext {
-            topic_name: topic_name.to_string(),
-            args: vec![],
-            topic_path: topic_path.to_path_buf(),
-            config: Arc::new(
-                jyc_types::load_config_from_str(
-                    r#"
-[general]
-[channels.test]
-type = "email"
-[channels.test.inbound]
-host = "h"
-port = 993
-username = "u"
-password = "p"
-[channels.test.outbound]
-host = "h"
-port = 465
-username = "u"
-password = "p"
-[agent]
-enabled = true
-mode = "agent"
-"#,
-                )
-                .unwrap(),
-            ),
-            channel: "test".into(),
-            agent: None,
-            template_dirs: PathBuf::from("/tmp/test/templates").into(),
-            channel_type: "websocket".to_string(),
-            config_path: None,
-            per_agent_commands: vec![],
-            hooks: Default::default(),
-        }
+        crate::test_support::test_context(topic_name, topic_path)
     }
 
     #[tokio::test]

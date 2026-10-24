@@ -920,55 +920,12 @@ mod list_topics_tests {
     use crate::message_storage::MessageStorage;
     use crate::metrics::MetricsCollector;
     use crate::static_agent::StaticAgentService;
-    use anyhow::Result;
-    use jyc_types::{InboundMessage, OutboundAdapter};
     use std::path::Path;
     use std::sync::Arc;
     use tempfile::tempdir;
     use tokio_util::sync::CancellationToken;
 
-    /// Minimal outbound adapter that does nothing.
-    struct NoopOutbound;
-
-    #[async_trait::async_trait]
-    impl OutboundAdapter for NoopOutbound {
-        fn channel_type(&self) -> &str {
-            "test"
-        }
-        async fn connect(&self) -> Result<()> {
-            Ok(())
-        }
-        async fn disconnect(&self) -> Result<()> {
-            Ok(())
-        }
-        fn clean_body(&self, raw_body: &str) -> String {
-            raw_body.to_string()
-        }
-        async fn send_reply(
-            &self,
-            _original: &InboundMessage,
-            _reply_text: &str,
-            _topic_path: &Path,
-            _message_dir: &str,
-            _attachments: Option<&[jyc_types::OutboundAttachment]>,
-        ) -> Result<jyc_types::SendResult> {
-            Ok(jyc_types::SendResult {
-                message_id: "test".to_string(),
-                chat_seq: 0,
-            })
-        }
-        async fn send_message(
-            &self,
-            _recipient: &str,
-            _subject: &str,
-            _body: &str,
-        ) -> Result<jyc_types::SendResult> {
-            Ok(jyc_types::SendResult {
-                message_id: "test".to_string(),
-                chat_seq: 0,
-            })
-        }
-    }
+    use crate::test_support::NoopOutbound;
 
     /// Config with channel `test` and one pattern `p1` whose mode is "plan"
     /// and which carries distinct plan/build models.

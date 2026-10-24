@@ -273,41 +273,7 @@ mod tests {
     }
 
     fn test_context() -> CommandContext {
-        CommandContext {
-            topic_name: "test-topic".to_string(),
-            args: vec![],
-            topic_path: PathBuf::from("/tmp/test"),
-            config: Arc::new(
-                jyc_types::load_config_from_str(
-                    r#"
-[general]
-[channels.test]
-type = "email"
-[channels.test.inbound]
-host = "h"
-port = 993
-username = "u"
-password = "p"
-[channels.test.outbound]
-host = "h"
-port = 465
-username = "u"
-password = "p"
-[agent]
-enabled = true
-mode = "agent"
-"#,
-                )
-                .unwrap(),
-            ),
-            channel: "test".into(),
-            agent: None,
-            template_dirs: PathBuf::from("/tmp/test/templates").into(),
-            channel_type: "websocket".to_string(),
-            config_path: None,
-            per_agent_commands: vec![],
-            hooks: Default::default(),
-        }
+        crate::test_support::test_context("test-topic", std::path::Path::new("/tmp/test"))
     }
 
     #[tokio::test]

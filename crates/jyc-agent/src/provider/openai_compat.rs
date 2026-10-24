@@ -4,7 +4,7 @@
 //! Covers: DeepSeek, GPT, Groq, Together AI, etc.
 
 use super::sse::{Event, stream_sse};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json;
@@ -37,28 +37,7 @@ impl OpenAiCompatProvider {
         supports_images: bool,
         user_agent: Option<&str>,
     ) -> Result<Self> {
-        // Connection pool hygiene:
-        //
-        // - `pool_idle_timeout(30s)` ensures we never reuse a connection
-        //   that has been idle longer than the typical NAT/load-balancer
-        //   silent-drop window. Reqwest's default is 90s, which is large
-        //   enough for the peer to forget the connection while we still
-        //   think it's healthy — that manifests as
-        //   `error sending request for url (...)` on the next use, even
-        //   though a fresh diagnostic POST against the same URL succeeds.
-        //   Observed in production on bare-metal where DeepSeek SSE calls
-        //   intermittently failed despite the upstream being healthy.
-        //
-        // - `pool_max_idle_per_host(2)` bounds how many warm connections
-        //   we keep around per provider. JYC issues at most a handful of
-        //   concurrent requests per provider so 2 is a comfortable cap;
-        //   prevents unbounded pool growth under bursts.
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
-            .pool_idle_timeout(std::time::Duration::from_secs(30))
-            .pool_max_idle_per_host(2)
-            .build()
-            .context("Failed to build HTTP client")?;
+        let client = super::http_client()?;
 
         Ok(Self {
             client,
@@ -82,71 +61,14 @@ impl OpenAiCompatProvider {
         }
         req
     }
-}
 
-#[async_trait]
-impl Provider for OpenAiCompatProvider {
-    fn name(&self) -> &str {
-        "openai-compatible"
-    }
-
-    fn model(&self) -> &str {
-        &self.model
-    }
-
-    fn supports_images(&self) -> bool {
-        self.supports_images
-    }
-
-    async fn complete(
-        &self,
-        messages: &[Message],
-        tools: &[ToolDefinition],
-        system: &str,
-    ) -> Result<EventStream> {
+    /// Send one chat-completions request and decode its SSE stream.
+    ///
+    /// `complete` and `complete_raw` differ only in how the request body is
+    /// built (typed messages vs. the journal wire format); everything from
+    /// the POST onwards is the same, so it lives here once.
+    fn send(&self, body: serde_json::Value) -> Result<EventStream> {
         let url = format!("{}/chat/completions", self.base_url);
-
-        // Build messages array (prepend system message)
-        let mut api_messages: Vec<serde_json::Value> = Vec::new();
-
-        if !system.is_empty() {
-            api_messages.push(serde_json::json!({
-                "role": "system",
-                "content": system,
-            }));
-        }
-
-        for msg in messages {
-            api_messages.push(to_openai_message(msg));
-        }
-
-        // Build request body
-        let mut body = serde_json::json!({
-            "model": &self.model,
-            "stream": true,
-            "stream_options": {"include_usage": true},
-            "messages": api_messages,
-        });
-
-        if !tools.is_empty() {
-            let openai_tools: Vec<serde_json::Value> = tools
-                .iter()
-                .map(|t| {
-                    serde_json::json!({
-                        "type": "function",
-                        "function": {
-                            "name": t.name,
-                            "description": t.description,
-                            "parameters": t.input_schema,
-                        }
-                    })
-                })
-                .collect();
-            body["tools"] = serde_json::Value::Array(openai_tools);
-        }
-
-        // Merge extra params from config (provider-level + model-level)
-        crate::provider::merge_params(&mut body, &self.params);
 
         // Build request
         let req = self
@@ -236,6 +158,72 @@ impl Provider for OpenAiCompatProvider {
 
         Ok(Box::pin(stream))
     }
+}
+
+#[async_trait]
+impl Provider for OpenAiCompatProvider {
+    fn name(&self) -> &str {
+        "openai-compatible"
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
+
+    fn supports_images(&self) -> bool {
+        self.supports_images
+    }
+
+    async fn complete(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        system: &str,
+    ) -> Result<EventStream> {
+        // Build messages array (prepend system message)
+        let mut api_messages: Vec<serde_json::Value> = Vec::new();
+
+        if !system.is_empty() {
+            api_messages.push(serde_json::json!({
+                "role": "system",
+                "content": system,
+            }));
+        }
+
+        for msg in messages {
+            api_messages.push(to_openai_message(msg));
+        }
+
+        // Build request body
+        let mut body = serde_json::json!({
+            "model": &self.model,
+            "stream": true,
+            "stream_options": {"include_usage": true},
+            "messages": api_messages,
+        });
+
+        if !tools.is_empty() {
+            let openai_tools: Vec<serde_json::Value> = tools
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "type": "function",
+                        "function": {
+                            "name": t.name,
+                            "description": t.description,
+                            "parameters": t.input_schema,
+                        }
+                    })
+                })
+                .collect();
+            body["tools"] = serde_json::Value::Array(openai_tools);
+        }
+
+        // Merge extra params from config (provider-level + model-level)
+        crate::provider::merge_params(&mut body, &self.params);
+
+        self.send(body)
+    }
 
     fn format_user_message(&self, blocks: &[ContentBlock]) -> serde_json::Value {
         build_openai_user_content(blocks)
@@ -265,8 +253,6 @@ impl Provider for OpenAiCompatProvider {
         tools: &[ToolDefinition],
         system: &str,
     ) -> Result<EventStream> {
-        let url = format!("{}/chat/completions", self.base_url);
-
         // Build messages array: system + raw messages (converted + filtered).
         // Raw context may contain Anthropic-format messages if the topic
         // previously ran on an Anthropic provider — normalize first so the
@@ -309,77 +295,7 @@ impl Provider for OpenAiCompatProvider {
         // Merge extra params
         crate::provider::merge_params(&mut body, &self.params);
 
-        // Build and send request
-        let req = self
-            .client
-            .post(&url)
-            .header("content-type", "application/json");
-        let req = self.apply_headers(req).json(&body);
-
-        tracing::debug!(url = %url, model = %self.model, "Sending OpenAI-compatible request");
-
-        let es = stream_sse(req);
-
-        let stream = futures::stream::unfold(
-            (es, OpenAiStreamState::default()),
-            |(mut es, mut state)| async move {
-                loop {
-                    if let Some(event) = state.pending_events.pop_front() {
-                        return Some((Ok(event), (es, state)));
-                    }
-
-                    match es.next().await {
-                        Some(Ok(Event::Open)) => continue,
-                        Some(Ok(Event::Message(msg))) => {
-                            let data = &msg.data;
-                            if data.trim() == "[DONE]" {
-                                if let Some(event) = flush_think_buffer(&mut state) {
-                                    state.pending_events.push_back(event);
-                                }
-                                state.pending_events.push_back(StreamEvent::Done);
-                                if let Some(event) = state.pending_events.pop_front() {
-                                    return Some((Ok(event), (es, state)));
-                                }
-                                return None;
-                            }
-                            if let Some(events) = parse_openai_chunk(data, &mut state) {
-                                state.pending_events.extend(events);
-                            }
-                            if let Some(event) = state.pending_events.pop_front() {
-                                return Some((Ok(event), (es, state)));
-                            }
-                        }
-                        Some(Err(e)) => {
-                            let err_msg = format!("{e}");
-                            if err_msg.contains("Stream ended") {
-                                if let Some(event) = flush_think_buffer(&mut state) {
-                                    state.pending_events.push_back(event);
-                                }
-                                if let Some(event) = state.pending_events.pop_front() {
-                                    return Some((Ok(event), (es, state)));
-                                }
-                                return None;
-                            }
-                            return Some((
-                                Err(anyhow::anyhow!("SSE stream error: {e}")),
-                                (es, state),
-                            ));
-                        }
-                        None => {
-                            if let Some(event) = flush_think_buffer(&mut state) {
-                                state.pending_events.push_back(event);
-                            }
-                            if let Some(event) = state.pending_events.pop_front() {
-                                return Some((Ok(event), (es, state)));
-                            }
-                            return None;
-                        }
-                    }
-                }
-            },
-        );
-
-        Ok(Box::pin(stream))
+        self.send(body)
     }
 }
 

@@ -282,8 +282,7 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # [ai.providers.deepseek]
 # type = "openai-compatible"
 # base_url = "https://api.deepseek.com"
-# api_key = "${DEEPSEEK_API_KEY}"            # preferred (consistent with other secrets)
-# # api_key_env = "DEEPSEEK_API_KEY"         # legacy; equivalent to the line above
+# api_key = "${DEEPSEEK_API_KEY}"
 # context_window = 128000
 # # Optional: replace the default User-Agent header for this provider's requests.
 # # Useful for endpoints (e.g. Kimi coding) that gate access by client identity.
@@ -331,8 +330,7 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # [ai.providers.anthropic]
 # type = "anthropic"
 # base_url = "https://api.anthropic.com/v1"
-# api_key = "${ANTHROPIC_API_KEY}"           # preferred
-# # api_key_env = "ANTHROPIC_API_KEY"        # legacy
+# api_key = "${ANTHROPIC_API_KEY}"
 # # Prompt-cache TTL: "5m" (default) or "1h". With "1h", every cache
 # # breakpoint is written with a 1-hour lifetime (extended-cache-ttl beta)
 # # instead of 5 minutes — worthwhile for bursty traffic where turns are
@@ -406,8 +404,7 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # [ai.providers.my_cn_provider]
 # type = "openai-compatible"
 # base_url = "https://api.example.cn"
-# api_key = "${CN_API_KEY}"                  # preferred
-# # api_key_env = "CN_API_KEY"               # legacy
+# api_key = "${CN_API_KEY}"
 # # `currency = "CNY"` is the default and may be omitted; shown here for clarity.
 # pricing = { input_per_million = 3.0, output_per_million = 4.0, cache_hit_per_million = 0.5, currency = "CNY" }
 #
@@ -465,7 +462,7 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # DeepSeek-OCR) to analyze images and return text descriptions.
 #
 # The `provider` field references a named entry in `[ai.providers]` above
-# to reuse its `base_url` and credentials (`api_key` or `api_key_env`),
+# to reuse its `base_url` and `api_key`,
 # avoiding duplicate credentials.
 #
 # [ai.vision]

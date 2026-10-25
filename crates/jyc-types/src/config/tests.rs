@@ -3,15 +3,14 @@ use super::*;
 mod config_loader_tests {
     use super::*;
 
-    /// Test-only builder for `ProviderDef`. Every field except the two
-    /// API-key fields is irrelevant to the `resolve_api_key` tests; this
-    /// helper shrinks the four test fixtures to one line each.
-    fn provider_with_keys(api_key: Option<&str>, api_key_env: Option<&str>) -> ProviderDef {
+    /// Test-only builder for `ProviderDef`. Every field except `api_key` is
+    /// irrelevant to the `resolve_api_key` tests; this helper shrinks the
+    /// fixtures to one line each.
+    fn provider_with_key(api_key: Option<&str>) -> ProviderDef {
         ProviderDef {
             provider_type: "anthropic".to_string(),
             base_url: None,
             api_key: api_key.map(String::from),
-            api_key_env: api_key_env.map(String::from),
             context_window: None,
             supports_images: None,
             params: None,
@@ -109,41 +108,43 @@ shell = ["sh", "-c", 'echo "${JYC_TOPIC_PATH}" >> "${JYC_CONFIG_PATH}/sessions.l
         );
     }
 
-    /// `resolve_api_key` returns the env-var value when `api_key_env` is
-    /// set and the env var exists. Late binding preserved.
+    /// `api_key` carries an expanded `${VAR}` value.
     #[test]
-    fn resolve_api_key_uses_api_key_env_first() {
-        unsafe {
-            std::env::set_var("JYC_RESOLVE_KEY_TEST", "env-key-value");
-        }
-        let p = provider_with_keys(Some("literal-not-used"), Some("JYC_RESOLVE_KEY_TEST"));
-        assert_eq!(p.resolve_api_key().as_deref(), Some("env-key-value"));
-        unsafe {
-            std::env::remove_var("JYC_RESOLVE_KEY_TEST");
-        }
-    }
-
-    /// When `api_key_env` is unset and `api_key` carries an expanded
-    /// `${VAR}` value, return that value.
-    #[test]
-    fn resolve_api_key_falls_back_to_api_key_field() {
-        let p = provider_with_keys(Some("expanded-key-value"), None);
+    fn resolve_api_key_returns_configured_key() {
+        let p = provider_with_key(Some("expanded-key-value"));
         assert_eq!(p.resolve_api_key().as_deref(), Some("expanded-key-value"));
     }
 
-    /// Empty `api_key` (i.e. `${UNSET}` after expansion) and no
-    /// `api_key_env` → `None`.
+    /// Empty `api_key` (i.e. `${UNSET}` after expansion) → `None`.
     #[test]
-    fn resolve_api_key_returns_none_when_empty_and_no_env() {
-        let p = provider_with_keys(Some(""), None);
+    fn resolve_api_key_returns_none_when_empty() {
+        let p = provider_with_key(Some(""));
         assert_eq!(p.resolve_api_key(), None);
     }
 
-    /// Neither field set → `None`.
+    /// No `api_key` → `None`.
     #[test]
-    fn resolve_api_key_returns_none_when_neither_set() {
-        let p = provider_with_keys(None, None);
+    fn resolve_api_key_returns_none_when_unset() {
+        let p = provider_with_key(None);
         assert_eq!(p.resolve_api_key(), None);
+    }
+
+    /// The removed legacy credential field must fail loudly instead of
+    /// being silently ignored (which would drop the auth header and turn
+    /// into a confusing 401 at request time).
+    #[test]
+    fn provider_def_rejects_removed_api_key_env_field() {
+        let err = toml::from_str::<ProviderDef>(
+            r#"
+type = "anthropic"
+api_key = "test-key"
+api_key_env = "ANTHROPIC_API_KEY"
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("api_key_env"), "{err}");
     }
 
     #[test]
@@ -341,6 +342,34 @@ mode = "agent"
         );
     }
 
+    /// The removed provider credential field must fail on the real config
+    /// load path, not only when `ProviderDef` is deserialized directly.
+    #[test]
+    fn test_provider_rejects_removed_api_key_env_field() {
+        let err = load_config_from_str(
+            r#"
+[agent]
+enabled = true
+mode = "agent"
+
+[agent.providers.anthropic]
+type = "anthropic"
+api_key = "test-key"
+api_key_env = "ANTHROPIC_API_KEY"
+"#,
+        )
+        .unwrap_err();
+        let chain = err
+            .chain()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            chain.contains("api_key_env"),
+            "error chain should name the unknown key: {chain}"
+        );
+    }
+
     /// Legacy pattern-level `thread_*` keys must fail loudly too.
     #[test]
     fn test_pattern_rejects_legacy_thread_keys() {
@@ -422,8 +451,6 @@ api_key = "${JYC_LOAD_TEST_API_KEY}"
             Some("loaded-key-123"),
             "${{VAR}} must expand into api_key"
         );
-        // legacy field stays None when not set
-        assert!(provider.api_key_env.is_none());
         unsafe {
             std::env::remove_var("JYC_LOAD_TEST_API_KEY");
         }

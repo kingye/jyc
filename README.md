@@ -511,7 +511,7 @@ Key sections:
 - **`[channels.<name>.agent]`** -- Per-channel agent override (model, system prompt)
 - **`[agent]`** -- AI agent settings (model, system prompt, progress updates)
 - **`[agent.providers.<name>]`** -- LLM provider (type, base_url, `api_key =
-  "${ENV_VAR}"` (preferred) or `api_key_env = "ENV_VAR"` (legacy), `pricing`);
+  "${ENV_VAR}"`, `pricing`);
   `[agent.providers.<name>.models.<id>]` overrides per model.
   `type` is one of `"anthropic"`, `"openai-compatible"` (Chat Completions),
   or `"openai-responses"` (OpenAI Responses API — recommended for GPT-5.x /

@@ -872,7 +872,7 @@ When the active model does NOT have `supports_images = true`, `read_image` falls
 inject_inbound_images = true
 
 [agent.providers.deepseek]
-provider_type = "openai_compat"
+type = "openai-compatible"
 base_url = "https://api.deepseek.com"
 api_key = "${DEEPSEEK_API_KEY}"
 supports_images = true

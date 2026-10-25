@@ -992,7 +992,7 @@ impl ModelPricing {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderDef {
-    /// Provider type: "anthropic" or "openai-compatible"
+    /// Provider type: "anthropic", "openai-compatible", or "openai-responses"
     #[serde(rename = "type")]
     pub provider_type: String,
     /// API base URL

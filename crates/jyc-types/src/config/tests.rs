@@ -133,7 +133,7 @@ shell = ["sh", "-c", 'echo "${JYC_TOPIC_PATH}" >> "${JYC_CONFIG_PATH}/sessions.l
     /// being silently ignored (which would drop the auth header and turn
     /// into a confusing 401 at request time).
     #[test]
-    fn provider_rejects_removed_api_key_env_field() {
+    fn provider_def_rejects_removed_api_key_env_field() {
         let err = toml::from_str::<ProviderDef>(
             r#"
 type = "anthropic"
@@ -338,6 +338,34 @@ mode = "agent"
             .join(" | ");
         assert!(
             chain.contains("max_concurrent_threads"),
+            "error chain should name the unknown key: {chain}"
+        );
+    }
+
+    /// The removed provider credential field must fail on the real config
+    /// load path, not only when `ProviderDef` is deserialized directly.
+    #[test]
+    fn test_provider_rejects_removed_api_key_env_field() {
+        let err = load_config_from_str(
+            r#"
+[agent]
+enabled = true
+mode = "agent"
+
+[agent.providers.anthropic]
+type = "anthropic"
+api_key = "test-key"
+api_key_env = "ANTHROPIC_API_KEY"
+"#,
+        )
+        .unwrap_err();
+        let chain = err
+            .chain()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            chain.contains("api_key_env"),
             "error chain should name the unknown key: {chain}"
         );
     }

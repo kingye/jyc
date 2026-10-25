@@ -154,7 +154,7 @@ system_prompt = "test"
 [agent.providers.test]
 type = "openai-compatible"
 base_url = "http://test"
-api_key_env = "TEST_KEY"
+api_key = "test-key"
 "#,
         )
         .unwrap();

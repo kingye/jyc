@@ -187,7 +187,7 @@ build_model = "p/build-256k"
 [agent.providers.p]
 type = "openai-compatible"
 base_url = "https://x"
-api_key_env = "X"
+api_key = "test-key"
 
 [agent.providers.p.models.plan-1m]
 context_window = 1000000
@@ -257,7 +257,7 @@ build_model = "p/build-256k"
 [agent.providers.p]
 type = "openai-compatible"
 base_url = "https://x"
-api_key_env = "X"
+api_key = "test-key"
 
 [agent.providers.p.models.plan-1m]
 context_window = 1000000

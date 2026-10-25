@@ -241,7 +241,7 @@ mode = "agent"
 [agent.providers.deepseek]
 type = "openai-compatible"
 base_url = "https://api.deepseek.com"
-api_key_env = "DEEPSEEK_API_KEY"
+api_key = "test-key"
 
 [agent.providers.deepseek.models.deepseek-chat]
 context_window = 64000
@@ -252,7 +252,7 @@ context_window = 64000
 [agent.providers.anthropic]
 type = "anthropic"
 base_url = "https://api.anthropic.com/v1"
-api_key_env = "ANTHROPIC_API_KEY"
+api_key = "test-key"
 
 [agent.providers.anthropic.models.claude-opus-4-6]
 context_window = 200000
@@ -489,7 +489,7 @@ mode = "agent"
 [agent.providers.deepseek]
 type = "openai-compatible"
 base_url = "https://api.deepseek.com"
-api_key_env = "DEEPSEEK_API_KEY"
+api_key = "test-key"
 
 [agent.providers.deepseek.models.deepseek-reasoner]
 context_window = 64000
@@ -607,7 +607,7 @@ mode = "agent"
 [agent.providers.deepseek]
 type = "openai-compatible"
 base_url = "https://x"
-api_key_env = "X"
+api_key = "test-key"
 
 [agent.providers.deepseek.models.deepseek-chat]
 context_window = 64000

@@ -1,3 +1,9 @@
+## [Unreleased]
+
+### Removed
+
+- The legacy `api_key_env = "ENV_VAR"` provider field is removed; use `api_key = "${ENV_VAR}"`. Provider blocks now reject unknown fields at config load, so an unmigrated key fails loudly instead of silently omitting the auth header (#999)
+
 ## [0.7.2] - 2026-10-24
 
 ### Added

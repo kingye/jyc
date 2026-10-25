@@ -5,9 +5,8 @@
 //! example into something that no longer parses or resolves, this fails —
 //! documentation that silently stops working is worse than none.
 //!
-//! Uses the legacy `api_key_env` form on purpose: this test exercises the
-//! pricing resolution path and is indifferent to which credential field
-//! the provider carries.
+//! This test exercises the pricing resolution path, not credential
+//! resolution, so the provider carries a literal test key.
 //!
 //! Inlined rather than read from disk so the test has no filesystem
 //! dependency (see AGENTS.md test-isolation rules).
@@ -17,7 +16,7 @@ const EXAMPLE_PRICING: &str = r#"
 [agent.providers.anthropic]
 type = "anthropic"
 base_url = "https://api.anthropic.com/v1"
-api_key_env = "ANTHROPIC_API_KEY"
+api_key = "test-key"
 pricing = { input_per_million = 3.0, output_per_million = 15.0, cache_hit_per_million = 0.3, currency = "USD" }
 
 [agent.providers.anthropic.models."claude-opus-4-7"]

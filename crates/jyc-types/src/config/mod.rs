@@ -700,7 +700,7 @@ impl Default for MonitorConfig {
 /// model (e.g., DeepSeek-OCR) to analyze images and return text descriptions.
 ///
 /// The `provider` field references a named entry in `[agent.providers.xxx]`
-/// to reuse its `base_url` and `api_key` (or `api_key_env` as legacy).
+/// to reuse its `base_url` and `api_key`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct VisionConfig {
     /// Whether vision fallback is enabled (default: false)
@@ -990,8 +990,9 @@ impl ModelPricing {
 
 /// Provider definition for the in-process agent.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderDef {
-    /// Provider type: "anthropic" or "openai-compatible"
+    /// Provider type: "anthropic", "openai-compatible", or "openai-responses"
     #[serde(rename = "type")]
     pub provider_type: String,
     /// API base URL
@@ -1000,17 +1001,8 @@ pub struct ProviderDef {
     /// `api_key = "${ANTHROPIC_API_KEY}"`). Consistent with every other
     /// secret field in the config. Resolved at config-load via the same
     /// `${VAR}` expansion that handles `token`, `password`, etc.
-    ///
-    /// When both `api_key` and `api_key_env` are set, `api_key_env` wins
-    /// (legacy precedence) and a warning is logged at startup.
     #[serde(default)]
     pub api_key: Option<String>,
-    /// Environment variable name containing the API key (legacy).
-    /// The value is the *name* of an env var, not the key itself.
-    /// Resolved lazily inside `create_provider` via `std::env::var`, so
-    /// the key can be rotated in a long-running process without restart.
-    #[serde(default)]
-    pub api_key_env: Option<String>,
     /// Default context window size in tokens (used if model-specific not set)
     pub context_window: Option<u64>,
     /// Whether models under this provider can accept image content blocks
@@ -1053,20 +1045,10 @@ pub struct ProviderDef {
 impl ProviderDef {
     /// Resolve the API key for this provider.
     ///
-    /// Order of preference:
-    ///   1. `api_key_env` — legacy. The value is an env-var *name*; we read
-    ///      the env on every call so keys can be rotated in a long-running
-    ///      process without restart.
-    ///   2. `api_key` — preferred. The TOML loader has already expanded
-    ///      `${VAR}` references, so by the time we get here this is either
-    ///      the resolved key value or `""` (env var was unset).
-    ///
-    /// Returns `None` when neither field is set, or when the referenced
-    /// env var is unset / expands to an empty string.
+    /// The TOML loader has already expanded `${VAR}` references, so
+    /// `api_key` is either the resolved key or an empty string (the env var
+    /// was unset). Both a missing field and an empty value mean no key.
     pub fn resolve_api_key(&self) -> Option<String> {
-        if let Some(env_var) = &self.api_key_env {
-            return std::env::var(env_var).ok().filter(|s| !s.is_empty());
-        }
         self.api_key.clone().filter(|s| !s.is_empty())
     }
 }

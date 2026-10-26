@@ -189,10 +189,9 @@ impl Tool for AskUserTool {
     fn description(&self) -> &str {
         "Ask the user one or more questions with selectable options. The call \
          returns at once: the turn ends and the answer arrives as the user's next \
-         message. Use it where the user's input changes what you do next; to settle \
-         several decisions at once pass a `questions` array instead of calling again. \
-         Text written alongside the call reaches the user before the questions — keep it \
-         to context they need, not a repeat of the questions."
+         message. Use it where the user's input changes what you do next. Text written \
+         alongside the call reaches the user before the questions — context they need, \
+         not a repeat of them."
     }
 
     fn input_schema(&self) -> Value {
@@ -217,8 +216,9 @@ impl Tool for AskUserTool {
                 "questions": {
                     "type": "array",
                     "maxItems": MAX_QUESTIONS as i32,
-                    "description": "Several questions asked at once, answered as one set. When \
-                                    present, `question`/`options`/`allow_multiple` are ignored.",
+                    "description": "Several questions asked at once, answered as one set — use it \
+                                    instead of calling again. When present, \
+                                    `question`/`options`/`allow_multiple` are ignored.",
                     "items": {
                         "type": "object",
                         "properties": {

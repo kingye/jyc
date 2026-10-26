@@ -925,7 +925,7 @@ pub async fn run(
             //    and any of its descendants (bash.rs:95-103).
             //  - webfetch: drops the reqwest send future, cancelling the HTTP
             //    request.
-            //  - read/write/edit/glob/grep/read_image: drops the I/O future;
+            //  - read/write/edit/grep/read_image: drops the I/O future;
             //    a write/edit cancelled mid-flush may leave a partial file —
             //    accepted trade-off for the immediate-cancel guarantee.
             //  - mcp_*: the dropped oneshot reply is cleaned up by the bridge.

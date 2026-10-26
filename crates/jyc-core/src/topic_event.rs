@@ -140,7 +140,7 @@ pub enum TopicEvent {
     /// A new message arrived in this topic.
     ///
     /// Published when `TopicManager::enqueue()` receives a message from any
-    /// source (remote user, scheduled job, dashboard injection, cross-topic).
+    /// source (remote user, dashboard injection, cross-topic).
     /// Enables the dashboard to display live chat messages for non-WebSocket
     /// topics.
     IncomingMessage {
@@ -149,7 +149,7 @@ pub enum TopicEvent {
         /// Per-topic chat sequence number, the same one the chat log stores
         /// for this message (see [`crate::chat_seq`]).
         id: u64,
-        /// Sender identifier (e.g., "user", display name, "job")
+        /// Sender identifier (e.g., "user", display name)
         sender: String,
         /// Message body preview (may be truncated)
         text: String,

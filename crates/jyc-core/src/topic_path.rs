@@ -303,7 +303,7 @@ pub fn activate_workspace_state(topic_name: &str, topic_dir: &Path, workspace: &
         // Skipped while the topic is closed — which includes the enqueue that
         // finds the queue still alive mid-close: the record would recreate the
         // state dir the close is about to delete (or just deleted), and any
-        // message, a firing job, or the router is enough to get here. A
+        // message, the router, or any other writer is enough to get here. A
         // legitimate reopen records the dir on its next enqueue, once the
         // worker's start has lifted the freeze; in between, resolution falls
         // back to inference, which is what a never-recorded topic does anyway.

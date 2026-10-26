@@ -21,7 +21,7 @@ use super::super::{Tool, ToolContext, ToolOutput};
 /// Max items in one list — a plan is a handful of steps, not a transcript.
 const MAX_ITEMS: usize = 20;
 
-/// The topic's `.jyc` dir, resolved the way `job_tools` resolves it:
+/// The topic's `.jyc` dir, resolved the way the state layer resolves it:
 /// `working_dir` is the topic directory and `current_topic` keys the state-dir
 /// registry (which can point a topic's state elsewhere).
 fn tasks_dir(ctx: &ToolContext<'_>) -> PathBuf {
@@ -47,8 +47,8 @@ impl Tool for TaskListTool {
     fn description(&self) -> &str {
         "Show this topic's task list: the plan in progress, one \
          line per item with the id `task_update` takes. Read it before updating \
-         an item you did not just create, and again after a context reset. Says \
-         so when there is no list yet — create one with `task_create`."
+         an item you did not just create, and again after a context reset. With \
+         no list yet, it says so — create one with `task_create`."
     }
 
     fn input_schema(&self) -> Value {
@@ -82,9 +82,8 @@ impl Tool for TaskCreateTool {
     fn description(&self) -> &str {
         "Create this topic's task list, replacing any existing one. Write it up \
          front whenever the work needs more than one step (a plan, an \
-         implementation, a fix), then keep it current with `task_update`: \
-         `in_progress` when you start an item, `completed` when it is actually \
-         done. Items are numbered in the order given and the ids stay stable \
+         implementation, a fix), then keep it current with `task_update`. \
+         Items are numbered in the order given and the ids stay stable \
          until you create a new list. Returns the rendered list."
     }
 
@@ -167,11 +166,10 @@ impl Tool for TaskUpdateTool {
     }
 
     fn description(&self) -> &str {
-        "Set one item's status in this topic's task list: `pending`, \
-         `in_progress` or `completed`. Mark `in_progress` when you start it, \
-         `completed` only once it is genuinely done — never optimistically, never \
-         with validation still failing. `task_list` shows the ids; `task_create` \
-         replaces the list. Returns the rendered list."
+        "Set one item's status in this topic's task list. Mark `in_progress` when \
+         you start it, `completed` only once it is genuinely done — never \
+         optimistically, never with validation still failing. `task_list` shows \
+         the ids; `task_create` replaces the list. Returns the rendered list."
     }
 
     fn input_schema(&self) -> Value {

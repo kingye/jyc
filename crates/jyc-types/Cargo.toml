@@ -16,7 +16,6 @@ toml = "1"
 regex = "1"
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
-cron = { version = "0.17", default-features = false, features = ["serde"] }
 
 [dev-dependencies]
 tempfile = "3"

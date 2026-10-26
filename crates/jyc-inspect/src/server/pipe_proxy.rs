@@ -223,8 +223,8 @@ mod tests {
     }
 
     /// Without a name, the only pipe channel routing into this hub channel is
-    /// the answer — that is the case for a scheduled job, which has no inbound
-    /// message to carry the origin channel.
+    /// the answer — that is the case for a message with no inbound origin
+    /// channel, such as a dashboard injection.
     #[test]
     fn resolve_falls_back_to_the_only_pipe_channel() {
         let route = route();

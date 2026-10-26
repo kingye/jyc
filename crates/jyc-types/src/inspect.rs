@@ -639,7 +639,7 @@ pub struct ModelInfo {
 
 /// Extract the tool's primary input value from the `ToolStarted` event's JSON
 /// input: `service/tools.rs` for file tools, the command for `bash`, the
-/// pattern for `grep`/`glob`, the URL for `webfetch`. Shared by every surface
+/// pattern for `grep`, the URL for `webfetch`. Shared by every surface
 /// that displays a tool call (feishu progress card, TUI chat progress tail).
 ///
 /// File paths are reduced to their basename; newlines and excess whitespace are
@@ -664,7 +664,7 @@ pub fn tool_activity(tool_name: &str, input: Option<&str>) -> Option<String> {
             let p = get("file_path").or_else(|| get("path"))?;
             p.rsplit('/').next().unwrap_or(&p).to_string()
         }
-        "grep" | "glob" => get("pattern")?,
+        "grep" => get("pattern")?,
         "bash" => get("command")?,
         "webfetch" => get("url")?,
         _ => return None,

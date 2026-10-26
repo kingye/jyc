@@ -246,10 +246,7 @@ impl JycAgentService {
 }
 
 /// Mode resolution chain: `.jyc/mode-override` > topic config `mode` >
-/// `pattern.mode` > default "build" downstream. Scheduled-job turns are
-/// non-interactive automation — a plan-mode job turn would wait for a user
-/// approval that can never arrive and emit nothing — so they always resolve to
-/// `None` (build).
+/// `pattern.mode` > default "build" downstream.
 ///
 /// The topic-config layer sits here rather than in `.jyc/mode-override` on
 /// purpose: that file means "the user chose this via `/mode`", while a
@@ -260,11 +257,7 @@ fn resolve_turn_mode(
     file_mode: Option<String>,
     topic_mode: Option<String>,
     pattern_mode: Option<String>,
-    scheduled: bool,
 ) -> Option<String> {
-    if scheduled {
-        return None;
-    }
     file_mode.or(topic_mode).or(pattern_mode)
 }
 
@@ -325,10 +318,6 @@ impl AgentService for JycAgentService {
         // 1. Read mode override for this topic (used to select mode-specific model)
         let mode_override =
             jyc_core::session_state::read_mode_override(topic_name, topic_path).await;
-        // Scheduled-job turns are non-interactive automation (no user will
-        // ever approve a plan), so they always resolve to build mode; see
-        // `resolve_turn_mode`.
-        let scheduled = message.is_scheduled_job();
 
         // 1b. The pattern the message matched — it carries the mode and the
         //     model this turn runs with.
@@ -341,7 +330,6 @@ impl AgentService for JycAgentService {
             mode_override,
             topic_cfg.as_ref().and_then(|c| c.mode.clone()),
             pattern.and_then(|p| p.mode.clone()),
-            scheduled,
         );
         // 1c. The model this turn runs. `jyc_core::session_state::resolve_model` is
         //     the single place that chain lives: the display source
@@ -464,7 +452,6 @@ impl AgentService for JycAgentService {
             jyc_core::session_state::read_mode_override(topic_name, topic_path).await,
             topic_cfg.as_ref().and_then(|c| c.mode.clone()),
             pattern.and_then(|p| p.mode.clone()),
-            scheduled,
         );
         // `prompt_hash` is the tripwire for the byte-stability property above:
         // a hash that changes between turns of an otherwise idle topic means

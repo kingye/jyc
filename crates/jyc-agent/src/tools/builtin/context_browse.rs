@@ -34,8 +34,7 @@ impl Tool for ContextBrowseTool {
     fn description(&self) -> &str {
         "Browse the conversation transcript — user/assistant text pairs, including \
          turns outside your sliding context window. Pair numbers count from the oldest \
-         (1 = first); `offset` skips pairs from the newest end and `limit` caps the \
-         count. Returns oldest→newest."
+         (1 = first). Returns oldest→newest."
     }
 
     fn input_schema(&self) -> Value {

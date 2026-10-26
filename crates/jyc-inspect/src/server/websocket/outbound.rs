@@ -172,18 +172,9 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
         _message_dir: &str,
         attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult> {
-        // Use the original message topic as the broadcast key for normal
-        // messages (topic = topic name from the WebSocket protocol).
-        // Fall back to the topic directory name for scheduled jobs, where
-        // `topic` is a descriptive string like "Scheduled job: ...".
-        let topic = if original.topic.starts_with("Scheduled job:") {
-            topic_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(original.topic.as_str())
-        } else {
-            original.topic.as_str()
-        };
+        // Use the original message topic as the broadcast key (topic = topic
+        // name from the WebSocket protocol).
+        let topic = original.topic.as_str();
         let attachments_json = attachments.filter(|a| !a.is_empty()).map(|atts| {
             atts.iter()
                 .map(|a| attachment_entry(&original.channel, topic, a))
@@ -455,56 +446,6 @@ mod tests {
             atts[0]["path"],
             "/api/topics/local_dev/general/files/%E6%8A%A5%E8%A1%A8%20v2.pdf"
         );
-    }
-
-    /// Regression test: scheduled jobs set `topic` to a descriptive string
-    /// ("Scheduled job: ...") rather than the topic name. The broadcast
-    /// must use the topic directory name so WebSocket clients subscribed
-    /// to the topic actually receive the reply.
-    #[tokio::test]
-    async fn test_send_reply_uses_topic_path_not_topic_for_job() {
-        let (tx, mut rx) = broadcast::channel(16);
-        let tmp = tempfile::TempDir::new().unwrap();
-        let topic_path = tmp.path().join("dev");
-        jyc_types::state_dir::register("dev", &topic_path.join(".jyc"));
-        tokio::fs::create_dir_all(&topic_path).await.unwrap();
-        let storage = Arc::new(MessageStorage::new(&topic_path));
-        let adapter = WebsocketOutboundAdapter::new(tx, storage);
-
-        // Simulate a scheduled job message: topic is descriptive, not the topic name
-        let message = InboundMessage {
-            id: "job-123".to_string(),
-            channel: "websocket".to_string(),
-            channel_uid: "job-123".to_string(),
-            sender: "scheduler".to_string(),
-            sender_address: "scheduler@jyc".to_string(),
-            recipients: vec![],
-            topic: "Scheduled job: check CI status".to_string(),
-            content: jyc_types::MessageContent {
-                text: Some("check CI".to_string()),
-                html: None,
-                markdown: None,
-            },
-            timestamp: chrono::Utc::now(),
-            references: None,
-            reply_to_id: None,
-            external_id: None,
-            attachments: vec![],
-            metadata: std::collections::HashMap::new(),
-            matched_pattern: None,
-        };
-
-        let result = adapter
-            .send_reply(&message, "CI passed!", &topic_path, "msg_001", None)
-            .await;
-        assert!(result.is_ok());
-
-        let sent = rx.recv().await.expect("should receive broadcast");
-        let parsed: serde_json::Value = serde_json::from_str(&sent).unwrap();
-        assert_eq!(parsed["type"], "reply");
-        // Topic must be "dev" (from topic_path), NOT "Scheduled job: ..."
-        assert_eq!(parsed["topic"], "dev");
-        assert_eq!(parsed["text"], "CI passed!");
     }
 
     #[tokio::test]

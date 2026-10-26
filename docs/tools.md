@@ -93,23 +93,6 @@ Perform exact string replacement in a file.
 
 ---
 
-### `glob`
-
-Find files matching a glob pattern.
-
-**Parameters:**
-- `pattern` (string, required): Glob pattern (e.g., `**/*.rs`, `src/**/*.ts`)
-- `path` (string, optional): Directory to search in (default: working directory)
-
-**Security:** If `path` is explicitly provided, it must be within `working_dir`.
-
-**Example:**
-```json
-{"pattern": "**/*.rs", "path": "crates"}
-```
-
----
-
 ### `grep`
 
 Search file contents using regular expressions.
@@ -482,7 +465,6 @@ disabled_mcps = ["*"]  # Disables all external MCP servers
 | `read` | `check_path_boundary()` working_dir + temp dir + read_roots + write_roots | Symlink exemption for symlinked repos |
 | `write` | `check_write_boundary()` working_dir + temp dir + write_roots | Creates parent dirs automatically |
 | `edit` | `check_write_boundary()` working_dir + temp dir + write_roots | — |
-| `glob` | `check_path_boundary()` only when explicit `path` provided | Default working_dir is trusted |
 | `grep` | `check_path_boundary()` only when explicit `path` provided | Default working_dir is trusted |
 | `webfetch` | None (network tool) | HTTPS only; 30s default timeout |
 | `read_image` | `check_path_boundary()` working_dir + temp dir + read_roots + write_roots | URL mode requires http(s) |
@@ -571,7 +553,7 @@ HTTP link served by the inspect server.
 
 ```
 build_tool_registry()
-  ├─ Register built-in tools: bash, read, write, edit, glob, grep, webfetch, context_browse
+  ├─ Register built-in tools: bash, read, write, edit, grep, webfetch, context_browse
   ├─ Register read_image (when model supports images OR vision_client configured)
   ├─ Register jyc_publish_file (base URL from [inspect] base_url)
   ├─ Register MCP bridge tools: jyc_send_message

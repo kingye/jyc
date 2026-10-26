@@ -198,8 +198,7 @@ impl Tool for LessonAddTool {
             "type": "object",
             "properties": {
                 "lesson": {
-                    "type": "string",
-                    "description": "One lesson, as one rule."
+                    "type": "string"
                 }
             },
             "required": ["lesson"]

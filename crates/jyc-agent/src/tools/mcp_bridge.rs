@@ -36,8 +36,7 @@ impl Tool for SendMessageTool {
 
     fn description(&self) -> &str {
         "Send a proactive message to an arbitrary recipient. \
-         Use ONLY for alerts and notifications — NEVER for in-topic replies. \
-         The recipient format is channel-specific (e.g. \"wecomkf:kf001:user123\")."
+         Use ONLY for alerts and notifications — NEVER for in-topic replies."
     }
 
     fn input_schema(&self) -> Value {
@@ -46,20 +45,19 @@ impl Tool for SendMessageTool {
             "properties": {
                 "recipient": {
                     "type": "string",
-                    "description": "Channel-specific recipient identifier"
+                    "description": "Channel-specific recipient identifier (e.g. \"wecomkf:kf001:user123\")"
                 },
                 "subject": {
                     "type": "string",
                     "description": "Message subject (optional, channel-dependent)"
                 },
                 "message": {
-                    "type": "string",
-                    "description": "The message body to send"
+                    "type": "string"
                 },
                 "channel": {
                     "type": "string",
                     "description": "Optional target channel name for cross-channel sending; \
-                                     defaults to the current channel, and the recipient format \
+                                     defaults to the current channel. The recipient format \
                                      must match that channel type."
                 },
                 "attachments": {

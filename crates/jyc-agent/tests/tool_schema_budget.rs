@@ -7,11 +7,14 @@
 //! * **the built-in tool set, by name** — a rename or a drop changes what the
 //!   model may call, and it invalidates every provider prefix cache. The
 //!   expected set is derived from the same calls `build_tool_registry` makes,
-//!   so registering a 22nd tool without saying so here fails the test rather
+//!   so registering a 19th tool without saying so here fails the test rather
 //!   than quietly enlarging every prompt.
 //! * **the description text, by budget** — the 2026-10-18 slimming pass took the
 //!   in-process natural language from 10,108 to 8,349 chars (-17.4%) without
-//!   touching a single name, parameter name, type or required list. The budgets
+//!   touching a single name, parameter name, type or required list. The
+//!   2026-10-26 pass removed five tools (the four `job_*` and `glob`, whose
+//!   text was 1,319 chars) and trimmed the rest by a further 1,272 chars, so
+//!   the set is now 6,888. The budgets
 //!   carry a few percent of slack, so an ordinary wording fix does not have to
 //!   bump them. The *total* ceiling is a different thing: it is the standing
 //!   per-call cost of the whole set, and it was raised once on purpose (#971,
@@ -63,44 +66,41 @@ fn built_in_tools() -> Vec<ToolDefinition> {
 /// slack; a tool added or removed shows up as a failure here rather than as a
 /// silent change in what every prompt carries.
 const BUDGETS: &[(&str, usize, usize)] = &[
-    ("ask_user", 465, 250),
-    ("bash", 180, 75),
-    ("context_browse", 280, 100),
-    ("edit", 235, 125),
-    ("glob", 100, 125),
-    ("grep", 165, 145),
-    ("job_list", 175, 0),
-    ("job_create", 385, 300),
-    ("job_delete", 135, 30),
-    ("job_toggle", 95, 95),
-    ("jyc_publish_file", 275, 225),
-    ("read", 185, 200),
-    ("read_image", 425, 195),
-    ("jyc_send_message", 215, 400),
-    ("jyc_send_to_topic", 315, 630),
-    ("jyc_spawn_subagent", 1200, 515),
-    ("lesson_add", 250, 40),
-    ("lesson_read", 110, 0),
-    ("task_list", 280, 0),
-    ("task_create", 425, 60),
-    ("task_update", 345, 80),
-    ("webfetch", 140, 55),
-    ("write", 140, 115),
+    ("ask_user", 330, 290),
+    ("bash", 128, 46),
+    ("context_browse", 205, 101),
+    ("edit", 222, 124),
+    ("grep", 117, 113),
+    ("jyc_publish_file", 211, 224),
+    ("read", 121, 199),
+    ("read_image", 327, 196),
+    ("jyc_send_message", 131, 430),
+    ("jyc_send_to_topic", 230, 562),
+    ("jyc_spawn_subagent", 1173, 380),
+    ("lesson_add", 220, 0),
+    ("lesson_read", 114, 0),
+    ("task_list", 278, 0),
+    ("task_create", 345, 46),
+    ("task_update", 305, 81),
+    ("webfetch", 96, 35),
+    ("write", 112, 80),
 ];
 
 /// The whole in-process set, in characters. It was 8,349 when the budgets
 /// above were set; other tools have grown it since, and the two lesson
 /// tools (#971) brought it to 9,511 — 9,487 after the send tool's wording
 /// was trimmed to say what a send does not do, and 9,479 after the spawn
-/// tool's said what a send to a closed child does. The ceiling is the standing
-/// per-call cost of every request's prefix, so raising it is a deliberate
-/// act — it was raised for #971, where the alternative was to cut a tool's
-/// description until the model stopped understanding what the tool was for.
+/// tool's said what a send to a closed child does. The 2026-10-26 pass —
+/// five tools removed, the rest trimmed — brought it to 6,888. The ceiling is
+/// the standing per-call cost of every request's prefix, so raising it is a
+/// deliberate act — it was raised for #971, where the alternative was to cut a
+/// tool's description until the model stopped understanding what the tool was
+/// for.
 ///
-/// Only 121 characters of slack are left. The next tool will have to raise
+/// Only 162 characters of slack are left. The next tool will have to raise
 /// it again, and before it does, look for an older description that can
 /// retire: a budget that only ever grows is not a budget.
-const TOTAL_BUDGET: usize = 9_600;
+const TOTAL_BUDGET: usize = 7_050;
 
 /// `jyc_spawn_subagent`'s `type` description ends with the catalog of roles
 /// configured *on this machine*, so its length is configuration rather than

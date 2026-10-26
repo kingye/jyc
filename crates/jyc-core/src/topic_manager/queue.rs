@@ -78,7 +78,7 @@ impl TopicManager {
             .or(topic_path_override);
 
         // Activation registration (#825) at the single enqueue funnel —
-        // covers the router, scheduled jobs, `jyc_send_to_topic`, and the
+        // covers the router, `jyc_send_to_topic`, and the
         // dashboard proxy. A user-dir pin without a registration fails
         // loudly at `state_dir` instead of polluting the dir. Must run
         // before the worker spawn below: worker code resolves `state_dir`

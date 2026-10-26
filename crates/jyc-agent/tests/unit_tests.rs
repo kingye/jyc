@@ -1458,18 +1458,13 @@ mod tool_registry {
     /// The tools the builtin registry must have. The count is derived from
     /// this list, so adding a tool means adding a name — not also
     /// remembering to bump a number somewhere else.
-    const EXPECTED_BUILTIN_TOOLS: [&str; 19] = [
+    const EXPECTED_BUILTIN_TOOLS: [&str; 14] = [
         "bash",
         "read",
         "write",
         "edit",
-        "glob",
         "grep",
         "webfetch",
-        "job_list",
-        "job_create",
-        "job_delete",
-        "job_toggle",
         "jyc_send_to_topic",
         "context_browse",
         "ask_user",
@@ -1659,25 +1654,6 @@ mod tools {
             .unwrap();
         assert!(result.is_error);
         assert!(result.content.contains("2 matches"));
-    }
-
-    #[tokio::test]
-    async fn glob_finds_files() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "glob_finds_files";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        std::fs::write(tmp.path().join("a.rs"), "").unwrap();
-        std::fs::write(tmp.path().join("b.rs"), "").unwrap();
-        std::fs::write(tmp.path().join("c.txt"), "").unwrap();
-        let tool = builtin::glob_tool::GlobTool;
-        let result = tool
-            .execute(json!({"pattern": "*.rs"}), &ctx(tmp.path()))
-            .await
-            .unwrap();
-        assert!(!result.is_error);
-        assert!(result.content.contains("2 file(s)"));
-        assert!(result.content.contains("a.rs"));
-        assert!(result.content.contains("b.rs"));
     }
 
     #[tokio::test]
@@ -2012,7 +1988,6 @@ mod skills {
             attachments: None,
             wecom: None,
             mcps: Vec::new(),
-            scheduler: jyc_types::SchedulerConfig::default(),
             commands: Vec::new(),
             hooks: Vec::new(),
             agents: std::collections::HashMap::new(),

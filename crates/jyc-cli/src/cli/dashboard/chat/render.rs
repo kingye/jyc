@@ -1456,7 +1456,7 @@ fn primary_field_keys(tool_name: &str) -> &'static [&'static str] {
         "bash" => &["command"],
         "read" | "edit" | "write" => &["file_path"],
         "read_image" => &["path", "file_path"],
-        "grep" | "glob" => &["pattern"],
+        "grep" => &["pattern"],
         "webfetch" => &["url"],
         _ => &[],
     }

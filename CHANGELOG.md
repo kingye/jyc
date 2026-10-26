@@ -2,6 +2,7 @@
 
 ### Changed
 
+- The built-in tool set is smaller and its text is leaner: the four `job_*` tools and `glob` are gone, and the 18 remaining descriptions went from 9,479 to 6,888 characters (-27%) — that much less in every request's cached prefix. `grep` and `webfetch` stay: they work without a `ripgrep`/`curl` binary, cap their output and set a browser user agent. The `edit` tool's description now names its actual parameter (`old_string`, not `oldString`) (#1003)
 - Skills are opt-in: a topic lists **no** skill unless a layer declares `skills` for it (channel, pattern, agent, or the topic's own `.jyc/config.toml`), and the allow-list is what the *system prompt* carries — the default is an empty list, not "every skill found". A config that relied on the old default (no `skills` key → everything listed) now lists nothing until it names the skills it wants; a topic that wants one skill for one message asks for it by name (#1002)
 - `/skill:<name>` now reaches every discovered skill, not only the ones the topic's allow-list names: the command appends that skill's name, path and description to the message, so the agent reads the right `SKILL.md` even when the prompt does not list it. The runtime `/skill on <name>` / `off <name>` still add to and remove from the topic's list, and `/skill reset` clears both (#1002)
 
@@ -12,6 +13,8 @@
 
 ### Removed
 
+- Scheduled jobs are gone: the `job_list` / `job_create` / `job_delete` / `job_toggle` tools, the background scheduler behind them (`[scheduler]` in the config, `JobScheduler`, the per-topic `<topic>/.jyc/jobs/` store) and the cron parsing. A config still carrying a `[scheduler]` block loads unchanged — the key is inert — and job files left in a topic's state dir are neither read nor deleted. Waiting for a CI run is the `ci-watch` subagent's job now (#1003)
+- The `glob` tool is gone: `rg --files` or `find` cover the same ground, and the tool's own description claimed a modification-time order it never applied. The `glob` crate stays in `jyc-core` — the `/new` command still uses it (#1003)
 - `disabled_skills` is gone from every config layer (channel, pattern, agent, topic config): with skills opt-in there is no implicit set of skills left to subtract from — a name is either in the allow-list or not, and the one way to take a skill out of a topic remains the runtime `/skill off <name>`. A config still carrying the key loads unchanged; the key is inert (#1002)
 - The legacy `api_key_env = "ENV_VAR"` provider field is removed; use `api_key = "${ENV_VAR}"`. Provider blocks now reject unknown fields at config load, so an unmigrated key fails loudly instead of silently omitting the auth header. Keys are now resolved once at config load, so a rotated key requires a restart or config reload (#999)
 

@@ -35,8 +35,7 @@ impl Tool for SendToThreadTool {
     fn description(&self) -> &str {
         "Send a message to another agent: its own topic by default, or one of its \
          topics with 'topic'. The topic must already exist — a name no topic owns is \
-         an error, so create the agent first with jyc_spawn_subagent. Set require_reply=true \
-         to have the target send its results back to this topic."
+         an error, so create the agent first with jyc_spawn_subagent."
     }
 
     fn input_schema(&self) -> Value {
@@ -45,11 +44,11 @@ impl Tool for SendToThreadTool {
             "properties": {
                 "agent": {
                     "type": "string",
-                    "description": "The agent to reach, e.g. \"invoice\" — its own topic, or one named by 'topic'. It must already exist."
+                    "description": "The agent to reach, e.g. \"invoice\". It must already exist."
                 },
                 "topic": {
                     "type": "string",
-                    "description": "One of that agent's topics, when it has more than one; a topic name is unique process-wide. An agent's own topic is named after the agent, so the same name here addresses that default topic."
+                    "description": "One of that agent's topics, when it has more than one. A topic name is unique process-wide; an agent's own topic is named after the agent."
                 },
                 "message": {
                     "type": "string",

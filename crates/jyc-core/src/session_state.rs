@@ -463,8 +463,7 @@ pub async fn clear_tasks_at(state_dir: &Path) {
 /// Mirrors the runtime chain in `jyc-agent::service::process()` so that
 /// non-runtime paths (dashboard topic list, `/model` command) agree with the
 /// mode the agent actually runs in. The runtime states the same precedence once
-/// more, as the pure `resolve_turn_mode` — it also has to force scheduled-job
-/// turns to build, which callers here never see. Changing one means changing the
+/// more, as the pure `resolve_turn_mode`. Changing one means changing the
 /// other; they are small enough that moving them together would cost the runtime
 /// a fresh topic-config read per turn.
 ///

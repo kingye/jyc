@@ -664,7 +664,7 @@ pub fn tool_activity(tool_name: &str, input: Option<&str>) -> Option<String> {
             let p = get("file_path").or_else(|| get("path"))?;
             p.rsplit('/').next().unwrap_or(&p).to_string()
         }
-        "grep" | "glob" => get("pattern")?,
+        "grep" => get("pattern")?,
         "bash" => get("command")?,
         "webfetch" => get("url")?,
         _ => return None,

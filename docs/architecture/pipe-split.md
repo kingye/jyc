@@ -180,12 +180,12 @@ deleted.
   attachment placeholder.
 - **The email transports moved to their caller.** The IMAP client/monitor and
   the raw-email parser now live in `jyc-channels/src/imap/`, the SMTP client in
-  `jyc-channels/src/smtp/client.rs`, and `job_scheduler.rs` moved to
-  `jyc-core`; `jyc-services` is gone and `jyc-channels` no longer depends on it.
+  `jyc-channels/src/smtp/client.rs`; `jyc-services` is gone and `jyc-channels`
+  no longer depends on it.
   This closes the gap step 5 left: the hub had stopped *reaching* the email
   adapter, but it still compiled the transport stack (`async-imap`,
   `mail-parser`, `lettre`, `comrak`, `htmd`) because `jyc-services` stayed in
-  its graph for the job scheduler. Whether that shows up as bytes in the `jyc`
+  its graph. Whether that shows up as bytes in the `jyc`
   artifact stays unmeasured here (no local `cargo build` on dev machines, and
   CI does not weigh artifacts) — measure with
   `ls -l target/release/{jyc,jyc-pipe}`.

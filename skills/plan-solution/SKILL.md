@@ -16,7 +16,7 @@ When asked to plan a solution, follow this structure:
   - `DESIGN.md` — architecture and design principles (if present)
   - `README.md` — build commands, prerequisites
   - `.opencode/skills/` or `.claude/` — project-specific workflows
-- Read relevant source code (use `read`, `glob`, `grep` — NOT `task` tool)
+- Read relevant source code (use `read`, `grep` — NOT `task` tool)
 - Summarize your understanding in 2-3 sentences
 - Follow the `coding-principles` skill:
   - **Principle 1 (Think Before Coding)**: State assumptions explicitly; if uncertain, ask
@@ -51,7 +51,7 @@ detected from config files like Cargo.toml, package.json, .cdsrc.json).
 - Maximum 5-10 steps per plan
 - Each step changes 1-3 files maximum
 - Do NOT explore the entire codebase — read docs first (AGENTS.md, DESIGN.md, README.md, CHANGELOG.md)
-- Do NOT use the `task` tool for exploration — use `read`, `glob`, `grep` directly
+- Do NOT use the `task` tool for exploration — use `read`, `grep` directly
 - Reference existing patterns in the codebase
 - Consider backward compatibility
 - Consider the project's design principles (from AGENTS.md or DESIGN.md)

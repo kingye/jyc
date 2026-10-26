@@ -2,13 +2,17 @@
 //! #935 is what made that prefix byte-stable — so their text is a standing
 //! per-call cost and their shape is a standing contract with the model.
 //!
-//! Two things are pinned here:
+//! Three things are pinned here:
 //!
 //! * **the built-in tool set, by name** — a rename or a drop changes what the
 //!   model may call, and it invalidates every provider prefix cache. The
 //!   expected set is derived from the same calls `build_tool_registry` makes,
-//!   so registering a 19th tool without saying so here fails the test rather
+//!   so registering a 20th tool without saying so here fails the test rather
 //!   than quietly enlarging every prompt.
+//! * **the advertised set** — the tools a request actually carries. The
+//!   extended group (`load_extended_tools`) is registered but kept out of that
+//!   set until the model loads it, so the set a request pays for is the core
+//!   one, not the whole registry.
 //! * **the description text, by budget** — the 2026-10-18 slimming pass took the
 //!   in-process natural language from 10,108 to 8,349 chars (-17.4%) without
 //!   touching a single name, parameter name, type or required list. The
@@ -28,11 +32,13 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use jyc_agent::tools::builtin::extended::{EXTENDED_TOOLS, register_extended_tools};
 use jyc_agent::tools::builtin::spawn_subagent::SpawnSubagentTool;
 use jyc_agent::tools::builtin::{
     create_builtin_registry, register_publish_file, register_read_image,
 };
 use jyc_agent::tools::mcp_bridge::register_mcp_tools;
+use jyc_agent::tools::registry::ToolRegistry;
 use jyc_agent::types::ToolDefinition;
 use jyc_types::AppConfig;
 
@@ -44,13 +50,16 @@ use jyc_types::AppConfig;
 /// `register_mcp_tools` adds to every registry and which ship a built-in
 /// schema of their own rather than a server's.
 ///
+/// The extended group goes on last, exactly as the service wires it: the
+/// group is whatever the registry ended up with.
+///
 /// Both configuration-dependent values are irrelevant to the text being
 /// budgeted: `publish_file`'s base URL and `read_image`'s two switches reach
 /// `execute`, not `input_schema`.
 ///
 /// MCP *server* tools are absent by construction — they arrive per channel
 /// config, and their schemas belong to whoever runs the server.
-fn built_in_tools() -> Vec<ToolDefinition> {
+fn built_in_registry() -> ToolRegistry {
     let mut registry = create_builtin_registry();
     register_read_image(&mut registry, false, None);
     register_publish_file(&mut registry, "http://127.0.0.1:8080".to_string());
@@ -58,7 +67,19 @@ fn built_in_tools() -> Vec<ToolDefinition> {
         config: Arc::new(ArcSwap::from_pointee(AppConfig::default())),
     }));
     register_mcp_tools(&mut registry);
-    registry.definitions()
+    register_extended_tools(&mut registry);
+    registry
+}
+
+/// Every registered tool — what a request carries once the model has loaded
+/// the extended group.
+fn built_in_tools() -> Vec<ToolDefinition> {
+    built_in_registry().all_definitions()
+}
+
+/// The tools a request carries *before* anything is loaded: the core set.
+fn advertised_tools() -> Vec<ToolDefinition> {
+    built_in_registry().definitions()
 }
 
 /// Per tool: `(name, description budget, parameter-description budget)` in
@@ -79,6 +100,8 @@ const BUDGETS: &[(&str, usize, usize)] = &[
     ("jyc_spawn_subagent", 1173, 380),
     ("lesson_add", 220, 0),
     ("lesson_read", 114, 0),
+    ("list_topics", 240, 0),
+    ("load_extended_tools", 600, 0),
     ("task_list", 278, 0),
     ("task_create", 345, 46),
     ("task_update", 305, 81),
@@ -86,7 +109,7 @@ const BUDGETS: &[(&str, usize, usize)] = &[
     ("write", 112, 80),
 ];
 
-/// The whole in-process set, in characters. It was 8,349 when the budgets
+/// The whole registered set, in characters. It was 8,349 when the budgets
 /// above were set; other tools have grown it since, and the two lesson
 /// tools (#971) brought it to 9,511 — 9,487 after the send tool's wording
 /// was trimmed to say what a send does not do, and 9,479 after the spawn
@@ -99,10 +122,21 @@ const BUDGETS: &[(&str, usize, usize)] = &[
 /// #971, where the alternative was to cut a tool's description until the
 /// model stopped understanding what the tool was for.
 ///
-/// Only 125 characters of slack are left. The next tool will have to raise
-/// it again, and before it does, look for an older description that can
-/// retire: a budget that only ever grows is not a budget.
-const TOTAL_BUDGET: usize = 7_050;
+/// The extended group raised it once more (the two new tools: `list_topics`
+/// and the loader's index), but the *advertised* set — what a request
+/// actually carries — went down, which is the number that matters. See
+/// [`ADVERTISED_TOTAL_BUDGET`].
+const TOTAL_BUDGET: usize = 7_800;
+
+/// The advertised set — the core tools plus the loader's index — in
+/// characters. This is the standing per-call cost after the extended group
+/// was moved out of the request: the seven extended tools (their schemas
+/// were 3,867 chars together) are advertised only after the model loads
+/// them, and the loader's own index is what it reads instead.
+///
+/// A topic that never delegates, never publishes and never fetches a URL
+/// pays this and not the whole registry.
+const ADVERTISED_TOTAL_BUDGET: usize = 4_050;
 
 /// `jyc_spawn_subagent`'s `type` description ends with the catalog of roles
 /// configured *on this machine*, so its length is configuration rather than
@@ -127,6 +161,11 @@ fn param_text(tool: &ToolDefinition) -> usize {
         .unwrap_or(0)
 }
 
+/// Characters of description plus parameter text.
+fn schema_text(tool: &ToolDefinition) -> usize {
+    tool.description.chars().count() + param_text(tool)
+}
+
 #[test]
 fn the_built_in_tool_set_is_stable() {
     let tools = built_in_tools();
@@ -139,6 +178,58 @@ fn the_built_in_tool_set_is_stable() {
         registered, budgeted,
         "the built-in tool set moved: a rename or a drop is an API change, and it \
          invalidates every provider prefix cache. Add or remove its budget deliberately."
+    );
+}
+
+/// The extended tools must not ride in a request before the model asks for
+/// them — that is the whole point of the group: their schemas are a standing
+/// per-call cost, and most turns never need them.
+#[test]
+fn the_extended_tools_are_not_advertised_until_they_are_loaded() {
+    let registry = built_in_registry();
+    let advertised: Vec<String> = registry.definitions().into_iter().map(|d| d.name).collect();
+
+    for (name, _) in EXTENDED_TOOLS {
+        assert!(
+            !advertised.iter().any(|n| n == name),
+            "{name} is advertised before it was loaded — the extended group is supposed to \
+             keep its schemas out of the request"
+        );
+    }
+    assert!(
+        advertised.iter().any(|n| n == "load_extended_tools"),
+        "the loader must be advertised — it is how the model finds the group: {advertised:?}"
+    );
+    assert!(
+        advertised.iter().any(|n| n == "read"),
+        "the core tools must still be advertised: {advertised:?}"
+    );
+}
+
+/// Loading the group advertises it: the flag is what the registry reads on
+/// every request, so the next model call after the load carries the schemas.
+#[test]
+fn loading_the_group_advertises_the_extended_tools() {
+    let registry = built_in_registry();
+    let group = registry
+        .extended()
+        .expect("the registry has an extended group")
+        .clone();
+    assert!(!group.is_loaded());
+
+    group.load();
+
+    let advertised: Vec<String> = registry.definitions().into_iter().map(|d| d.name).collect();
+    for (name, _) in EXTENDED_TOOLS {
+        assert!(
+            advertised.iter().any(|n| n == name),
+            "{name} is still hidden after the group was loaded: {advertised:?}"
+        );
+    }
+    assert_eq!(
+        advertised.len(),
+        registry.all_definitions().len(),
+        "a loaded group must advertise every registered tool"
     );
 }
 
@@ -169,14 +260,22 @@ fn descriptions_stay_within_budget() {
 
 #[test]
 fn schema_text_total_stays_within_budget() {
-    let total: usize = built_in_tools()
-        .iter()
-        .map(|t| t.description.chars().count() + param_text(t))
-        .sum();
+    let total: usize = built_in_tools().iter().map(schema_text).sum();
     assert!(
         total <= TOTAL_BUDGET,
         "built-in schema text is {total} chars, over the {TOTAL_BUDGET} budget \
          (10,108 before the 2026-10-18 slimming pass)"
+    );
+}
+
+/// The number that is actually billed: what a request carries before the
+/// model loads anything.
+#[test]
+fn advertised_schema_text_stays_within_budget() {
+    let total: usize = advertised_tools().iter().map(schema_text).sum();
+    assert!(
+        total <= ADVERTISED_TOTAL_BUDGET,
+        "advertised schema text is {total} chars, over the {ADVERTISED_TOTAL_BUDGET} budget"
     );
 }
 

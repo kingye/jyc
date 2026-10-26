@@ -422,13 +422,30 @@ impl AgentService for JycAgentService {
 
         let t_small = std::time::Instant::now();
 
-        // 4. Build prompts (image-injection gated by per-pattern flag and
+        // 4. Build the tool registry (cached per (topic, config snapshot) so
+        //    MCP subprocess spawn + handshake only runs when configs change).
+        //    It comes before the prompt: the prompt tells the model how to
+        //    reach the extended group, and only the registry knows whether
+        //    the loader is there to be called.
+        let tools_arc = self
+            .get_or_build_tool_registry(
+                topic_name,
+                topic_path,
+                topic_cfg.as_ref(),
+                provider.supports_images(),
+                message.matched_pattern.as_deref(),
+            )
+            .await;
+        let tools = &*tools_arc;
+        let t_tools = std::time::Instant::now();
+
+        // 5. Build prompts (image-injection gated by per-pattern flag and
         //    per-model `supports_images`)
         // Resolve access roots first: the system prompt must describe exactly
         // the boundaries the tool layer enforces (same Vecs, single source).
         let additional_read_roots = self.resolve_additional_read_roots(message, topic_path);
         let additional_write_roots = self.resolve_additional_write_roots(message, topic_path);
-        // 3a. Build system prompt (boundaries, skills, AGENTS.md, static
+        // 5a. Build system prompt (boundaries, skills, AGENTS.md, static
         //     cross-topic prose). Everything in it is unchanged by runtime
         //     churn on purpose — the boundary's grant lines excepted, since
         //     those track enforcement: providers that cache by prefix reuse the
@@ -441,13 +458,15 @@ impl AgentService for JycAgentService {
                 topic_cfg.as_ref(),
                 &additional_read_roots,
                 &additional_write_roots,
+                Some(tools),
             )
             .await;
-        // 3b. The volatile half — subagents and the channel/topic roster —
-        //     rides the turn's user message instead of the system prompt, so
-        //     a topic appearing or closing costs no cached prefix.
+        // 5b. The volatile half — the subagent roster — rides the turn's
+        //     user message instead of the system prompt, so a topic
+        //     appearing or closing costs no cached prefix. The channel/topic
+        //     roster is not in the prompt at all: the `list_topics` tool
+        //     fetches it on demand.
         let turn_reference = self.build_turn_reference(topic_name).await;
-        let t_prompt = std::time::Instant::now();
         let current_mode = resolve_turn_mode(
             jyc_core::session_state::read_mode_override(topic_name, topic_path).await,
             topic_cfg.as_ref().and_then(|c| c.mode.clone()),
@@ -455,11 +474,13 @@ impl AgentService for JycAgentService {
         );
         // `prompt_hash` is the tripwire for the byte-stability property above:
         // a hash that changes between turns of an otherwise idle topic means
-        // something volatile crept back into the system prompt. Two movers
+        // something volatile crept back into the system prompt. Three movers
         // are legitimate and expected, and the reader has to exclude them by
-        // context rather than by this line: a `/grant`, and a spawn/close
-        // (the child's directory is an access grant, and the boundary section
-        // must list exactly the roots the tool layer enforces).
+        // context rather than by this line: a `/grant`, a spawn/close (the
+        // child's directory is an access grant, and the boundary section
+        // must list exactly the roots the tool layer enforces), and a config
+        // reload that changes which tools this topic has — the prompt names
+        // the extended-tools loader only when the registry holds it.
         tracing::debug!(
             topic = %topic_name,
             prompt_len = system_prompt.len(),
@@ -479,35 +500,25 @@ impl AgentService for JycAgentService {
             current_mode.as_deref(),
             &turn_reference,
         );
-
-        // 5. Build tool registry (cached per (topic, config snapshot) so
-        //    MCP subprocess spawn + handshake only runs when configs change).
-        let tools_arc = self
-            .get_or_build_tool_registry(
-                topic_name,
-                topic_path,
-                topic_cfg.as_ref(),
-                provider.supports_images(),
-                message.matched_pattern.as_deref(),
-            )
-            .await;
-        let tools = &*tools_arc;
-        let t_tools = std::time::Instant::now();
+        // Sampled after the user blocks: they read the images and encode
+        // them, so they belong to the prompt's cost — and to the setup's.
+        let t_prompt = std::time::Instant::now();
 
         tracing::info!(
             topic = %topic_name,
             // Spans: cfg_model_ms = topic config + mode override + model
             // resolution, provider_ms / small_ms = the two create_provider
-            // calls, prompt_ms = build_user_blocks + system prompt,
-            // tools_ms = tool registry (MCP spawn + handshake on a cache
-            // miss), setup_ms = the whole turn setup so far.
+            // calls, tools_ms = tool registry (MCP spawn + handshake on a
+            // cache miss), prompt_ms = system prompt + turn reference + mode
+            // re-read + user blocks (the image reads and their encoding
+            // included), setup_ms = the whole turn setup so far.
             cfg_model_ms = t_before_provider.duration_since(t_turn).as_millis() as u64,
             provider_ms = t_provider.duration_since(t_before_provider).as_millis() as u64,
             small_ms = t_small.duration_since(t_provider).as_millis() as u64,
             small = small_provider.is_some(),
-            prompt_ms = t_prompt.duration_since(t_small).as_millis() as u64,
-            tools_ms = t_tools.duration_since(t_prompt).as_millis() as u64,
-            setup_ms = t_tools.duration_since(t_turn).as_millis() as u64,
+            tools_ms = t_tools.duration_since(t_small).as_millis() as u64,
+            prompt_ms = t_prompt.duration_since(t_tools).as_millis() as u64,
+            setup_ms = t_prompt.duration_since(t_turn).as_millis() as u64,
             "Turn setup"
         );
 

@@ -230,6 +230,60 @@ takes them with it.
 
 ---
 
+## Extended Tools (loaded on demand)
+
+Some tools are worth having but not worth paying for on every call: a topic
+that never delegates, never publishes and never fetches a URL should not carry
+their schemas in every request. They are **registered but not advertised** —
+the model gets them by calling one tool.
+
+### `load_extended_tools`
+
+Brings the extended group into the tool list.
+
+**Parameters:** none.
+
+**Effect:** the group's schemas are advertised from the next model call on, and
+they stay advertised for the rest of the topic's registry lifetime (a config
+reload rebuilds the registry and starts over). The tool is idempotent: calling
+it again reports that the group is already loaded.
+
+**The group** (the tools that are in it depend on what the instance has — a
+tool disabled through `disabled_tools`, or one that does not exist on this
+channel, is not part of it):
+
+| Tool | What it is for |
+|------|----------------|
+| `jyc_spawn_subagent` | Delegate a task to a subagent topic |
+| `jyc_send_to_topic` | Message another topic |
+| `jyc_send_message` | Send a proactive message to a channel |
+| `list_topics` | List the channels and their active topics |
+| `jyc_publish_file` | Publish a file as a download link |
+| `read_image` | View an image |
+| `webfetch` | Fetch a URL as text |
+
+The loader's own description is the index of the group, so the model learns
+what it holds without the group's schemas being in the request.
+
+**Only advertisement is gated.** The tools stay registered and executable, so
+a model that names one before loading it gets a working call rather than a
+"not found" error. `disabled_tools` is the boundary that removes a tool for
+good — see [Tool Exclusion](#tool-exclusion). That includes the loader
+itself: `disabled_tools = ["load_extended_tools"]` removes it, and the group
+then stays out of every request (its tools remain callable by name, as always).
+
+### `list_topics`
+
+Lists the channels and their active topics — the addressing table for
+`jyc_send_to_topic` and `jyc_send_message`.
+
+**Parameters:** none.
+
+**Output:** the same shape the per-turn runtime-state block used to carry —
+one `- Channel "name" (type)` line per channel, and the topic names under it.
+
+---
+
 ## MCP Bridge Tools
 
 These are JYC-specific tools implemented as in-process bridges (not external MCP subprocesses). They are always registered unless excluded via `disabled_tools`.
@@ -559,7 +613,12 @@ build_tool_registry()
   ├─ Register MCP bridge tools: jyc_send_message
   ├─ Register jyc_send_to_topic (when the topic managers are available)
   ├─ Load external MCP tools (filtered by disabled_mcps)
-  └─ Apply exclusions: remove tools matching disabled_tools
+  ├─ Apply exclusions: remove tools matching disabled_tools
+  ├─ Wire the extended group: register load_extended_tools and mark the
+  │  group's tools as advertised-only-after-loading
+  └─ Apply the exclusions to the loader as well: it is registered after the
+     pass above, so disabled_tools may name load_extended_tools
 ```
 
-The final registry is what the LLM sees in its `tools` list.
+The final registry is what the LLM sees in its `tools` list — minus the
+extended group, until the model loads it.

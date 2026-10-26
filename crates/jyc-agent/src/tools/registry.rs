@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use serde_json::Value;
@@ -12,6 +13,52 @@ use jyc_utils::hooks::{HookCtx, HookOutcome, HookSet};
 use super::{Tool, ToolContext, ToolOutput};
 use crate::types::ToolDefinition;
 
+/// The group of tools that stay out of the advertised tool list until the
+/// model asks for them (`load_extended_tools`).
+///
+/// The state is shared between the registry — which decides what the model
+/// sees — and the tool that flips it. One instance is created per registry
+/// build, and the registry itself is cached per topic, so a load sticks for
+/// the rest of that topic's registry lifetime (a config reload rebuilds the
+/// registry and starts over).
+///
+/// Only *advertisement* is gated: an extended tool stays registered and
+/// executable, so a model that names one before loading it gets a working
+/// call rather than a "not found" error.
+#[derive(Debug)]
+pub struct ExtendedTools {
+    /// The extended tools present in this registry, by name.
+    names: Vec<String>,
+    /// Whether the model has loaded the group.
+    loaded: AtomicBool,
+}
+
+impl ExtendedTools {
+    /// Create the group for the given tool names.
+    pub fn new(names: Vec<String>) -> Self {
+        Self {
+            names,
+            loaded: AtomicBool::new(false),
+        }
+    }
+
+    /// The extended tools in this group, by name.
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+
+    /// Whether the group has been loaded.
+    pub fn is_loaded(&self) -> bool {
+        self.loaded.load(Ordering::Relaxed)
+    }
+
+    /// Load the group. Returns `true` when this call is the one that loaded
+    /// it (a second call reports `false`).
+    pub fn load(&self) -> bool {
+        !self.loaded.swap(true, Ordering::Relaxed)
+    }
+}
+
 /// Registry of available tools.
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
@@ -19,6 +66,8 @@ pub struct ToolRegistry {
     /// (`pre_tool_use`, `post_tool_use`, `post_tool_use_failure`);
     /// `None` (the default) → zero hook overhead.
     hooks: Option<Arc<HookSet>>,
+    /// The extended-tools group, when this registry has one.
+    extended: Option<Arc<ExtendedTools>>,
 }
 
 impl ToolRegistry {
@@ -27,6 +76,7 @@ impl ToolRegistry {
         Self {
             tools: HashMap::new(),
             hooks: None,
+            extended: None,
         }
     }
 
@@ -35,6 +85,17 @@ impl ToolRegistry {
     /// the config snapshot pointer, so a reload rebuilds with fresh hooks.
     pub fn set_hooks(&mut self, hooks: Arc<HookSet>) {
         self.hooks = Some(hooks);
+    }
+
+    /// Attach the extended-tools group. The tools it names stay out of the
+    /// advertised list until the group is loaded.
+    pub fn set_extended(&mut self, extended: Arc<ExtendedTools>) {
+        self.extended = Some(extended);
+    }
+
+    /// The extended-tools group, when this registry has one.
+    pub fn extended(&self) -> Option<&Arc<ExtendedTools>> {
+        self.extended.as_ref()
     }
 
     /// Register a tool.
@@ -47,19 +108,40 @@ impl ToolRegistry {
         self.tools.remove(name);
     }
 
-    /// Get all tool definitions for the LLM, sorted by name.
+    /// Get the tool definitions for the LLM, sorted by name.
     ///
     /// The sort is required for prompt caching: providers cache on an exact
     /// prefix match, and `HashMap` iteration order is randomized per process.
     /// Without a stable order the serialized `tools` array differs on every
     /// restart, so the cache breakpoint placed on the last tool would never
     /// produce a hit (see `provider::anthropic::apply_cache_breakpoints`).
+    ///
+    /// The extended tools are filtered out until the model loads them —
+    /// their schemas are a standing per-call cost, and most turns never need
+    /// them. Use [`Self::all_definitions`] for the unfiltered set.
     pub fn definitions(&self) -> Vec<ToolDefinition> {
-        let mut defs: Vec<ToolDefinition> =
-            self.tools.values().map(|t| t.to_definition()).collect();
+        let hidden = self.extended.as_ref().filter(|group| !group.is_loaded());
+        let mut defs: Vec<ToolDefinition> = self
+            .tools
+            .values()
+            .filter(|tool| match hidden {
+                Some(group) => !group.names().iter().any(|name| name == tool.name()),
+                None => true,
+            })
+            .map(|t| t.to_definition())
+            .collect();
         // Unstable sort: tool names are unique (they're `HashMap` keys), so
         // there are no equal elements whose relative order could matter, and
         // it avoids the scratch allocation a stable sort needs.
+        defs.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+        defs
+    }
+
+    /// Every registered tool's definition, sorted by name — the extended
+    /// ones included, whether or not they are advertised right now.
+    pub fn all_definitions(&self) -> Vec<ToolDefinition> {
+        let mut defs: Vec<ToolDefinition> =
+            self.tools.values().map(|t| t.to_definition()).collect();
         defs.sort_unstable_by(|a, b| a.name.cmp(&b.name));
         defs
     }

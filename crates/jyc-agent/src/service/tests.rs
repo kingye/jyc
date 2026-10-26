@@ -466,7 +466,11 @@ async fn disabled_tools_removes_builtin_and_bridge() {
         )
         .await;
 
-    let defs = registry.definitions();
+    // The *registered* set, not the advertised one: a disabled tool has to be
+    // gone from the registry (so it cannot be executed either), while the
+    // extended group is a separate matter — registered, advertised only after
+    // the model loads it.
+    let defs = registry.all_definitions();
     let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
 
     assert!(!names.contains(&"bash"), "bash should be disabled");
@@ -498,7 +502,11 @@ async fn disabled_builtin_tools_alias_works() {
         )
         .await;
 
-    let defs = registry.definitions();
+    // The *registered* set, not the advertised one: a disabled tool has to be
+    // gone from the registry (so it cannot be executed either), while the
+    // extended group is a separate matter — registered, advertised only after
+    // the model loads it.
+    let defs = registry.all_definitions();
     let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
 
     assert!(
@@ -529,7 +537,11 @@ async fn channel_and_pattern_disabled_tools_merged() {
         )
         .await;
 
-    let defs = registry.definitions();
+    // The *registered* set, not the advertised one: a disabled tool has to be
+    // gone from the registry (so it cannot be executed either), while the
+    // extended group is a separate matter — registered, advertised only after
+    // the model loads it.
+    let defs = registry.all_definitions();
     let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
 
     assert!(
@@ -1106,14 +1118,14 @@ async fn skill_toggle_override_shapes_the_prompt_skill_list() {
     // No toggle and no allow-list: the prompt lists nothing.
     let svc = service_with_skills(vec![], None);
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, &[], &[])
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], None)
         .await;
     assert!(!prompt.contains("## Available Skills"), "{prompt}");
 
     // `/skill on beta`: the toggle widens an empty allow-list.
     std::fs::write(&override_file, r#"{"on":["beta"]}"#).unwrap();
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, &[], &[])
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], None)
         .await;
     assert!(prompt.contains("- **beta**"), "{prompt}");
     assert!(!prompt.contains("- **alpha**"), "{prompt}");
@@ -1121,7 +1133,7 @@ async fn skill_toggle_override_shapes_the_prompt_skill_list() {
     // `off` wins over `on`: exclusion is applied after inclusion.
     std::fs::write(&override_file, r#"{"on":["beta"],"off":["beta"]}"#).unwrap();
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, &[], &[])
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], None)
         .await;
     assert!(!prompt.contains("## Available Skills"), "{prompt}");
 
@@ -1130,7 +1142,7 @@ async fn skill_toggle_override_shapes_the_prompt_skill_list() {
     std::fs::write(&override_file, r#"{"off":["alpha"]}"#).unwrap();
     let svc = service_with_skills(vec![], Some(vec!["alpha".into(), "beta".into()]));
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, &[], &[])
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], None)
         .await;
     assert!(!prompt.contains("- **alpha**"), "{prompt}");
     assert!(prompt.contains("- **beta**"), "{prompt}");
@@ -1196,7 +1208,11 @@ async fn topic_config_disabled_tools_are_excluded() {
     let registry = svc
         .build_tool_registry(topic, tmp.path(), Some(&topic_cfg), false, Some("test"))
         .await;
-    let defs = registry.definitions();
+    // The *registered* set, not the advertised one: a disabled tool has to be
+    // gone from the registry (so it cannot be executed either), while the
+    // extended group is a separate matter — registered, advertised only after
+    // the model loads it.
+    let defs = registry.all_definitions();
     let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
     assert!(!names.contains(&"bash"), "{names:?}");
     assert!(!names.contains(&"write"), "{names:?}");
@@ -1220,7 +1236,7 @@ async fn topic_config_instructions_reach_the_system_prompt() {
 
     let svc = service_with_skills(vec![], None);
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, Some(&topic_cfg), &[], &[])
+        .build_system_prompt(topic, tmp.path(), None, Some(&topic_cfg), &[], &[], None)
         .await;
     assert!(prompt.contains("## Topic Instructions"), "{prompt}");
     assert!(prompt.contains("report findings only, change nothing"));
@@ -1273,7 +1289,7 @@ async fn cli_helper_section_lists_exactly_what_is_installed() {
 
     let svc = service_with_skills(vec![], None);
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, &[], &[])
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], None)
         .await;
 
     let installed = crate::capabilities::available();
@@ -1293,9 +1309,9 @@ async fn cli_helper_section_lists_exactly_what_is_installed() {
     }
 }
 
-/// The volatile runtime state — subagents and the channel/topic roster — must
-/// NOT land in the system prompt: any byte of churn there invalidates the
-/// provider's cached prefix on every call of every later turn.
+/// The volatile runtime state — the subagent roster — must NOT land in the
+/// system prompt: any byte of churn there invalidates the provider's cached
+/// prefix on every call of every later turn.
 ///
 /// The fixture is built so that **both** sections would have been emitted by
 /// the pre-refactor code, so the negative assertions fail on it rather than
@@ -1303,6 +1319,9 @@ async fn cli_helper_section_lists_exactly_what_is_installed() {
 /// before the iteration, so an empty set still produces the header) and a real
 /// child grant with a lineage breadcrumb is registered. The positive half pins
 /// that the information still reaches the model — on the turn's user message.
+///
+/// The channel/topic roster no longer rides the turn either: it is fetched on
+/// demand by the `list_topics` tool, which is part of the extended group.
 #[tokio::test]
 async fn volatile_runtime_state_rides_the_turn_not_the_system_prompt() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1323,7 +1342,7 @@ async fn volatile_runtime_state_rides_the_turn_not_the_system_prompt() {
     svc.set_topic_managers(Arc::new(TopicManagers::new()));
 
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, &[], &[])
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], None)
         .await;
     assert!(
         !prompt.contains("Your subagents"),
@@ -1340,8 +1359,9 @@ async fn volatile_runtime_state_rides_the_turn_not_the_system_prompt() {
         "the reference must still name the child:\n{reference}"
     );
     assert!(
-        reference.contains("Available channels and their active topics"),
-        "the reference must still carry the channel/topic roster:\n{reference}"
+        !reference.contains("Available channels and their active topics"),
+        "the channel/topic roster must not ride every turn — `list_topics` fetches it \
+         on demand:\n{reference}"
     );
     assert!(
         reference.starts_with("<runtime-state>")
@@ -1353,8 +1373,48 @@ async fn volatile_runtime_state_rides_the_turn_not_the_system_prompt() {
     jyc_types::access_grants::ungrant_subagent(topic, child);
 }
 
-/// With no subagents and no topic managers there is nothing volatile to
-/// report, so the caller prepends nothing at all.
+/// The prompt must not tell the model to call the loader when the registry
+/// does not have it: a role that disabled `load_extended_tools` would
+/// otherwise get an instruction it cannot follow. The registry is the only
+/// truth about that — the prompt does not parse `disabled_tools` a second
+/// time.
+#[tokio::test]
+async fn the_prompt_mentions_the_loader_only_when_the_registry_has_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let topic = "the_prompt_mentions_the_loader_only_when_the_registry_has_it";
+    jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+
+    let svc = service_with_skills(vec![], None);
+    // The cross-topic section only appears when the topic can address others.
+    svc.set_topic_managers(Arc::new(TopicManagers::new()));
+
+    // A registry with the extended group in it: the loader is there.
+    let mut registry = crate::tools::builtin::create_builtin_registry();
+    crate::tools::builtin::extended::register_extended_tools(&mut registry);
+    assert!(registry.has_tool("load_extended_tools"));
+
+    let prompt = svc
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], Some(&registry))
+        .await;
+    assert!(
+        prompt.contains("`load_extended_tools`"),
+        "the prompt must point at the loader:\n{prompt}"
+    );
+
+    // The same registry without the loader — what a role that disabled it
+    // gets. The prompt must not name a tool that is not there.
+    registry.remove("load_extended_tools");
+    let prompt = svc
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], Some(&registry))
+        .await;
+    assert!(
+        !prompt.contains("load_extended_tools"),
+        "the prompt must not call a tool the registry does not have:\n{prompt}"
+    );
+}
+
+/// With no subagents there is nothing volatile to report, so the caller
+/// prepends nothing at all.
 #[tokio::test]
 async fn turn_reference_is_empty_when_nothing_volatile_exists() {
     let svc = service_with_skills(vec![], None);
@@ -1893,6 +1953,7 @@ async fn system_prompt_enumerates_configured_access_roots() {
             None,
             &reads,
             &writes,
+            None,
         )
         .await;
     assert!(

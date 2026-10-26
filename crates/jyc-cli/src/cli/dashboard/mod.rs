@@ -112,6 +112,14 @@ struct App {
     /// context, last activity) and no more. The detail endpoint is also what
     /// `/info` reads, so the pane and the command report the same numbers.
     topic_detail: Option<jyc_types::TopicInfo>,
+    /// The `(channel, topic)` whose detail fetch failed last, if any.
+    ///
+    /// A failed fetch drops `topic_detail`, and without this marker the info
+    /// pane cannot tell "not loaded yet" from "the fetch failed" — both
+    /// render as "Loading topic details...", so a dead hub looks like a
+    /// pane that never finishes loading. Keyed by topic so a stale failure
+    /// does not show up under a topic that is loading fine.
+    topic_detail_failed: Option<(String, String)>,
     error: Option<String>,
     table_state: TableState,
     should_quit: bool,
@@ -217,6 +225,7 @@ impl App {
         Self {
             state: None,
             topic_detail: None,
+            topic_detail_failed: None,
             error: None,
             table_state: TableState::default(),
             should_quit: false,
@@ -362,7 +371,7 @@ impl App {
     fn handle_ws_event(&mut self, event: WsEvent) {
         match event {
             WsEvent::Connected => {
-                self.chat.ws_connected = true;
+                self.chat.ws_state = chat::WsState::Connected;
                 // After (re)connect, the server-side inspect_broadcast is
                 // a fresh channel — the dedup state from the previous
                 // session would drop every incoming event until events
@@ -376,13 +385,17 @@ impl App {
                 }
             }
             WsEvent::Disconnected => {
-                self.chat.ws_connected = false;
+                self.chat.ws_state = chat::WsState::Disconnected;
                 self.set_status("WebSocket disconnected".to_string());
             }
             WsEvent::Message(text) => {
                 self.chat.handle_ws_message(&text);
             }
             WsEvent::Error(err) => {
+                // Every error the client reports ends the socket (or the
+                // attempt to open one), so the pane shows the fault, not a
+                // quiet "connecting".
+                self.chat.ws_state = chat::WsState::Disconnected;
                 self.set_status(format!("WebSocket error: {err}"));
             }
         }
@@ -816,16 +829,24 @@ pub async fn run(
                 match result {
                     Ok(info) => {
                         // Drop a detail the screen has already moved away from.
-                        if shown_topic_key(&app) == Some(key) {
+                        if shown_topic_key(&app) == Some(key.clone()) {
                             app.topic_detail = Some(info);
+                        }
+                        // This topic loads again — its old failure is over.
+                        if app.topic_detail_failed.as_ref() == Some(&key) {
+                            app.topic_detail_failed = None;
                         }
                     }
                     Err(e) => {
                         // Drop the detail rather than let a failing fetch keep
                         // an arbitrarily old branch and file list on screen.
-                        if shown_topic_key(&app) == Some(key) {
+                        if shown_topic_key(&app) == Some(key.clone()) {
                             app.topic_detail = None;
                         }
+                        // Remember which topic failed, so the pane can say
+                        // "failed" instead of "loading" — the two are the
+                        // same empty detail to the renderer.
+                        app.topic_detail_failed = Some(key);
                         tracing::debug!(error = %e, "failed to fetch topic detail");
                     }
                 }
@@ -1802,7 +1823,13 @@ fn ensure_overview_ws(app: &mut App, addr: &str, channel: &str, topic: &str) {
     app.overview_ws_tx = Some(cmd_tx);
     app.overview_ws_rx = event_rx;
     app.overview_ws_target = Some((channel.to_string(), topic.to_string()));
-    tokio::spawn(ws::ws_client_task(url, cmd_rx, event_tx, app.token.clone()));
+    tokio::spawn(ws::ws_client_task(
+        url,
+        cmd_rx,
+        event_tx,
+        app.token.clone(),
+        ws::Heartbeat::default(),
+    ));
 }
 
 /// Close the overview WS (used when chat mode opens; chat WS takes over).
@@ -1849,14 +1876,36 @@ fn pack_chips(chips: &[(&str, String)], width: usize) -> Vec<String> {
 /// version line is the one row that is not packed: too narrow for it, it
 /// clips rather than taking a second row. A transient status message swaps
 /// the whole block for one yellow line; it auto-expires after a few seconds.
-/// Empty when there is no server state to report (the chat header already
-/// shows the connecting state).
+///
+/// A broken connection replaces the stats, like the transient message does:
+/// the numbers behind them are stale the moment the hub is unreachable, and
+/// a stale "3 active" reads like a live dashboard. Empty when there is no
+/// server state to report.
 fn chat_status_block(app: &App, width: u16) -> Vec<Line<'_>> {
     if let Some((msg, _)) = &app.status_message {
         return vec![Line::from(Span::styled(
             msg.as_str(),
             Style::default().fg(Color::Yellow),
         ))];
+    }
+    let mut faults: Vec<Line<'_>> = Vec::new();
+    // The poll failed: the hub is unreachable or refusing. This is the
+    // same message the overview screen shows, and it is the one that
+    // explains a pane stuck on "Loading topic details...".
+    if let Some(error) = &app.error {
+        faults.push(Line::from(vec![
+            Span::styled("Not connected: ", Style::default().fg(Color::Red)),
+            Span::raw(error.clone()),
+        ]));
+    }
+    if app.chat.ws_state == chat::WsState::Disconnected {
+        faults.push(Line::from(Span::styled(
+            "WebSocket disconnected — reconnecting...",
+            Style::default().fg(Color::Yellow),
+        )));
+    }
+    if !faults.is_empty() {
+        return faults;
     }
     let Some(state) = &app.state else {
         return Vec::new();
@@ -2197,6 +2246,53 @@ mod tests {
     fn make_test_app() -> App {
         let (_, ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         App::new(ws_rx, None)
+    }
+
+    /// A broken connection must be visible where the user is looking.
+    ///
+    /// The chat screen's status block used to show the version and the stats
+    /// whatever the connection was doing, so a dead hub looked like a live
+    /// dashboard — and the info pane stuck on "Loading topic details..." had
+    /// no explanation next to it.
+    #[test]
+    fn chat_status_block_reports_a_broken_connection() {
+        let mut app = make_test_app();
+        let text = |app: &App| -> String {
+            chat_status_block(app, 60)
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .map(|span| span.content.as_ref())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // A healthy connection shows the stats, not a fault.
+        app.state = Some(jyc_types::InspectOverview::default());
+        assert!(
+            !text(&app).contains("Not connected"),
+            "a healthy connection has nothing to report"
+        );
+
+        // The poll failed: the hub is unreachable or refusing.
+        app.error = Some("connection refused".to_string());
+        let block = text(&app);
+        assert!(
+            block.contains("Not connected"),
+            "the failed poll must be reported: {block}"
+        );
+        assert!(
+            block.contains("connection refused"),
+            "the reason must be reported: {block}"
+        );
+
+        // The socket is gone: the client is reconnecting.
+        app.error = None;
+        app.chat.ws_state = WsState::Disconnected;
+        let block = text(&app);
+        assert!(
+            block.contains("WebSocket disconnected"),
+            "the lost socket must be reported: {block}"
+        );
     }
 
     /// A `TopicInfo` as the per-topic info endpoint returns it — the detail

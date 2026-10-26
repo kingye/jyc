@@ -559,6 +559,80 @@ fn info_pane_reads_the_shown_topics_detail() {
     );
 }
 
+/// A failed detail fetch must not look like a detail that never arrives.
+///
+/// The fetch clears the detail, so the pane cannot tell "still loading"
+/// from "the request failed" by looking at the detail alone — and a hub
+/// that stopped answering looks exactly like a request that never returns.
+/// The failure is reported, and it is reported for its own topic only.
+#[test]
+fn info_pane_separates_a_failed_fetch_from_a_pending_one() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.visible = true;
+    app.chat.info_visible = true;
+    app.chat.topic = Some("jyc".to_string());
+    app.chat.channel = Some("local_dev".to_string());
+    app.state = Some(jyc_types::InspectOverview {
+        topics: vec![jyc_types::TopicSummary {
+            name: "jyc".to_string(),
+            channel: "local_dev".to_string(),
+            agent: None,
+            pattern: None,
+            status: jyc_types::TopicStatus::Idle,
+            context_input_tokens: None,
+            context_output_tokens: None,
+            max_tokens: None,
+            last_active_at: None,
+            topic_path: None,
+            parent: None,
+            commands: vec![],
+        }],
+        ..Default::default()
+    });
+
+    let render = |app: &mut App| -> String {
+        let (width, height) = (60, 12);
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_topic_info_pane(frame, frame.area(), &mut *app))
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    // The fetch for the topic on screen failed.
+    app.topic_detail_failed = Some(("local_dev".to_string(), "jyc".to_string()));
+    let pane = render(&mut app);
+    assert!(
+        pane.contains("Failed to load topic details"),
+        "a failed fetch must not read as a pending one:\n{pane}"
+    );
+
+    // Another topic's failure says nothing about this one.
+    app.topic_detail_failed = Some(("local_dev".to_string(), "other".to_string()));
+    let pane = render(&mut app);
+    assert!(
+        pane.contains("Loading topic details"),
+        "a pending fetch must still read as pending:\n{pane}"
+    );
+    assert!(
+        !pane.contains("Failed to load topic details"),
+        "another topic's failure must not be shown here:\n{pane}"
+    );
+}
+
 /// A topic's detail, with nothing but its identity filled in.
 fn topic_detail_for(name: &str, channel: &str) -> jyc_types::TopicInfo {
     jyc_types::TopicInfo {

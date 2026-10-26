@@ -259,11 +259,7 @@ pub(crate) async fn process_message(
     // [`skill_commands`]). A name already taken by config is skipped, so an
     // explicit `[[commands]] name = "skill:foo"` wins without the
     // warn-on-overwrite firing on every message.
-    let pattern = (!item.pattern_match.pattern_name.is_empty())
-        .then_some(item.pattern_match.pattern_name.as_str());
-    for cmd in
-        skill_commands(&agent.available_skills(topic_name, &store_result.topic_path, pattern))
-    {
+    for cmd in skill_commands(&agent.available_skills(topic_name, &store_result.topic_path)) {
         let key = CustomCommandHandler::command_key(&cmd);
         if command_registry.get(&key).is_none() {
             command_registry.register(&key, Arc::new(CustomCommandHandler::new(cmd)));

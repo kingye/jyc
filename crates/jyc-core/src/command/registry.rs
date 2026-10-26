@@ -340,7 +340,12 @@ mod tests {
             output.cleaned_body
         );
         assert!(output.cleaned_body.contains("帮我看看这段"));
-        assert!(output.cleaned_body.contains("use these skills: ponytail"));
+        // The directive carries the skill's name, path and description, so
+        // the agent can find and read the SKILL.md even when the topic's
+        // prompt does not list the skill.
+        assert!(output.cleaned_body.contains("## Skill: ponytail"));
+        assert!(output.cleaned_body.contains("/skills/ponytail"));
+        assert!(output.cleaned_body.contains("SKILL.md"));
     }
 
     #[tokio::test]

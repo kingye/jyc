@@ -95,13 +95,13 @@ Three-level layering applies to `config.toml`, `skills/`, and `templates/`:
 
 - **L1 (global)** — `<config dir>/`: shared `config.toml`, `skills/`, `templates/`, `subagents/` (one directory per subagent type — this one is L1-only, see below)
 - **L2 (data dir / data root)** — `--data-dir` if given, else the data dir: its own `config.toml` (`--config`), `skills/`, `templates/`, and all generated state (`channels/<channel>/.imap/`, `channels/<channel>/.github/`, `agents/<agent>/<topic>/`)
-- **L3 (topic)** — the topic's state dir (`<home>/.jyc`, a sibling of the `.data` it works in): `config.toml` (model overrides plus the topic's own `mode`, skill allow/deny lists, `disabled_tools` and `instructions`), `skills/`, `templates/`, sessions, chat history
+- **L3 (topic)** — the topic's state dir (`<home>/.jyc`, a sibling of the `.data` it works in): `config.toml` (model overrides plus the topic's own `mode`, skill allow-list, `disabled_tools` and `instructions`), `skills/`, `templates/`, sessions, chat history
 
 Merge/lookup rules:
 
-- **config.toml**: L2 is deep-merged over L1 (tables merge recursively, arrays/scalars are replaced). L3 sets the topic's own model overrides, `mode`, `skills` (allow-list), `disabled_skills` / `disabled_tools` (deny-lists) and `instructions`; a broken L3 file is ignored with a warning. Model precedence: `.jyc/<mode>-model-override` file > L3 `config.toml` > pattern > L2/L1 config; mode precedence: `.jyc/mode-override` (your `/mode`) > L3 `config.toml` > pattern > build.
+- **config.toml**: L2 is deep-merged over L1 (tables merge recursively, arrays/scalars are replaced). L3 sets the topic's own model overrides, `mode`, `skills` (allow-list), `disabled_tools` (deny-list) and `instructions`; a broken L3 file is ignored with a warning. Model precedence: `.jyc/<mode>-model-override` file > L3 `config.toml` > pattern > L2/L1 config; mode precedence: `.jyc/mode-override` (your `/mode`) > L3 `config.toml` > pattern > build.
 - **subagent types**: `jyc_spawn_subagent(type = "…")` and `/spawn <type>` name a role, defined by `[subagents.<type>]` in `config.toml` or by `<config dir>/subagents/<type>/config.toml` (a topic config, plus two keys only an installed role file has: a one-line `description` of when to spawn it, and a `[spawn]` table of its own `inherit_context` / `share_topic_path` defaults — an explicit argument at spawn time wins; defined in both sources, the in-config table wins key by key). The spawn writes it into the child's own `.jyc/config.toml`, dropping the runtime overrides the child inherited from its parent for the keys the type sets itself. Only the L1 config dir is scanned — unlike `skills/` and `templates/`, a type is not layered, so `{data dir}/subagents/` is not a source. This repo ships three: `subagents/review/config.toml` is a read-only reviewer (plan mode, the review skills as an allow-list, no `write`/`edit`), delegated to from the `dev-workflow` skill; `subagents/ci-watch/config.toml` waits for a pull request's checks, on the small model (`dev-workflow` again); and `subagents/develop/config.toml` is a build-mode developer that implements a plan the caller has already settled in a directory of its own and drives it to a reviewed PR (`delegated-dev`). Each installs the same way — `cp -r subagents/<type> <config dir>/subagents/`. See `config.example.toml` → "Subagent Types".
-- **skills**: all levels are scanned; higher levels override same-named skills.
+- **skills**: all levels are scanned; higher levels override same-named skills. **A topic lists none of them by default** — `skills` (channel/pattern/agent/topic) is the allow-list of what the *system prompt* lists, and it is opt-in: unset means none, not "everything found". Every discovered skill stays reachable with `/skill:<name>`, which appends that skill's name, path and description to one message so the agent reads its `SKILL.md`; `/skill on <name>` adds a skill to the topic's list for good, `/skill off <name>` takes it out.
 - **templates**: looked up L3 → L2 → L1; first match wins.
 - A pattern's custom `topic_path` (absolute or `~`) lives outside the data root; relative paths resolve against the data root. L3 applies to any topic directory, including ad-hoc ones (`jyc open <path>`).
 
@@ -239,15 +239,16 @@ Report findings grouped by severity. Do not modify any code.
 Typing `/review` then:
 
 1. switches the topic to `mode` (when set),
-2. names the `skills` to use — the agent already receives every discovered
-   skill's path and description, so naming them is enough for it to read the
-   right `SKILL.md`,
+2. names the `skills` to use — the prompt lists the skills the topic's
+   allow-list enables, so a name outside it is named here and read by the
+   agent from its `SKILL.md`,
 3. appends `user_prompt` to the message body.
 
-You do not need a `[[commands]]` entry to reach a skill: every skill a topic
-can use already has a runtime `/skill:<name>` command that does exactly this
-(your text is the prompt, nothing else changes). Config wins on a name
-collision, so `[[commands]] name = "skill:review"` overrides the derived one.
+You do not need a `[[commands]]` entry to reach a skill: every discovered
+skill has a runtime `/skill:<name>` command that does exactly this (your
+text is the prompt, the skill's name, path and description are appended so
+the agent reads the right `SKILL.md`). Config wins on a name collision, so
+`[[commands]] name = "skill:review"` overrides the derived one.
 
 Text you type after the command is preserved, with `user_prompt` appended last so
 it is the most recent instruction. These two forms are equivalent:

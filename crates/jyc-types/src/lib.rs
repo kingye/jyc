@@ -8,6 +8,7 @@ pub mod github_config;
 pub mod inspect;
 pub mod job;
 pub mod pricing;
+pub mod skill;
 pub mod state_dir;
 pub mod task;
 pub mod tokens;

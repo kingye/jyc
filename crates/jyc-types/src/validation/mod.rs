@@ -322,22 +322,12 @@ pub fn validate_config(config: &AppConfig, builtin_names: &[&str]) -> Vec<Valida
             }
         }
 
-        // Validate channel-level skills / disabled_skills
+        // Validate channel-level skills
         if let Some(ref skills) = channel.skills {
             for (i, name) in skills.iter().enumerate() {
                 if name.is_empty() {
                     errors.push(ValidationError {
                         path: format!("{prefix}.skills[{i}]"),
-                        message: "skill name must not be empty".into(),
-                    });
-                }
-            }
-        }
-        if let Some(ref skills) = channel.disabled_skills {
-            for (i, name) in skills.iter().enumerate() {
-                if name.is_empty() {
-                    errors.push(ValidationError {
-                        path: format!("{prefix}.disabled_skills[{i}]"),
                         message: "skill name must not be empty".into(),
                     });
                 }
@@ -586,9 +576,6 @@ fn pipe_forbidden_channel_attrs(channel: &ChannelConfig) -> Vec<&'static str> {
     if channel.skills.is_some() {
         attrs.push("skills");
     }
-    if channel.disabled_skills.is_some() {
-        attrs.push("disabled_skills");
-    }
     attrs
 }
 
@@ -635,9 +622,6 @@ fn pipe_forbidden_attrs(pattern: &ChannelPattern) -> Vec<&'static str> {
     }
     if pattern.skills.is_some() {
         attrs.push("skills");
-    }
-    if pattern.disabled_skills.is_some() {
-        attrs.push("disabled_skills");
     }
     if pattern.template.is_some() {
         attrs.push("template");
@@ -742,22 +726,12 @@ fn validate_pattern(prefix: &str, pattern: &ChannelPattern, errors: &mut Vec<Val
         }
     }
 
-    // Validate per-pattern skills / disabled_skills
+    // Validate per-pattern skills
     if let Some(ref skills) = pattern.skills {
         for (i, name) in skills.iter().enumerate() {
             if name.is_empty() {
                 errors.push(ValidationError {
                     path: format!("{prefix}.skills[{i}]"),
-                    message: "skill name must not be empty".into(),
-                });
-            }
-        }
-    }
-    if let Some(ref skills) = pattern.disabled_skills {
-        for (i, name) in skills.iter().enumerate() {
-            if name.is_empty() {
-                errors.push(ValidationError {
-                    path: format!("{prefix}.disabled_skills[{i}]"),
                     message: "skill name must not be empty".into(),
                 });
             }

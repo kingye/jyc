@@ -69,8 +69,6 @@ pub struct JycAgentService {
     outbound: Option<Arc<dyn jyc_types::channel::OutboundAdapter>>,
     /// Channel-level skills whitelist.
     channel_skills: Option<Vec<String>>,
-    /// Channel-level skills to disable (merged with pattern-level).
-    channel_disabled_skills: Option<Vec<String>>,
     /// Cross-channel topic managers keyed by channel name.
     /// Passed through to `AgentLoopConfig` so the `jyc_send_to_topic` tool
     /// can inject messages into topics in other channels.
@@ -97,7 +95,6 @@ impl JycAgentService {
         vision_client: Option<Arc<VisionClient>>,
         outbound: Option<Arc<dyn jyc_types::channel::OutboundAdapter>>,
         channel_skills: Option<Vec<String>>,
-        channel_disabled_skills: Option<Vec<String>>,
         channel_name: String,
     ) -> Self {
         Self {
@@ -109,7 +106,6 @@ impl JycAgentService {
             vision_client,
             outbound,
             channel_skills,
-            channel_disabled_skills,
             registry_cache: Mutex::new(HashMap::new()),
             topic_managers: std::sync::Mutex::new(None),
             channel_name,
@@ -279,20 +275,12 @@ impl AgentService for JycAgentService {
         Ok("in-process".to_string())
     }
 
-    fn available_skills(
-        &self,
-        topic_name: &str,
-        topic_path: &Path,
-        matched_pattern: Option<&str>,
-    ) -> Vec<SkillMeta> {
-        let topic_cfg = jyc_types::load_topic_config(topic_name, topic_path);
-        let (include, exclude) = self.config_skill_filters(matched_pattern, topic_cfg.as_ref());
-        self.discover_skills(
-            topic_name,
-            topic_path,
-            include.as_deref(),
-            (!exclude.is_empty()).then_some(exclude.as_slice()),
-        )
+    fn available_skills(&self, topic_name: &str, topic_path: &Path) -> Vec<SkillMeta> {
+        // Every discovered skill is invocable, whatever the topic's
+        // allow-list says: `skills` decides what the *system prompt*
+        // lists (context cost), not what a message may ask for. A skill
+        // that is not listed is still reachable via `/skill:<name>`.
+        self.discover_skills(topic_name, topic_path, None, None)
     }
 
     async fn process(
@@ -816,4 +804,5 @@ mod tools;
 
 use prompt::read_thinking_enabled;
 
-pub use skills::{format_skills_section, parse_skill_frontmatter};
+pub use jyc_types::skill::format_skills_section;
+pub use skills::parse_skill_frontmatter;

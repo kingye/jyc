@@ -43,7 +43,6 @@ fn service_with_timeout_ms(
         None,
         None,
         None,
-        None,
         "test".to_string(),
     );
     // Sanity-check: every MCP must end up with a positive timeout.
@@ -196,7 +195,6 @@ async fn cache_invalidates_on_config_swap() {
         None,
         None,
         None,
-        None,
         "test".to_string(),
     );
     let svc = Arc::new(svc);
@@ -254,7 +252,6 @@ async fn reload_picks_up_newly_added_global_mcp() {
         config.clone(),
         Path::new("/tmp/test-topic").to_path_buf(),
         vec![ChannelPattern::default()],
-        None,
         None,
         None,
         None,

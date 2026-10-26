@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+### Changed
+
+- Skills are opt-in: a topic lists **no** skill unless a layer declares `skills` for it (channel, pattern, agent, or the topic's own `.jyc/config.toml`), and the allow-list is what the *system prompt* carries — the default is an empty list, not "every skill found". A config that relied on the old default (no `skills` key → everything listed) now lists nothing until it names the skills it wants; a topic that wants one skill for one message asks for it by name (#1002)
+- `/skill:<name>` now reaches every discovered skill, not only the ones the topic's allow-list names: the command appends that skill's name, path and description to the message, so the agent reads the right `SKILL.md` even when the prompt does not list it. The runtime `/skill on <name>` / `off <name>` still add to and remove from the topic's list, and `/skill reset` clears both (#1002)
+
 ### Fixed
 
 - The dashboard reports a broken connection instead of looking healthy: the topic info pane says `Failed to load topic details — will retry` when the detail request failed (it used to read `Loading topic details...` forever, because a failed fetch and a pending one left the same empty detail), and the chat status block shows `Not connected: …` for a failed poll and `WebSocket disconnected — reconnecting...` for a lost socket (#998)
@@ -7,6 +12,7 @@
 
 ### Removed
 
+- `disabled_skills` is gone from every config layer (channel, pattern, agent, topic config): with skills opt-in there is no implicit set of skills left to subtract from — a name is either in the allow-list or not, and the one way to take a skill out of a topic remains the runtime `/skill off <name>`. A config still carrying the key loads unchanged; the key is inert (#1002)
 - The legacy `api_key_env = "ENV_VAR"` provider field is removed; use `api_key = "${ENV_VAR}"`. Provider blocks now reject unknown fields at config load, so an unmigrated key fails loudly instead of silently omitting the auth header. Keys are now resolved once at config load, so a rotated key requires a restart or config reload (#999)
 
 ## [0.7.2] - 2026-10-24

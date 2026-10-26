@@ -333,10 +333,11 @@ pub struct CustomCommand {
     /// Skills the agent should use for this command.
     ///
     /// These names are surfaced to the agent in the appended prompt. The
-    /// system prompt already lists every discovered skill with its path and
-    /// description, so naming them here is enough for the agent to locate
-    /// and read the corresponding `SKILL.md`. Only meaningful for
-    /// prompt-injection commands — shell commands ignore it.
+    /// system prompt lists only the skills a topic's allow-list enables, so
+    /// a name outside that list is not locatable from the prompt alone —
+    /// carry the path in the command's own `user_prompt` when that matters.
+    /// Only meaningful for prompt-injection commands — shell commands
+    /// ignore it.
     #[serde(default)]
     pub skills: Option<Vec<String>>,
 
@@ -621,16 +622,9 @@ pub struct ChannelConfig {
     ///
     /// When set, only skills whose names appear in this list are loaded
     /// for all topics in this channel. Pattern-level `skills` takes priority.
-    /// When both are unset, all discovered skills are loaded.
+    /// When both are unset, no skill is loaded — skills are opt-in.
     #[serde(default)]
     pub skills: Option<Vec<String>>,
-
-    /// Channel-level skills to disable for all patterns in this channel.
-    ///
-    /// Skill names match the `name` field in SKILL.md frontmatter.
-    /// Merged with pattern-level `disabled_skills`.
-    #[serde(default)]
-    pub disabled_skills: Option<Vec<String>>,
 }
 
 /// IMAP server configuration.

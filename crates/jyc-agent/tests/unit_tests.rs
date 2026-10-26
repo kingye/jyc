@@ -2026,7 +2026,6 @@ mod skills {
             None,
             None,
             None,
-            None,
             "test".to_string(),
         )
     }

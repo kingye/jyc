@@ -110,12 +110,9 @@ pub struct AgentConfig {
 
     /// Per-agent skills whitelist.
     /// When set, only skills whose names appear in this list are loaded.
+    /// When unset, no skill is loaded — skills are opt-in.
     #[serde(default)]
     pub skills: Option<Vec<String>>,
-
-    /// Per-agent skills to disable.
-    #[serde(default)]
-    pub disabled_skills: Option<Vec<String>>,
 
     /// Per-agent compression configuration for session reset.
     ///
@@ -205,7 +202,6 @@ impl AgentConfig {
         pattern.disabled_builtin_tools = self.disabled_builtin_tools.clone();
         pattern.disabled_mcps = self.disabled_mcps.clone();
         pattern.skills = self.skills.clone();
-        pattern.disabled_skills = self.disabled_skills.clone();
         pattern.access = self.access.clone();
         pattern.context_strategy = self.context_strategy.clone();
     }

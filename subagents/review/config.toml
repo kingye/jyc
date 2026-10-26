@@ -43,14 +43,12 @@ description = "Reviews a change before you push or open a PR — reads the diff 
 
 mode = "plan"
 
-# An allow-list: these four skills are all the reviewer can see.
+# An allow-list: these four skills are all the reviewer sees by default.
+# `dev-workflow` is not among them — the workflow guide is of no use to this
+# role (in plan mode it cannot branch, commit or release). The reviewer still
+# cannot act on it either: plan mode, the instructions below and the disabled
+# tools are what hold the review to one hop.
 skills = ["pr-review", "ponytail-review", "coding-principles", "ponytail"]
-
-# Denied as well as absent from the allow-list — the reviewer must not hand the
-# review on to a reviewer of its own, and `dev-workflow` is where that procedure
-# now lives (it also hides the rest of the workflow guide, which this role has no
-# use for: in plan mode it cannot branch, commit or release).
-disabled_skills = ["dev-workflow"]
 
 # `bash` is deliberately left in place: a review of a branch needs `git status`,
 # `git diff <base>..HEAD` and `git log`, and no read-only shell exists. Plan mode

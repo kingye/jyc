@@ -19,12 +19,7 @@ impl CommandHandler for HelpCommandHandler {
         // register them, so `/?` can never list a command that does not
         // dispatch.
         let skills = match context.agent.as_ref() {
-            Some(agent) => {
-                let pattern =
-                    crate::session_state::read_pattern(&context.topic_name, &context.topic_path)
-                        .await;
-                agent.available_skills(&context.topic_name, &context.topic_path, pattern.as_deref())
-            }
+            Some(agent) => agent.available_skills(&context.topic_name, &context.topic_path),
             None => Vec::new(),
         };
         let commands = super::all_commands_with(

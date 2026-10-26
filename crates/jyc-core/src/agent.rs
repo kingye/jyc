@@ -65,22 +65,17 @@ pub trait AgentService: Send + Sync {
     /// This is optional - some agent implementations may not use event buses.
     async fn set_topic_event_bus(&self, _topic_name: &str, _event_bus: Option<TopicEventBusRef>) {}
 
-    /// Skills the given topic can use, resolved live (same discovery the
-    /// system prompt uses, with config filters but WITHOUT the runtime
-    /// `/skill` toggle — a toggled-off skill is still a skill a message may
-    /// ask for, and the way to turn it back on).
+    /// Skills the given topic can invoke, resolved live.
     ///
-    /// `matched_pattern` is the routing pattern name for this topic (`None`
-    /// for non-agent topics), because `[[channels.<p>.patterns.<name>]]` can
-    /// whitelist/disable skills per pattern.
+    /// This is the *invocation* set, not the prompt's list: every
+    /// discovered skill, whatever the topic's `skills` allow-list says.
+    /// The allow-list decides what the system prompt lists (context
+    /// cost); a skill that is not listed is still reachable via
+    /// `/skill:<name>`, so narrowing the list must not remove the
+    /// command row.
     ///
     /// Default: none, for agents that have no skill concept.
-    fn available_skills(
-        &self,
-        _topic_name: &str,
-        _topic_path: &Path,
-        _matched_pattern: Option<&str>,
-    ) -> Vec<jyc_types::SkillMeta> {
+    fn available_skills(&self, _topic_name: &str, _topic_path: &Path) -> Vec<jyc_types::SkillMeta> {
         Vec::new()
     }
 

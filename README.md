@@ -389,8 +389,8 @@ remote bind is read from that install's own effective config with
 `127.0.0.1:9876`. `jyc connect` opens an `ssh -N -L` forward on the same port
 when it is free locally (so `jyc_publish_file` links resolve unchanged), reads
 the token from the remote once per session and never writes it to this disk,
-and leaves the remote hub running when it quits (other dashboards, channels
-and scheduled jobs may be using it). Starting that hub is opt-in:
+and leaves the remote hub running when it quits (other dashboards and
+channels may be using it). Starting that hub is opt-in:
 
 ```bash
 jyc connect devbox                 # dashboard against an existing hub

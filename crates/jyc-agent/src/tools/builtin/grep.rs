@@ -21,8 +21,8 @@ impl Tool for GrepTool {
     }
 
     fn description(&self) -> &str {
-        "Search file contents using regular expressions. Returns file paths and line numbers \
-         with matching content. Use 'include' to filter by file extension."
+        "Search file contents using regular expressions. Returns file paths and line \
+         numbers with matching content."
     }
 
     fn input_schema(&self) -> Value {
@@ -30,8 +30,7 @@ impl Tool for GrepTool {
             "type": "object",
             "properties": {
                 "pattern": {
-                    "type": "string",
-                    "description": "The regex pattern to search for"
+                    "type": "string"
                 },
                 "path": {
                     "type": "string",

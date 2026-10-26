@@ -168,12 +168,6 @@ pub struct AppConfig {
     #[serde(default)]
     pub mcps: Vec<McpServerConfig>,
 
-    /// Scheduler configuration for channel-agnostic scheduled jobs.
-    /// When enabled, a background JobScheduler runs alongside the monitor
-    /// and fires due jobs by injecting InboundMessage into TopicManager.
-    #[serde(default)]
-    pub scheduler: SchedulerConfig,
-
     /// User-defined slash commands (e.g. `/review`), declared as `[[commands]]`.
     #[serde(default)]
     pub commands: Vec<CustomCommand>,
@@ -1166,43 +1160,6 @@ impl Default for InspectConfig {
 
 fn default_inspect_bind() -> String {
     "127.0.0.1:9876".to_string()
-}
-
-/// Scheduler configuration for channel-agnostic scheduled jobs.
-///
-/// Controls the background JobScheduler that fires due jobs by injecting
-/// InboundMessage into the originating topic via TopicManager.
-#[derive(Debug, Clone, Deserialize)]
-pub struct SchedulerConfig {
-    /// Whether the job scheduler is enabled (default: true).
-    #[serde(default = "crate::default_true")]
-    pub enabled: bool,
-
-    /// How often (in seconds) the scheduler scans for due jobs (default: 60).
-    #[serde(default = "default_60")]
-    pub scan_interval_secs: u64,
-
-    /// Maximum number of jobs per topic (default: 10).
-    #[serde(default = "default_10_jobs")]
-    pub max_jobs_per_topic: usize,
-}
-
-impl Default for SchedulerConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            scan_interval_secs: 60,
-            max_jobs_per_topic: 10,
-        }
-    }
-}
-
-fn default_60() -> u64 {
-    60
-}
-
-fn default_10_jobs() -> usize {
-    10
 }
 
 // --- Default value functions ---

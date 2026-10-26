@@ -9,7 +9,6 @@ use tokio_util::sync::CancellationToken;
 /// RAII guard that removes a PID file on drop.
 use jyc_agent::JycAgentService;
 
-use jyc_core::job_scheduler::JobScheduler;
 use std::collections::HashMap;
 
 use jyc_core::message_router::MessageRouter;
@@ -411,27 +410,6 @@ pub async fn run(
             "Wired outbound adapters into {} agent service(s)",
             all_agent_services.len()
         );
-
-        // Start JobScheduler (if scheduler is enabled in config)
-        let scheduler_config = config_snapshot.scheduler.clone();
-        if scheduler_config.enabled {
-            let workspace_dirs = orchestrator.workspace_dirs().load();
-            let workspace_dirs: Vec<std::path::PathBuf> = workspace_dirs.iter().cloned().collect();
-            let scheduler = JobScheduler::new(
-                orchestrator.topic_managers(),
-                workspace_dirs,
-                scheduler_config.scan_interval_secs,
-                scheduler_config.max_jobs_per_topic,
-                true,
-            );
-
-            let scheduler_cancel = cancel.clone();
-            tasks.push(tokio::spawn(async move {
-                scheduler.run(scheduler_cancel).await;
-            }));
-
-            tracing::info!("Job scheduler started");
-        }
     }
 
     // 6. Start inspect server (if configured). The auth token was already

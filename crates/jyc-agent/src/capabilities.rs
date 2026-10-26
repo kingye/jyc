@@ -7,8 +7,8 @@
 //! wrong on the next machine or costs the user a turn of `command -v` probes.
 //!
 //! So we probe `PATH` once per process and announce exactly what is there.
-//! Nothing here replaces a built-in tool: `grep`, `glob` and `read` stay the
-//! built-in Rust implementations, and a helper that is not installed is simply
+//! Nothing here replaces a built-in tool: `grep` and `read` stay the built-in
+//! Rust implementations, and a helper that is not installed is simply
 //! not mentioned, so the prompt can never send the model looking for a tool
 //! that is not there.
 

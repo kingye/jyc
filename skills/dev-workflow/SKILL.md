@@ -86,13 +86,6 @@ again in this turn, do not start a waiter that the next push will supersede.
    fetch now (`gh pr checks <pr> --repo <owner/name>`, then `gh run view <id> --repo <owner/name>
    --log-failed`, with `<id>` the run id from that check's own URL — the number after `/runs/`).
 
-The equivalent older way, when you would rather not hold a child open: `job_create` with a one-time
-`at` at the end of the budget, whose prompt says to check that PR's checks and report. It re-enters
-this topic as a new turn — one wake-up, cheaper, but an early failure is only known then. One waiter
-per PR either way: if a job is already pending for this PR, replace it rather than adding a second,
-and when you push again, continue the waiter you have (another task to a watcher is a new turn in it)
-instead of spawning or scheduling a second one.
-
 **A dead watch looks like nothing — until the budget is out.** Silence in this
 topic once the watcher's ~30-minute budget has run out is a dead watch, not a
 report: when you are next awake here, check that PR's checks yourself once, or send the

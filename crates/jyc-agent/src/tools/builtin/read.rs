@@ -19,8 +19,8 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read a file or directory from the filesystem. Returns file contents with line numbers, \
-         or directory listing. Use offset and limit to read specific sections of large files."
+        "Read a file or directory from the filesystem. Returns file contents with line \
+         numbers, or a directory listing."
     }
 
     fn input_schema(&self) -> Value {

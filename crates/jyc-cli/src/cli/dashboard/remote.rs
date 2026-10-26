@@ -381,7 +381,7 @@ fn tunnel_args(remote: &Remote, local_port: u16) -> Vec<OsString> {
 /// A live `ssh -N -L` forward.
 ///
 /// Dropping it ends the tunnel; the remote hub keeps running — it may have
-/// other dashboards, channels and scheduled jobs using it.
+/// other dashboards and channels using it.
 pub(super) struct Tunnel {
     /// `127.0.0.1:<port>` — what the dashboard's HTTP and WS clients talk to.
     pub(super) addr: String,

@@ -16,9 +16,9 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "Perform exact string replacements in files. The oldString must match exactly \
-         (including whitespace and indentation). If oldString is found multiple times, \
-         the edit will fail — provide more context to make it unique."
+        "Perform exact string replacements in files. `old_string` must match exactly \
+         (including whitespace and indentation). If it matches in several places, \
+         the edit fails — give more context to make it unique."
     }
 
     fn input_schema(&self) -> Value {

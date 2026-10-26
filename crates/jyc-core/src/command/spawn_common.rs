@@ -32,8 +32,6 @@ use crate::topic_manager::TopicManager;
 ///   identity and channel routing. `set_topic_path` writes the first two for
 ///   the new topic; the routing meta must not point the child at the parent's
 ///   channel or thread.
-/// - `jobs/` — a scheduled job fires by injecting into *its* topic, so a copy
-///   would make the child run the parent's jobs too. Directories are skipped.
 /// - Anything else in the state dir belongs to the user, not to the framework.
 const SEED_FILES: &[&str] = &[
     CONVERSATION_FILE,     // the running context: the conversation

@@ -168,7 +168,7 @@ User sends message (any channel) → Pattern Match → Topic Queue → Worker (A
 │  5. Build user prompt (incoming message)                                 │
 │     - Text blocks + optional ContentBlock::Image for inbound attachments │
 │       when inject_inbound_images=true and model supports images          │
-│  6. Build tool registry (bash, read, write, edit, glob, grep, webfetch   │
+│  6. Build tool registry (bash, read, write, edit, grep, webfetch        │
 │     + read_image + reply_message bridge)                                 │
 │     - Apply per-pattern disabled_builtin_tools and per-pattern mcps      │
 │  6. Run agent loop:                                                      │
@@ -216,7 +216,7 @@ User sends message (any channel) → Pattern Match → Topic Queue → Worker (A
 12. **Pending Delivery Watcher** — Background task that runs alongside SSE stream, watches for signal files and delivers messages immediately
 13. **Message Storage** — Unified chat log storage: daily log files (`chat_history_YYYY-MM-DD.jsonl`) with JSON metadata
 14. **State Manager** — Track processed UIDs per channel, handle migrations
-15. **Security Module** — Path validation, file size/extension checks for attachments; tool boundary checks for write/edit/grep/glob/bash/read_image
+15. **Security Module** — Path validation, file size/extension checks for attachments; tool boundary checks for write/edit/grep/bash/read_image
 16. **Attachment Storage** — Channel-agnostic attachment saving with path traversal protection
 17. **Inspect Server + Dashboard** — TCP JSON line protocol for runtime state queries, TUI dashboard for live monitoring
 18. **MetricsCollector** — Lightweight stats accumulation for monitoring topic/channel activity
@@ -314,7 +314,7 @@ JYC 0.1.2 introduces a new unified chat log storage system that replaces the pre
 
 #### AI Access Pattern
 
-- AI uses `glob "chat_history_*.jsonl"` to find log files
+- AI uses `grep` or `rg --files` to find `chat_history_*.jsonl` log files
 - `read "chat_history_2026-04-07.jsonl"` to access specific logs
 - `grep "keyword" --include "chat_history_*.jsonl"` to search history
 
@@ -477,7 +477,7 @@ Readings this table exists to rule out:
 ## Topic State Directory (.jyc)
 
 Each topic keeps its runtime state (agent session, chat history,
-jobs, exchange files, L3 topic config) in a `.jyc` directory resolved
+exchange files, L3 topic config) in a `.jyc` directory resolved
 through `jyc_types::state_dir::resolve_state_dir(topic_name, topic_dir)` — a process-global
 registry keyed by **topic name** (the identity that distinguishes topics).
 Find a topic among a listed set through `jyc_types::find_topic` /
@@ -503,7 +503,7 @@ keeps its own state dir.
 Registrations happen at four points: startup restore (config pins adopt,
 agent-keyed state dirs re-register from their breadcrumbs), runtime pins
 (`set_topic_path`, dashboard `open -p`), spawn, and **activation** — every
-enqueue path (router, scheduled jobs, `jyc_send_to_topic`, dashboard proxy)
+enqueue path (router, `jyc_send_to_topic`, dashboard proxy)
 registers a jyc-owned dir's **home** `.jyc` before any state access, which for
 a working directory is `<home>/.data`'s parent. A user-owned dir (a pin)
 without a registration is a bug: state access fails loudly rather than writing
@@ -677,8 +677,8 @@ only turn the defaults on, never off (see `AGENTS.md` on that asymmetry).
 2. Seed the parent's state with `seed_state(…, "spawned-from")` — the seed
    allow-list minus the conversation-shaped entries (pattern, backlog,
    `mode-override`, model/context/MCP/skill overrides; the task list is never
-   inherited, so a child plans its own work), never `jobs/`
-   or `agent-session.json`, and never the workspace. The conversation
+   inherited, so a child plans its own work), never a state directory
+   and never `agent-session.json`, and never the workspace. The conversation
    (`agent-context.jsonl`) and the transcript (`chat_history_*.jsonl`) are copied
    only when they were asked for: a child starting on a task of its own would
    otherwise pay for the parent's whole train of thought, in tokens, on every
@@ -3006,7 +3006,7 @@ resolver**), every step keyed by the mode the topic is in:
 
 **MCP scoping**: When `mcps` is present on an agent, only those named servers are loaded for matching topics. When `mcps = []`, no MCP servers are loaded (fully restricted). When omitted, the global `[[mcps]]` list is used.
 
-**Built-in tool disable**: `disabled_builtin_tools` removes named tools from the registry before the agent loop starts. Tool names match `Tool::name()`: `bash`, `write`, `edit`, `grep`, `glob`, `read`, `webfetch`, `read_image`.
+**Built-in tool disable**: `disabled_builtin_tools` removes named tools from the registry before the agent loop starts. Tool names match `Tool::name()`: `bash`, `write`, `edit`, `grep`, `read`, `webfetch`, `read_image`.
 
 ## Directory Structure
 
@@ -3183,8 +3183,8 @@ What the design buys, and what it deliberately does not:
   including over the survival options (`BatchMode`, `ConnectTimeout`), which
   guard against a password prompt with nowhere to appear. Overriding those is
   permitted and self-inflicted.
-- **Exiting ends the tunnel only.** The hub may be serving other dashboards,
-  channels and scheduled jobs; `jyc connect` owns the forward, not the server.
+- **Exiting ends the tunnel only.** The hub may be serving other dashboards
+  and channels; `jyc connect` owns the forward, not the server.
   (A dashboard killed with SIGKILL never runs its `Drop`, so the `ssh -N` it
   leaves behind holds the local port until it is killed by hand.)
 - **Non-interactive ssh is a requirement, not a preference.** Bootstrap and
@@ -3572,10 +3572,10 @@ pub enum TopicEvent {
     // ... existing variants ...
 
     /// A new message arrived in this topic (from any source: remote user,
-    /// scheduled job, or dashboard injection).
+    /// dashboard injection, cross-topic).
     IncomingMessage {
         topic_name: String,
-        sender: String,        // "user", "job", display name, etc.
+        sender: String,        // "user", display name, etc.
         text: String,          // Truncated message body preview
         timestamp: DateTime<Utc>,
     },
@@ -3793,7 +3793,7 @@ Dashboard (crates/jyc-cli/src/cli/dashboard/)
 | Decision | Rationale |
 |---|---|
 | `TopicEventBus` over new broadcast channel | Reuses existing infrastructure; events already scoped per-topic; ActivityTracker already subscribes |
-| `IncomingMessage` published in `TopicManager::enqueue()` | Captures ALL message sources (remote IMAP, Feishu WS, GitHub poll, dashboard, jobs) in one place |
+| `IncomingMessage` published in `TopicManager::enqueue()` | Captures ALL message sources (remote IMAP, Feishu WS, GitHub poll, dashboard) in one place |
 | `ReplySent` published after `send_reply()` succeeds | Guarantees the reply was actually delivered; same timing as existing metrics counters |
 | `recent_messages` in `TopicActivityState`, not `TopicInfo` directly | TopicInfo is rebuilt from scratch on each poll; ActivityTracker maintains rolling buffer |
 | Single WebSocket endpoint for all channels (`/ws/<channel>/<topic>`) | Decouples dashboard from channel type; `TopicProxyHandler` handles non-WS channels uniformly |
@@ -3993,7 +3993,7 @@ Logs within instrumented futures automatically inherit all parent span fields. F
 ```
 INFO worker{channel=jiny283, topic=weather}: Sending prompt to in-process agent mode=build
 INFO worker{channel=jiny283, topic=weather}: AI model selected model=deepseek-v3.2
-INFO worker{channel=jiny283, topic=weather}: Tool running tool=glob
+INFO worker{channel=jiny283, topic=weather}: Tool running tool=grep
 INFO worker{channel=jiny283, topic=weather}: Session idle — prompt complete
 ```
 
@@ -4645,91 +4645,6 @@ skills of the same name.
 2. Add the skill mapping to `deploy-templates.sh` (`get_skills` function)
 3. Run `./deploy-templates.sh <target>` to deploy
 
-
-## Scheduled Job System
-
-### Overview
-
-JYC supports channel-agnostic scheduled jobs — recurring or one-time tasks created by the AI from any topic. The JobScheduler runs as a background task alongside the per-channel inbound monitors, firing due jobs by injecting `InboundMessage` into the originating topic via `TopicManager::enqueue`.
-
-### Architecture
-
-```
-User in topic: "Every day at 8 AM, send me the daily summary"
-    │
-    ├── Agent calls job_create("0 0 8 * * * *", "send daily summary")
-    │       │
-    │       ▼
-    │   JobStore.write(<jobs_dir>/{id}.json)
-    │       │
-    │       ▼
-    └── JobScheduler (background tokio task)
-            │
-            ├── scan cycle: list enabled jobs, check next_fire_at
-            │
-            ├── job due? → mark_fired() → save → fire_job()
-            │       │
-            │       ▼
-            │   InboundMessage {
-            │       sender: "scheduler",
-            │       topic: "Scheduled job: send daily summary",
-            │       content.text: "send daily summary",
-            │       metadata.job_id: "..."
-            │   }
-            │       │
-            │       ▼
-            │   TopicManager::enqueue(message, topic_name, ...)
-            │       │
-            │       ▼
-            │   Worker processes message → AI generates reply
-            │
-            └── sleep until next due job (or scan interval)
-```
-
-### Components
-
-1. **JobConfig** (`jyc-types/src/job.rs`) — Data model for scheduled jobs
-   - `cron`: 7-field cron expression ("sec min hour dom mon dow year") for recurring jobs
-   - `at`: ISO 8601 timestamp for one-time jobs
-   - `enabled`: Whether the job fires
-   - `topic_name`, `channel`, `channel_name`: Routing info for firing
-   - `prompt`: Instructions injected as the message body when job fires
-   - `next_fire_at`: Pre-computed next scheduled fire time (updated after each fire)
-
-2. **JobStore** (`jyc-core/src/job_store.rs`) — File-based CRUD persistence
-   - Each job stored as `<jobs_dir>/<id>.json`
-   - Atomic writes via temp file + rename
-   - Methods: `list`, `get`, `create`, `update`, `upsert`, `delete`
-
-3. **JobScheduler** (`jyc-core/src/job_scheduler.rs`) — Background scan-and-fire loop
-   - Lists all enabled jobs, checks `next_fire_at <= now`
-   - Fires due jobs by injecting `InboundMessage` into `TopicManager`
-   - Updates job state (last_fired_at, next_fire_at, enabled for one-time)
-   - Sleeps until next due job (or scan interval)
-
-4. **Job Management Tools** (`jyc-agent/src/tools/builtin/job_tools.rs`) — Agent tools
-   - `job_list`: List all scheduled jobs with schedule info
-   - `job_create`: Create new recurring (cron) or one-time (at) jobs
-   - `job_delete`: Delete a job by ID
-   - `job_toggle`: Enable/disable a job
-
-### Configuration
-
-```toml
-[scheduler]
-enabled = true              # default: true
-scan_interval_secs = 60     # default: 60
-max_jobs_per_topic = 10    # default: 10
-```
-
-### Design Decisions
-
-- **Channel-agnostic**: Jobs fire by injecting `InboundMessage` into the existing `TopicManager` — no channel-specific code in the scheduler
-- **Per-topic JSON file storage**: Jobs are stored in `<topic>/.jyc/jobs/<id>.json` — each topic manages its own jobs, no global directory. The scheduler scans all workspace directories for topic directories with `.jyc/jobs/` subdirectories.
-- **7-field cron** (sec min hour dom mon dow year) for precision — the `cron` crate supports sub-minute scheduling
-- **Pre-computed next_fire_at**: Each job stores its next fire time, computed after each fire — avoids re-parsing cron on every scan cycle
-- **One-time job lifecycle**: After firing, `enabled` is set to `false` and `next_fire_at` to `None`
-- **Job ID**: UUID v4, generated at creation time
 
 ## References
 

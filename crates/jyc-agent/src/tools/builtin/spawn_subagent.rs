@@ -59,13 +59,12 @@ impl Tool for SpawnSubagentTool {
         "Create a subagent topic — a sibling inheriting this topic's settings (mode, pattern, \
          and the runtime overrides you do not pin with `type`), on your model for its mode \
          unless `type` names one that resolves, with an empty task list and its own queue. You \
-         get read+write access to its topic_path. Its conversation starts empty: \
-         inherit_context=true copies this conversation in; share_topic_path=true works it in \
-         *your* directory, for a review of uncommitted changes (its state still goes to its own \
-         state dir). Pass type=\"<name>\" to start it as a configured role — its model, skills, \
-         disabled tools, mode and instructions go into the child's state, and the role may set \
-         defaults for the two flags. The types you can pass are listed in this tool's `type` \
-         argument. Seed its directory with `write`, then send the task with \
+         get read+write access to its topic_path. Its conversation starts empty; the two flags \
+         below say what else it inherits, and a type may set its own default for either — \
+         passing the flag explicitly overrides. Pass type=\"<name>\" to start it as a configured \
+         role — its model, skills, disabled tools, mode and instructions go into the child's \
+         state. The types you can pass are listed in this tool's `type` argument. Seed its \
+         directory with `write`, then send the task with \
          `jyc_send_to_topic` (require_reply=true); reconfigure it by sending a command body \
          (`/build`, `/plan`, `/model`, …), which spends none of its turns. When the subagent \
          list in your system prompt already holds one that fits, continue it. Send `/close \
@@ -92,16 +91,15 @@ impl Tool for SpawnSubagentTool {
                 },
                 "inherit_context": {
                     "type": "boolean",
-                    "description": "Copy your conversation and transcript into the subagent. \
-                                    Default false: it starts with your settings but no history. \
-                                    A type may set its own default here; passing this overrides it."
+                    "description": "Copy your conversation and transcript into it. \
+                                    Default false: it starts with your settings but no history."
                 },
                 "share_topic_path": {
                     "type": "boolean",
                     "description": "Let the subagent work in your own directory, for work that has \
                                     to see your files as they are (a review of uncommitted \
-                                    changes). Default false: it gets a directory of its own. \
-                                    A type may set its own default here; passing this overrides it."
+                                    changes). Its state dir stays its own. Default false: it gets \
+                                    a directory of its own."
                 },
                 "type": {
                     "type": "string",

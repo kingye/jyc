@@ -40,7 +40,7 @@ impl Tool for BashTool {
 
     fn description(&self) -> &str {
         "Execute a bash command in the working directory. Use for tests, builds, git, \
-         file operations and any system command. Commands run with a 2-minute timeout by default."
+         file operations and any system command."
     }
 
     fn input_schema(&self) -> Value {
@@ -48,8 +48,7 @@ impl Tool for BashTool {
             "type": "object",
             "properties": {
                 "command": {
-                    "type": "string",
-                    "description": "The bash command to execute"
+                    "type": "string"
                 },
                 "timeout": {
                     "type": "integer",

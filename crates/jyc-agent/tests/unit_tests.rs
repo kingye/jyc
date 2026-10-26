@@ -1458,18 +1458,13 @@ mod tool_registry {
     /// The tools the builtin registry must have. The count is derived from
     /// this list, so adding a tool means adding a name — not also
     /// remembering to bump a number somewhere else.
-    const EXPECTED_BUILTIN_TOOLS: [&str; 19] = [
+    const EXPECTED_BUILTIN_TOOLS: [&str; 14] = [
         "bash",
         "read",
         "write",
         "edit",
-        "glob",
         "grep",
         "webfetch",
-        "job_list",
-        "job_create",
-        "job_delete",
-        "job_toggle",
         "jyc_send_to_topic",
         "context_browse",
         "ask_user",
@@ -1662,25 +1657,6 @@ mod tools {
     }
 
     #[tokio::test]
-    async fn glob_finds_files() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "glob_finds_files";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        std::fs::write(tmp.path().join("a.rs"), "").unwrap();
-        std::fs::write(tmp.path().join("b.rs"), "").unwrap();
-        std::fs::write(tmp.path().join("c.txt"), "").unwrap();
-        let tool = builtin::glob_tool::GlobTool;
-        let result = tool
-            .execute(json!({"pattern": "*.rs"}), &ctx(tmp.path()))
-            .await
-            .unwrap();
-        assert!(!result.is_error);
-        assert!(result.content.contains("2 file(s)"));
-        assert!(result.content.contains("a.rs"));
-        assert!(result.content.contains("b.rs"));
-    }
-
-    #[tokio::test]
     async fn grep_finds_matches() {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "grep_finds_matches";
@@ -1744,11 +1720,24 @@ mod tools {
     }
 
     #[test]
-    fn send_to_topic_description_mentions_require_reply() {
+    fn send_to_topic_require_reply_is_discoverable() {
+        // The `require_reply` contract lives in the parameter description, not
+        // in the tool description: the tool text rides in every request's
+        // cached prefix, and the parameter says the same thing in fewer
+        // words. What matters is that the model can still learn what the
+        // flag does — so pin the parameter's text, not the tool's.
         let tool = builtin::send_to_topic::SendToThreadTool;
+        let schema = tool.input_schema();
+        let desc = schema["properties"]["require_reply"]["description"]
+            .as_str()
+            .expect("require_reply should carry a description");
         assert!(
-            tool.description().contains("require_reply"),
-            "description should mention require_reply"
+            desc.contains("send its results back"),
+            "the parameter description should say what require_reply does: {desc}"
+        );
+        assert!(
+            desc.contains("Default false"),
+            "the parameter description should state the default: {desc}"
         );
     }
 }
@@ -2012,7 +2001,6 @@ mod skills {
             attachments: None,
             wecom: None,
             mcps: Vec::new(),
-            scheduler: jyc_types::SchedulerConfig::default(),
             commands: Vec::new(),
             hooks: Vec::new(),
             agents: std::collections::HashMap::new(),

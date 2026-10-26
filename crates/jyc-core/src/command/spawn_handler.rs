@@ -62,7 +62,7 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 ///
 /// What comes along is the state, not the workspace: an allow-list (backlog and
 /// settings, never a task list) marked `spawned-from`, so a child inherits
-/// neither jobs that would double-fire nor a token meter it did not run up. The
+/// neither the parent's work nor a token meter it did not run up. The
 /// conversation and the transcript are the one part that stays behind by
 /// default — a worker starting on a task of its own does not need the parent's
 /// train of thought — and `-i/--inherit` copies them too (see `seed_state`).
@@ -1174,7 +1174,9 @@ mod tests {
         // what production always has. `topic` is the caller's: the registry is
         // process-global and these tests run in parallel.
         jyc_types::state_dir::register(topic, &state);
-        tokio::fs::create_dir_all(state.join("jobs")).await.unwrap();
+        tokio::fs::create_dir_all(state.join("cache"))
+            .await
+            .unwrap();
         tokio::fs::create_dir_all(dir.join("src")).await.unwrap();
         tokio::fs::write(dir.join("src/main.rs"), "fn main() {}")
             .await
@@ -1200,7 +1202,7 @@ mod tests {
         ] {
             tokio::fs::write(state.join(name), body).await.unwrap();
         }
-        tokio::fs::write(state.join("jobs/one.json"), "{}")
+        tokio::fs::write(state.join("cache/one.json"), "{}")
             .await
             .unwrap();
         (tmp, dir)
@@ -2672,8 +2674,8 @@ mod tests {
             );
         }
         assert!(
-            !state.join("jobs").exists(),
-            "a copy of the parent's scheduled jobs would double-fire them"
+            !state.join("cache").exists(),
+            "a directory in the parent's state is not copied"
         );
 
         // A spawn is one of the parent's subagents: this grant is what the

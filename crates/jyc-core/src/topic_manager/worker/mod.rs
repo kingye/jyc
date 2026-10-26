@@ -36,7 +36,7 @@ const INJECTION_CHANNEL_CAPACITY: usize = 32;
 
 /// Whether a queued message can join the running turn as it is.
 ///
-/// Only plain text: an attachment, a template or a scheduled job needs
+/// Only plain text: an attachment or a template needs
 /// the full turn pipeline (its own storage, hooks and reply target).
 ///
 /// A topic path is not a reason on its own: the worker registers the
@@ -52,7 +52,6 @@ fn is_injectable(item: &QueueItem, topic_path: &Path, workspace: &Path) -> bool 
     effective_path == topic_path
         && item.template.is_none()
         && item.message.attachments.is_empty()
-        && !item.message.is_scheduled_job()
         && item
             .message
             .content

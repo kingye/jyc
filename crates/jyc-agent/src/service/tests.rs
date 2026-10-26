@@ -33,7 +33,6 @@ fn base_app_config(model: Option<&str>) -> jyc_types::AppConfig {
         attachments: None,
         wecom: None,
         mcps: Vec::new(),
-        scheduler: jyc_types::SchedulerConfig::default(),
         commands: Vec::new(),
         hooks: Vec::new(),
         agents: std::collections::HashMap::new(),
@@ -321,7 +320,6 @@ fn reload_picks_up_new_model_context_window_without_restart() {
         attachments: None,
         wecom: None,
         mcps: Vec::new(),
-        scheduler: jyc_types::SchedulerConfig::default(),
         commands: Vec::new(),
         hooks: Vec::new(),
         agents: std::collections::HashMap::new(),
@@ -431,7 +429,6 @@ fn derive_agent_config_applies_channel_overrides() {
         attachments: None,
         wecom: None,
         mcps: Vec::new(),
-        scheduler: jyc_types::SchedulerConfig::default(),
         commands: Vec::new(),
         hooks: Vec::new(),
         agents: std::collections::HashMap::new(),
@@ -1915,40 +1912,27 @@ async fn system_prompt_enumerates_configured_access_roots() {
 #[test]
 fn test_resolve_turn_mode() {
     // Mode resolution: file > topic config > pattern > default build (None
-    // downstream). Scheduled-job turns are non-interactive automation — no user
-    // will ever approve a plan — so they always resolve to build (None),
-    // ignoring every configured layer.
+    // downstream).
     let cases = [
-        // (scheduled, file_mode, topic_mode, pattern_mode, expected)
-        (false, Some("plan"), None, None, Some("plan")),
-        (false, None, Some("plan"), None, Some("plan")),
-        (false, None, None, Some("plan"), Some("plan")),
+        // (file_mode, topic_mode, pattern_mode, expected)
+        (Some("plan"), None, None, Some("plan")),
+        (None, Some("plan"), None, Some("plan")),
+        (None, None, Some("plan"), Some("plan")),
         // The user's own /mode beats a configured mode, which beats the pattern.
-        (
-            false,
-            Some("plan"),
-            Some("build"),
-            Some("build"),
-            Some("plan"),
-        ),
-        (false, None, Some("build"), Some("plan"), Some("build")),
-        (false, None, None, None, None), // default: build
-        (true, Some("plan"), None, None, None),
-        (true, None, Some("plan"), None, None),
-        (true, None, None, Some("plan"), None),
-        (true, Some("plan"), Some("plan"), Some("plan"), None),
+        (Some("plan"), Some("build"), Some("build"), Some("plan")),
+        (None, Some("build"), Some("plan"), Some("build")),
+        (None, None, None, None), // default: build
     ];
-    for (scheduled, file_mode, topic_mode, pattern_mode, expected) in cases {
+    for (file_mode, topic_mode, pattern_mode, expected) in cases {
         let got = super::resolve_turn_mode(
             file_mode.map(|s| s.to_string()),
             topic_mode.map(|s| s.to_string()),
             pattern_mode.map(|s| s.to_string()),
-            scheduled,
         );
         assert_eq!(
             got.as_deref(),
             expected,
-            "scheduled={scheduled} file={file_mode:?} topic={topic_mode:?} pattern={pattern_mode:?}"
+            "file={file_mode:?} topic={topic_mode:?} pattern={pattern_mode:?}"
         );
     }
 }

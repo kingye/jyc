@@ -58,7 +58,6 @@ mod tests {
             attachments: None,
             wecom: None,
             mcps: vec![],
-            scheduler: Default::default(),
             commands: vec![],
             hooks: vec![],
         }

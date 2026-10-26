@@ -109,8 +109,7 @@ The core is channel-agnostic. It never sees platform-specific data — only
 
 - Per-topic message queues drained by worker tasks; concurrency bounded by a
   semaphore.
-- Agent service (in-process agent), message storage, template resolution, job
-  scheduler.
+- Agent service (in-process agent), message storage, template resolution.
 - One core instance per agent channel; pipe-only channels have no core
   presence.
 - The single `[ai]` block is the shared brain — model providers, prompts,

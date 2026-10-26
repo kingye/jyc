@@ -14,16 +14,6 @@
 max_concurrent_topics = 3
 max_queue_size_per_topic = 10
 
-# --- Scheduler ---
-# Enable channel-agnostic scheduled jobs.
-# When enabled, the background JobScheduler scans all topics for due jobs
-# and fires them by injecting InboundMessage into the originating topic.
-# Default: enabled.
-# [scheduler]
-# enabled = true
-# scan_interval_secs = 60    # How often to scan for due jobs
-# max_jobs_per_topic = 10   # Max jobs per topic (prevents unbounded creation)
-
 # --- Channel: jiny283 (email, pipe-only) ---
 # Email is a pipe-only channel (see docs/architecture/overview.md): it owns no
 # topics or agents — every enabled pattern must pipe into an agent channel /

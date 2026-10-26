@@ -19,8 +19,8 @@ impl Tool for WebfetchTool {
     }
 
     fn description(&self) -> &str {
-        "Fetch content from a URL. Returns the response body as text. \
-         Use for retrieving web pages, API responses, or downloading content."
+        "Fetch a URL and return the response body as text — web pages, API \
+         responses, downloads."
     }
 
     fn input_schema(&self) -> Value {
@@ -28,8 +28,7 @@ impl Tool for WebfetchTool {
             "type": "object",
             "properties": {
                 "url": {
-                    "type": "string",
-                    "description": "The URL to fetch"
+                    "type": "string"
                 },
                 "timeout": {
                     "type": "integer",

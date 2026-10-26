@@ -4,7 +4,7 @@
 //! it: the system prompt lists the skills a topic may use, and the
 //! `/skill:<name>` command rows tell the model to read one of them — and
 //! `jyc-core` (which builds those rows) cannot depend on `jyc-agent`.
-//! One wording, one place to change it.
+//! Both wordings live here, one place to change them.
 
 use crate::agent::SkillMeta;
 use std::borrow::Cow;
@@ -49,6 +49,26 @@ pub fn format_skills_section(skills: &[SkillMeta]) -> String {
     section
 }
 
+/// Format the directive injected for a `/skill:<name>` command.
+///
+/// The system prompt's wording is standing orders ("before processing any
+/// user request"); this one is part of a single message, so it names the one
+/// skill, hands over its path and asks for the `SKILL.md` to be read. Same
+/// facts, no standing orders — and a fraction of the tokens.
+pub fn format_skill_section(skill: &SkillMeta) -> String {
+    let path = skill.source_path.display();
+    format!(
+        "## Skill: {name}\n\n\
+         {description}\n\n\
+         Read `{path}/SKILL.md` with the `read` tool before using this skill — \
+         the description above is a summary, not its full instructions. \
+         Paths inside a SKILL.md are relative to the skill's directory; \
+         run its scripts with `cd {path} && <command>`.\n",
+        name = skill.name,
+        description = truncate_description(&skill.description),
+    )
+}
+
 /// Max characters kept from a skill description in the system prompt.
 /// Long descriptions cost input tokens on every LLM call; the first
 /// ~200 chars carry the trigger semantics ("Use when…"), the rest is
@@ -79,6 +99,25 @@ fn truncate_description(desc: &str) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The single-skill directive: one skill, its path, and the ask to read
+    /// its SKILL.md — no standing orders about "every user request".
+    #[test]
+    fn single_skill_section_names_the_skill_and_its_path() {
+        let skill = SkillMeta {
+            name: "pr-review".into(),
+            description: "Review pull requests".into(),
+            source_path: std::path::PathBuf::from("/skills/pr-review"),
+        };
+        let section = format_skill_section(&skill);
+        assert!(section.starts_with("## Skill: pr-review"), "{section}");
+        assert!(section.contains("Review pull requests"), "{section}");
+        assert!(section.contains("/skills/pr-review/SKILL.md"), "{section}");
+        assert!(
+            !section.contains("Available Skills"),
+            "the injection is about one skill, not a list: {section}"
+        );
+    }
 
     #[test]
     fn short_description_is_unchanged() {

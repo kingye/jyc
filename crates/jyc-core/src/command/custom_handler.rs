@@ -440,10 +440,10 @@ mod tests {
         assert!(result.success);
         let body = result.append_body.unwrap();
         assert!(
-            body.starts_with("focus on X\n\n## Available Skills"),
+            body.starts_with("focus on X\n\n## Skill: pr-review"),
             "unexpected body: {body:?}"
         );
-        assert!(body.contains("**pr-review**"), "the skill is named");
+        assert!(body.contains("pr-review"), "the skill is named");
         assert!(
             body.contains(&tmp.path().join("pr-review").display().to_string()),
             "the skill's path is given: {body:?}"

@@ -343,7 +343,7 @@ mod tests {
         // The directive carries the skill's name, path and description, so
         // the agent can find and read the SKILL.md even when the topic's
         // prompt does not list the skill.
-        assert!(output.cleaned_body.contains("**ponytail**"));
+        assert!(output.cleaned_body.contains("## Skill: ponytail"));
         assert!(output.cleaned_body.contains("/skills/ponytail"));
         assert!(output.cleaned_body.contains("SKILL.md"));
     }

@@ -91,14 +91,15 @@ impl Tool for SpawnSubagentTool {
                 },
                 "inherit_context": {
                     "type": "boolean",
-                    "description": "Copy your conversation and transcript into the subagent. \
+                    "description": "Copy your conversation and transcript into it. \
                                     Default false: it starts with your settings but no history."
                 },
                 "share_topic_path": {
                     "type": "boolean",
                     "description": "Let the subagent work in your own directory, for work that has \
                                     to see your files as they are (a review of uncommitted \
-                                    changes). Default false: it gets a directory of its own."
+                                    changes). Its state dir stays its own. Default false: it gets \
+                                    a directory of its own."
                 },
                 "type": {
                     "type": "string",

@@ -14,7 +14,7 @@
 //!   touching a single name, parameter name, type or required list. The
 //!   2026-10-26 pass removed five tools (the four `job_*` and `glob`, whose
 //!   text was 1,319 chars) and trimmed the rest by a further 1,272 chars, so
-//!   the set is now 6,888. The budgets
+//!   the set is now 6,925. The budgets
 //!   carry a few percent of slack, so an ordinary wording fix does not have to
 //!   bump them. The *total* ceiling is a different thing: it is the standing
 //!   per-call cost of the whole set, and it was raised once on purpose (#971,
@@ -91,13 +91,15 @@ const BUDGETS: &[(&str, usize, usize)] = &[
 /// tools (#971) brought it to 9,511 — 9,487 after the send tool's wording
 /// was trimmed to say what a send does not do, and 9,479 after the spawn
 /// tool's said what a send to a closed child does. The 2026-10-26 pass —
-/// five tools removed, the rest trimmed — brought it to 6,888. The ceiling is
-/// the standing per-call cost of every request's prefix, so raising it is a
-/// deliberate act — it was raised for #971, where the alternative was to cut a
-/// tool's description until the model stopped understanding what the tool was
-/// for.
+/// five tools removed, the rest trimmed — brought it to 6,888; the
+/// follow-up that put back the two rules the trim had cut (the spawn tool's
+/// "its state dir stays its own", the ask_user tool's "the turn ends") took
+/// it to 6,925. The ceiling is the standing per-call cost of every
+/// request's prefix, so raising it is a deliberate act — it was raised for
+/// #971, where the alternative was to cut a tool's description until the
+/// model stopped understanding what the tool was for.
 ///
-/// Only 162 characters of slack are left. The next tool will have to raise
+/// Only 125 characters of slack are left. The next tool will have to raise
 /// it again, and before it does, look for an older description that can
 /// retire: a budget that only ever grows is not a budget.
 const TOTAL_BUDGET: usize = 7_050;

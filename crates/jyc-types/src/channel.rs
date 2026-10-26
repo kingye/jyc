@@ -886,9 +886,9 @@ fn default_tool_result_cap() -> Option<usize> {
 
 /// Per-pattern filesystem access whitelist.
 ///
-/// `read` paths widen the read boundary for tools like `read`, `bash`,
-/// `grep`, and `glob`. `write` paths widen the write boundary for `write`,
-/// `edit`, and `bash` — and are automatically readable too.
+/// `read` paths widen the read boundary for tools like `read`, `bash` and
+/// `grep`. `write` paths widen the write boundary for `write`, `edit`, and
+/// `bash` — and are automatically readable too.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AccessConfig {
     /// Additional read paths outside the working directory.

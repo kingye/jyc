@@ -639,7 +639,7 @@ pub struct ModelInfo {
 
 /// Extract the tool's primary input value from the `ToolStarted` event's JSON
 /// input: `service/tools.rs` for file tools, the command for `bash`, the
-/// pattern for `grep`/`glob`, the URL for `webfetch`. Shared by every surface
+/// pattern for `grep`, the URL for `webfetch`. Shared by every surface
 /// that displays a tool call (feishu progress card, TUI chat progress tail).
 ///
 /// File paths are reduced to their basename; newlines and excess whitespace are

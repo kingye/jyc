@@ -1720,11 +1720,24 @@ mod tools {
     }
 
     #[test]
-    fn send_to_topic_description_mentions_require_reply() {
+    fn send_to_topic_require_reply_is_discoverable() {
+        // The `require_reply` contract lives in the parameter description, not
+        // in the tool description: the tool text rides in every request's
+        // cached prefix, and the parameter says the same thing in fewer
+        // words. What matters is that the model can still learn what the
+        // flag does — so pin the parameter's text, not the tool's.
         let tool = builtin::send_to_topic::SendToThreadTool;
+        let schema = tool.input_schema();
+        let desc = schema["properties"]["require_reply"]["description"]
+            .as_str()
+            .expect("require_reply should carry a description");
         assert!(
-            tool.description().contains("require_reply"),
-            "description should mention require_reply"
+            desc.contains("send its results back"),
+            "the parameter description should say what require_reply does: {desc}"
+        );
+        assert!(
+            desc.contains("Default false"),
+            "the parameter description should state the default: {desc}"
         );
     }
 }

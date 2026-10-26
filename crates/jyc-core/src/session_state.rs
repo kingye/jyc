@@ -570,8 +570,8 @@ pub async fn write_context_window(topic_name: &str, topic_path: &Path, new_windo
 ///
 /// `pattern_name` is the pattern that applies to this turn — the runtime passes
 /// what the message matched, so `None` there means no pattern layer at all
-/// (scheduled and injected turns have none, and the pre-unification runtime
-/// consulted no other source for them); callers that mean "the pattern this
+/// (injected turns have none, and the pre-unification runtime consulted no
+/// other source for them); callers that mean "the pattern this
 /// topic runs" read `.jyc/pattern` themselves — [`resolve_effective_model`] does
 /// it for the spawn triggers, the display passes its own `topic_pattern`. There
 /// is deliberately no fallback to the channel's first pattern: the runtime has no

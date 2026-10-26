@@ -192,6 +192,9 @@ impl JycAgentService {
                 "\n## Cross-Topic Communication\n\n\
                  You can send messages to another agent — its own topic by default, or one of its \
                  topics with `topic` — using the `jyc_send_to_topic` tool.\n\
+                 The addressing tools are extended: call `load_extended_tools` to bring \
+                 `jyc_send_to_topic`, `jyc_send_message` and `list_topics` into your tool list \
+                 before you use them — `list_topics` gives you the names they accept.\n\
                  Set `require_reply=true` when you need the target agent to send results back to you.\n\n\
                  When you receive a message with a **Source:** header, it came from another topic. \
                  Process the content normally — your final message displays the results in the \
@@ -270,32 +273,11 @@ impl JycAgentService {
             body.push_str(&Self::format_subagents_section(&subagents));
         }
 
-        // The addressing table for `jyc_send_to_topic` / `jyc_send_message`:
-        // channels and their active topics. Names only — all this list needs;
-        // `list_topic_names` documents what resolving each state dir would cost.
-        let managers_opt = self
-            .topic_managers
-            .lock()
-            .expect("topic_managers poisoned")
-            .clone();
-        if let Some(ref managers) = managers_opt {
-            body.push_str("Available channels and their active topics:\n");
-            for tm in managers.all().iter() {
-                body.push_str(&format!(
-                    "- Channel \"{}\" ({})\n",
-                    tm.channel_name(),
-                    tm.channel_type()
-                ));
-                let topics = tm.list_topic_names().await;
-                if topics.is_empty() {
-                    body.push_str("    (no active topics)\n");
-                } else {
-                    for name in &topics {
-                        body.push_str(&format!("  - {}\n", name));
-                    }
-                }
-            }
-        }
+        // The channel/topic roster used to ride here. It is now fetched on
+        // demand by the `list_topics` tool: the list changed whenever a topic
+        // appeared or closed, and as a per-turn block it was repeated in the
+        // history of every later turn — a standing cost for a table only
+        // needed when the model wants to address someone.
 
         if body.is_empty() {
             return String::new();

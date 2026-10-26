@@ -340,6 +340,14 @@ impl JycAgentService {
             registry.remove(tool_name);
         }
 
+        // The extended group: registered, but kept out of the advertised tool
+        // list until the model loads it. Done after the exclusions above, so
+        // the group is exactly what this registry ended up with — a tool
+        // disabled here is not part of it, and a tool that is not registered
+        // (e.g. `jyc_spawn_subagent` off the `agents` channel) is not
+        // advertised as something the call would fail on.
+        crate::tools::builtin::extended::register_extended_tools(&mut registry);
+
         // External hooks for tool events: global [[hooks]] first, then
         // [[agents.<name>.hooks]] for the routed agent (the pattern name
         // is the agent key — same merge rule as [[commands]]). The

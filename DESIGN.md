@@ -2386,7 +2386,25 @@ JYC uses the following subset of the agent service API:
    | Access boundaries, skills, `AGENTS.md`, reply/history/VCS rules, static cross-topic prose | system prompt | Changes only when config or files do — **except** the boundary's runtime grant lines, below |
    | Mode block (`<mode>`) | user message | `BUILD`↔`PLAN` switches per turn |
    | Subagent roster (`Your subagents (N): …`) | user message | A child is spawned or closed |
-   | Channel/topic roster (`Available channels and their active topics:`) | user message | Any topic appears or disappears — the most frequent churn of all |
+   | Channel/topic roster | — | Not in the prompt at all: the `list_topics` tool fetches it on demand |
+
+   **The extended tools.** A tool schema rides in every request, so a topic
+   that never delegates, never publishes and never fetches a URL pays for
+   those schemas on every call. The seven tools most topics use rarely —
+   `jyc_spawn_subagent`, `jyc_send_to_topic`, `jyc_send_message`,
+   `list_topics`, `jyc_publish_file`, `read_image`, `webfetch` — are
+   therefore **registered but not advertised**: the registry filters them out
+   of the `tools` array until the model calls `load_extended_tools`, whose
+   description is the index of what the group holds. The flag lives in the
+   registry, which is cached per topic, so a load sticks for the rest of that
+   topic's registry lifetime (a config reload rebuilds it and starts over).
+   Only *advertisement* is gated: the tools stay executable, so a model that
+   names one before loading it gets a working call instead of an error — the
+   group is a cost optimization, and `disabled_tools` remains the boundary
+   that removes a tool for good. The advertised set went from 6,925 chars of
+   schema text to about 3,800, and the tools array is re-read on every agent
+   loop iteration, so the schemas are in the *next* request of the *same*
+   turn.
 
    **What still moves the prompt, and why that is correct.** Spawning a
    child calls `access_grants::grant_subagent()`, which registers the
@@ -2405,6 +2423,12 @@ JYC uses the following subset of the agent service API:
    (`build_turn_reference()`), prepended to the user message and framed
    as an auto-generated snapshot that is not user text and may go stale
    within a long turn. `build_system_prompt()` emits neither.
+
+   Only the subagent roster rides that block now. The channel/topic roster
+   is fetched by the `list_topics` tool when the model wants to address
+   someone: it changed whenever a topic appeared or closed, and as a
+   per-turn block it was repeated in the history of every later turn — a
+   standing cost for a table that is only needed when addressing.
 
    The per-turn `prompt_hash` in the `System prompt built` trace line
    is the tripwire for this property: on an otherwise idle topic the

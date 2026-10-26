@@ -466,7 +466,11 @@ async fn disabled_tools_removes_builtin_and_bridge() {
         )
         .await;
 
-    let defs = registry.definitions();
+    // The *registered* set, not the advertised one: a disabled tool has to be
+    // gone from the registry (so it cannot be executed either), while the
+    // extended group is a separate matter — registered, advertised only after
+    // the model loads it.
+    let defs = registry.all_definitions();
     let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
 
     assert!(!names.contains(&"bash"), "bash should be disabled");
@@ -498,7 +502,11 @@ async fn disabled_builtin_tools_alias_works() {
         )
         .await;
 
-    let defs = registry.definitions();
+    // The *registered* set, not the advertised one: a disabled tool has to be
+    // gone from the registry (so it cannot be executed either), while the
+    // extended group is a separate matter — registered, advertised only after
+    // the model loads it.
+    let defs = registry.all_definitions();
     let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
 
     assert!(
@@ -529,7 +537,11 @@ async fn channel_and_pattern_disabled_tools_merged() {
         )
         .await;
 
-    let defs = registry.definitions();
+    // The *registered* set, not the advertised one: a disabled tool has to be
+    // gone from the registry (so it cannot be executed either), while the
+    // extended group is a separate matter — registered, advertised only after
+    // the model loads it.
+    let defs = registry.all_definitions();
     let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
 
     assert!(
@@ -1196,7 +1208,11 @@ async fn topic_config_disabled_tools_are_excluded() {
     let registry = svc
         .build_tool_registry(topic, tmp.path(), Some(&topic_cfg), false, Some("test"))
         .await;
-    let defs = registry.definitions();
+    // The *registered* set, not the advertised one: a disabled tool has to be
+    // gone from the registry (so it cannot be executed either), while the
+    // extended group is a separate matter — registered, advertised only after
+    // the model loads it.
+    let defs = registry.all_definitions();
     let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
     assert!(!names.contains(&"bash"), "{names:?}");
     assert!(!names.contains(&"write"), "{names:?}");
@@ -1293,9 +1309,9 @@ async fn cli_helper_section_lists_exactly_what_is_installed() {
     }
 }
 
-/// The volatile runtime state — subagents and the channel/topic roster — must
-/// NOT land in the system prompt: any byte of churn there invalidates the
-/// provider's cached prefix on every call of every later turn.
+/// The volatile runtime state — the subagent roster — must NOT land in the
+/// system prompt: any byte of churn there invalidates the provider's cached
+/// prefix on every call of every later turn.
 ///
 /// The fixture is built so that **both** sections would have been emitted by
 /// the pre-refactor code, so the negative assertions fail on it rather than
@@ -1303,6 +1319,9 @@ async fn cli_helper_section_lists_exactly_what_is_installed() {
 /// before the iteration, so an empty set still produces the header) and a real
 /// child grant with a lineage breadcrumb is registered. The positive half pins
 /// that the information still reaches the model — on the turn's user message.
+///
+/// The channel/topic roster no longer rides the turn either: it is fetched on
+/// demand by the `list_topics` tool, which is part of the extended group.
 #[tokio::test]
 async fn volatile_runtime_state_rides_the_turn_not_the_system_prompt() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1340,8 +1359,9 @@ async fn volatile_runtime_state_rides_the_turn_not_the_system_prompt() {
         "the reference must still name the child:\n{reference}"
     );
     assert!(
-        reference.contains("Available channels and their active topics"),
-        "the reference must still carry the channel/topic roster:\n{reference}"
+        !reference.contains("Available channels and their active topics"),
+        "the channel/topic roster must not ride every turn — `list_topics` fetches it \
+         on demand:\n{reference}"
     );
     assert!(
         reference.starts_with("<runtime-state>")
@@ -1353,8 +1373,8 @@ async fn volatile_runtime_state_rides_the_turn_not_the_system_prompt() {
     jyc_types::access_grants::ungrant_subagent(topic, child);
 }
 
-/// With no subagents and no topic managers there is nothing volatile to
-/// report, so the caller prepends nothing at all.
+/// With no subagents there is nothing volatile to report, so the caller
+/// prepends nothing at all.
 #[tokio::test]
 async fn turn_reference_is_empty_when_nothing_volatile_exists() {
     let svc = service_with_skills(vec![], None);

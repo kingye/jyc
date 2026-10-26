@@ -666,16 +666,10 @@ pub struct ChannelPattern {
     ///
     /// When set, only skills whose names appear in this list are loaded
     /// for topics matching this pattern. Takes priority over channel-level
-    /// `skills`. When both are unset, all discovered skills are loaded.
+    /// `skills`. When both are unset, no skill is loaded — skills are
+    /// opt-in.
     #[serde(default)]
     pub skills: Option<Vec<String>>,
-
-    /// Per-pattern skills to disable.
-    ///
-    /// Skill names match the `name` field in SKILL.md frontmatter.
-    /// Merged with channel-level `disabled_skills`.
-    #[serde(default)]
-    pub disabled_skills: Option<Vec<String>>,
 
     /// Per-pattern compression configuration for session reset.
     ///
@@ -948,7 +942,6 @@ impl Default for ChannelPattern {
             disabled_builtin_tools: None,
             disabled_mcps: None,
             skills: None,
-            disabled_skills: None,
             reset_compression: None,
             auto_reset_threshold: None,
             access: None,

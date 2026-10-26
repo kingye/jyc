@@ -851,7 +851,6 @@ mode = "static"
 template = "jyc"
 topic_path = "~/projects/jyc"
 skills = ["coding-principles"]
-disabled_skills = []
 access = { read = ["~/.cargo/registry/src"], write = ["/tmp/jyc-builds"] }
 attachments = { enabled = true, allowed_extensions = [".pdf", ".md"] }
 reset_compression = { mode = "llm", keep_pairs = 3 }
@@ -1718,7 +1717,6 @@ mod shell_command_timeout_tests {
             r#"
 mode = "plan"
 skills = ["pr-review", "ponytail-review"]
-disabled_skills = ["dev-workflow"]
 disabled_tools = ["write", "edit", "bash"]
 instructions = "read-only: report, do not edit"
 "#,
@@ -1730,10 +1728,6 @@ instructions = "read-only: report, do not edit"
         assert_eq!(
             cfg.skills.as_deref(),
             Some(["pr-review".to_string(), "ponytail-review".to_string()].as_slice())
-        );
-        assert_eq!(
-            cfg.disabled_skills.as_deref(),
-            Some(["dev-workflow".to_string()].as_slice())
         );
         assert_eq!(cfg.disabled_tools.as_ref().map(Vec::len), Some(3));
         assert_eq!(
@@ -1764,7 +1758,6 @@ plan_model = "provider/installed-plan"
         let from_config = parse_toml_value(
             r#"
 mode = "plan"
-disabled_skills = ["dev-workflow"]
 [ai]
 plan_model = "provider/config-plan"
 small_model = "provider/config-small"
@@ -1795,10 +1788,6 @@ small_model = "provider/config-small"
         assert_eq!(
             merged.ai.as_ref().unwrap().small_model.as_deref(),
             Some("provider/config-small")
-        );
-        assert_eq!(
-            merged.disabled_skills.as_deref(),
-            Some(["dev-workflow".to_string()].as_slice())
         );
         assert_eq!(
             merged.disabled_tools.as_deref(),
@@ -1891,7 +1880,6 @@ small_model = "provider/config-small"
             !body.contains("mcps_replace"),
             "default false is not written: {body}"
         );
-        assert!(!body.contains("disabled_skills"), "{body}");
         // Round-trips back to the same settings.
         let back: TopicConfig =
             parse_and_deserialize_from_value(parse_toml_value(&body, "<test>").unwrap(), "<test>")

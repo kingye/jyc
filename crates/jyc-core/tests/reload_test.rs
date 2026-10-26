@@ -114,7 +114,6 @@ fn create_test_config(pattern_names: Vec<&str>) -> jyc_types::AppConfig {
             small_model: None,
             footer: None,
             skills: None,
-            disabled_skills: None,
             disabled_tools: None,
             disabled_mcps: None,
             mcps: None,

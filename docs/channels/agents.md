@@ -55,8 +55,7 @@ attachments = { enabled = true, allowed_extensions = [".pdf", ".md"] }
 |-------|-------------|
 | `template` | Topic template name (from `templates/`) |
 | `topic_path` | Pins this agent's **1:1 topic** (topic name == agent name) to a fixed directory — the agent's own home, typically a code checkout. Other topics of the agent are never placed inside it; they stay at `<data dir>/agents/<agent_name>/<topic_name>/`. |
-| `skills` | Whitelist; when set, only these skills are loaded for topics of this agent |
-| `disabled_skills` | Skills to disable for this agent |
+| `skills` | Allow-list of the skills this agent's topics list by default; unset means none (skills are opt-in). Every discovered skill stays invocable via `/skill:<name>` |
 | `access` | Filesystem read/write whitelist (`{ read = [...], write = [...] }`) |
 | `role` | Agent role name (e.g., "Planner", "Developer", "Reviewer") |
 | `live_injection` | Inject follow-ups into the active session (default: `true`) |

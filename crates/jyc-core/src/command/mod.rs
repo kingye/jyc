@@ -109,10 +109,12 @@ pub fn skill_commands(skills: &[jyc_types::SkillMeta]) -> Vec<CustomCommand> {
             name: format!("skill:{}", s.name),
             description: s.description.clone(),
             mode: None,
-            skills: Some(vec![s.name.clone()]),
-            // Empty: the user's own text is the prompt. `CustomCommandHandler`
-            // puts same-line args first, then the skills directive.
-            user_prompt: Some(String::new()),
+            // The skill's name, path and description plus the instruction to
+            // read its SKILL.md — the path is what makes a skill the topic's
+            // prompt does not list still reachable. `CustomCommandHandler`
+            // puts same-line args first, then this block.
+            user_prompt: Some(jyc_types::skill::format_skill_section(s)),
+            skills: None,
             shell: None,
             timeout: None,
         })
@@ -350,11 +352,15 @@ mod tests {
         let cmds = skill_commands(&[skill("pr-review")]);
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].name, "skill:pr-review");
-        assert_eq!(cmds[0].skills, Some(vec!["pr-review".to_string()]));
         assert!(
-            cmds[0].user_prompt.as_deref() == Some(""),
-            "the user's own text is the prompt"
+            cmds[0].skills.is_none(),
+            "the directive carries the path, so it lives in the prompt — \
+             the `skills` field holds names only"
         );
+        let directive = cmds[0].user_prompt.as_deref().unwrap_or_default();
+        assert!(directive.contains("pr-review"), "{directive}");
+        assert!(directive.contains("/skills/pr-review"), "{directive}");
+        assert!(directive.contains("SKILL.md"), "{directive}");
         assert!(cmds[0].shell.is_none(), "never a shell command");
         assert!(cmds[0].mode.is_none(), "must not touch the topic's mode");
     }

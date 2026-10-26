@@ -1095,11 +1095,11 @@ fn superseded_overrides(config: &TopicConfig) -> Vec<&'static str> {
             files.push("build-model-override");
         }
     }
-    // A skill toggle cancels a config-level exclusion of the same name
-    // (`prompt.rs` keeps `on` entries out of the exclude list), so a type that
-    // only excludes skills needs the parent's toggles gone just as much; the
-    // same goes for a type that replaces the inherited MCP set outright.
-    if config.skills.is_some() || config.disabled_skills.is_some() {
+    // A skill toggle cancels a config-level exclusion of the same name, so a
+    // type that replaces the inherited skill list outright needs the parent's
+    // toggles gone just as much; the same goes for a type that replaces the
+    // inherited MCP set outright.
+    if config.skills.is_some() {
         files.push(crate::session_state::SKILL_OVERRIDE_FILE);
     }
     if config.mcps.is_some() || config.mcps_replace {
@@ -1558,11 +1558,6 @@ mod tests {
                 .as_slice()
             )
         );
-        assert_eq!(
-            review.config.disabled_skills.as_deref(),
-            Some(["dev-workflow".to_string()].as_slice()),
-            "a reviewer must not delegate the review onward"
-        );
         // `bash` stays: there is no read-only shell, and a review of uncommitted
         // work needs `git diff`. The file-editing tools are the ones that go.
         assert_eq!(
@@ -1953,7 +1948,7 @@ mod tests {
         std::fs::create_dir_all(&type_dir).unwrap();
         tokio::fs::write(
             type_dir.join("config.toml"),
-            "mode = \"plan\"\nskills = [\"pr-review\"]\ndisabled_skills = [\"dev-workflow\"]\n\
+            "mode = \"plan\"\nskills = [\"pr-review\"]\n\
              disabled_tools = [\"write\", \"bash\"]\ninstructions = \"read-only review\"\n",
         )
         .await
@@ -2017,10 +2012,6 @@ mod tests {
         assert_eq!(
             cfg.skills.as_deref(),
             Some(["pr-review".to_string()].as_slice())
-        );
-        assert_eq!(
-            cfg.disabled_skills.as_deref(),
-            Some(["dev-workflow".to_string()].as_slice())
         );
         assert_eq!(cfg.disabled_tools.as_ref().map(Vec::len), Some(2));
         assert_eq!(cfg.instructions.as_deref(), Some("read-only review"));
@@ -2095,9 +2086,10 @@ mod tests {
                 &["plan-model-override", "mode-override"],
             ),
             (
-                // `disabled_skills` alone still needs the parent's toggles gone:
-                // an `on` entry cancels a config-level exclusion of that name.
-                "disabled_skills = [\"danger\"]\n",
+                // A skill allow-list of its own: the parent's `/skill`
+                // toggles go, so the child starts from exactly the list the
+                // role declares.
+                "skills = [\"pr-review\"]\n",
                 &["skill-override.json"],
                 &[
                     "mode-override",

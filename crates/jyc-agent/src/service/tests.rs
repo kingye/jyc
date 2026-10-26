@@ -1066,7 +1066,7 @@ fn no_allow_list_lists_no_skills() {
         let svc = service_with_skills(vec![], None);
 
         // The config layer resolves to an empty allow-list...
-        let include = svc.config_skill_filters(None, None);
+        let include = svc.config_skill_allow_list(None, None);
         assert!(include.is_empty(), "{include:?}");
 
         // ...so the prompt lists nothing, even though the skills exist.
@@ -1077,6 +1077,66 @@ fn no_allow_list_lists_no_skills() {
         let all = svc.discover_skills(topic, tmp.path(), None, None);
         assert_eq!(all.len(), 2);
     });
+}
+
+/// The runtime `/skill on|off` toggle is the only way to change a topic's
+/// skill list while it runs, and both directions have to reach the prompt
+/// the model actually reads: `on` widens the allow-list, `off` narrows it.
+///
+/// The allow-list names the fixture skills, so nothing installed on this
+/// machine can leak into the result.
+#[tokio::test]
+async fn skill_toggle_override_shapes_the_prompt_skill_list() {
+    let tmp = tempfile::tempdir().unwrap();
+    let topic = "skill_toggle_override_shapes_the_prompt_skill_list";
+    let state = tmp.path().join(".jyc");
+    std::fs::create_dir_all(&state).unwrap();
+    jyc_types::state_dir::register(topic, &state);
+
+    // Two skills on disk, in the topic's own state dir.
+    for name in &["alpha", "beta"] {
+        let dir = state.join("skills").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {name} skill\n---\n"),
+        )
+        .unwrap();
+    }
+
+    let override_file = state.join("skill-override.json");
+
+    // No toggle and no allow-list: the prompt lists nothing.
+    let svc = service_with_skills(vec![], None);
+    let prompt = svc
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[])
+        .await;
+    assert!(!prompt.contains("## Available Skills"), "{prompt}");
+
+    // `/skill on beta`: the toggle widens an empty allow-list.
+    std::fs::write(&override_file, r#"{"on":["beta"]}"#).unwrap();
+    let prompt = svc
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[])
+        .await;
+    assert!(prompt.contains("- **beta**"), "{prompt}");
+    assert!(!prompt.contains("- **alpha**"), "{prompt}");
+
+    // `off` wins over `on`: exclusion is applied after inclusion.
+    std::fs::write(&override_file, r#"{"on":["beta"],"off":["beta"]}"#).unwrap();
+    let prompt = svc
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[])
+        .await;
+    assert!(!prompt.contains("## Available Skills"), "{prompt}");
+
+    // `/skill off alpha`: the toggle narrows the allow-list the config
+    // declared; the rest of it stays.
+    std::fs::write(&override_file, r#"{"off":["alpha"]}"#).unwrap();
+    let svc = service_with_skills(vec![], Some(vec!["alpha".into(), "beta".into()]));
+    let prompt = svc
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[])
+        .await;
+    assert!(!prompt.contains("- **alpha**"), "{prompt}");
+    assert!(prompt.contains("- **beta**"), "{prompt}");
 }
 
 /// Register a topic whose `.jyc/config.toml` holds `body`, and return the
@@ -1104,7 +1164,7 @@ fn topic_config_skills_replace_the_pattern_list() {
     }];
     let svc = service_with_skills(patterns, Some(vec!["alpha".to_string()]));
 
-    let include = svc.config_skill_filters(Some("test-pattern"), Some(&topic_cfg));
+    let include = svc.config_skill_allow_list(Some("test-pattern"), Some(&topic_cfg));
     assert_eq!(
         include,
         vec!["pr-review".to_string()],
@@ -1122,7 +1182,7 @@ fn no_topic_config_keeps_the_pattern_chain() {
         ..ChannelPattern::default()
     }];
     let svc = service_with_skills(patterns, Some(vec!["alpha".to_string()]));
-    let include = svc.config_skill_filters(Some("test-pattern"), None);
+    let include = svc.config_skill_allow_list(Some("test-pattern"), None);
     assert_eq!(include, vec!["gamma".to_string()]);
 }
 

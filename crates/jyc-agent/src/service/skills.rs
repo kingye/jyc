@@ -81,7 +81,7 @@ impl JycAgentService {
     /// outright (a topic-level `skills` replaces the pattern/channel list
     /// rather than extending it — "only these" has to mean only these).
     /// The runtime `/skill` toggle layers on top of it per topic.
-    pub(crate) fn config_skill_filters(
+    pub(crate) fn config_skill_allow_list(
         &self,
         matched_pattern: Option<&str>,
         topic_cfg: Option<&TopicConfig>,

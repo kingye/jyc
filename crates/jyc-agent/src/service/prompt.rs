@@ -45,7 +45,7 @@ impl JycAgentService {
         // The skills this topic lists: the config allow-list (topic config >
         // pattern > channel), empty unless a layer declares one — skills are
         // opt-in, and this list is what the system prompt spends context on.
-        let mut include_list = self.config_skill_filters(matched_pattern, topic_cfg);
+        let mut include_list = self.config_skill_allow_list(matched_pattern, topic_cfg);
         // Runtime `/skill` toggle override (persisted until `/skill reset`):
         // `on` adds a skill to the list, `off` removes one. The two lists
         // are disjoint by construction, and exclusion is applied after

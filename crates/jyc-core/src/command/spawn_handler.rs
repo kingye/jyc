@@ -62,7 +62,7 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 ///
 /// What comes along is the state, not the workspace: an allow-list (backlog and
 /// settings, never a task list) marked `spawned-from`, so a child inherits
-/// neither a job list that would double-fire nor a token meter it did not run up. The
+/// neither the parent's work nor a token meter it did not run up. The
 /// conversation and the transcript are the one part that stays behind by
 /// default — a worker starting on a task of its own does not need the parent's
 /// train of thought — and `-i/--inherit` copies them too (see `seed_state`).

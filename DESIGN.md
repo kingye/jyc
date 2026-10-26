@@ -3183,8 +3183,8 @@ What the design buys, and what it deliberately does not:
   including over the survival options (`BatchMode`, `ConnectTimeout`), which
   guard against a password prompt with nowhere to appear. Overriding those is
   permitted and self-inflicted.
-- **Exiting ends the tunnel only.** The hub may be serving other dashboards,
-  channels and scheduled jobs; `jyc connect` owns the forward, not the server.
+- **Exiting ends the tunnel only.** The hub may be serving other dashboards
+  and channels; `jyc connect` owns the forward, not the server.
   (A dashboard killed with SIGKILL never runs its `Drop`, so the `ssh -N` it
   leaves behind holds the local port until it is killed by hand.)
 - **Non-interactive ssh is a requirement, not a preference.** Bootstrap and
@@ -3572,10 +3572,10 @@ pub enum TopicEvent {
     // ... existing variants ...
 
     /// A new message arrived in this topic (from any source: remote user,
-    /// scheduled job, or dashboard injection).
+    /// dashboard injection, cross-topic).
     IncomingMessage {
         topic_name: String,
-        sender: String,        // "user", "job", display name, etc.
+        sender: String,        // "user", display name, etc.
         text: String,          // Truncated message body preview
         timestamp: DateTime<Utc>,
     },
@@ -3793,7 +3793,7 @@ Dashboard (crates/jyc-cli/src/cli/dashboard/)
 | Decision | Rationale |
 |---|---|
 | `TopicEventBus` over new broadcast channel | Reuses existing infrastructure; events already scoped per-topic; ActivityTracker already subscribes |
-| `IncomingMessage` published in `TopicManager::enqueue()` | Captures ALL message sources (remote IMAP, Feishu WS, GitHub poll, dashboard, jobs) in one place |
+| `IncomingMessage` published in `TopicManager::enqueue()` | Captures ALL message sources (remote IMAP, Feishu WS, GitHub poll, dashboard) in one place |
 | `ReplySent` published after `send_reply()` succeeds | Guarantees the reply was actually delivered; same timing as existing metrics counters |
 | `recent_messages` in `TopicActivityState`, not `TopicInfo` directly | TopicInfo is rebuilt from scratch on each poll; ActivityTracker maintains rolling buffer |
 | Single WebSocket endpoint for all channels (`/ws/<channel>/<topic>`) | Decouples dashboard from channel type; `TopicProxyHandler` handles non-WS channels uniformly |

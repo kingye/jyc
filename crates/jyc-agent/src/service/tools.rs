@@ -354,10 +354,7 @@ impl JycAgentService {
         // the exclusion to it here. The group stays set: with no loader
         // nothing can flip it, so the group's tools stay out of the request
         // (and remain callable by name, like every extended tool).
-        if disabled_plain_tools
-            .iter()
-            .any(|tool_name| *tool_name == "load_extended_tools")
-        {
+        if disabled_plain_tools.contains(&"load_extended_tools") {
             tracing::debug!(
                 tool = "load_extended_tools",
                 pattern = %matched_pattern_name.unwrap_or("?"),
@@ -556,9 +553,10 @@ mod tests {
         );
         // With no loader nothing can flip the group, so its tools must stay
         // out of the request — the same hiding the load would have undone.
-        let advertised: Vec<String> = registry.definitions().into_iter().map(|d| d.name).collect();
+        let definitions = registry.definitions();
+        let advertised: Vec<&str> = definitions.iter().map(|d| d.name.as_str()).collect();
         assert!(
-            !advertised.iter().any(|n| n == "jyc_send_to_topic"),
+            !advertised.contains(&"jyc_send_to_topic"),
             "the group's tools must stay out of the request: {advertised:?}"
         );
     }

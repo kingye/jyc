@@ -2420,6 +2420,13 @@ JYC uses the following subset of the agent service API:
    therefore specifically the churn that changes **no** access: topics
    appearing and disappearing, which is the frequent case.
 
+   One mover is config-driven: the cross-topic section names
+   `load_extended_tools` only when the registry holds it, so a config
+   reload that disables the loader drops that line. The registry is the
+   only truth about which tools exist, so the prompt asks the registry
+   instead of resolving `disabled_tools` a second time — a role that
+   removed the loader must not be told to call a tool it does not have.
+
    What travels in the `<runtime-state>` block (`build_turn_reference()`) is
    the subagent roster alone, prepended to the user message and framed as an
    auto-generated snapshot that is not user text and may go stale within a
@@ -2433,9 +2440,9 @@ JYC uses the following subset of the agent service API:
 
    The per-turn `prompt_hash` in the `System prompt built` trace line
    is the tripwire for this property: on an otherwise idle topic the
-   hash must not move. A hash that changes with no `/grant` and no
-   spawn or close behind it means volatile state leaked back into the
-   system prompt and is paying for cache misses.
+   hash must not move. A hash that changes with no `/grant`, no spawn
+   or close, and no config reload behind it means volatile state leaked
+   back into the system prompt and is paying for cache misses.
 
    **Tool schemas sit in that same prefix, so their text is
    budgeted.** The `tools` array is sent on every call, which makes

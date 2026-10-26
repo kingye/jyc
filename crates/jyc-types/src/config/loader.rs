@@ -29,7 +29,7 @@ pub fn load_config(path: &Path) -> Result<AppConfig> {
 /// - `[mcps]`: MCP overrides (additive by default, opt-in full replace via
 ///   `mcps_replace`). Precedence: `.jyc/config.toml` > pattern > channel >
 ///   global. No `<mode>-model-override` higher layer exists for MCPs.
-/// - `mode`, `skills`, `disabled_skills`, `disabled_tools`, `instructions`,
+/// - `mode`, `skills`, `disabled_tools`, `instructions`,
 ///   `context_strategy`: settings the topic sets for itself, above the
 ///   pattern/channel layers and below the runtime override files. A **subagent
 ///   type**
@@ -74,15 +74,11 @@ pub struct TopicConfig {
     /// Skill allow-list for this topic: when set, only these skills exist here.
     ///
     /// Replaces (does not extend) a pattern/channel allow-list — "only these"
-    /// has to mean only these. The runtime `/skill` toggle layers on top of the
-    /// result, so `on` can re-add and `off` can remove, but neither can widen a
-    /// list this field did not already contain.
+    /// has to mean only these. When unset, no skill is listed: skills are
+    /// opt-in. The runtime `/skill` toggle layers on top of the result, so
+    /// `on` can add a skill and `off` can remove one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills: Option<Vec<String>>,
-
-    /// Skill deny-list for this topic, applied after `skills`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub disabled_skills: Option<Vec<String>>,
 
     /// Built-in tool names disabled for this topic (plain names, or
     /// `server/tool` for one MCP tool — see `docs/tools.md`).
@@ -141,7 +137,6 @@ impl TopicConfig {
             mcps_replace,
             mode: self.mode.or(base.mode),
             skills: self.skills.or(base.skills),
-            disabled_skills: self.disabled_skills.or(base.disabled_skills),
             disabled_tools: self.disabled_tools.or(base.disabled_tools),
             instructions: self.instructions.or(base.instructions),
             context_strategy: self.context_strategy.or(base.context_strategy),

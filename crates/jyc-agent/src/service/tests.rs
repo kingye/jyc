@@ -80,7 +80,6 @@ fn service_with_patterns(
         None,
         None,
         None,
-        None,
         "test".to_string(),
     )
 }
@@ -123,7 +122,6 @@ fn service_with_full_exclusion(
         None,
         None,
         None,
-        None,
         "test".to_string(),
     )
 }
@@ -132,7 +130,6 @@ fn service_with_full_exclusion(
 fn service_with_skills(
     patterns: Vec<ChannelPattern>,
     channel_skills: Option<Vec<String>>,
-    channel_disabled_skills: Option<Vec<String>>,
 ) -> JycAgentService {
     let channel = ChannelConfig {
         patterns: Some(patterns.clone()),
@@ -148,7 +145,6 @@ fn service_with_skills(
         None,
         None,
         channel_skills,
-        channel_disabled_skills,
         "test".to_string(),
     )
 }
@@ -340,7 +336,6 @@ fn reload_picks_up_new_model_context_window_without_restart() {
         None,
         None,
         None,
-        None,
         "test".to_string(),
     );
 
@@ -408,7 +403,6 @@ fn derive_agent_config_applies_channel_overrides() {
         disabled_tools: None,
         disabled_mcps: None,
         skills: None,
-        disabled_skills: None,
     };
     let mut channels = HashMap::new();
     channels.insert("test".to_string(), channel_cfg);
@@ -837,11 +831,12 @@ command = ["./topic-mcp"]
 // ── Skill filtering tests ──────────────────────────────────────────
 
 /// [`AgentService::available_skills`] — the source for a topic's
-/// `/skill:<name>` commands — runs the same discovery as the system prompt,
-/// with the *config* filters (pattern > channel > none). The runtime `/skill`
-/// toggle is not consulted: the list answers "what may a message ask for".
+/// `/skill:<name>` commands — is the *invocation* set: every discovered
+/// skill, whatever the topic's `skills` allow-list says. The allow-list
+/// decides what the system prompt lists (context cost); narrowing it must
+/// not take the command row away.
 #[test]
-fn available_skills_uses_config_filters_not_toggles() {
+fn available_skills_ignores_the_allow_list() {
     use jyc_core::agent::AgentService;
 
     with_temp_home(|| {
@@ -864,22 +859,19 @@ fn available_skills_uses_config_filters_not_toggles() {
             skills: Some(vec!["alpha".to_string()]),
             ..ChannelPattern::default()
         }];
-        let svc = service_with_skills(patterns, None, None);
-        let names = |pattern: Option<&str>| {
-            svc.available_skills(topic, tmp.path(), pattern)
-                .into_iter()
-                .map(|s| s.name)
-                .collect::<Vec<_>>()
-        };
+        let svc = service_with_skills(patterns, None);
+        let names = svc
+            .available_skills(topic, tmp.path())
+            .into_iter()
+            .map(|s| s.name)
+            .collect::<Vec<_>>();
 
-        assert_eq!(names(Some("pinned")), vec!["alpha".to_string()]);
-        // An unmatched pattern — and a topic with no pattern at all — falls
-        // back to the channel filter, which is unset here: everything found.
-        assert_eq!(names(Some("other")), vec!["alpha", "beta"]);
-        assert_eq!(names(None), vec!["alpha", "beta"]);
+        // The pattern's allow-list names only `alpha`, but both skills stay
+        // invocable — the list answers "what may a message ask for".
+        assert_eq!(names, vec!["alpha", "beta"]);
 
         let alpha = svc
-            .available_skills(topic, tmp.path(), Some("pinned"))
+            .available_skills(topic, tmp.path())
             .into_iter()
             .next()
             .unwrap();
@@ -907,7 +899,7 @@ fn discover_skills_include_filter_retains_only_matched() {
             .unwrap();
         }
 
-        let svc = service_with_skills(vec![], None, None);
+        let svc = service_with_skills(vec![], None);
         let skills = svc.discover_skills(
             topic,
             tmp.path(),
@@ -940,7 +932,7 @@ fn discover_skills_exclude_filter_removes_matched() {
             .unwrap();
         }
 
-        let svc = service_with_skills(vec![], None, None);
+        let svc = service_with_skills(vec![], None);
         let skills = svc.discover_skills(topic, tmp.path(), None, Some(&["beta".to_string()]));
 
         assert_eq!(skills.len(), 2);
@@ -968,7 +960,7 @@ fn discover_skills_include_and_exclude_combined() {
             .unwrap();
         }
 
-        let svc = service_with_skills(vec![], None, None);
+        let svc = service_with_skills(vec![], None);
         // Include alpha, beta, gamma; then exclude beta
         let skills = svc.discover_skills(
             topic,
@@ -1003,7 +995,7 @@ fn channel_skills_applied_when_no_pattern_match() {
             .unwrap();
         }
 
-        let svc = service_with_skills(vec![], Some(vec!["alpha".to_string()]), None);
+        let svc = service_with_skills(vec![], Some(vec!["alpha".to_string()]));
         let skills = svc.discover_skills(topic, tmp.path(), svc.channel_skills.as_deref(), None);
 
         assert_eq!(skills.len(), 1);
@@ -1035,7 +1027,7 @@ fn pattern_skills_override_channel_skills() {
             ..ChannelPattern::default()
         }];
 
-        let svc = service_with_skills(patterns, Some(vec!["alpha".to_string()]), None);
+        let svc = service_with_skills(patterns, Some(vec!["alpha".to_string()]));
 
         // Simulate pattern lookup as done in build_system_prompt
         let pattern = svc.patterns.iter().find(|p| p.name == "test-pattern");
@@ -1050,67 +1042,14 @@ fn pattern_skills_override_channel_skills() {
     });
 }
 
+/// Skills are opt-in: with no layer declaring `skills`, the topic lists
+/// none of them — the default is an empty allow-list, not "everything
+/// found". The skills stay invocable all the same.
 #[test]
-fn channel_and_pattern_disabled_skills_merged() {
+fn no_allow_list_lists_no_skills() {
     with_temp_home(|| {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "channel_and_pattern_disabled_skills_merged";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let skills_dir = tmp.path().join(".jyc").join("skills");
-
-        for name in &["alpha", "beta", "gamma"] {
-            let dir = skills_dir.join(name);
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(
-                dir.join("SKILL.md"),
-                format!("---\nname: {name}\ndescription: {name} skill\n---\n"),
-            )
-            .unwrap();
-        }
-
-        let patterns = vec![ChannelPattern {
-            name: "test-pattern".to_string(),
-            disabled_skills: Some(vec!["beta".to_string()]),
-            ..ChannelPattern::default()
-        }];
-
-        let svc = service_with_skills(patterns, None, Some(vec!["alpha".to_string()]));
-
-        // Merge excludes as done in build_system_prompt
-        let mut exclude_list: Vec<String> = Vec::new();
-        if let Some(ref channel_excluded) = svc.channel_disabled_skills {
-            exclude_list.extend(channel_excluded.iter().cloned());
-        }
-        if let Some(pattern_excluded) = svc
-            .patterns
-            .iter()
-            .find(|p| p.name == "test-pattern")
-            .and_then(|p| p.disabled_skills.as_ref())
-        {
-            for name in pattern_excluded {
-                if !exclude_list.contains(name) {
-                    exclude_list.push(name.clone());
-                }
-            }
-        }
-        let exclude_slice: Option<&[String]> = if exclude_list.is_empty() {
-            None
-        } else {
-            Some(&exclude_list)
-        };
-
-        let skills = svc.discover_skills(topic, tmp.path(), None, exclude_slice);
-
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].name, "gamma");
-    });
-}
-
-#[test]
-fn no_filters_loads_all_skills() {
-    with_temp_home(|| {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "no_filters_loads_all_skills";
+        let topic = "no_allow_list_lists_no_skills";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let skills_dir = tmp.path().join(".jyc").join("skills");
 
@@ -1124,10 +1063,19 @@ fn no_filters_loads_all_skills() {
             .unwrap();
         }
 
-        let svc = service_with_skills(vec![], None, None);
-        let skills = svc.discover_skills(topic, tmp.path(), None, None);
+        let svc = service_with_skills(vec![], None);
 
-        assert_eq!(skills.len(), 2);
+        // The config layer resolves to an empty allow-list...
+        let include = svc.config_skill_filters(None, None);
+        assert!(include.is_empty(), "{include:?}");
+
+        // ...so the prompt lists nothing, even though the skills exist.
+        let listed = svc.discover_skills(topic, tmp.path(), Some(&include), None);
+        assert!(listed.is_empty(), "{listed:?}");
+
+        // Discovery without a filter still finds them: they stay invocable.
+        let all = svc.discover_skills(topic, tmp.path(), None, None);
+        assert_eq!(all.len(), 2);
     });
 }
 
@@ -1142,42 +1090,26 @@ fn topic_with_config(topic: &str, tmp: &tempfile::TempDir, body: &str) -> jyc_ty
 }
 
 /// A topic config's skill allow-list is the narrowest statement of intent there
-/// is, so it *replaces* the pattern/channel list instead of extending it — while
-/// every deny-list in the chain still applies (disabling is subtractive).
+/// is, so it *replaces* the pattern/channel list instead of extending it.
 #[test]
 fn topic_config_skills_replace_the_pattern_list() {
     let tmp = tempfile::tempdir().unwrap();
     let topic = "topic_config_skills_replace_the_pattern_list";
-    let topic_cfg = topic_with_config(
-        topic,
-        &tmp,
-        "skills = [\"pr-review\"]\ndisabled_skills = [\"dev-workflow\"]\n",
-    );
+    let topic_cfg = topic_with_config(topic, &tmp, "skills = [\"pr-review\"]\n");
 
     let patterns = vec![ChannelPattern {
         name: "test-pattern".to_string(),
         skills: Some(vec!["gamma".to_string()]),
-        disabled_skills: Some(vec!["beta".to_string()]),
         ..ChannelPattern::default()
     }];
-    let svc = service_with_skills(
-        patterns,
-        Some(vec!["alpha".to_string()]),
-        Some(vec!["delta".to_string()]),
-    );
+    let svc = service_with_skills(patterns, Some(vec!["alpha".to_string()]));
 
-    let (include, exclude) = svc.config_skill_filters(Some("test-pattern"), Some(&topic_cfg));
+    let include = svc.config_skill_filters(Some("test-pattern"), Some(&topic_cfg));
     assert_eq!(
-        include.as_deref(),
-        Some(["pr-review".to_string()].as_slice()),
+        include,
+        vec!["pr-review".to_string()],
         "the topic's allow-list wins over the pattern's and the channel's"
     );
-    for name in ["delta", "beta", "dev-workflow"] {
-        assert!(
-            exclude.contains(&name.to_string()),
-            "'{name}' must stay excluded: {exclude:?}"
-        );
-    }
 }
 
 /// Without a topic config nothing changes: the pattern/channel chain is what it
@@ -1189,10 +1121,9 @@ fn no_topic_config_keeps_the_pattern_chain() {
         skills: Some(vec!["gamma".to_string()]),
         ..ChannelPattern::default()
     }];
-    let svc = service_with_skills(patterns, Some(vec!["alpha".to_string()]), None);
-    let (include, exclude) = svc.config_skill_filters(Some("test-pattern"), None);
-    assert_eq!(include.as_deref(), Some(["gamma".to_string()].as_slice()));
-    assert!(exclude.is_empty(), "{exclude:?}");
+    let svc = service_with_skills(patterns, Some(vec!["alpha".to_string()]));
+    let include = svc.config_skill_filters(Some("test-pattern"), None);
+    assert_eq!(include, vec!["gamma".to_string()]);
 }
 
 /// `disabled_tools` in a topic config reaches the tool registry, like the
@@ -1230,7 +1161,7 @@ async fn topic_config_instructions_reach_the_system_prompt() {
         "instructions = \"report findings only, change nothing\"\n",
     );
 
-    let svc = service_with_skills(vec![], None, None);
+    let svc = service_with_skills(vec![], None);
     let prompt = svc
         .build_system_prompt(topic, tmp.path(), None, Some(&topic_cfg), &[], &[])
         .await;
@@ -1283,7 +1214,7 @@ async fn cli_helper_section_lists_exactly_what_is_installed() {
     std::fs::create_dir_all(&state).unwrap();
     jyc_types::state_dir::register(topic, &state);
 
-    let svc = service_with_skills(vec![], None, None);
+    let svc = service_with_skills(vec![], None);
     let prompt = svc
         .build_system_prompt(topic, tmp.path(), None, None, &[], &[])
         .await;
@@ -1331,7 +1262,7 @@ async fn volatile_runtime_state_rides_the_turn_not_the_system_prompt() {
     jyc_types::state_dir::register(child, &child_state);
     jyc_types::access_grants::grant_subagent(topic, child, child_dir);
 
-    let svc = service_with_skills(vec![], None, None);
+    let svc = service_with_skills(vec![], None);
     svc.set_topic_managers(Arc::new(TopicManagers::new()));
 
     let prompt = svc
@@ -1369,7 +1300,7 @@ async fn volatile_runtime_state_rides_the_turn_not_the_system_prompt() {
 /// report, so the caller prepends nothing at all.
 #[tokio::test]
 async fn turn_reference_is_empty_when_nothing_volatile_exists() {
-    let svc = service_with_skills(vec![], None, None);
+    let svc = service_with_skills(vec![], None);
     let reference = svc
         .build_turn_reference("turn_reference_is_empty_when_nothing_volatile_exists")
         .await;
@@ -1380,7 +1311,7 @@ async fn turn_reference_is_empty_when_nothing_volatile_exists() {
 /// model reads it as standing context; an empty reference changes nothing.
 #[test]
 fn user_prompt_leads_with_the_turn_reference() {
-    let svc = service_with_skills(vec![], None, None);
+    let svc = service_with_skills(vec![], None);
     let message = InboundMessage {
         id: "test-id".into(),
         channel: "test".into(),
@@ -1421,7 +1352,7 @@ fn user_prompt_leads_with_the_turn_reference() {
 
 #[test]
 fn build_user_prompt_injects_build_mode_tag() {
-    let svc = service_with_skills(vec![], None, None);
+    let svc = service_with_skills(vec![], None);
     let message = InboundMessage {
         id: "test-id".into(),
         channel: "test".into(),
@@ -1474,7 +1405,7 @@ fn build_user_prompt_injects_build_mode_tag() {
 
 #[test]
 fn build_user_prompt_shows_source_with_require_reply() {
-    let svc = service_with_skills(vec![], None, None);
+    let svc = service_with_skills(vec![], None);
     let mut metadata = std::collections::HashMap::new();
     metadata.insert(
         "source_channel".to_string(),
@@ -1519,7 +1450,7 @@ fn build_user_prompt_shows_source_with_require_reply() {
 
 #[test]
 fn build_user_prompt_shows_source_without_require_reply() {
-    let svc = service_with_skills(vec![], None, None);
+    let svc = service_with_skills(vec![], None);
     let mut metadata = std::collections::HashMap::new();
     metadata.insert(
         "source_channel".to_string(),
@@ -1564,7 +1495,7 @@ fn build_user_prompt_shows_source_without_require_reply() {
 
 #[test]
 fn build_user_prompt_no_source_without_metadata() {
-    let svc = service_with_skills(vec![], None, None);
+    let svc = service_with_skills(vec![], None);
     let message = InboundMessage {
         id: "test-id".into(),
         channel: "test".into(),

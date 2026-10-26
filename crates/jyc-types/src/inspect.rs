@@ -378,9 +378,10 @@ pub struct TopicInfo {
     /// Skills loaded for this topic
     #[serde(default)]
     pub skills: Vec<String>,
-    /// Skills this topic *could* use — config filters applied, the runtime
-    /// `/skill` toggle ignored. Drives the `/skill:<name>` rows in the
-    /// dashboard/TUI command popup. See
+    /// Skills this topic can *invoke* — every discovered skill, whatever the
+    /// topic's `skills` allow-list says (the allow-list decides what the
+    /// system prompt lists, not what a message may ask for). Drives the
+    /// `/skill:<name>` rows in the dashboard/TUI command popup. See
     /// [`jyc_core::agent::AgentService::available_skills`].
     #[serde(default)]
     pub available_skills: Vec<crate::SkillMeta>,

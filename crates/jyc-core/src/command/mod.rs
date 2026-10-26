@@ -109,10 +109,15 @@ pub fn skill_commands(skills: &[jyc_types::SkillMeta]) -> Vec<CustomCommand> {
             name: format!("skill:{}", s.name),
             description: s.description.clone(),
             mode: None,
-            skills: Some(vec![s.name.clone()]),
-            // Empty: the user's own text is the prompt. `CustomCommandHandler`
-            // puts same-line args first, then the skills directive.
-            user_prompt: Some(String::new()),
+            // The skill's name, path and description plus the instruction to
+            // read its SKILL.md — the same wording the system prompt uses,
+            // so a skill the prompt does not list is still reachable (the
+            // path is what makes it reachable). `CustomCommandHandler` puts
+            // same-line args first, then this block.
+            user_prompt: Some(jyc_types::skill::format_skills_section(
+                std::slice::from_ref(s),
+            )),
+            skills: None,
             shell: None,
             timeout: None,
         })

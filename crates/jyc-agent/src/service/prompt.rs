@@ -12,7 +12,8 @@ use jyc_types::InboundMessage;
 use jyc_types::TopicConfig;
 
 use super::JycAgentService;
-use super::skills::{format_skills_section, persist_skill_names};
+use super::skills::persist_skill_names;
+use jyc_types::skill::format_skills_section;
 
 impl JycAgentService {
     pub(crate) async fn build_system_prompt(
@@ -41,52 +42,33 @@ impl JycAgentService {
         // prefix this prompt exists to keep stable (see `build_turn_reference`,
         // which ships them with the turn's user message instead).
         //
-        // Resolve skill filters: topic config > pattern > channel > none (shared
-        // with `available_skills` so the `/` popup lists exactly what config
-        // allows).
-        let (include_base, mut exclude_list) =
-            self.config_skill_filters(matched_pattern, topic_cfg);
-        let include_list: Option<&[String]> = include_base.as_deref();
-        // Runtime `/skill` toggle override (persisted until `/skill reset`).
-        // `on` joins the whitelist and cancels config-level exclusions;
-        // `off` joins the exclusion list (applied after inclusion, so it
-        // wins over whitelists).
+        // The skills this topic lists: the config allow-list (topic config >
+        // pattern > channel), empty unless a layer declares one — skills are
+        // opt-in, and this list is what the system prompt spends context on.
+        let mut include_list = self.config_skill_filters(matched_pattern, topic_cfg);
+        // Runtime `/skill` toggle override (persisted until `/skill reset`):
+        // `on` adds a skill to the list, `off` removes one. The two lists
+        // are disjoint by construction, and exclusion is applied after
+        // inclusion, so `off` wins.
         let skill_ovr = jyc_core::session_state::read_skill_override(topic_name, topic_path).await;
-        let include_owned: Option<Vec<String>> = match (&skill_ovr, include_list) {
-            // Only materialize a whitelist when one already exists; with no
-            // whitelist every discoverable skill is already included, so
-            // `on` entries are a no-op (must not shrink "all" to "[x]").
-            (Some(ovr), Some(base)) if !ovr.on.is_empty() => {
-                let mut list = base.to_vec();
-                for name in &ovr.on {
-                    if !list.contains(name) {
-                        list.push(name.clone());
-                    }
-                }
-                Some(list)
-            }
-            _ => None,
-        };
+        let mut exclude_list: Vec<String> = Vec::new();
         if let Some(ovr) = &skill_ovr {
             for name in &ovr.on {
-                exclude_list.retain(|e| e != name);
-            }
-            for name in &ovr.off {
-                if !exclude_list.contains(name) {
-                    exclude_list.push(name.clone());
+                if !include_list.contains(name) {
+                    include_list.push(name.clone());
                 }
             }
+            exclude_list = ovr.off.clone();
         }
-        let include_final = include_owned.as_deref().or(include_list);
-        let exclude_final: Option<&[String]> = if exclude_list.is_empty() {
-            None
-        } else {
-            Some(&exclude_list)
-        };
 
         // Discover and inject skill metadata (before AGENTS.md so instructions
         // to read SKILL.md files are seen first)
-        let skills = self.discover_skills(topic_name, topic_path, include_final, exclude_final);
+        let skills = self.discover_skills(
+            topic_name,
+            topic_path,
+            Some(&include_list),
+            (!exclude_list.is_empty()).then_some(exclude_list.as_slice()),
+        );
         if !skills.is_empty() {
             prompt.push_str(&format_skills_section(&skills));
         }

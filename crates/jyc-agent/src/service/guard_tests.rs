@@ -162,7 +162,6 @@ fn service_with_managers(managers: Arc<TopicManagers>, data_dir: &Path) -> JycAg
         None,
         None,
         None,
-        None,
         "agents".to_string(),
     );
     service.set_topic_managers(managers);

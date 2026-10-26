@@ -691,12 +691,10 @@ impl TopicManager {
             // Read skills from .jyc/skills.json
             let skills = read_skills(name, &topic_path).await;
 
-            // What the topic *could* use, live-resolved through the agent's
-            // discovery (config filters, toggle ignored) — this is what turns
-            // into `/skill:<name>` rows in the command popup.
-            let available_skills =
-                self.agent
-                    .available_skills(name, &topic_path, pattern.as_deref());
+            // What the topic *could* invoke, live-resolved through the
+            // agent's discovery (every discovered skill) — this is what
+            // turns into `/skill:<name>` rows in the command popup.
+            let available_skills = self.agent.available_skills(name, &topic_path);
 
             // The topic's live status — the one source of truth for
             // `TopicStatus` (see `live_status.rs`). The runtime writes it

@@ -6,7 +6,7 @@
 #   L1 (global):  <config dir>/config.toml   (Linux/macOS: ~/.config/jyc/config.toml)
 #   L2 (data dir): <data dir>/config.toml      (--data-dir, or platform data dir)
 #   L3 (topic):  <topic>/.jyc/config.toml  (topic overrides: [ai], [[mcps]], mode,
-#                                            skills, disabled_skills, disabled_tools,
+#                                            skills, disabled_tools,
 #                                            instructions, [context_strategy])
 # L2 is deep-merged over L1 (tables merge; arrays/scalars are replaced).
 
@@ -595,9 +595,9 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #
 # Invoking the command:
 #   1. switches the topic to `mode` (when set; `plan` or `build`),
-#   2. tells the agent which `skills` to use (the agent already receives
-#      every discovered skill's path and description, so naming them is
-#      enough for it to read the right SKILL.md),
+#   2. tells the agent which `skills` to use (the system prompt lists the
+#      skills the topic's allow-list enables, so a name outside that list
+#      is named here for the agent to read from its SKILL.md),
 #   3. appends `user_prompt` to the message body.
 #
 # Anything you type after the command is kept, with `user_prompt` appended
@@ -1113,7 +1113,8 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # workspace root); the "" marker applies recursively, so "" inside a
 # nested table (e.g. context_strategy = { mode = "" }) clears that field
 # too. Lists have no "unset" marker — skills = [] replaces the list with
-# an empty whitelist (load no skills). The base agent stays usable itself.
+# an empty whitelist (load no skills), which is also what an agent with no
+# `skills` gets: skills are opt-in. The base agent stays usable itself.
 #
 # [agents.base_planner]
 # role = "Planner"
@@ -1206,7 +1207,6 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #
 #   mode            = "plan"            # starting mode (a config layer, not /mode)
 #   skills          = ["pr-review"]     # allow-list: replaces the pattern's
-#   disabled_skills = ["dev-workflow"] # deny-list: unioned with every layer
 #   disabled_tools  = ["write", "bash"] # unioned with channel/pattern
 #   instructions    = "..."             # extra system-prompt section
 #
@@ -1308,7 +1308,6 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # [subagents.review]
 # mode = "plan"
 # skills = ["pr-review", "ponytail-review", "coding-principles", "ponytail"]
-# disabled_skills = ["dev-workflow"]
 # disabled_tools = ["write", "edit", "jyc_spawn_subagent"]
 # instructions = """
 # You are the reviewer for this delegation: read, verify, report. Change no file.
@@ -1324,7 +1323,6 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #   share_topic_path = true   # review the tree as it is, not a copy of it
 #   mode = "plan"
 #   skills = ["pr-review", "ponytail-review", "coding-principles", "ponytail"]
-#   disabled_skills = ["dev-workflow"]
 #   disabled_tools = ["write", "edit", "jyc_spawn_subagent"]
 #   instructions = "…"   # report-only standing orders, see the file itself
 

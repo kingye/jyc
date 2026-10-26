@@ -114,7 +114,6 @@ pub fn build_agent_service(
                 vision_client,
                 Some(outbound),
                 channel_config.skills.clone(),
-                channel_config.disabled_skills.clone(),
                 channel_name.to_string(),
             ));
 

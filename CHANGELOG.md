@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+### Fixed
+
+- The dashboard reports a broken connection instead of looking healthy: the topic info pane says `Failed to load topic details — will retry` when the detail request failed (it used to read `Loading topic details...` forever, because a failed fetch and a pending one left the same empty detail), and the chat status block shows `Not connected: …` for a failed poll and `WebSocket disconnected — reconnecting...` for a lost socket (#998)
+- The dashboard's WebSocket client now pings the server and treats a silent socket as dead, so a half-open tunnel — a VPN switching the network under a `jyc connect` session — is detected and reconnected instead of leaving the chat pane quietly frozen (#998)
+
 ### Removed
 
 - The legacy `api_key_env = "ENV_VAR"` provider field is removed; use `api_key = "${ENV_VAR}"`. Provider blocks now reject unknown fields at config load, so an unmigrated key fails loudly instead of silently omitting the auth header. Keys are now resolved once at config load, so a rotated key requires a restart or config reload (#999)

@@ -1458,7 +1458,11 @@ mod tool_registry {
     /// The tools the builtin registry must have. The count is derived from
     /// this list, so adding a tool means adding a name — not also
     /// remembering to bump a number somewhere else.
-    const EXPECTED_BUILTIN_TOOLS: [&str; 14] = [
+    ///
+    /// `list_topics` is in the builtin registry but belongs to the extended
+    /// group: it is registered here and kept out of the advertised list
+    /// until the model loads the group.
+    const EXPECTED_BUILTIN_TOOLS: [&str; 15] = [
         "bash",
         "read",
         "write",
@@ -1473,6 +1477,7 @@ mod tool_registry {
         "task_update",
         "lesson_add",
         "lesson_read",
+        "list_topics",
     ];
 
     #[test]

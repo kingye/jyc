@@ -490,10 +490,10 @@ impl TopicManager {
     /// The scan half of [`Self::list_topics`]: it reads the workspace
     /// directory and the pinned `topic_path` overrides and nothing else — no
     /// session file, no billing ledger, no skills, no `git` probe. Callers
-    /// that only need the names must use this: the system prompt lists them on
-    /// every turn for every channel, and going through `list_topics` there
-    /// costs a `.git/HEAD` read plus up to four `git` invocations per topic per
-    /// channel per turn for a list of names.
+    /// that only need the names must use this: the `list_topics` tool is
+    /// where a model fetches the roster, and going through `list_topics`
+    /// there costs a `.git/HEAD` read plus up to four `git` invocations per
+    /// topic per channel per call for a list of names.
     pub async fn list_topic_names(&self) -> Vec<String> {
         let mut topic_names: Vec<String> = Vec::new();
 

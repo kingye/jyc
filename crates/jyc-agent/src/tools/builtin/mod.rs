@@ -4,8 +4,10 @@ pub mod ask_user;
 pub mod bash;
 pub mod context_browse;
 pub mod edit;
+pub mod extended;
 pub mod grep;
 pub mod lesson;
+pub mod list_topics;
 pub mod publish_file;
 pub mod read;
 pub mod read_image;
@@ -38,6 +40,7 @@ pub fn create_builtin_registry() -> ToolRegistry {
     registry.register(Box::new(task_tools::TaskUpdateTool));
     registry.register(Box::new(lesson::LessonAddTool));
     registry.register(Box::new(lesson::LessonReadTool));
+    registry.register(Box::new(list_topics::ListTopicsTool));
 
     registry
 }

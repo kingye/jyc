@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::capabilities;
 use crate::tools::builtin::lesson;
+use crate::tools::registry::ToolRegistry;
 
 use jyc_types::InboundMessage;
 use jyc_types::TopicConfig;
@@ -24,6 +25,7 @@ impl JycAgentService {
         topic_cfg: Option<&TopicConfig>,
         additional_read_roots: &[PathBuf],
         additional_write_roots: &[PathBuf],
+        registry: Option<&ToolRegistry>,
     ) -> String {
         let mut prompt = String::new();
 
@@ -39,8 +41,10 @@ impl JycAgentService {
         // NOTE: the subagent list and the channel/topic enumeration are NOT
         // here — both change whenever a topic or a child is created or closed,
         // and every byte of churn in the system prompt invalidates the cached
-        // prefix this prompt exists to keep stable (see `build_turn_reference`,
-        // which ships them with the turn's user message instead).
+        // prefix this prompt exists to keep stable. The subagent roster
+        // rides the turn's user message (see `build_turn_reference`); the
+        // channel/topic roster is not in the prompt at all — the
+        // `list_topics` tool fetches it on demand.
         //
         // The skills this topic lists: the config allow-list (topic config >
         // pattern > channel), empty unless a layer declares one — skills are
@@ -191,11 +195,22 @@ impl JycAgentService {
             prompt.push_str(
                 "\n## Cross-Topic Communication\n\n\
                  You can send messages to another agent — its own topic by default, or one of its \
-                 topics with `topic` — using the `jyc_send_to_topic` tool.\n\
-                 The addressing tools are extended: call `load_extended_tools` to bring them \
-                 into your tool list before you use them — its description is the index of \
-                 what it loads.\n\
-                 Set `require_reply=true` when you need the target agent to send results back to you.\n\n\
+                 topics with `topic` — using the `jyc_send_to_topic` tool.\n",
+            );
+            // The addressing tools are extended: the group is loaded on demand
+            // instead of being advertised. Say so only when the loader is
+            // actually registered — a role that disabled it must not be told
+            // to call a tool that does not exist. The registry is the only
+            // truth about that, so the `disabled_tools` layers are not
+            // parsed a second time here.
+            if registry.is_some_and(|r| r.has_tool("load_extended_tools")) {
+                prompt.push_str(
+                    "The addressing tools are extended: they stay out of your tool list until the \
+                     group is loaded — `load_extended_tools` is the index of what it holds.\n",
+                );
+            }
+            prompt.push_str(
+                "Set `require_reply=true` when you need the target agent to send results back to you.\n\n\
                  When you receive a message with a **Source:** header, it came from another topic. \
                  Process the content normally — your final message displays the results in the \
                  current topic. If it includes \"⚠️ Reply requested\", you MUST ALSO use \
@@ -247,19 +262,22 @@ impl JycAgentService {
 
     /// Build the per-turn runtime reference: the parts of what the model needs
     /// to know that change as the instance runs — the subagents this topic
-    /// spawned, and the channels and topics it can address.
+    /// spawned.
     ///
-    /// Both used to live in the system prompt. That made the system prompt
-    /// change whenever any topic appeared or disappeared, which is frequent
-    /// (spawning a reviewer, closing a watcher) and which costs twice over:
-    /// the changed bytes are re-sent on every later call of the turn, and for
-    /// providers with automatic prefix caching the whole prompt's cache entry
-    /// is invalidated, not just the tail.
+    /// The roster used to live in the system prompt. That made the system
+    /// prompt change whenever any topic appeared or disappeared, which is
+    /// frequent (spawning a reviewer, closing a watcher) and which costs
+    /// twice over: the changed bytes are re-sent on every later call of the
+    /// turn, and for providers with automatic prefix caching the whole
+    /// prompt's cache entry is invalidated, not just the tail.
     ///
-    /// They ride the current turn's user message instead: that message is new
+    /// It rides the current turn's user message instead: that message is new
     /// on every turn anyway, so churn here lands past the cached prefix
     /// regardless of how often it changes, while the system prompt stays
     /// byte-stable and its cache entry survives from turn to turn.
+    ///
+    /// The channel/topic roster is not here either: the `list_topics` tool
+    /// fetches it on demand.
     ///
     /// Returns an empty string when there is nothing volatile to report, so the
     /// caller can prepend unconditionally.

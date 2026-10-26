@@ -1118,14 +1118,14 @@ async fn skill_toggle_override_shapes_the_prompt_skill_list() {
     // No toggle and no allow-list: the prompt lists nothing.
     let svc = service_with_skills(vec![], None);
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, &[], &[])
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], None)
         .await;
     assert!(!prompt.contains("## Available Skills"), "{prompt}");
 
     // `/skill on beta`: the toggle widens an empty allow-list.
     std::fs::write(&override_file, r#"{"on":["beta"]}"#).unwrap();
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, &[], &[])
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], None)
         .await;
     assert!(prompt.contains("- **beta**"), "{prompt}");
     assert!(!prompt.contains("- **alpha**"), "{prompt}");
@@ -1133,7 +1133,7 @@ async fn skill_toggle_override_shapes_the_prompt_skill_list() {
     // `off` wins over `on`: exclusion is applied after inclusion.
     std::fs::write(&override_file, r#"{"on":["beta"],"off":["beta"]}"#).unwrap();
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, &[], &[])
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], None)
         .await;
     assert!(!prompt.contains("## Available Skills"), "{prompt}");
 
@@ -1142,7 +1142,7 @@ async fn skill_toggle_override_shapes_the_prompt_skill_list() {
     std::fs::write(&override_file, r#"{"off":["alpha"]}"#).unwrap();
     let svc = service_with_skills(vec![], Some(vec!["alpha".into(), "beta".into()]));
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, &[], &[])
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], None)
         .await;
     assert!(!prompt.contains("- **alpha**"), "{prompt}");
     assert!(prompt.contains("- **beta**"), "{prompt}");
@@ -1236,7 +1236,7 @@ async fn topic_config_instructions_reach_the_system_prompt() {
 
     let svc = service_with_skills(vec![], None);
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, Some(&topic_cfg), &[], &[])
+        .build_system_prompt(topic, tmp.path(), None, Some(&topic_cfg), &[], &[], None)
         .await;
     assert!(prompt.contains("## Topic Instructions"), "{prompt}");
     assert!(prompt.contains("report findings only, change nothing"));
@@ -1289,7 +1289,7 @@ async fn cli_helper_section_lists_exactly_what_is_installed() {
 
     let svc = service_with_skills(vec![], None);
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, &[], &[])
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], None)
         .await;
 
     let installed = crate::capabilities::available();
@@ -1342,7 +1342,7 @@ async fn volatile_runtime_state_rides_the_turn_not_the_system_prompt() {
     svc.set_topic_managers(Arc::new(TopicManagers::new()));
 
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, &[], &[])
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], None)
         .await;
     assert!(
         !prompt.contains("Your subagents"),
@@ -1371,6 +1371,46 @@ async fn volatile_runtime_state_rides_the_turn_not_the_system_prompt() {
 
     // The grant registry is process-wide; leave it as we found it.
     jyc_types::access_grants::ungrant_subagent(topic, child);
+}
+
+/// The prompt must not tell the model to call the loader when the registry
+/// does not have it: a role that disabled `load_extended_tools` would
+/// otherwise get an instruction it cannot follow. The registry is the only
+/// truth about that — the prompt does not parse `disabled_tools` a second
+/// time.
+#[tokio::test]
+async fn the_prompt_mentions_the_loader_only_when_the_registry_has_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let topic = "the_prompt_mentions_the_loader_only_when_the_registry_has_it";
+    jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+
+    let svc = service_with_skills(vec![], None);
+    // The cross-topic section only appears when the topic can address others.
+    svc.set_topic_managers(Arc::new(TopicManagers::new()));
+
+    // A registry with the extended group in it: the loader is there.
+    let mut registry = crate::tools::builtin::create_builtin_registry();
+    crate::tools::builtin::extended::register_extended_tools(&mut registry);
+    assert!(registry.has_tool("load_extended_tools"));
+
+    let prompt = svc
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], Some(&registry))
+        .await;
+    assert!(
+        prompt.contains("`load_extended_tools`"),
+        "the prompt must point at the loader:\n{prompt}"
+    );
+
+    // The same registry without the loader — what a role that disabled it
+    // gets. The prompt must not name a tool that is not there.
+    registry.remove("load_extended_tools");
+    let prompt = svc
+        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], Some(&registry))
+        .await;
+    assert!(
+        !prompt.contains("load_extended_tools"),
+        "the prompt must not call a tool the registry does not have:\n{prompt}"
+    );
 }
 
 /// With no subagents there is nothing volatile to report, so the caller
@@ -1913,6 +1953,7 @@ async fn system_prompt_enumerates_configured_access_roots() {
             None,
             &reads,
             &writes,
+            None,
         )
         .await;
     assert!(

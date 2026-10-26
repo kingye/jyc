@@ -2,7 +2,7 @@
 
 ### Added
 
-- The extended tools: seven tools most topics use rarely — `jyc_spawn_subagent`, `jyc_send_to_topic`, `jyc_send_message`, `list_topics`, `jyc_publish_file`, `read_image`, `webfetch` — are registered but kept out of the request's `tools` array until the model calls the new `load_extended_tools`, whose description is the index of the group. The advertised schema text goes from 6,925 to about 3,800 characters (−45%); the group is loaded once per topic and sticks for the rest of that topic's registry lifetime. Only *advertisement* is gated — the tools stay executable, so a model that names one before loading it gets a working call, and `disabled_tools` remains the boundary that removes a tool for good, the loader included (#1004)
+- The extended tools: seven tools most topics use rarely — `jyc_spawn_subagent`, `jyc_send_to_topic`, `jyc_send_message`, `list_topics`, `jyc_publish_file`, `read_image`, `webfetch` — are registered but kept out of the request's `tools` array until the model calls the new `load_extended_tools`, whose description is the index of the group. The advertised schema text goes from 6,925 to about 3,800 characters (−45%); the group is loaded once per registry lifetime — a config reload rebuilds the registry and the group hides again until it is loaded once more. Only *advertisement* is gated — the tools stay executable, so a model that names one before loading it gets a working call, and `disabled_tools` remains the boundary that removes a tool for good, the loader included (#1004)
 - `list_topics` lists the channels and their active topics — the addressing table for `jyc_send_to_topic` and `jyc_send_message` — on demand, in the shape the per-turn runtime-state block used to carry (#1004)
 
 ### Changed

@@ -17,6 +17,11 @@ use super::skills::persist_skill_names;
 use jyc_types::skill::format_skills_section;
 
 impl JycAgentService {
+    // The inputs are the per-turn facts — who the topic is, what the
+    // boundaries are, and which tools this turn has. They are one list
+    // because they are read together, and the repo's other long builders
+    // keep theirs in one list too.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn build_system_prompt(
         &self,
         topic_name: &str,

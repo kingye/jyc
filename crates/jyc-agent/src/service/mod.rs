@@ -467,7 +467,6 @@ impl AgentService for JycAgentService {
         //     roster is not in the prompt at all: the `list_topics` tool
         //     fetches it on demand.
         let turn_reference = self.build_turn_reference(topic_name).await;
-        let t_prompt = std::time::Instant::now();
         let current_mode = resolve_turn_mode(
             jyc_core::session_state::read_mode_override(topic_name, topic_path).await,
             topic_cfg.as_ref().and_then(|c| c.mode.clone()),
@@ -501,14 +500,18 @@ impl AgentService for JycAgentService {
             current_mode.as_deref(),
             &turn_reference,
         );
+        // Sampled after the user blocks: they read the images and encode
+        // them, so they belong to the prompt's cost — and to the setup's.
+        let t_prompt = std::time::Instant::now();
 
         tracing::info!(
             topic = %topic_name,
             // Spans: cfg_model_ms = topic config + mode override + model
             // resolution, provider_ms / small_ms = the two create_provider
             // calls, tools_ms = tool registry (MCP spawn + handshake on a
-            // cache miss), prompt_ms = build_user_blocks + system prompt,
-            // setup_ms = the whole turn setup so far.
+            // cache miss), prompt_ms = system prompt + turn reference + mode
+            // re-read + user blocks (the image reads and their encoding
+            // included), setup_ms = the whole turn setup so far.
             cfg_model_ms = t_before_provider.duration_since(t_turn).as_millis() as u64,
             provider_ms = t_provider.duration_since(t_before_provider).as_millis() as u64,
             small_ms = t_small.duration_since(t_provider).as_millis() as u64,

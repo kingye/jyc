@@ -131,7 +131,7 @@ const TOTAL_BUDGET: usize = 7_800;
 /// The advertised set — the core tools plus the loader's index — in
 /// characters. This is the standing per-call cost after the extended group
 /// was moved out of the request: the seven extended tools (their schemas
-/// were 3,558 chars together) are advertised only after the model loads
+/// were 3,867 chars together) are advertised only after the model loads
 /// them, and the loader's own index is what it reads instead.
 ///
 /// A topic that never delegates, never publishes and never fetches a URL

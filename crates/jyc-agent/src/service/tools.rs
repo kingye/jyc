@@ -348,6 +348,24 @@ impl JycAgentService {
         // advertised as something the call would fail on.
         crate::tools::builtin::extended::register_extended_tools(&mut registry);
 
+        // The loader is a tool like any other, and the exclusion pass above
+        // ran before it existed — so `disabled_tools = ["load_extended_tools"]`
+        // would find nothing to remove and leave the loader in place. Apply
+        // the exclusion to it here. The group stays set: with no loader
+        // nothing can flip it, so the group's tools stay out of the request
+        // (and remain callable by name, like every extended tool).
+        if disabled_plain_tools
+            .iter()
+            .any(|tool_name| *tool_name == "load_extended_tools")
+        {
+            tracing::debug!(
+                tool = "load_extended_tools",
+                pattern = %matched_pattern_name.unwrap_or("?"),
+                "Removing disabled tool"
+            );
+            registry.remove("load_extended_tools");
+        }
+
         // External hooks for tool events: global [[hooks]] first, then
         // [[agents.<name>.hooks]] for the routed agent (the pattern name
         // is the agent key — same merge rule as [[commands]]). The
@@ -494,6 +512,56 @@ fn mcp_override_stamp(topic_name: &str, topic_path: &Path) -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service::tests::app_config_with_channels;
+    use std::collections::HashMap;
+
+    /// `disabled_tools` must be able to remove the loader itself.
+    ///
+    /// The exclusion pass runs before the extended group is wired, so the
+    /// loader does not exist yet when the pass looks for it — without a
+    /// second pass `disabled_tools = ["load_extended_tools"]` would be a
+    /// no-op, and the tool that `disabled_tools` is supposed to remove would
+    /// sit in every request advertising a group nobody may load.
+    #[tokio::test]
+    async fn the_loader_can_be_disabled() {
+        let tname = "the_loader_can_be_disabled";
+        let tmp = tempfile::tempdir().unwrap();
+        jyc_types::state_dir::register(tname, &tmp.path().join(".jyc"));
+
+        let channel = jyc_types::ChannelConfig {
+            patterns: Some(vec![ChannelPattern::default()]),
+            disabled_tools: Some(vec!["load_extended_tools".to_string()]),
+            ..Default::default()
+        };
+        let mut channels = HashMap::new();
+        channels.insert("test".to_string(), channel);
+        let svc = JycAgentService::new(
+            app_config_with_channels(None, channels),
+            tmp.path().to_path_buf(),
+            vec![ChannelPattern::default()],
+            None,
+            None,
+            None,
+            None,
+            "test".to_string(),
+        );
+
+        let registry = svc
+            .build_tool_registry(tname, tmp.path(), None, false, None)
+            .await;
+
+        assert!(
+            !registry.has_tool("load_extended_tools"),
+            "disabled_tools must remove the loader, not only the group's tools"
+        );
+        // With no loader nothing can flip the group, so its tools must stay
+        // out of the request — the same hiding the load would have undone.
+        let advertised: Vec<String> = registry.definitions().into_iter().map(|d| d.name).collect();
+        assert!(
+            !advertised.iter().any(|n| n == "jyc_send_to_topic"),
+            "the group's tools must stay out of the request: {advertised:?}"
+        );
+    }
 
     #[test]
     fn mcp_override_stamp_tracks_file() {

@@ -2401,7 +2401,8 @@ JYC uses the following subset of the agent service API:
    Only *advertisement* is gated: the tools stay executable, so a model that
    names one before loading it gets a working call instead of an error — the
    group is a cost optimization, and `disabled_tools` remains the boundary
-   that removes a tool for good. The advertised set went from 6,925 chars of
+   that removes a tool for good, the loader included (the loader is registered
+   after the exclusion pass, so the pass is applied to it once more). The advertised set went from 6,925 chars of
    schema text to about 3,800, and the tools array is re-read on every agent
    loop iteration, so the schemas are in the *next* request of the *same*
    turn.
@@ -2419,10 +2420,10 @@ JYC uses the following subset of the agent service API:
    therefore specifically the churn that changes **no** access: topics
    appearing and disappearing, which is the frequent case.
 
-   The two rosters travel together in a `<runtime-state>` block
-   (`build_turn_reference()`), prepended to the user message and framed
-   as an auto-generated snapshot that is not user text and may go stale
-   within a long turn. `build_system_prompt()` emits neither.
+   What travels in the `<runtime-state>` block (`build_turn_reference()`) is
+   the subagent roster alone, prepended to the user message and framed as an
+   auto-generated snapshot that is not user text and may go stale within a
+   long turn. `build_system_prompt()` emits neither roster.
 
    Only the subagent roster rides that block now. The channel/topic roster
    is fetched by the `list_topics` tool when the model wants to address

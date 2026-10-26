@@ -192,9 +192,9 @@ impl JycAgentService {
                 "\n## Cross-Topic Communication\n\n\
                  You can send messages to another agent — its own topic by default, or one of its \
                  topics with `topic` — using the `jyc_send_to_topic` tool.\n\
-                 The addressing tools are extended: call `load_extended_tools` to bring \
-                 `jyc_send_to_topic`, `jyc_send_message` and `list_topics` into your tool list \
-                 before you use them — `list_topics` gives you the names they accept.\n\
+                 The addressing tools are extended: call `load_extended_tools` to bring them \
+                 into your tool list before you use them — its description is the index of \
+                 what it loads.\n\
                  Set `require_reply=true` when you need the target agent to send results back to you.\n\n\
                  When you receive a message with a **Source:** header, it came from another topic. \
                  Process the content normally — your final message displays the results in the \
@@ -221,9 +221,11 @@ impl JycAgentService {
             // The live channel/topic roster is deliberately NOT enumerated
             // here: topics come and go, and one line of churn in the system
             // prompt invalidates its cached prefix on every provider that
-            // caches by prefix. The roster rides the turn's user message
-            // instead (`build_turn_reference`); what stays here is the static
-            // prose above, which does not move.
+            // caches by prefix. The subagent roster rides the turn's user
+            // message instead (`build_turn_reference`); the channel/topic
+            // roster is not in the prompt at all — the `list_topics` tool
+            // fetches it on demand. What stays here is the static prose
+            // above, which does not move.
             prompt.push('\n');
         }
 
@@ -297,9 +299,10 @@ impl JycAgentService {
     /// Build the user prompt text (header + body) from an inbound message.
     ///
     /// `turn_reference` is the runtime snapshot from `build_turn_reference`
-    /// (subagents + channel/topic roster), prepended here so it travels with
-    /// the one block that is new every turn. Empty means "nothing volatile to
-    /// report" and contributes nothing.
+    /// (the subagent roster; the channel/topic roster is fetched on demand
+    /// by `list_topics`), prepended here so it travels with the one block
+    /// that is new every turn. Empty means "nothing volatile to report" and
+    /// contributes nothing.
     pub(crate) fn build_user_prompt_text(
         &self,
         message: &InboundMessage,

@@ -443,9 +443,11 @@ impl AgentService for JycAgentService {
                 &additional_write_roots,
             )
             .await;
-        // 3b. The volatile half — subagents and the channel/topic roster —
-        //     rides the turn's user message instead of the system prompt, so
-        //     a topic appearing or closing costs no cached prefix.
+        // 3b. The volatile half — the subagent roster — rides the turn's
+        //     user message instead of the system prompt, so a topic
+        //     appearing or closing costs no cached prefix. The channel/topic
+        //     roster is not in the prompt at all: the `list_topics` tool
+        //     fetches it on demand.
         let turn_reference = self.build_turn_reference(topic_name).await;
         let t_prompt = std::time::Instant::now();
         let current_mode = resolve_turn_mode(

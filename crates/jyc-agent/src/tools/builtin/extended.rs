@@ -11,7 +11,9 @@
 //! flag; from the next model call on, the group's schemas are part of the
 //! advertised tool list. The flag is sticky for the life of the registry,
 //! and the registry is cached per topic — so a topic pays the load once, and
-//! a topic that never loads never pays at all.
+//! a topic that never loads never pays at all. A rebuild (a config reload,
+//! an `/mcp` override) starts a fresh registry, and the group hides again
+//! until it is loaded once more.
 //!
 //! Only *advertisement* is gated. An extended tool stays registered and
 //! executable, so a model that names one before loading it gets a working
@@ -47,6 +49,14 @@ pub const EXTENDED_TOOLS: &[(&str, &str)] = &[
     ("webfetch", "fetch a URL as text"),
 ];
 
+/// The core tools the loader mentions as already available.
+///
+/// These are the ones a request carries whatever the model does — the file
+/// tools, the shell and the question tool. The list is filtered by what the
+/// registry actually holds, so a role that disables one of them is never
+/// told it is there.
+const CORE_TOOLS: &[&str] = &["read", "write", "edit", "bash", "grep", "ask_user"];
+
 /// Bring the extended group into a registry: mark the tools it names, and
 /// register the tool that loads them.
 ///
@@ -64,13 +74,22 @@ pub fn register_extended_tools(registry: &mut ToolRegistry) {
         return;
     }
 
+    // The core tools this registry actually has: the loader says what is
+    // already available, and a tool that was removed (by `disabled_tools`)
+    // is not available.
+    let core: Vec<&str> = CORE_TOOLS
+        .iter()
+        .copied()
+        .filter(|name| registry.has_tool(name))
+        .collect();
+
     let group = Arc::new(ExtendedTools::new(
         present
             .iter()
             .map(|(name, _)| (*name).to_string())
             .collect(),
     ));
-    let description = LoadExtendedToolsTool::description_for(&present);
+    let description = LoadExtendedToolsTool::description_for(&present, &core);
     registry.register(Box::new(LoadExtendedToolsTool {
         group: group.clone(),
         present,
@@ -91,16 +110,18 @@ pub struct LoadExtendedToolsTool {
 
 impl LoadExtendedToolsTool {
     /// The description, built from the tools this registry actually has.
-    fn description_for(present: &[(&str, &str)]) -> String {
+    fn description_for(present: &[(&str, &str)], core: &[&str]) -> String {
         let mut text = String::from(
-            "Load the extended tools into your tool list. They stay out of it until you call \
-             this once, then remain available for the rest of the session. Call it before you \
-             need any of:",
+            "Load the extended tools into your tool list — they stay out of it until you call \
+             this once, and remain in it while this topic's tool registry is reused. Call it \
+             before you need any of:",
         );
         for (name, what) in present {
             text.push_str(&format!(" {name} ({what});"));
         }
-        text.push_str(" The file, shell and ask_user tools are already available.");
+        if !core.is_empty() {
+            text.push_str(&format!(" Already available: {}.", core.join(", ")));
+        }
         text
     }
 }
@@ -130,7 +151,9 @@ impl Tool for LoadExtendedToolsTool {
         let first = self.group.load();
         if first {
             Ok(ToolOutput::success(format!(
-                "Loaded {} extended tools: {}. They are in your tool list from now on.",
+                "Loaded {} extended tools: {}. They are in your tool list from the next model \
+                 call on, while this topic's tool registry is reused — a config reload or an \
+                 `/mcp` change rebuilds it, and hides them again until it is loaded once more.",
                 names.len(),
                 names.join(", ")
             )))
@@ -229,5 +252,32 @@ mod tests {
         register_extended_tools(&mut registry);
         assert!(registry.extended().is_none());
         assert!(!registry.has_tool("load_extended_tools"));
+    }
+
+    /// The loader must not offer a tool this registry does not have: a role
+    /// that disables `bash` must not be told the shell is available.
+    #[test]
+    fn the_loader_offers_only_the_core_tools_that_are_there() {
+        let mut registry = create_builtin_registry();
+        registry.remove("bash");
+        register_extended_tools(&mut registry);
+
+        let loader = registry
+            .definitions()
+            .into_iter()
+            .find(|d| d.name == "load_extended_tools")
+            .expect("the loader is registered");
+        assert!(
+            !loader.description.contains("bash"),
+            "the loader must not offer a tool that was removed: {}",
+            loader.description
+        );
+        assert!(
+            loader
+                .description
+                .contains("Already available: read, write, edit, grep, ask_user."),
+            "the loader must still say what is available: {}",
+            loader.description
+        );
     }
 }

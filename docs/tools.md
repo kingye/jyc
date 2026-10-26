@@ -268,7 +268,9 @@ what it holds without the group's schemas being in the request.
 **Only advertisement is gated.** The tools stay registered and executable, so
 a model that names one before loading it gets a working call rather than a
 "not found" error. `disabled_tools` is the boundary that removes a tool for
-good — see [Tool Exclusion](#tool-exclusion).
+good — see [Tool Exclusion](#tool-exclusion). That includes the loader
+itself: `disabled_tools = ["load_extended_tools"]` removes it, and the group
+then stays out of every request (its tools remain callable by name, as always).
 
 ### `list_topics`
 
@@ -612,8 +614,10 @@ build_tool_registry()
   ├─ Register jyc_send_to_topic (when the topic managers are available)
   ├─ Load external MCP tools (filtered by disabled_mcps)
   ├─ Apply exclusions: remove tools matching disabled_tools
-  └─ Wire the extended group: register load_extended_tools and mark the
-     group's tools as advertised-only-after-loading
+  ├─ Wire the extended group: register load_extended_tools and mark the
+  │  group's tools as advertised-only-after-loading
+  └─ Apply the exclusions to the loader as well: it is registered after the
+     pass above, so disabled_tools may name load_extended_tools
 ```
 
 The final registry is what the LLM sees in its `tools` list — minus the

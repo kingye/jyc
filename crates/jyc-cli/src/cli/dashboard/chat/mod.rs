@@ -99,6 +99,23 @@ pub(super) struct ZenSnapshot {
     explorer_visible: bool,
 }
 
+/// The chat pane's WebSocket state.
+///
+/// Three states, not a bool: "not talking to the hub yet" and "the link is
+/// broken" are the same `false` for a bool, and the pane reports them
+/// differently — one is a startup state, the other is a fault worth showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WsState {
+    /// No attempt has failed yet — the client is connecting (or has not
+    /// started).
+    Connecting,
+    /// The socket is live.
+    Connected,
+    /// The socket is down: it was never established, or it was lost. Either
+    /// way the client is retrying, and the pane says so.
+    Disconnected,
+}
+
 /// Chat pane state: WebSocket topic chat for any channel type.
 pub(super) struct ChatState {
     // Chat pane state
@@ -197,7 +214,8 @@ pub(super) struct ChatState {
     pub(super) explorer_selected: usize,
     pub(super) ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     pub(super) ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
-    pub(super) ws_connected: bool,
+    /// The chat socket's state — see [`WsState`].
+    pub(super) ws_state: WsState,
     /// Live activity buffer — populated by REST hydrate on selection and
     /// appended to by WS `{"type":"activity",...}` events. Keyed by
     /// `(channel, topic)`. The activity pane and chat progress read
@@ -1598,6 +1616,20 @@ fn selected_topic_detail(app: &App) -> Option<&jyc_types::TopicInfo> {
     (detail.channel == channel && detail.name == name).then_some(detail)
 }
 
+/// Whether the last detail fetch for the topic on screen failed.
+///
+/// A failed fetch clears the detail, so the pane cannot tell "not loaded
+/// yet" from "the request failed" by looking at the detail alone — and a
+/// dead tunnel looks exactly like a request that never returns. The failure
+/// is keyed by topic, so a stale failure never shows up under a topic that
+/// is loading fine.
+fn detail_fetch_failed(app: &App) -> bool {
+    let Some((channel, name)) = super::shown_topic_key(app) else {
+        return false;
+    };
+    app.topic_detail_failed.as_ref() == Some(&(channel, name))
+}
+
 /// One row of the info pane: a `label: value` field, a value that belongs
 /// to the row above it, or a line of a section that keeps its own shape
 /// (the task list, the changed files).
@@ -2055,9 +2087,19 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         layout_info_rows(rows, layout, topic_inner.width)
     } else if super::shown_topic_key(app).is_some() {
         // A topic is on screen, but its detail has not landed yet — the
-        // fetch runs on a timer, and a failed fetch leaves it unset. Say so
-        // instead of claiming that no topic is selected.
-        vec![Line::from("Loading topic details...")]
+        // fetch runs on a timer. Say so instead of claiming that no topic
+        // is selected. A fetch that *failed* says something else: the hub
+        // is unreachable (or refusing), and the retry will not fix it
+        // until the connection comes back — so it is reported as a
+        // failure, not as an eternal load.
+        vec![Line::from(if detail_fetch_failed(app) {
+            Span::styled(
+                "Failed to load topic details — will retry",
+                Style::default().fg(Color::Yellow),
+            )
+        } else {
+            Span::raw("Loading topic details...")
+        })]
     } else {
         vec![Line::from("Select a topic")]
     };
@@ -2659,7 +2701,7 @@ impl ChatState {
             explorer_selected: 0,
             ws_tx: None,
             ws_rx,
-            ws_connected: false,
+            ws_state: WsState::Connecting,
             live_activity: std::collections::BTreeMap::new(),
             live_chat: std::collections::BTreeMap::new(),
             live_thinking: std::collections::BTreeMap::new(),
@@ -2727,7 +2769,13 @@ impl ChatState {
             Some(ch) => format!("ws://{}/ws/{}/{}", addr, ch, topic),
             None => format!("ws://{}/ws", addr),
         };
-        tokio::spawn(ws_client_task(url, cmd_rx, event_tx, self.token.clone()));
+        tokio::spawn(ws_client_task(
+            url,
+            cmd_rx,
+            event_tx,
+            self.token.clone(),
+            Heartbeat::default(),
+        ));
     }
 
     /// Clear per-topic state for a switch to `topic`. Used by `open()` and
@@ -2751,7 +2799,7 @@ impl ChatState {
         self.info_visible = true;
         self.status_visible = true;
         self.zen_saved = None;
-        self.ws_connected = false;
+        self.ws_state = WsState::Connecting;
         self.input_history.clear();
         self.history_pos = None;
         // Clear the poll-loop's last-hydrated key so it doesn't skip hydrate
@@ -2764,7 +2812,7 @@ impl ChatState {
 
     pub(super) fn close(&mut self) {
         self.visible = false;
-        self.ws_connected = false;
+        self.ws_state = WsState::Connecting;
         self.command_popup = None;
         self.last_hydrated_key = None;
         // Drop the batch: the pane that draws it is going away, and a half

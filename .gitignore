@@ -36,3 +36,6 @@ jyc-data
 /nohup.out
 /jyc.log
 /jyc-pipe
+
+# Runtime context payload the agent framework drops in the topic dir
+agent-context.jsonl.payload

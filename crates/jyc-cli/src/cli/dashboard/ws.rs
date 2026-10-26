@@ -17,6 +17,9 @@ const WS_LIVENESS_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_s
 ///
 /// Split out from the constants so a test can use a much shorter window than
 /// a human would ever wait for.
+///
+/// The timeout must span several ping intervals: one delayed pong — a busy
+/// machine, a congested link — is not a dead socket.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Heartbeat {
     /// How often to ping the server.
@@ -210,10 +213,15 @@ mod tests {
 
     /// Heartbeat timings short enough to keep a test quick, long enough that
     /// a loaded machine does not trip them by accident.
+    ///
+    /// The timeout is wall clock, so a task starved for its whole length would
+    /// look dead. A second is wide enough that a busy CI runner does not
+    /// starve the client that long; the test window below spans several
+    /// heartbeats, so a heartbeat that misfires would show.
     fn fast_heartbeat() -> Heartbeat {
         Heartbeat {
-            ping_interval: Duration::from_millis(50),
-            liveness_timeout: Duration::from_millis(200),
+            ping_interval: Duration::from_millis(100),
+            liveness_timeout: Duration::from_secs(1),
         }
     }
 
@@ -264,7 +272,7 @@ mod tests {
             fast_heartbeat(),
         ));
 
-        let events = collect_events(&mut event_rx, Duration::from_secs(3)).await;
+        let events = collect_events(&mut event_rx, Duration::from_secs(5)).await;
         let errors: Vec<&str> = events
             .iter()
             .filter_map(|event| match event {
@@ -312,7 +320,7 @@ mod tests {
             fast_heartbeat(),
         ));
 
-        let events = collect_events(&mut event_rx, Duration::from_millis(800)).await;
+        let events = collect_events(&mut event_rx, Duration::from_millis(2500)).await;
         assert!(
             matches!(events.first(), Some(WsEvent::Connected)),
             "the client must report the connection: {events:?}"

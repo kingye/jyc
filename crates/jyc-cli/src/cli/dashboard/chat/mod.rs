@@ -101,16 +101,18 @@ pub(super) struct ZenSnapshot {
 
 /// The chat pane's WebSocket state.
 ///
-/// Three states, not a bool: "no connection yet" and "the connection was
-/// lost" are the same `false`, and the pane reports them differently — one
-/// is a startup state, the other is a fault worth showing.
+/// Three states, not a bool: "not talking to the hub yet" and "the link is
+/// broken" are the same `false` for a bool, and the pane reports them
+/// differently — one is a startup state, the other is a fault worth showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WsState {
-    /// No live socket yet — the client is connecting (or has not started).
+    /// No attempt has failed yet — the client is connecting (or has not
+    /// started).
     Connecting,
     /// The socket is live.
     Connected,
-    /// The socket was lost; the client is reconnecting.
+    /// The socket is down: it was never established, or it was lost. Either
+    /// way the client is retrying, and the pane says so.
     Disconnected,
 }
 
@@ -2092,7 +2094,7 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         // failure, not as an eternal load.
         vec![Line::from(if detail_fetch_failed(app) {
             Span::styled(
-                "Failed to load topic details — retrying...",
+                "Failed to load topic details — will retry",
                 Style::default().fg(Color::Yellow),
             )
         } else {

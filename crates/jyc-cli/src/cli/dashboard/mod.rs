@@ -394,7 +394,9 @@ impl App {
             WsEvent::Error(err) => {
                 // Every error the client reports ends the socket (or the
                 // attempt to open one), so the pane shows the fault, not a
-                // quiet "connecting".
+                // quiet "connecting". A connect that never succeeded counts
+                // too: while the hub is unreachable the pane must report a
+                // broken link, not spin on "Loading...".
                 self.chat.ws_state = chat::WsState::Disconnected;
                 self.set_status(format!("WebSocket error: {err}"));
             }

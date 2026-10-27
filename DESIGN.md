@@ -210,7 +210,7 @@ User sends message (any channel) → Pattern Match → Topic Queue → Worker (A
 6. **Topic Event System** — Per-topic isolated event bus for progress events (ProcessingStarted/Progress/Completed, ToolStarted/Completed, Thinking, SessionStatus). Used by the inspect dashboard for realtime monitoring.
 7. **Prompt Builder** — Builds channel-agnostic prompts from InboundMessage; supports multimodal first turns with ContentBlock::Image
 8. **Reply Delivery** — the agent's final message at the end of the turn IS the reply (no reply tool). `deliver_reply` sends it synchronously via the channel's pre-warmed outbound adapter when a reply target is live; otherwise (or on send failure) it writes `reply.md` + signal file for the watcher/monitor to deliver
-9. **MCP SendMessage Tool** — `jyc_send_message` in-process tool, sends proactive out-of-topic messages to any recipient via the pre-warmed outbound adapter. Used for alerts and notifications only, never for in-topic replies
+9. **MCP SendMessage Tool** — `jyc_send_message` in-process tool, sends a channel message with optional attachments to any recipient via the pre-warmed outbound adapter. Advertised with the core tools; used for proactive alerts, cross-channel messages, and attachment-bearing replies
 10. **MCP Vision Tool** — `analyze_image` tool via `rmcp`, analyzes images using OpenAI-compatible vision API. Configure via `[[mcps]]` in `config.toml`
 11. **Question Tool** — `ask_user` renders the user's decision options on whichever channel the message arrived on: a `question` frame to a channel with a question box (the TUI), the same set as a plain-text message on the ordinary reply path everywhere else (feishu, email, any pipe-only channel). Up to 5 questions go in one call and come back in one answer. It never waits: the tool ends the turn the moment the questions are handed over, and the user's reply — a numbered message on the TUI, free text anywhere else — arrives as the input to the next turn. On the TUI each question also takes a typed answer: the option list ends with a `✎` row whose one-line draft answers for that question on its own line (`Q2: their own words`, carrying no option number, so a pick and a typed answer are told apart), which is what makes the free text the other channels always had reachable on the one surface that draws a box. Skipping one question (`d`) or closing the box (`Esc`) are client-side choices with no protocol of their own, which is why there is no hub, no timeout, and no answer frame on any channel.
 12. **Pending Delivery Watcher** — Background task that runs alongside SSE stream, watches for signal files and delivers messages immediately
@@ -2389,23 +2389,31 @@ JYC uses the following subset of the agent service API:
    | Channel/topic roster | — | Not in the prompt at all: the `list_topics` tool fetches it on demand |
 
    **The extended tools.** A tool schema rides in every request, so a topic
-   that never delegates, never publishes and never fetches a URL pays for
-   those schemas on every call. The seven tools most topics use rarely —
-   `jyc_spawn_subagent`, `jyc_send_to_topic`, `jyc_send_message`,
-   `list_topics`, `jyc_publish_file`, `read_image`, `webfetch` — are
-   therefore **registered but not advertised**: the registry filters them out
-   of the `tools` array until the model calls `load_extended_tools`, whose
-   description is the index of what the group holds. The flag lives in the
-   registry, which is cached per topic, so a load sticks for the rest of that
-   topic's registry lifetime (a config reload rebuilds it and starts over).
-   Only *advertisement* is gated: the tools stay executable, so a model that
-   names one before loading it gets a working call instead of an error — the
-   group is a cost optimization, and `disabled_tools` remains the boundary
-   that removes a tool for good, the loader included (the loader is registered
-   after the exclusion pass, so the pass is applied to it once more). The advertised set went from 6,925 chars of
-   schema text to about 3,800, and the tools array is re-read on every agent
-   loop iteration, so the schemas are in the *next* request of the *same*
-   turn.
+   that never delegates, never publishes, never fetches a URL, never browses
+   its transcript, never records a lesson and never needs a multi-step plan
+   pays for those schemas on every call. The twelve tools most topics use
+   rarely — `jyc_spawn_subagent`, `jyc_send_to_topic`, `list_topics`,
+   `jyc_publish_file`, `read_image`, `webfetch`, `context_browse`,
+   `lesson_add`, `lesson_read`, `task_list`, `task_create`, `task_update` —
+   are therefore **registered but not advertised**: the registry filters them
+   out of the `tools` array until the model calls `load_extended_tools`, whose
+   description is the index of what the group holds. `jyc_send_message` stays
+   in the core advertised set: an attachment-bearing reply must be
+   discoverable without a loader call. The task tools are in the group
+   because whether work needs a plan is a project convention, not a
+   framework-wide cost; the loader points multi-step work at them, and that
+   sentence is omitted when `disabled_tools` removes every task tool. The
+   loader names both groups explicitly. The flag lives in the registry, which
+   is cached per topic, so a load sticks for the rest of that topic's registry
+   lifetime (a config reload rebuilds it and starts over). Only
+   *advertisement* is gated: the tools stay executable, so a model that names
+   one before loading it gets a working call instead of an error — the group
+   is a cost optimization, and `disabled_tools` remains the boundary that
+   removes a tool for good, the loader included (the loader is registered after
+   the exclusion pass, so the pass is applied to it once more). The advertised
+   set went from 6,925 chars of schema text to about 2,974 (−57%), and the
+   tools array is re-read on every agent loop iteration, so the schemas are in
+   the *next* request of the *same* turn.
 
    **What still moves the prompt, and why that is correct.** Spawning a
    child calls `access_grants::grant_subagent()`, which registers the
@@ -2703,23 +2711,25 @@ the cycle-boundary heartbeat — the single delivery path, no tool involved.
 
 ### MCP Tool: `jyc_send_message`
 
-Sends a proactive out-of-topic message to any recipient. Unlike `reply_message` which replies within the current topic context, this tool is for alerts, notifications, and other proactive messaging.
+Sends a channel message with optional attachments to any recipient. It is part of the core advertised tool set, not the on-demand group, because an attachment-bearing reply must be discoverable without a loader call. Ordinary text-only replies still use the turn's final message.
 
 ```
 In-process tool (jyc-agent/src/tools/mcp_bridge.rs):
-  Tool schema: recipient (string), subject (string, optional), message (string)
+  Tool schema: recipient, subject (optional), message, channel (optional),
+               attachments (optional)
 
   1. Validate recipient format (channel-specific, e.g. "wecomkf:kf001:wmE8OcHAAA...")
-  2. Parse recipient to extract channel routing info
-  3. Call OutboundAdapter::send_message() on the pre-warmed outbound adapter
-  4. Return success message with delivery confirmation
+  2. Resolve the current or named outbound adapter
+  3. Build an OutboundMessage with any attachment files from the topic directory
+  4. Call OutboundAdapter::send_proactive() and return the delivery result
 ```
 
 **ToolContext outbound injection**: `ToolContext` carries an optional `outbound: Arc<dyn OutboundAdapter>` field. When the agent loop builds the tool registry, it injects the current topic's outbound adapter into `ToolContext`. The `jyc_send_message` tool uses this adapter directly for immediate delivery — no signal file indirection needed.
 
 **Usage constraints** (enforced by AGENTS.md rules):
-- Must NOT be used for in-topic replies (use `reply_message` instead)
-- Must NOT be used to spam users (limit to alerts and notifications)
+- Use for proactive alerts, cross-channel messages, and attachment-bearing replies
+- Use the turn's final message for ordinary text-only replies
+- Must NOT be used to spam users
 - Recipient format is channel-specific; the tool validates format before attempting delivery
 
 ### Built-in Tool: `jyc_send_to_topic` and `/send`

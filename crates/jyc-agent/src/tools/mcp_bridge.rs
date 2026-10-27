@@ -12,12 +12,13 @@ use tracing;
 use crate::tools::{Tool, ToolContext, ToolOutput};
 use jyc_types::channel::{OutboundAttachment, OutboundMessage};
 
-/// Send message tool — sends a proactive out-of-topic message via the
-/// pre-warmed outbound adapter.
+/// Send message tool — sends a message through the pre-warmed outbound
+/// adapter.
 ///
 /// This is the in-process equivalent of the `jyc_send_message` MCP tool.
-/// Unlike the in-topic reply delivery path, this tool sends messages to
-/// arbitrary recipients for alerts and notifications.
+/// It sends directly to arbitrary recipients for proactive alerts,
+/// cross-channel messages, and replies that carry attachments; ordinary
+/// text-only replies use the in-topic delivery path.
 ///
 /// Supports:
 /// - `channel`: optional target channel name for cross-channel messaging.
@@ -35,8 +36,8 @@ impl Tool for SendMessageTool {
     }
 
     fn description(&self) -> &str {
-        "Send a proactive message to an arbitrary recipient. \
-         Use ONLY for alerts and notifications — NEVER for in-topic replies."
+        "Send a channel message with optional attachments. Use for proactive messages \
+         and attachment replies; text replies are automatic."
     }
 
     fn input_schema(&self) -> Value {

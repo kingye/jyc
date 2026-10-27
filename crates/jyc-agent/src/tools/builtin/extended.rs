@@ -342,5 +342,50 @@ mod tests {
             "the loader must not name a task tool this registry does not have: {}",
             loader.description
         );
+        assert!(
+            !loader
+                .description
+                .contains("For multi-step work, use the task tools."),
+            "the loader must not give guidance for task tools this registry does not have: {}",
+            loader.description
+        );
+    }
+
+    /// One remaining task tool is enough to make the guidance true.
+    #[test]
+    fn the_loader_keeps_task_guidance_while_one_task_tool_remains() {
+        let mut registry = create_builtin_registry();
+        for name in ["task_list", "task_create"] {
+            registry.remove(name);
+        }
+        register_extended_tools(&mut registry);
+
+        let loader = registry
+            .definitions()
+            .into_iter()
+            .find(|d| d.name == "load_extended_tools")
+            .expect("the loader is registered");
+        assert!(
+            loader
+                .description
+                .contains("For multi-step work, use the task tools."),
+            "one task tool is enough to keep the guidance: {}",
+            loader.description
+        );
+        assert!(
+            loader
+                .description
+                .contains("task_update (set an item's status)"),
+            "the loader must index the task tool this registry has: {}",
+            loader.description
+        );
+        assert!(
+            !loader.description.contains("task_list (read the plan)")
+                && !loader
+                    .description
+                    .contains("task_create (write a new plan)"),
+            "the loader must not index task tools this registry does not have: {}",
+            loader.description
+        );
     }
 }

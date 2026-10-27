@@ -376,6 +376,7 @@ async fn send_returns_429_when_the_queue_is_full() {
     let http = reqwest::Client::new();
     let send = |message: &'static str| {
         http.post(format!("http://{addr}/api/send"))
+            .bearer_auth("topsecret")
             .json(&serde_json::json!({ "agent": topic, "message": message }))
             .send()
     };

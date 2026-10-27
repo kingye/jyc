@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
@@ -23,7 +24,7 @@ use jyc_types::{
 };
 use tempfile::TempDir;
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, Semaphore};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 
@@ -125,7 +126,8 @@ fn make_tm_with_agent(
 
 struct BlockingAgent {
     started: Arc<Notify>,
-    release: Arc<Notify>,
+    release: Arc<Semaphore>,
+    finished: Arc<AtomicBool>,
 }
 
 #[async_trait]
@@ -144,7 +146,9 @@ impl AgentService for BlockingAgent {
         _topic_cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<AgentResult> {
         self.started.notify_one();
-        self.release.notified().await;
+        let permit = self.release.acquire().await.unwrap();
+        permit.forget();
+        self.finished.store(true, Ordering::SeqCst);
         Ok(AgentResult {
             reply_delivered: true,
             reply_text: Some("ok".to_string()),
@@ -363,10 +367,12 @@ async fn send_returns_429_when_the_queue_is_full() {
     std::fs::create_dir_all(&agents_dir).unwrap();
 
     let started = Arc::new(Notify::new());
-    let release = Arc::new(Notify::new());
+    let release = Arc::new(Semaphore::new(0));
+    let finished = Arc::new(AtomicBool::new(false));
     let agent = Arc::new(BlockingAgent {
         started: started.clone(),
         release: release.clone(),
+        finished: finished.clone(),
     });
     let tm = make_tm_with_agent(&tmp, &workspace, "agents", 1, agent);
     let managers = Arc::new(TopicManagers::new());
@@ -391,16 +397,36 @@ async fn send_returns_429_when_the_queue_is_full() {
 
     let first = send("first").await.unwrap();
     assert_eq!(first.status(), 200);
+    let first_body = first.text().await.unwrap();
+
+    // Probe the manager directly: if the handler resolved to a different queue
+    // this still reports Full for the queue the seed left behind.
+    let probe = tm
+        .try_enqueue(
+            test_message("agents", topic, "probe"),
+            topic.to_string(),
+            test_pattern("agents"),
+            None,
+            false,
+            None,
+        )
+        .await;
+    let probe = match probe {
+        Ok(()) => "accepted".to_string(),
+        Err(e) => format!("rejected: {e}"),
+    };
 
     // Keep sending through the API until the target queue reports itself full.
     // The worker is blocked in the seed turn, so a bounded queue must reject
     // instead of accepting without bound; asking through the same endpoint
     // avoids assuming which manager instance the handler resolved.
     let mut statuses = Vec::new();
+    let mut last_body = String::new();
     for _ in 0..8 {
         let response = send("filler").await.unwrap();
-        statuses.push(response.status());
-        if response.status() == 429 {
+        let status = response.status();
+        statuses.push(status);
+        if status == 429 {
             let body: serde_json::Value = response.json().await.unwrap();
             assert!(
                 body["error"]
@@ -408,11 +434,16 @@ async fn send_returns_429_when_the_queue_is_full() {
                     .is_some_and(|e| e.contains("queue is full")),
                 "{body}"
             );
-            release.notify_waiters();
+            release.add_permits(32);
             return;
         }
+        last_body = response.text().await.unwrap_or_default();
     }
-    panic!("queue never filled; statuses: {statuses:?}");
+    panic!(
+        "queue never filled; statuses: {statuses:?}; first_body: {first_body}; \
+         last_body: {last_body}; direct_probe: {probe}; seed_finished: {}",
+        finished.load(Ordering::SeqCst)
+    );
 }
 
 #[tokio::test]

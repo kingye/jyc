@@ -444,7 +444,15 @@ fn build_history_regions(
     // notes here — the recent pairs are already verbatim, so notes
     // would be redundant (and are the leak trigger).
     let keep = pair_count - head;
-    let compacted = crate::session::extract_user_assistant_pairs(compact_prior, keep, Some(0));
+    // `keep == 0` must stay empty: the extractor's fallback keeps the
+    // last text-bearing user message of a non-empty slice (meant for
+    // unfinished turns in the wire payload), which would resurrect a
+    // dropped pair as a stray region-① message and rewrite the prefix.
+    let compacted = if keep == 0 {
+        Vec::new()
+    } else {
+        crate::session::extract_user_assistant_pairs(compact_prior, keep, Some(0))
+    };
     let new_anchor = if keep > 0 {
         Some(crate::session::BlockAnchor {
             hash: pair_anchor_hash(&pairs[head]),

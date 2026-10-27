@@ -502,14 +502,16 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # `window` up to `window + ext_rate × window` turns; when it hits the
 # ceiling the oldest `capacity − landing` turns drop at once and the span
 # returns to `window` (with note_window ≥ window there is no compact
-# region and the extension is inert). The compact turns between the
-# verbatim tail and the drop form an anchored block: between drops it only
-# appends, so the wire prefix stays byte-stable across turns
+# region — turns older than note_window are dropped, only the verbatim
+# tail is sent — and the extension is inert). The compact turns between
+# the verbatim tail and the drop form an anchored block: between drops it
+# only appends, so the wire prefix stays byte-stable across turns
 # (prompt-cache friendly) and only the drop turn misses the cache.
 # ext_rate = 0 is the classic sliding window (constant `window`-turn span,
 # one turn dropping per turn, no cache stability); the drop discards
-# round(window × ext_rate) pairs, so values above 1 would drop more than a
-# full window at once — the range stops at 1. The block capacity
+# capacity − landing pairs (= round(window × ext_rate) while the cap
+# does not bind), so values above 1 would drop more than a full window at
+# once — the range stops at 1. The block capacity
 # ((window − note_window) + round(window × ext_rate) pairs) is capped at
 # MAX_BLOCK_PAIRS = 200 so large window × ext_rate compositions stay
 # bounded; once the cap binds the span tops out at MAX_BLOCK_PAIRS +

@@ -15,8 +15,9 @@ use crate::types::{ContentBlock, PriorDepth};
 /// note_window` pairs plus the `ext_rate` extension. With `note_window ≤
 /// window` the visible history span therefore oscillates between `window`
 /// and `window + ext_rate × window` turns; with `note_window ≥ window`
-/// there is no compact region at all (every prior turn is verbatim) and
-/// the span stays at `note_window` turns. Capped at
+/// there is no compact region (turns older than `note_window` are dropped,
+/// only the verbatim tail is sent) and the span stays at `note_window`
+/// turns. Capped at
 /// [`jyc_types::channel::MAX_BLOCK_PAIRS`] so a large window × rate
 /// composition cannot inflate the per-turn payload and the reader scan
 /// back towards a full-journal read; when the cap binds the extension
@@ -34,8 +35,9 @@ fn block_capacity(strategy: &ContextStrategyConfig) -> usize {
         .max(1)
         .saturating_sub(strategy.note_window.unwrap_or(usize::MAX));
     if base == 0 {
-        // `window ≤ note_window`: every prior turn is verbatim, so there
-        // is no compact region to anchor. An extension here would only
+        // `window ≤ note_window`: turns older than `note_window` are
+        // dropped and only the verbatim tail is sent, so there is no
+        // compact region to anchor. An extension here would only
         // rewrite the wire prefix every turn — the cache regression this
         // block exists to fix.
         return 0;
@@ -48,7 +50,8 @@ fn block_capacity(strategy: &ContextStrategyConfig) -> usize {
 /// Region-① jump landing: the block keeps this many pairs after a jump.
 /// Constant `window − note_window`, independent of `ext_rate`, so every
 /// jump returns the visible history to exactly `window` turns (provided
-/// `note_window ≤ window` and the capacity cap does not bind). With
+/// `note_window ≤ window` and `window − note_window ≤ MAX_BLOCK_PAIRS`).
+/// With
 /// `ext_rate = 0` the capacity equals the landing and the head advances
 /// one pair per turn — the classic sliding window, no special case.
 fn block_landing(strategy: &ContextStrategyConfig) -> usize {
@@ -1641,9 +1644,9 @@ mod render_raw_context_tests {
         assert_eq!(prior_depth(&no_note), PriorDepth::All);
     }
 
-    /// `window ≤ note_window`: every prior turn is verbatim, so region ①
-    /// stays empty instead of alternating between a 1-pair block and an
-    /// empty region every other turn (which would rewrite the wire prefix
+    /// `window ≤ note_window`: turns older than `note_window` are dropped
+    /// and only the verbatim tail is sent, so region ① stays empty instead
+    /// of alternating between a 1-pair block and an empty region (which would rewrite the wire prefix
     /// every turn — the cache regression the block exists to fix). The
     /// extension is inert and no anchor is persisted.
     #[test]

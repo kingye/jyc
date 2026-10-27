@@ -854,8 +854,9 @@ pub struct ContextStrategyConfig {
     /// compacted turns between the verbatim tail and the drop point form
     /// an anchored block whose wire prefix stays byte-stable across turns
     /// (prompt-cache friendly), so only the drop turn misses the cache.
-    /// With `note_window ≥ window` there is no compact region and the
-    /// extension is inert. Saturating at [`MAX_BLOCK_PAIRS`] caps the
+    /// With `note_window ≥ window` there is no compact region (turns
+    /// older than `note_window` are dropped; only the verbatim tail is
+    /// sent) and the extension is inert. Saturating at [`MAX_BLOCK_PAIRS`] caps the
     /// extension: once the cap binds, the span tops out at
     /// `MAX_BLOCK_PAIRS + note_window` turns and the jump period becomes
     /// `MAX_BLOCK_PAIRS − (window − note_window) + 1` turns. `ext_rate =

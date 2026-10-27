@@ -493,7 +493,8 @@ history the sliding window retains beyond `window` — see below.
 history extends beyond `window` turns, as a fraction of `window`. With
 `note_window ≤ window` the visible span grows from `window` up to
 `window + ext_rate × window` turns (with `note_window ≥ window` there
-is no compact region and the extension is inert); when the span hits
+is no compact region — turns older than `note_window` are dropped, only
+the verbatim tail is sent — and the extension is inert); when the span hits
 the ceiling, the oldest `capacity − landing` turns drop at once and
 the span returns to `window`. The capacity `(window − note_window) +
 round(window × ext_rate)` saturates at `MAX_BLOCK_PAIRS` (200): once

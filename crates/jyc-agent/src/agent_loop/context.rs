@@ -34,6 +34,20 @@ pub(crate) fn prior_depth(strategy: &ContextStrategyConfig) -> PriorDepth {
     }
 }
 
+/// Tool-result cap for the verbatim regions ② and ③.
+///
+/// The two regions must use the same cap and truncation policy: on the next
+/// turn region ③ becomes region ②, and any re-cap there would change the
+/// request bytes from the prefix outward. `turn_tool_result_cap` therefore
+/// overrides `tool_result_cap` for the whole verbatim window; `Some(0)` is
+/// the explicit-off sentinel.
+fn verbatim_result_cap(strategy: &ContextStrategyConfig) -> usize {
+    strategy
+        .turn_tool_result_cap
+        .or(strategy.tool_result_cap)
+        .unwrap_or(0)
+}
+
 /// Reformat a cleaned message (string content from `extract_user_assistant_pairs`)
 /// into the active provider's wire format via the Provider trait. This is
 /// what makes sliding-window output valid for Anthropic, which requires
@@ -140,20 +154,19 @@ impl SendContextCache {
 /// - `2` = second region — verbatim prior turns (`SlidingWindow` only).
 /// - `3` = third region — current turn verbatim (`SlidingWindow` only).
 ///
-/// When `strategy.tool_result_cap` is `Some(cap > 0)`, every tool result
-/// in region ② is truncated to at most `cap` bytes with the standard
-/// `… [truncated N bytes]` marker. Region ③ (the current turn) is
-/// uncapped by default — the model is reasoning over those tool results
-/// mid-loop, so they must stay complete — and bounded by the separate,
-/// opt-in `strategy.turn_tool_result_cap`, which keeps head and tail
-/// instead of the head alone. `Some(0)` or `None` disables capping
-/// everywhere.
+/// Regions ② and ③ share one tool-result policy ([`verbatim_result_cap`]):
+/// `turn_tool_result_cap` overrides `tool_result_cap`, oversized results keep
+/// head and tail with the `… [truncated N bytes]` marker, and `Some(0)`/`None`
+/// disable capping. Sharing the policy is what keeps the request prefix stable
+/// when the current turn is promoted into the verbatim prior on the next turn.
 ///
 /// `strategy.max_history_tokens` is the second lever, orthogonal to
 /// `window`: it caps what regions ① and ② weigh together, not how many
-/// turns they hold. When the estimate is over budget the oldest history
-/// goes first (see [`fit_history_to_budget`]). Region ③ is never part of
-/// it. `Some(0)` or `None` sends the windowed history untouched.
+/// turns they hold. The builder first chooses the oldest compacted-pair
+/// start that fits a high-water target, so the history head normally stays
+/// byte-stable across turns; [`fit_history_to_budget`] remains the absolute
+/// backstop. Region ③ is never part of it. `Some(0)` or `None` sends the
+/// windowed history untouched.
 ///
 /// `cache` lets a turn's calls reuse the history regions instead of
 /// rebuilding them per call (see [`SendContextCache`]).
@@ -199,15 +212,10 @@ pub(crate) fn build_send_context_cached<'a>(
             out.extend_from_slice(&cache.region2);
             regions.resize(region1_len + region2_len, 2);
 
-            // Current turn. Verbatim by default (`turn_tool_result_cap`
-            // unset, so `0` short-circuits): the model is reasoning over
-            // these tool results mid-loop, so they normally stay
-            // complete. When the cap is configured, oversized results
-            // keep head and tail with the middle dropped — what a result
-            // is read for usually sits at the ends, and the marker tells
-            // the model how to page the gap. Both sentinel and default
-            // mean off; see the doc above.
-            let turn_cap = strategy.turn_tool_result_cap.unwrap_or(0);
+            // Current turn. Same tool-result policy as region ② — when this
+            // turn is promoted into the verbatim prior next turn, its bytes
+            // must already match what the provider cached.
+            let turn_cap = verbatim_result_cap(strategy);
             for msg in current {
                 out.push(cap_tool_result_content_with(
                     msg,
@@ -223,14 +231,18 @@ pub(crate) fn build_send_context_cached<'a>(
 
 /// Build regions ① (compacted older pairs) and ② (recent turns verbatim) from
 /// the persisted prefix, fitted to `max_history_tokens`.
+///
+/// Region ① is a stable prefix, not a per-turn rolling rebuild: within the
+/// `window` cap, keep the oldest compacted pairs that still fit the budget
+/// high-water mark, and advance that start only when the newly completed turn
+/// makes the estimate exceed it. Provider prefix caches can then survive turn
+/// boundaries; the absolute budget backstop still applies afterwards.
 fn build_history_regions(
     provider: &dyn Provider,
     prior: &[serde_json::Value],
     strategy: &ContextStrategyConfig,
 ) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
-    // `tool_result_cap`: Some(0) and None both mean "off" — let the
-    // helper short-circuit on cap == 0.
-    let cap = strategy.tool_result_cap.unwrap_or(0);
+    let cap = verbatim_result_cap(strategy);
 
     // The most recent `note_window` prior turns are sent VERBATIM
     // (structured tool_calls + results) instead of being folded into
@@ -244,20 +256,92 @@ fn build_history_regions(
     let verbatim_start = crate::session::verbatim_start_index(prior, note_window);
     let (compact_prior, verbatim_prior) = prior.split_at(verbatim_start);
 
+    // Region ② — recent turns verbatim, minus round-tripped
+    // history notes (metadata, not conversation; re-sending them as
+    // user text is the pattern that triggered the leak). Apply the
+    // shared tool-result policy to each message; non-tool messages are
+    // pass-through, so the cap is cheap.
+    let mut region2: Vec<serde_json::Value> = Vec::new();
+    for msg in verbatim_prior {
+        if crate::session::is_history_note(msg) {
+            continue;
+        }
+        region2.push(cap_tool_result_content_with(
+            msg,
+            cap,
+            crate::session::truncate_text_keeping_edges,
+        ));
+    }
+
     // Older pairs compact to text-only user/assistant. No history
     // notes here — the recent pairs are already verbatim, so notes
     // would be redundant (and are the leak trigger).
     let verbatim_pairs = crate::session::extract_pairs(verbatim_prior).len();
-    let compact_keep = strategy.window.saturating_sub(verbatim_pairs);
-    let compacted =
-        crate::session::extract_user_assistant_pairs(compact_prior, compact_keep, Some(0));
+    let compact_pairs = crate::session::extract_pairs(compact_prior);
+    let compact_capacity = strategy.window.saturating_sub(verbatim_pairs);
+    let min_skip = compact_pairs.len().saturating_sub(compact_capacity);
+    let window_skip = min_skip;
 
-    // Built region by region so `max_history_tokens` can weigh and
-    // trim them as blocks before anything reaches the payload.
-    // Region ① leads with the history marker and keeps it: it
-    // explains the text-only block the compacted pairs form.
+    // Pre-format pair payloads so candidate starts can be weighed without
+    // re-extracting the raw prefix for every budget step.
+    let pair_payloads: Vec<Vec<serde_json::Value>> = compact_pairs
+        .iter()
+        .map(|pair| {
+            let raw = if let Some(assistant) = &pair.assistant {
+                vec![pair.user.clone(), assistant.clone()]
+            } else {
+                vec![pair.user.clone()]
+            };
+            raw.iter()
+                .filter_map(|msg| format_cleaned_message(provider, msg))
+                .collect()
+        })
+        .collect();
+    let mut suffix_tokens = vec![0usize; pair_payloads.len() + 1];
+    for (idx, payloads) in pair_payloads.iter().enumerate().rev() {
+        suffix_tokens[idx] =
+            suffix_tokens[idx + 1] + payloads.iter().map(est_message_tokens).sum::<usize>();
+    }
+
+    // Aim below the absolute budget: the next turn will append to the tail,
+    // and this headroom keeps that append from advancing the start again.
+    let budget_target = strategy
+        .max_history_tokens
+        .filter(|&budget| budget > 0)
+        .map(|budget| budget.saturating_sub(budget / 4).max(1));
+    let mut skip = min_skip;
+    if let Some(target) = budget_target {
+        let marker_tokens = if compact_pairs.is_empty() {
+            0
+        } else {
+            est_message_tokens(&provider.format_user_message(&[ContentBlock::Text {
+                text: crate::session::HISTORY_MARKER_TEXT.into(),
+            }]))
+        };
+        let region2_tokens = region2.iter().map(est_message_tokens).sum::<usize>();
+        while skip < compact_pairs.len()
+            && marker_tokens + suffix_tokens[skip] + region2_tokens > target
+        {
+            skip += 1;
+        }
+    }
+
+    let compacted = crate::session::extract_user_assistant_pairs_range(
+        compact_prior,
+        skip,
+        compact_pairs.len().saturating_sub(skip),
+        Some(0),
+    );
+
+    // Region ① leads with the history marker and keeps it: it explains the
+    // text-only block the compacted pairs form. A budget may trim that block
+    // away entirely; the marker still survives as the floor that labels it.
+    let marker_floor = budget_target.is_some()
+        && skip > window_skip
+        && skip >= compact_pairs.len()
+        && !compact_pairs.is_empty();
     let mut region1: Vec<serde_json::Value> = Vec::new();
-    if !compacted.is_empty() {
+    if !compacted.is_empty() || marker_floor {
         region1.push(provider.format_user_message(&[ContentBlock::Text {
             text: crate::session::HISTORY_MARKER_TEXT.into(),
         }]));
@@ -269,19 +353,6 @@ fn build_history_regions(
         if let Some(formatted) = format_cleaned_message(provider, msg) {
             region1.push(formatted);
         }
-    }
-
-    // Region ② — recent turns verbatim, minus round-tripped
-    // history notes (metadata, not conversation; re-sending them as
-    // user text is the pattern that triggered the leak). Apply the
-    // tool-result byte cap to each message (non-tool messages are
-    // pass-through, so the cap is cheap).
-    let mut region2: Vec<serde_json::Value> = Vec::new();
-    for msg in verbatim_prior {
-        if crate::session::is_history_note(msg) {
-            continue;
-        }
-        region2.push(cap_tool_result_content(msg, cap));
     }
 
     fit_history_to_budget(&mut region1, &mut region2, strategy.max_history_tokens);
@@ -416,7 +487,8 @@ fn is_wide_char(ch: char) -> bool {
 }
 
 /// Truncate oversized tool-result `content` to `cap` bytes, head-only.
-/// Region ②'s cap; see [`cap_tool_result_content_with`].
+/// Test helper for [`cap_tool_result_content_with`].
+#[cfg(test)]
 fn cap_tool_result_content(msg: &serde_json::Value, cap: usize) -> serde_json::Value {
     cap_tool_result_content_with(msg, cap, crate::session::truncate_text)
 }
@@ -1281,6 +1353,61 @@ mod render_raw_context_tests {
         assert_eq!(cache.history_rebuilt(), Some(true));
     }
 
+    /// The wire bytes through the end of turn N must be a prefix of turn
+    /// N+1's first request. Otherwise provider prompt caches restart at every
+    /// turn boundary even when the history itself did not change.
+    #[test]
+    fn sliding_window_keeps_prefix_stable_across_turn_boundary() {
+        let prior = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2"}),
+            json!({"role": "user", "content": "u3"}),
+            json!({"role": "assistant", "content": "a3"}),
+        ];
+        let big = "x".repeat(2000);
+        let mut previous_turn = prior.clone();
+        previous_turn.extend([
+            json!({"role": "user", "content": "u4"}),
+            json!({"role": "assistant", "content": "", "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": big}),
+            json!({"role": "assistant", "content": "done"}),
+        ]);
+
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 10,
+            note_window: Some(2),
+            tool_result_cap: Some(600),
+            turn_tool_result_cap: Some(600),
+            max_history_tokens: None,
+        };
+
+        let prior_len = prior.len();
+        let (turn_end, _) =
+            build_send_context_with_regions(&prov(), &previous_turn, prior_len, &cfg);
+
+        let next_prior_len = previous_turn.len();
+        let mut next_turn = previous_turn.clone();
+        next_turn.push(json!({"role": "user", "content": "u5"}));
+        let (next_first, _) =
+            build_send_context_with_regions(&prov(), &next_turn, next_prior_len, &cfg);
+
+        let turn_end_wire = serde_json::to_string(turn_end.as_ref()).unwrap();
+        let next_first_wire = serde_json::to_string(next_first.as_ref()).unwrap();
+        assert!(
+            next_first_wire.starts_with(&turn_end_wire),
+            "next turn must extend the previous wire prefix; common prefix diverged first at {}",
+            next_first_wire
+                .char_indices()
+                .zip(turn_end_wire.chars())
+                .find(|((_, a), b)| a != b)
+                .map(|((idx, _), _)| idx)
+                .unwrap_or_else(|| turn_end_wire.len().min(next_first_wire.len()))
+        );
+    }
+
     #[test]
     fn history_marker_omitted_when_compacted_region_is_empty() {
         // window == verbatim_pairs, so the compact region has zero pairs.
@@ -1471,9 +1598,8 @@ mod render_raw_context_tests {
     fn build_send_context_applies_cap_to_verbatim_region() {
         let big = "y".repeat(2000);
         // Two prior turns, each with a tool call + big result. Both tool
-        // results live in region ② (verbatim prior) and must get capped.
-        // Region ③ (the current turn) is no longer capped — covered by
-        // `build_send_context_does_not_cap_current_turn_even_when_cap_set`.
+        // results live in region ② (verbatim prior) and must get capped under
+        // the same policy as region ③.
         let prior = vec![
             json!({"role": "user", "content": "u1"}),
             json!({"role": "assistant", "content": "calling bash", "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
@@ -1526,19 +1652,16 @@ mod render_raw_context_tests {
         );
     }
 
-    /// Region ③ (current turn) is never truncated, regardless of
-    /// `tool_result_cap`. The full tool result must appear in the wire
-    /// payload with no truncation marker.
+    /// Regions ② and ③ share one cap policy. A tool result must be capped the
+    /// same way before and after it is promoted from current turn into the
+    /// verbatim prior; otherwise the next turn's request prefix changes.
     #[test]
-    fn build_send_context_does_not_cap_current_turn_even_when_cap_set() {
+    fn build_send_context_applies_history_cap_to_current_turn_when_turn_cap_unset() {
         let big = "y".repeat(2000);
         let prior = vec![
             json!({"role": "user", "content": "u1"}),
             json!({"role": "assistant", "content": "a1"}),
         ];
-        // Current turn contains a tool result mid-loop. The model is
-        // reasoning over this content; truncating it would corrupt
-        // mid-loop state.
         let current = vec![
             json!({"role": "user", "content": "u2"}),
             json!({"role": "assistant", "content": "", "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
@@ -1552,24 +1675,22 @@ mod render_raw_context_tests {
             mode: ContextStrategy::SlidingWindow,
             window: 5,
             note_window: Some(5),
-            tool_result_cap: Some(50), // cap is ON
+            tool_result_cap: Some(50),
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
         let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
         let wire = serde_json::to_string(out.as_ref()).unwrap();
 
-        // Full 2000-byte content must appear in region 3.
         assert!(
-            wire.contains(&big),
-            "current-turn tool result was truncated: {wire}"
+            !wire.contains(&big),
+            "current-turn tool result must use the shared verbatim cap: {wire}"
         );
         assert!(
-            !wire.contains("[truncated"),
-            "current-turn tool result has truncation marker: {wire}"
+            wire.contains("[truncated"),
+            "current-turn tool result is missing the truncation marker: {wire}"
         );
 
-        // The tool message is labelled region 3 (not 2).
         let tool_idx = out
             .iter()
             .position(|m| m["role"] == "tool")
@@ -1580,9 +1701,9 @@ mod render_raw_context_tests {
         );
     }
 
-    /// With `turn_tool_result_cap` set, region ③ is bounded too — head and
-    /// tail kept, middle dropped with a paging marker — while region ② stays
-    /// governed by `tool_result_cap` alone.
+    /// With `turn_tool_result_cap` set, regions ② and ③ share that override —
+    /// head and tail kept, middle dropped with a paging marker — regardless of
+    /// `tool_result_cap`.
     #[test]
     fn build_send_context_caps_current_turn_when_turn_cap_set() {
         let big = "z".repeat(4000) + "ERROR: the tail matters";
@@ -1638,11 +1759,12 @@ mod render_raw_context_tests {
         );
     }
 
-    /// The turn cap must not leak into region ② — a prior-turn result stays
-    /// whole while the turn cap is on and `tool_result_cap` is off.
+    /// `turn_tool_result_cap` overrides the history cap across the whole
+    /// verbatim window, including prior turns. That shared policy is what lets
+    /// a completed current turn move into region ② without changing bytes.
     #[test]
-    fn build_send_context_turn_cap_does_not_touch_prior_turn() {
-        let big = "w".repeat(3000);
+    fn build_send_context_turn_cap_overrides_prior_verbatim_cap() {
+        let big = "w".repeat(3000) + "ERROR: tail matters";
         let prior = vec![
             json!({"role": "user", "content": "u1"}),
             json!({"role": "assistant", "content": "a1"}),
@@ -1667,16 +1789,19 @@ mod render_raw_context_tests {
         let (out, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
         let wire = serde_json::to_string(out.as_ref()).unwrap();
         assert!(
-            wire.contains(&big),
-            "region ② must stay untouched by the turn cap: {}",
-            &wire[..wire.len().min(200)]
+            !wire.contains(&"w".repeat(3000)),
+            "region ② must honour the shared turn cap: {wire}"
+        );
+        assert!(
+            wire.contains("ERROR: tail matters"),
+            "shared cap must keep the result tail: {wire}"
         );
     }
 
-    /// `Some(0)` is the explicit-off sentinel and must behave exactly like
-    /// `None` — the "switch off" path the command writes.
+    /// `turn_tool_result_cap = Some(0)` explicitly switches the shared
+    /// verbatim policy off, overriding a configured `tool_result_cap`.
     #[test]
-    fn build_send_context_turn_cap_zero_is_off() {
+    fn build_send_context_turn_cap_zero_overrides_history_cap() {
         let big = "q".repeat(4000);
         let prior = vec![json!({"role": "user", "content": "u1"})];
         let current = vec![
@@ -1702,14 +1827,15 @@ mod render_raw_context_tests {
         };
         let (a, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &none_cfg);
         let (b, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &zero_cfg);
-        assert_eq!(
-            serde_json::to_string(a.as_ref()).unwrap(),
-            serde_json::to_string(b.as_ref()).unwrap(),
-            "Some(0) must behave identically to None"
+        assert!(
+            serde_json::to_string(a.as_ref())
+                .unwrap()
+                .contains("[truncated"),
+            "history cap remains active when the turn cap is unset"
         );
         assert!(
             serde_json::to_string(b.as_ref()).unwrap().contains(&big),
-            "turn cap 0 must leave the current turn whole"
+            "turn cap 0 must leave the whole verbatim window uncapped"
         );
     }
 
@@ -1834,6 +1960,13 @@ mod render_raw_context_tests {
         }
     }
 
+    /// The builder targets 75% of the configured budget so the next turn can
+    /// append without immediately advancing the stable prefix. A test that
+    /// wants an exact history weight therefore has to configure ~4/3 of it.
+    fn configured_budget_for(target: usize) -> usize {
+        target + target.div_ceil(3)
+    }
+
     /// `None` and `Some(0)` are the same "off" state — the payload must be
     /// byte-identical to what an unconfigured build sends.
     #[test]
@@ -1892,10 +2025,10 @@ mod render_raw_context_tests {
             uncapped.len() - expected.len() == 2,
             "fixture must shed exactly the oldest pair, got {uncapped:?}"
         );
-        let budget: usize = expected.iter().map(est_message_tokens).sum();
+        let target: usize = expected.iter().map(est_message_tokens).sum();
 
         let tight = ContextStrategyConfig {
-            max_history_tokens: Some(budget),
+            max_history_tokens: Some(configured_budget_for(target)),
             ..base.clone()
         };
         let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &tight);
@@ -1942,10 +2075,10 @@ mod render_raw_context_tests {
             })
             .cloned()
             .collect();
-        let budget: usize = expected.iter().map(est_message_tokens).sum();
+        let target: usize = expected.iter().map(est_message_tokens).sum();
 
         let tight = ContextStrategyConfig {
-            max_history_tokens: Some(budget),
+            max_history_tokens: Some(configured_budget_for(target)),
             ..base.clone()
         };
         let (out, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &tight);
@@ -2034,10 +2167,10 @@ mod render_raw_context_tests {
             6,
             "marker (1) + the newest verbatim turn (user, tool call, tool result, final = 4) + the current turn (1): {expected:?}"
         );
-        let budget: usize = expected.iter().map(est_message_tokens).sum();
+        let target: usize = expected.iter().map(est_message_tokens).sum();
 
         let tight = ContextStrategyConfig {
-            max_history_tokens: Some(budget),
+            max_history_tokens: Some(configured_budget_for(target)),
             ..base
         };
         let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &tight);

@@ -498,12 +498,17 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # is heuristic (CJK characters ~1 token, other bytes ~1/4), not a tokenizer.
 # The current turn is not part of it. Unset by default.
 # mult: region-① block multiplier (sliding_window only). The compact block
-# holds up to window × mult pairs before its head jumps one window forward;
-# between jumps the block only appends, so the wire prefix stays
-# byte-stable across turns (prompt-cache friendly). Default: 2. 1 = slide
-# by one pair every turn (pre-block behavior); fractional values (e.g.
-# 0.5) shrink the block below a window (constant size, sliding every
-# turn); larger values space the jumps further apart.
+# holds up to window × mult pairs (capped at MAX_BLOCK_PAIRS = 200) before
+# its head jumps forward; between jumps the block only appends, so the
+# wire prefix stays byte-stable across turns (prompt-cache friendly).
+# Default: 2. 1 = slide by one pair every turn (pre-block behavior);
+# fractional values (e.g. 0.5) shrink the block below a window (constant
+# size, sliding every turn). Past mult ≈ 2 the jump interval saturates at
+# `window` turns — larger values only enlarge the block (more history
+# retained per turn, at token cost), they do not space the jumps further
+# apart. Note: a binding max_history_tokens trims region ① oldest-first
+# after the build and breaks the cross-turn prefix stability the block
+# buys.
 # context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048 }
 # context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048, max_history_tokens = 30000 }
 # context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048, mult = 2.0 }

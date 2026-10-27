@@ -457,9 +457,10 @@ pub async fn run(
         );
         let context_build_ms = build_started.elapsed().as_millis() as u64;
         // Persist the region-① block anchor when a rebuild moved it (a
-        // block jump or a cold rebuild). The rebuild happens at most once
-        // per turn — the first call of this run — so the write does too,
-        // and only on turns where the anchor actually changed.
+        // block jump or a cold rebuild). Normally that is the first build
+        // of the turn; a cancellation truncation can rebuild once more in
+        // the same turn, where the equality guard in persist_block_anchor
+        // makes the extra write a no-op.
         if send_context_cache.history_rebuilt() == Some(true)
             && send_context_cache.block_anchor() != loaded_block_anchor
         {

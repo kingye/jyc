@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use jyc_types::state_dir::resolve_state_dir;
 
-use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
+use jyc_types::channel::{ContextStrategy, ContextStrategyConfig, MAX_MULT};
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
@@ -64,10 +64,12 @@ const MAX_TURN_TOOL_RESULT_CAP: usize = 1024 * 1024;
 /// there — so a larger value would only disguise a misconfiguration.
 const MAX_HISTORY_TOKENS: usize = 4_000_000;
 
-/// Upper bound for the region-① block multiplier. The reader parses
-/// `window × mult` pair-turns per turn-start, so an unbounded multiplier
-/// would turn the bounded reader back into a full-journal scan.
-const MAX_MULT: f64 = 64.0;
+// The region-① block multiplier range comes from
+// [`jyc_types::channel::MAX_MULT`] (imported above) — the same range the
+// config resolver clamps to. The reader parses `block_capacity`
+// pair-turns per turn-start (capped at
+// [`jyc_types::channel::MAX_BLOCK_PAIRS`]), so an unbounded multiplier
+// would turn the bounded reader back into a full-journal scan.
 
 #[async_trait]
 impl CommandHandler for ContextCommandHandler {
@@ -448,8 +450,12 @@ fn describe_strategy(cfg: &ContextStrategyConfig) -> String {
             if let Some(t) = cfg.max_history_tokens {
                 s.push_str(&format!(", max_history_tokens={t}"));
             }
-            if let Some(m) = cfg.mult {
-                s.push_str(&format!(", mult={m}"));
+            if cfg.mult.is_some() {
+                // Print the resolved multiplier: the config resolver
+                // clamps, and reporting the configured value (e.g.
+                // mult=0.02 for an effective 0.1) would lie about the
+                // block the strategy actually builds.
+                s.push_str(&format!(", mult={}", cfg.mult()));
             }
             s.push(')');
             s

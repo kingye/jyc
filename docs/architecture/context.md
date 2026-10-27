@@ -181,11 +181,16 @@ pairs before it, from the block head onward.
 #### The region-① block anchor
 
 Region ① is **block-anchored** so its wire prefix stays stable across
-turns. The head position persists across turns as two FNV-1a hashes
-(block-head pair's user/assistant text) in
-`agent-session.json` (`SessionState.history_block_anchor`) — same file,
-same lifecycle: `/reset` and `/new` delete it together with the journal
-acknowledgement, which is exactly when an anchor must be dropped.
+turns. The head position persists across turns in
+`agent-session.json` (`SessionState.history_block_anchor` +
+`history_block_anchor_keep`): two FNV-1a hashes of the block-head
+pair's user/assistant text, plus the pair count the block held when
+the anchor was written. The hashes alone cannot distinguish two pairs
+with identical text (a topic that keeps receiving "ok"), so the pair
+count names the expected head and match resolution picks the matching
+pair nearest it. Same file, same lifecycle: `/reset` and `/new` delete
+it together with the journal acknowledgement, which is exactly when an
+anchor must be dropped.
 
 - **Within a block** the head does not move: each turn only *appends*
   one pair at the region's tail, so the bytes before it are identical
@@ -193,8 +198,12 @@ acknowledgement, which is exactly when an anchor must be dropped.
 - **Jump.** When the block outgrows `window × mult` pairs (capacity
   `round(window × mult)`, landing floor `round(window × min(mult, 1))`),
   the head jumps forward so the block lands on `max(floor, capacity −
-  floor + 1)` pairs. One turn in `window × (mult − 1) + 1` breaks the
-  prefix; the rest hit the cache. `mult = 1` makes the landing equal
+  floor + 1)` pairs. The jump period is `capacity + 1 − landing`: one
+  prefix-breaking turn every `window × (mult − 1) + 1` turns while the
+  capacity is below `2 × window − 1`, and every `window` turns past
+  that point — past `mult ≈ 2` a larger multiplier does **not** space
+  the jumps further apart, it only enlarges the block (retains more
+  history per turn, at token cost). `mult = 1` makes the landing equal
   the capacity — a constant-size block that slides one pair every turn
   (the pre-block behavior); fractional `mult` (e.g. `0.5`) shrinks the
   block below a window (constant size, sliding every turn).
@@ -204,10 +213,20 @@ acknowledgement, which is exactly when an anchor must be dropped.
   changed beyond the reader depth), the block rebuilds from the last
   `capacity` pairs and re-anchors. All paths converge to the same
   state for the same journal and config.
-- The reader depth `window × mult + note_window` guarantees the
-  anchored head is always inside the delivered slice for a
-  journal-consistent session: the block never exceeds the capacity and
-  the verbatim region is the openers on top.
+- **Budget trim breaks the anchor's stability.** `max_history_tokens`
+  weighs the two history regions *after* the block is built and sheds
+  region ①'s oldest messages one by one, so while the budget is
+  binding the sent block's head creeps forward every turn and the
+  cross-turn prefix breaks anyway — while still paying the larger
+  block and reader depth. The block anchor and a tight
+  `max_history_tokens` are competing levers; expect the stability win
+  only when the budget rarely binds.
+- The reader depth `block_capacity + note_window + 1` guarantees the
+  anchored head is inside the delivered slice for a journal-consistent
+  session: the block never exceeds the capacity (itself capped at
+  `MAX_BLOCK_PAIRS` so window × mult compositions stay bounded), the
+  verbatim region is the openers on top, and the `+ 1` slack absorbs a
+  verbatim turn that ever yields more than one pair.
 
 ① and ② are built **once per turn**, not once per LLM call: they depend
 only on `raw_context[..prior_len]`, which is fixed while a turn runs

@@ -206,6 +206,32 @@ pub struct SessionState {
     /// existed deserialize as `None` and untouched files stay unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_block_anchor: Option<[u64; 2]>,
+    /// Pair count the block held when the anchor was written (`keep`).
+    /// Disambiguates duplicate-text pairs that hash identically: the next
+    /// build expects the head near `pair_count − keep − 1` (the extra `− 1`
+    /// is the pair that aged into the compact region since the write) and
+    /// picks the matching pair closest to that position. `None` (session
+    /// files from before the field existed) resolves a hash match nearest
+    /// the tail instead — a conservative fallback, not a wrong-block risk.
+    /// Stale within a block (the persist guard compares the hash only, so
+    /// the value on disk is from the last jump); the closest-match
+    /// resolution tolerates that.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_block_anchor_keep: Option<u64>,
+}
+
+/// Region-① block anchor as persisted in the session file: identifies the
+/// block-head pair (FNV-1a text hashes) and records how many compact pairs
+/// the block held when the anchor was written, so a duplicate-text pair
+/// resolves to the right occurrence instead of the oldest hash match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockAnchor {
+    /// FNV-1a hashes of the head pair's user/assistant text.
+    pub hash: [u64; 2],
+    /// Pairs from the head pair to the compact-region tail at write time.
+    /// `0` means unknown (legacy anchor): match resolution falls back to
+    /// the matching pair nearest the tail.
+    pub keep: u64,
 }
 
 // ─── Conversation Persistence ────────────────────────────────────────
@@ -630,22 +656,38 @@ pub async fn session_token_totals(topic_name: &str, topic_path: &Path) -> TokenT
 /// the session file is missing (fresh topic) or predates the field — both
 /// make the next context build fall back to a cold block anchored at the
 /// tail `window` pairs.
-pub async fn session_block_anchor(topic_name: &str, topic_path: &Path) -> Option<[u64; 2]> {
+pub async fn session_block_anchor(topic_name: &str, topic_path: &Path) -> Option<BlockAnchor> {
     let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
-    load_session_state(&session_path).await.history_block_anchor
+    let state = load_session_state(&session_path).await;
+    state.history_block_anchor.map(|hash| BlockAnchor {
+        hash,
+        keep: state.history_block_anchor_keep.unwrap_or(0),
+    })
 }
 
 /// Persist the region-① block anchor when it changed. Called from the
-/// agent loop after a context rebuild (at most once per turn, and only on
-/// turns where the block jumped or was rebuilt cold); skips the write when
-/// the value already matches so the common no-jump turn costs nothing.
-pub async fn persist_block_anchor(topic_name: &str, topic_path: &Path, anchor: Option<[u64; 2]>) {
+/// agent loop after a context rebuild (the first build of a turn, and only
+/// on turns where the block jumped or was rebuilt cold; a cancellation
+/// truncation can trigger one extra rebuild+persist in the same turn —
+/// harmless, the equality guard makes the second write a no-op).
+///
+/// The guard compares the hash only, so within a block — where the head
+/// stays put — the no-jump turn costs nothing. The `keep` on disk is then
+/// from the last jump: fresh for the turn right after it, staler the
+/// longer the block runs, and resolution tolerates that (it picks the
+/// matching pair nearest the expected head).
+pub async fn persist_block_anchor(
+    topic_name: &str,
+    topic_path: &Path,
+    anchor: Option<BlockAnchor>,
+) {
     let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
-    if state.history_block_anchor == anchor {
+    if state.history_block_anchor == anchor.map(|a| a.hash) {
         return;
     }
-    state.history_block_anchor = anchor;
+    state.history_block_anchor = anchor.map(|a| a.hash);
+    state.history_block_anchor_keep = anchor.map(|a| a.keep);
     save_session_state(topic_name, &session_path, &state).await;
 }
 
@@ -2456,7 +2498,10 @@ mod tests {
     async fn block_anchor_roundtrips_through_session_file() {
         let tmp = tempfile::TempDir::new().unwrap();
         jyc_types::state_dir::register("anchor-roundtrip", &tmp.path().join(".jyc"));
-        let anchor = Some([0x1234_u64, 0x5678]);
+        let anchor = Some(super::BlockAnchor {
+            hash: [0x1234_u64, 0x5678],
+            keep: 7,
+        });
         super::persist_block_anchor("anchor-roundtrip", tmp.path(), anchor).await;
         assert_eq!(
             super::session_block_anchor("anchor-roundtrip", tmp.path()).await,

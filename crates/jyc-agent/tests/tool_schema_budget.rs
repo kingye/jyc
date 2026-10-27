@@ -130,13 +130,14 @@ const TOTAL_BUDGET: usize = 7_800;
 
 /// The advertised set — the core tools plus the loader's index — in
 /// characters. This is the standing per-call cost after the extended group
-/// was moved out of the request: the seven extended tools (their schemas
-/// were 3,867 chars together) are advertised only after the model loads
-/// them, and the loader's own index is what it reads instead.
+/// was moved out of the request: the six extended tools are advertised only
+/// after the model loads them, and the loader's own index is what it reads
+/// instead. `jyc_send_message` stays in the advertised set because attachment
+/// replies must be discoverable without a loader call.
 ///
 /// A topic that never delegates, never publishes and never fetches a URL
 /// pays this and not the whole registry.
-const ADVERTISED_TOTAL_BUDGET: usize = 4_050;
+const ADVERTISED_TOTAL_BUDGET: usize = 4_600;
 
 /// `jyc_spawn_subagent`'s `type` description ends with the catalog of roles
 /// configured *on this machine*, so its length is configuration rather than
@@ -203,6 +204,39 @@ fn the_extended_tools_are_not_advertised_until_they_are_loaded() {
     assert!(
         advertised.iter().any(|n| n == "read"),
         "the core tools must still be advertised: {advertised:?}"
+    );
+}
+
+/// `jyc_send_message` carries attachment-bearing replies, so it must be
+/// discoverable in the core set rather than behind the loader.
+#[test]
+fn send_message_is_advertised_without_loading_the_extended_group() {
+    let registry = built_in_registry();
+    let advertised = registry.definitions();
+    let names: Vec<&str> = advertised.iter().map(|d| d.name.as_str()).collect();
+
+    assert!(
+        names.contains(&"jyc_send_message"),
+        "jyc_send_message must be advertised before the group is loaded: {names:?}"
+    );
+
+    let loader = advertised
+        .iter()
+        .find(|d| d.name == "load_extended_tools")
+        .expect("the loader is advertised");
+    assert!(
+        loader
+            .description
+            .contains("Already available: read, write, edit, grep, ask_user, jyc_send_message."),
+        "the loader must list jyc_send_message as already available: {}",
+        loader.description
+    );
+    assert!(
+        !loader
+            .description
+            .contains("jyc_send_message (send a proactive message to a channel)"),
+        "jyc_send_message must not remain in the loaded group: {}",
+        loader.description
     );
 }
 

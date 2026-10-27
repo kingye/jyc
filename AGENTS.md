@@ -123,8 +123,9 @@ and uses an in-process AI agent to generate replies.
 - 父 topic 关闭（含上游 auto-close）会连同整棵子树一起关闭（子、孙……各自的 `<agents dir>/<child>` 一并清理）：禁止假设子 agent 能活过父；共享目录的子 agent 关闭时只删自己的 state，父的目录由父决定
 
 ### Reply vs. SendMessage
-- The agent's final message at the end of a turn IS the in-topic reply; no reply tool exists.
-- `jyc_send_message` is only for out-of-topic proactive messages; never use it to spam users — limit to alerts and notifications.
+- The agent's final message at the end of a turn carries an ordinary text reply; no reply tool exists.
+- Use `jyc_send_message` for proactive alerts, cross-channel messages, or a reply that carries attachments; never use it to spam users.
+- Use `jyc_send_to_topic` to send a message to another topic for agent processing.
 
 ### Task List
 - Multi-step work (a plan, an implementation, a cross-file fix) must start with `task_create`; the list is the topic's single plan of record.

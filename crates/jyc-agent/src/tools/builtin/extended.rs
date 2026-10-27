@@ -42,7 +42,6 @@ use crate::tools::registry::{ExtendedTools, ToolRegistry};
 pub const EXTENDED_TOOLS: &[(&str, &str)] = &[
     ("jyc_spawn_subagent", "delegate a task to a subagent topic"),
     ("jyc_send_to_topic", "message another topic"),
-    ("jyc_send_message", "send a proactive message to a channel"),
     ("list_topics", "list the channels and their active topics"),
     ("jyc_publish_file", "publish a file as a download link"),
     ("read_image", "view an image"),
@@ -52,10 +51,19 @@ pub const EXTENDED_TOOLS: &[(&str, &str)] = &[
 /// The core tools the loader mentions as already available.
 ///
 /// These are the ones a request carries whatever the model does — the file
-/// tools, the shell and the question tool. The list is filtered by what the
-/// registry actually holds, so a role that disables one of them is never
-/// told it is there.
-const CORE_TOOLS: &[&str] = &["read", "write", "edit", "bash", "grep", "ask_user"];
+/// tools, the shell, the question tool and `jyc_send_message`, which carries
+/// attachment-bearing replies. The list is filtered by what the registry
+/// actually holds, so a role that disables one of them is never told it is
+/// there.
+const CORE_TOOLS: &[&str] = &[
+    "read",
+    "write",
+    "edit",
+    "bash",
+    "grep",
+    "ask_user",
+    "jyc_send_message",
+];
 
 /// Bring the extended group into a registry: mark the tools it names, and
 /// register the tool that loads them.

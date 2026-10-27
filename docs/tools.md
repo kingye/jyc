@@ -256,11 +256,13 @@ channel, is not part of it):
 |------|----------------|
 | `jyc_spawn_subagent` | Delegate a task to a subagent topic |
 | `jyc_send_to_topic` | Message another topic |
-| `jyc_send_message` | Send a proactive message to a channel |
 | `list_topics` | List the channels and their active topics |
 | `jyc_publish_file` | Publish a file as a download link |
 | `read_image` | View an image |
 | `webfetch` | Fetch a URL as text |
+
+`jyc_send_message` is not in this group: it stays advertised with the core
+tools so an attachment-bearing reply is discoverable without a loader call.
 
 The loader's own description is the index of the group, so the model learns
 what it holds without the group's schemas being in the request.
@@ -302,7 +304,8 @@ There is no reply tool. The agent's final message at the end of a turn IS the in
 
 ### `jyc_send_message`
 
-Send a proactive out-of-topic message to an arbitrary recipient.
+Send a channel message to an arbitrary recipient, with optional attachments.
+It is part of the core advertised tool set, not the extended group.
 
 **Parameters:**
 - `recipient` (string, required): Channel-specific recipient identifier
@@ -320,13 +323,13 @@ Send a proactive out-of-topic message to an arbitrary recipient.
 - Other channels: channel-specific format
 
 **Constraints:**
-- Use ONLY for alerts and notifications
-- NEVER use for in-topic replies (the final message of the turn is the reply)
+- Use for proactive alerts, cross-channel messages, and replies that carry attachments
+- Use the final message of the turn for ordinary text-only replies
 - Requires a pre-warmed outbound adapter (`ToolContext.outbound`)
 
 **Example:**
 ```json
-{"recipient": "wecomkf:kf001:wmE8OcHAAA...", "subject": "System Alert", "message": "Disk usage exceeded 90%"}
+{"recipient": "wecomkf:kf001:wmE8OcHAAA...", "message": "Invoice package attached.", "attachments": ["invoices.zip"]}
 ```
 
 ---

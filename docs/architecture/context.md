@@ -138,19 +138,13 @@ pairs_in_prior` when unset (the implementation in
 `build_send_context_cached`
 computes this via `verbatim_start_index` + `extract_pairs(...).len()`):
 
-1. **Compacted history** — up to `max(0, window − recent)` older prior
-   turns, reduced to pure text and reformatted in the active provider's wire
-   format. This is a **stable prefix**, not a per-turn rolling rebuild: the
-   builder keeps the oldest compacted pair start that still fits the budget
-   high-water mark, and advances it only when the `window` cap or
-   `max_history_tokens` requires. Provider prompt caches can therefore
-   survive turn boundaries.
+1. **Compacted history** — the last `max(0, window − recent)` older
+   prior turns, reduced to pure text and reformatted in the active
+   provider's wire format.
 2. **Recent turns, verbatim** — the last `recent` prior turns with
    their **structured `tool_calls` / `tool_use` and tool results
-   intact**, passed through under the same tool-result policy as region ③.
-3. **Current turn, verbatim** — `raw_context[prior_len..]`, under that same
-   policy. When the turn completes, its bytes move unchanged into region ②
-   of the next request.
+   intact**, passed through untouched.
+3. **Current turn, verbatim** — `raw_context[prior_len..]`, untouched.
 
 ```mermaid
 flowchart TB
@@ -424,9 +418,8 @@ context_strategy = { mode = "full" }
 `window` counts **turns**, not messages or tokens. `note_window` is
 optional (unset = entire prior verbatim, `window` ignored; `0` = pure
 text window of the last `window` pairs) — see `note_window` above for
-the full boundary table. `tool_result_cap` is the default per-tool-result
-byte cap on the whole verbatim window; `turn_tool_result_cap` can override
-that policy for both regions ② and ③ — see below.
+the full boundary table. `tool_result_cap` is a per-tool-result byte
+cap on the verbatim region — see below.
 
 ### Verbatim tool-result cap (`tool_result_cap`)
 
@@ -436,11 +429,12 @@ tool results (`read` of a 1000-line file, `bash` test output, etc.) —
 the verbatim region can balloon quickly when a single user input
 spawns many tool calls.
 
-`tool_result_cap: N` is the default cap for each tool result in the
-verbatim regions ② and ③. Oversized string content is truncated with
-head and tail kept and a paging marker noting the dropped middle, so a
-completed current turn can be promoted into region ② on the next request
-without changing cached bytes. Only string content is capped:
+`tool_result_cap: N` caps each tool result in region ② (the verbatim
+prior region) at `N` bytes, suffixed with the standard `… [truncated N bytes]`
+marker (same format as the existing compaction truncation, so the model
+sees consistent truncation across all boundaries). Region ③ (the current
+turn) is untouched by it — see `turn_tool_result_cap` below. Only
+string content is capped:
 
 - OpenAI / simple wire format (`role: "tool"`, string `content`) —
   the string is truncated in place.
@@ -456,7 +450,7 @@ user/assistant pairs, no tool results to cap.
 |-------|----------|
 | unset / absent | Every tool result is sent in full. |
 | `Some(0)` | Explicit "off" sentinel — same as unset. |
-| `Some(N > 0)` | Cap each tool result in regions ② and ③ at `N` bytes. `turn_tool_result_cap`, when set, replaces this value for both regions. Default `2048`. |
+| `Some(N > 0)` | Cap each tool result in region ② (verbatim prior) at `N` bytes. Region ③ is governed by `turn_tool_result_cap`. Default `2048`. |
 
 **Resolution layer:** follows the same chain as the rest of
 `ContextStrategyConfig` (override file → matched pattern → first
@@ -469,12 +463,16 @@ even though that file still governs the turn itself. The CLI enforces
 `0 ≤ CAP ≤ 1 MiB`; larger caps must go through `config.toml` or
 `.jyc/context-strategy.json`.
 
-## `turn_tool_result_cap` — overriding the verbatim result policy
+## `turn_tool_result_cap` — bounding region ③
 
-Regions ② and ③ share one tool-result policy so a completed current turn
-can move into the verbatim prior without changing the request prefix.
-`turn_tool_result_cap: N` overrides `tool_result_cap` across both regions.
-An oversized result keeps its **head and tail** with the middle replaced by
+Region ③ is uncapped by default: the model is mid-reasoning over those
+tool results, and silently trimming what it is still working through is
+the more damaging failure. The cost is that one verbose result — a
+`read` of a large file, a chatty command — rides every remaining call
+of the turn, at full price each time.
+
+`turn_tool_result_cap: N` opts into a bound on region ③. An oversized
+result keeps its **head and tail** with the middle replaced by
 
 ```
 … [N bytes dropped from the middle — re-read with offset/limit to see the gap] …
@@ -483,15 +481,15 @@ An oversized result keeps its **head and tail** with the middle replaced by
 Head-only truncation would hide what a result is usually read for: the
 error at the bottom of a command's output, the totals of a grep. The
 marker states how much is missing and how to page it, so the cost of
-the cut is one extra tool call the model chooses to make. The shared
-policy counts the marker **inside** `N` — the caller gets the byte bound
-it asked for.
+the cut is one extra tool call the model chooses to make. Unlike
+`tool_result_cap`, whose marker sits on top of `N`, this cap counts the
+marker **inside** `N` — the caller gets the byte bound it asked for.
 
 | Value | Behavior |
 |-------|----------|
-| unset (default) | Regions ② and ③ use `tool_result_cap`. |
-| `Some(0)` | Explicit "off" sentinel for the shared policy, overriding a configured `tool_result_cap`. |
-| `Some(N > 0)` | Each tool result in regions ② and ③ keeps head + tail within `N` bytes total. Below ~128 bytes there is no room for both ends, so it degrades to the plain head-only cut. |
+| unset (default) | Region ③ sent in full. |
+| `Some(0)` | Explicit "off" sentinel — same as unset. |
+| `Some(N > 0)` | Each region ③ tool result keeps head + tail within `N` bytes total. Below ~128 bytes there is no room for both ends, so it degrades to the plain head-only cut. |
 
 Both wire shapes are handled exactly as for `tool_result_cap` (string
 `content` in place, or per-`tool_result`-block for Anthropic), and the
@@ -503,10 +501,10 @@ positional; `0` switches it off, omitting it keeps the configured
 value, ceiling 1 MiB), or from config as
 `context_strategy = { …, turn_tool_result_cap = 32768 }`.
 
-**Interplay with `note_window` and `mode`:** the cap applies to region ③
-always, and to region ② while prior turns are sent verbatim. With
-`note_window = 0` there is no verbatim prior region; with `mode = "full"`
-the context strategy does not shape tool results, so the cap is a no-op.
+**Interplay with `note_window`:** the cap only applies to messages in
+the verbatim region. If `note_window = 0` (text-only window) or
+`mode = "full"`, no tool results reach the wire verbatim, so the cap
+is a no-op even when set.
 
 **Why per-result, not global:** a single 5 KB `read` result is usually
 fine; ten 100 KB results from one bash test suite are the actual
@@ -526,11 +524,7 @@ they hold.
 context_strategy = { …, max_history_tokens = 30000 }
 ```
 
-The builder treats the configured budget as an absolute backstop, but
-targets 75% of it when choosing the compacted-history start. That
-headroom lets a newly completed turn append to the stable prefix instead
-of immediately moving it. If the absolute estimate is still over budget,
-the oldest history goes first:
+When the estimate is over budget the oldest history goes first:
 
 1. Region ① sheds its oldest messages. The leading history marker
    survives — it is what explains the text-only block.
@@ -538,9 +532,9 @@ the oldest history goes first:
    because a partial cut leaves a tool result whose `tool_use` is gone,
    which providers reject.
 
-Region ③ is never part of the budget: it is the turn in flight, and the
-shared verbatim result cap is its size lever. A budget smaller than the
-marker alone still sends the marker — that is the floor region ① trims to.
+Region ③ is never part of the budget: it is the turn in flight, and
+`turn_tool_result_cap` is its lever. A budget smaller than the marker
+alone still sends the marker — that is the floor region ① trims to.
 
 **The estimate is heuristic, not a tokenizer.** CJK characters count one
 token each (a Chinese glyph costs about what a short English word does,
@@ -555,11 +549,10 @@ positional; `0` switches it off, omitting it keeps the configured value,
 ceiling 4M tokens). Unset by default: the windowed history is sent
 byte-for-byte as before until you ask for a budget.
 
-**Interplay:** the budget is independent of `note_window` — it does not
-change which turns are verbatim. Within the `window` cap it controls how
-much compacted history survives while preserving the stable-prefix goal:
-choose the oldest start that fits the high-water target, and move it only
-when the weight actually requires.
+**Interplay:** the budget is independent of `window` and
+`note_window` — a generous budget changes nothing about which turns are
+verbatim, it only bounds how much of the history survives when the
+weight runs away.
 
 **Resolution chain** (highest wins):
 
@@ -577,7 +570,7 @@ when the weight actually requires.
 |---------|--------|
 | `/context` | Show current strategy and its source (`override` / `default`) |
 | `/context full` | Send the full context |
-| `/context sliding [N] [M] [CAP] [TURNCAP] [MAXHIST]` | Sliding window, N turns (default 10, max 200); M = note window (default 3, max 200); CAP = default tool-result byte cap for regions ② + ③ (0..1 MiB, default 2048); TURNCAP = optional override of CAP across both verbatim regions (0..1 MiB, unset by default; `0` turns the shared policy off); MAXHIST = token budget for regions ① + ② (0..4M, unset by default). An absent slot falls back to the configured value |
+| `/context sliding [N] [M] [CAP] [TURNCAP] [MAXHIST]` | Sliding window, N turns (default 10, max 200); M = note window (default 3, max 200); CAP = tool-result byte cap on verbatim region (0..1 MiB, default 2048); TURNCAP = same for the current turn (0..1 MiB, unset by default); MAXHIST = token budget for regions ① + ② (0..4M, unset by default). An absent slot falls back to the configured value; `0` switches a cap off |
 | `/context reset` | Remove the runtime override, revert to configured default |
 
 ## Code map

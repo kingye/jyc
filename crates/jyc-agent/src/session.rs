@@ -1396,49 +1396,9 @@ pub(crate) fn count_turn_openers(raw_context: &[serde_json::Value]) -> usize {
 /// pairs (`None` = notes on every kept pair); older pairs are text-only.
 /// Values above `keep_pairs` clamp to `keep_pairs`.
 ///
-/// Test convenience wrapper around [`extract_user_assistant_pairs_range`]
-/// with no skipped prefix. The production sliding-window builder uses the
-/// range form directly.
-#[cfg(test)]
+/// Shared by the sliding-window wire payload (passes the configured
+/// `note_window`) and the region builders (pass `None`).
 pub(crate) fn extract_user_assistant_pairs(
-    raw_context: &[serde_json::Value],
-    keep_pairs: usize,
-    note_window: Option<usize>,
-) -> Vec<serde_json::Value> {
-    extract_user_assistant_pairs_impl(raw_context, keep_pairs, note_window)
-}
-
-/// Like [`extract_user_assistant_pairs`], but returns the pair range
-/// `[skip_pairs, skip_pairs + keep_pairs)`: the oldest `skip_pairs`
-/// pair-producing turns are dropped first, then the NEXT `keep_pairs` of
-/// what remains are kept. Used by the stable-prefix sliding window to
-/// advance the compacted-history start without rebuilding the kept tail
-/// (it calls with `skip_pairs + keep_pairs == total`, i.e. keep-to-end).
-pub(crate) fn extract_user_assistant_pairs_range(
-    raw_context: &[serde_json::Value],
-    skip_pairs: usize,
-    keep_pairs: usize,
-    note_window: Option<usize>,
-) -> Vec<serde_json::Value> {
-    if keep_pairs == 0 {
-        return Vec::new();
-    }
-    let (_, total_pairs) = pairs_tail_start(raw_context, usize::MAX);
-    let remaining = total_pairs.saturating_sub(skip_pairs);
-    let keep = keep_pairs.min(remaining);
-    if keep == 0 {
-        return Vec::new();
-    }
-    // `start` opens the `skip_pairs`-th oldest pair; `end` opens the pair
-    // right after the range. `keep == remaining` (keep-to-end) yields
-    // `remaining - keep == 0`, where `pairs_tail_start` already returns
-    // `raw_context.len()`.
-    let start = pairs_tail_start(raw_context, remaining).0;
-    let end = pairs_tail_start(raw_context, remaining - keep).0;
-    extract_user_assistant_pairs_impl(&raw_context[start..end], keep, note_window)
-}
-
-fn extract_user_assistant_pairs_impl(
     raw_context: &[serde_json::Value],
     keep_pairs: usize,
     note_window: Option<usize>,
@@ -1764,25 +1724,6 @@ mod tests {
                 json!({"role": "user", "content": "u2"}),
                 json!({"role": "user", "content":
                     "[History note] assistant tool calls: read(path=\"f\")"}),
-                json!({"role": "assistant", "content": "a2"}),
-            ]
-        );
-    }
-
-    #[test]
-    fn extract_pairs_range_skips_oldest_pairs() {
-        let ctx = vec![
-            json!({"role": "user", "content": "u1"}),
-            json!({"role": "assistant", "content": "a1"}),
-            json!({"role": "user", "content": "u2"}),
-            json!({"role": "assistant", "content": "a2"}),
-            json!({"role": "user", "content": "u3"}),
-            json!({"role": "assistant", "content": "a3"}),
-        ];
-        assert_eq!(
-            super::extract_user_assistant_pairs_range(&ctx, 1, 1, Some(0)),
-            vec![
-                json!({"role": "user", "content": "u2"}),
                 json!({"role": "assistant", "content": "a2"}),
             ]
         );

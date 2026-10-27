@@ -2330,18 +2330,12 @@ JYC uses the following subset of the agent service API:
    (written by `/context full | sliding [N] | reset`).
 
    * `full` (default) — send the entire `agent-context.jsonl`.
-   * `sliding_window` — emits three parts in order:
-     1. Compacted older turns, reduced to text through the active
+   * `sliding_window` — emits two parts in order:
+     1. The last N user+assistant text pairs from the prior context,
+        reformatted in provider wire format via the active
         `Provider` (`format_user_message` / `build_raw_assistant_message`).
-        This region is a stable prefix: the builder advances its oldest
-        pair only when the `window` cap or `max_history_tokens` high-water
-        target requires, rather than rebuilding a rolling last-N block on
-        every turn.
-     2. The most recent prior turns verbatim, so tool calls / results keep
-        their structured wire shape.
-     3. The current turn verbatim (`raw_context[prior_len..]`), using the
-        same tool-result policy as region ② so its bytes remain unchanged
-        when promoted into that region next turn.
+     2. The current turn verbatim (`raw_context[prior_len..]`) so
+        tool calls / results stay coherent mid-loop.
 
    Resolution chain: runtime override file > the topic's own config
    (`[context_strategy]` in `<topic>/.jyc/config.toml` — including one a
@@ -2354,30 +2348,27 @@ JYC uses the following subset of the agent service API:
    `build_send_context` (`crates/jyc-agent/src/agent_loop/context.rs`) only
    shapes what that returned:
    for `full` it returns `Cow::Borrowed(&raw_context)`; for
-   `sliding_window` it returns `Cow::Owned` of `[stable_compacted_prior,
-   verbatim_prior, current_turn]`. Synthetic messages use the provider's
+   `sliding_window` it returns `Cow::Owned` of `[windowed_prior,
+   current_turn]`. Synthetic messages use the provider's
    own formatter, so Anthropic (`content: [...]`) and OpenAI-compat
    (`content: "..."`) wire formats both stay valid.
 
    Full mechanism reference (turn pairing, history notes, token safety
    nets, configuration): [docs/architecture/context.md](docs/architecture/context.md).
 
-   **`max_history_tokens` (2026-10-18; stable-prefix targeting 2026-10-27).**
-   `window` counts turns, so `window = 10` costs 2k tokens on a quiet topic
-   and 200k on one whose turns carry huge tool results. The budget is the
-   orthogonal lever: it caps what regions ① + ② weigh together. The builder
-   targets 75% of the configured value so a newly completed turn can append
-   without immediately moving the stable compacted-history prefix; beyond
-   that high-water target, the absolute trim drops the oldest history first
-   (region ①'s oldest messages — the drop is per message, so a pair can be
-   split; then region ②'s oldest **whole** turns — a partial cut would
-   orphan a tool result from its `tool_use`, which providers reject).
-   Region ③ is excluded: the turn in flight is bounded by the shared
-   verbatim result cap. The estimate is a heuristic, not a tokenizer — CJK
-   characters ×1, other bytes ÷4, plus a small per-message constant —
-   because a tokenizer dependency would buy precision this knob does not
-   need. Unset by default: without it the window cap alone determines the
-   payload.
+   **`max_history_tokens` (2026-10-18).** `window` counts turns, so
+   `window = 10` costs 2k tokens on a quiet topic and 200k on one whose
+   turns carry huge tool results. The budget is the orthogonal lever: it
+   caps what regions ① + ② weigh together, dropping the oldest history
+   first (region ①'s oldest messages — the drop is per message, so a pair
+   can be split; then region ②'s oldest **whole** turns — a partial cut
+   would orphan a tool result from its `tool_use`, which providers
+   reject). Region ③ is excluded: the turn in flight has
+   `turn_tool_result_cap`. The estimate is a heuristic, not a
+   tokenizer — CJK characters ×1, other bytes ÷4, plus a small
+   per-message constant — because a tokenizer dependency would buy
+   precision this knob does not need. Unset by default: without it the
+   payload is byte-identical to today's.
 
    **System Prompt Stability (2026-10-18).** The system prompt is
    **unchanged by runtime churn on purpose** — everything except the
@@ -2497,12 +2488,12 @@ tokens ↓
 │  · Reply instructions / History format / VCS     │
 ├─ messages ──────────────────────────────────────┤
 │  region ① 压缩历史          ~25-35k              │
-│  └ 窗口内旧轮次: user/assistant 文本原样,         │ ← 稳定头块：起点只在 window/
-│    tool call / result 省略                        │    预算高水位时前进 → 跨轮缓存
+│  └ 窗口内旧轮次: user/assistant 文本原样,         │ ← 每轮的"头块"：滑窗滑动
+│    tool call 折叠成 note (最近 M 对带 note)        │    几乎每轮都变 → 缓存止于此
 │  ★超 max_history_tokens 时从这里最老端开始丢       │
 │                                                   │
 │  region ② verbatim 前窗     ~10-15k              │
-│  └ 全结构保留, tool result 每块 ≤ 共享 cap        │ ← 当前轮完成提升进来时字节不变
+│  └ 全结构保留, tool result 每块 ≤ tool_result_cap │ ← 轮间整体后移, 内容稳定
 │  ★超预算时丢最老的"整轮"(半个轮次不可丢)          │
 │                                                   │
 │  region ③ 当前轮            0 → 增长             │
@@ -2510,8 +2501,8 @@ tokens ↓
 │  │        + 入站消息(含 <mode> 块) + 附件          │
 │  ├ assistant: tool_call                          │ ◇断点3 (n-3)
 │  ├ tool: result                                 │ ◇断点4 (n-2)
-│  │     与 region ② 共享 tool_result_cap /        │  ★同一 cap★ 留头尾 +
-│  │     turn_tool_result_cap 覆盖值                │  缺口标记
+│  │     默认原样携带 ★turn_tool_result_cap★       │  ★置了则 ≤ N 字节:
+│  │     设了则留头2/3 + 标记 + 尾1/3               │  头 2/3 + 缺口标记 + 尾 1/3
 │  ├   …(一轮内多轮工具调用, 每块结果各按各的帽)…    │
 │  └ assistant: 最终回复(不进后续 call 的输入)      │
 └──────────────────────────────────────────────────┘

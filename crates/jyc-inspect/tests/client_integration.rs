@@ -156,35 +156,43 @@ impl AgentService for BlockingAgent {
     }
 }
 
+fn test_message(channel: &str, topic: &str, text: &str) -> InboundMessage {
+    InboundMessage {
+        id: text.to_string(),
+        channel: channel.to_string(),
+        channel_uid: text.to_string(),
+        sender: "user".to_string(),
+        sender_address: "user@example.com".to_string(),
+        recipients: vec![],
+        topic: topic.to_string(),
+        content: MessageContent {
+            text: Some(text.to_string()),
+            html: None,
+            markdown: None,
+        },
+        timestamp: chrono::Utc::now(),
+        references: None,
+        reply_to_id: None,
+        external_id: None,
+        attachments: vec![],
+        metadata: HashMap::new(),
+        matched_pattern: None,
+    }
+}
+
+fn test_pattern(channel: &str) -> PatternMatch {
+    PatternMatch {
+        pattern_name: "invoice".to_string(),
+        channel: channel.to_string(),
+        matches: HashMap::new(),
+    }
+}
+
 async fn seed_topic(tm: &Arc<TopicManager>, channel: &str, topic: &str) {
     tm.enqueue(
-        InboundMessage {
-            id: "seed".to_string(),
-            channel: channel.to_string(),
-            channel_uid: "seed".to_string(),
-            sender: "user".to_string(),
-            sender_address: "user@example.com".to_string(),
-            recipients: vec![],
-            topic: topic.to_string(),
-            content: MessageContent {
-                text: Some("seed".to_string()),
-                html: None,
-                markdown: None,
-            },
-            timestamp: chrono::Utc::now(),
-            references: None,
-            reply_to_id: None,
-            external_id: None,
-            attachments: vec![],
-            metadata: HashMap::new(),
-            matched_pattern: None,
-        },
+        test_message(channel, topic, "seed"),
         topic.to_string(),
-        PatternMatch {
-            pattern_name: "invoice".to_string(),
-            channel: channel.to_string(),
-            matches: HashMap::new(),
-        },
+        test_pattern(channel),
         None,
         false,
         None,
@@ -383,6 +391,31 @@ async fn send_returns_429_when_the_queue_is_full() {
 
     let first = send("first").await.unwrap();
     assert_eq!(first.status(), 200);
+
+    // Fill the queue through the same manager the API resolves to. The worker is
+    // blocked in the seed turn, so these messages cannot be consumed and the
+    // queue must report itself full instead of accepting without bound.
+    let mut queue_full = false;
+    for i in 0..8 {
+        let message = test_message("agents", topic, &format!("filler-{i}"));
+        if tm
+            .try_enqueue(
+                message,
+                topic.to_string(),
+                test_pattern("agents"),
+                None,
+                false,
+                None,
+            )
+            .await
+            .is_err()
+        {
+            queue_full = true;
+            break;
+        }
+    }
+    assert!(queue_full, "the topic queue never reported itself full");
+
     let second = send("second").await.unwrap();
     assert_eq!(second.status(), 429);
     let body: serde_json::Value = second.json().await.unwrap();

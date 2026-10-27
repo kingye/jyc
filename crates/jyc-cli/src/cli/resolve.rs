@@ -88,6 +88,33 @@ pub fn resolve_inspect_client_addr(
     Ok(addr.to_string())
 }
 
+/// Resolve the inspect authorization token from explicit input or data_dir.
+///
+/// An explicit `--token` (or its env fallback) wins. Otherwise the token
+/// `jyc serve` wrote to `<data dir>/auth.token` is used. A missing file is not
+/// an error: the caller may be connecting to a server with auth disabled.
+pub fn resolve_inspect_token(explicit: Option<&str>, data_dir: &Path) -> Result<Option<String>> {
+    if let Some(token) = explicit {
+        return Ok(Some(token.to_string()));
+    }
+    let path = jyc_utils::auth_token::token_path(data_dir);
+    match jyc_utils::auth_token::read_token(&path) {
+        Ok(token) => Ok(Some(token)),
+        Err(e) => {
+            // File-not-found is the common case (server not yet started).
+            // Other errors (corrupted file, permission denied) are worth logging.
+            if path.exists() {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "Failed to read authorization token; client will connect without auth"
+                );
+            }
+            Ok(None)
+        }
+    }
+}
+
 /// Replace a wildcard bind host with loopback while preserving the port.
 pub fn normalize_inspect_client_addr(addr: &str) -> String {
     let Ok(socket) = addr.parse::<SocketAddr>() else {

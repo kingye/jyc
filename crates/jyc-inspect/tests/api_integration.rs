@@ -150,6 +150,58 @@ async fn same_token_works_for_api_and_ws() {
 // ─── REST endpoints ──────────────────────────────────────────────────
 
 #[tokio::test]
+async fn send_requires_bearer() {
+    let addr = start_server(ctx_with_token(Some("secret"))).await;
+    let res = reqwest::Client::new()
+        .post(format!("http://{addr}/api/send"))
+        .json(&serde_json::json!({
+            "agent": "missing",
+            "message": "hello"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401);
+}
+
+#[tokio::test]
+async fn send_rejects_unknown_target() {
+    let addr = start_server(ctx_with_token(None)).await;
+    let res = reqwest::Client::new()
+        .post(format!("http://{addr}/api/send"))
+        .json(&serde_json::json!({
+            "agent": "missing",
+            "message": "hello"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 422);
+    let v: serde_json::Value = res.json().await.unwrap();
+    assert!(
+        v["error"].as_str().is_some_and(|e| e.contains("missing")),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn send_rejects_empty_message_before_resolving_target() {
+    let addr = start_server(ctx_with_token(None)).await;
+    let res = reqwest::Client::new()
+        .post(format!("http://{addr}/api/send"))
+        .json(&serde_json::json!({
+            "agent": "missing",
+            "message": "  "
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 422);
+    let v: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(v["error"], "Message cannot be empty");
+}
+
+#[tokio::test]
 async fn get_state_returns_json() {
     let addr = start_server(ctx_with_token(None)).await;
     let res = reqwest::Client::new()

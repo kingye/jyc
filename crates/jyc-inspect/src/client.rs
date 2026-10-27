@@ -163,6 +163,51 @@ impl InspectClient {
         Ok((status.is_success(), r.message))
     }
 
+    /// Enqueue one message for an existing agent/topic.
+    ///
+    /// Returns `(success, message)`: the server's confirmation on success, or
+    /// its rejection reason. This is the HTTP face of the `/send` command.
+    pub async fn send_to_topic(
+        &self,
+        agent: &str,
+        topic: Option<&str>,
+        message: &str,
+    ) -> Result<(bool, String)> {
+        #[derive(serde::Serialize)]
+        struct B<'a> {
+            agent: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            topic: Option<&'a str>,
+            message: &'a str,
+        }
+        #[derive(serde::Deserialize, Default)]
+        struct R {
+            #[serde(default, alias = "error")]
+            message: String,
+        }
+        let url = self.url("/api/send");
+        let resp = self
+            .http
+            .post(url)
+            .json(&B {
+                agent,
+                topic,
+                message,
+            })
+            .send()
+            .await
+            .context("POST /api/send request failed")?;
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        let r: R = match serde_json::from_str(&body_text) {
+            Ok(r) => r,
+            Err(_) => R {
+                message: format!("unexpected response (status {status}): {body_text}"),
+            },
+        };
+        Ok((status.is_success(), r.message))
+    }
+
     /// Download a topic-local file as raw bytes.
     ///
     /// `path` is the relative URL from a websocket reply broadcast's

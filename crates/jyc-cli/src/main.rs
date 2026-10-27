@@ -84,6 +84,9 @@ enum Commands {
         action: cli::mcp::McpAction,
     },
 
+    /// Send one or more messages to an existing agent/topic
+    Send(cli::send::SendArgs),
+
     /// Stop a running jyc serve process
     Stop(cli::stop::StopArgs),
 
@@ -235,6 +238,7 @@ async fn main() -> Result<()> {
         }
         Commands::Plugins { action } => cli::plugins::run(action).await,
         Commands::Mcp { action } => cli::mcp::run(action, &data_dir, cli.data_dir.is_some()).await,
+        Commands::Send(args) => cli::send::run(args, &data_dir, cli.data_dir.is_some()).await,
         Commands::Stop(args) => cli::stop::run(args, &data_dir).await,
         Commands::Token(args) => cli::token::run(args, &data_dir),
     };
@@ -347,6 +351,47 @@ mod tests {
             }
             _ => panic!("expected `jyc connect`"),
         }
+    }
+
+    #[test]
+    fn send_accepts_ordered_messages() {
+        let cli = parse(&["jyc", "send", "jyc", "first", "second scheduled"]);
+        match cli.command {
+            Commands::Send(args) => {
+                assert_eq!(args.agent, "jyc");
+                assert_eq!(args.topic, None);
+                assert_eq!(args.messages, ["first", "second scheduled"]);
+            }
+            _ => panic!("expected `jyc send`"),
+        }
+    }
+
+    #[test]
+    fn send_accepts_topic_and_addr() {
+        let cli = parse(&[
+            "jyc",
+            "send",
+            "--addr",
+            "127.0.0.1:9816",
+            "--topic",
+            "reports",
+            "jyc",
+            "run",
+        ]);
+        match cli.command {
+            Commands::Send(args) => {
+                assert_eq!(args.addr.as_deref(), Some("127.0.0.1:9816"));
+                assert_eq!(args.topic.as_deref(), Some("reports"));
+                assert_eq!(args.messages, ["run"]);
+            }
+            _ => panic!("expected `jyc send`"),
+        }
+    }
+
+    #[test]
+    fn send_requires_a_message() {
+        let args = vec!["jyc".to_string(), "send".to_string(), "jyc".to_string()];
+        assert!(Cli::try_parse_from(&args).is_err());
     }
 
     /// `jyc --help` must still print help: the help error kind is only

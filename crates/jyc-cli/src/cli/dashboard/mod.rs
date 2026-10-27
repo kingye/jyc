@@ -34,7 +34,7 @@ use jyc_inspect::client::InspectClient;
 use jyc_types::{CommandInfo, InspectOverview, Severity, TopicStatus};
 
 use super::command_popup::*;
-use super::resolve::resolve_inspect_client_addr;
+use super::resolve::{resolve_inspect_client_addr, resolve_inspect_token};
 
 mod chat;
 mod hyperlink;
@@ -556,7 +556,7 @@ async fn reject_foreign_hub(
     data_dir: &std::path::Path,
     explicit_token: Option<&str>,
 ) -> Result<()> {
-    let Some(token) = resolve_dashboard_token(explicit_token, data_dir)? else {
+    let Some(token) = resolve_inspect_token(explicit_token, data_dir)? else {
         // Without a token, a 401 is what any authenticated hub answers; it is
         // not evidence that this listener belongs to another hub.
         return Ok(());
@@ -720,7 +720,7 @@ pub async fn run(
     let token = if args.remote {
         args.token.clone()
     } else {
-        resolve_dashboard_token(args.token.as_deref(), data_dir)?
+        resolve_inspect_token(args.token.as_deref(), data_dir)?
     };
 
     let client = match &token {
@@ -1068,7 +1068,7 @@ pub async fn run_open(
         .await
         .with_context(|| format!("Failed to connect to {addr}. Start jyc serve manually."))?;
 
-    let token = resolve_dashboard_token(explicit_token, data_dir)?;
+    let token = resolve_inspect_token(explicit_token, data_dir)?;
 
     // Resolve topic path and name
     let path = resolve_topic_path(path)?;
@@ -1201,32 +1201,6 @@ pub async fn run_connect(args: &ConnectArgs, data_dir: &std::path::Path, pipe: b
         false,
     )
     .await
-}
-
-/// Resolve the dashboard authorization token from explicit input or data_dir.
-fn resolve_dashboard_token(
-    explicit: Option<&str>,
-    data_dir: &std::path::Path,
-) -> Result<Option<String>> {
-    if let Some(token) = explicit {
-        return Ok(Some(token.to_string()));
-    }
-    let path = jyc_utils::auth_token::token_path(data_dir);
-    match jyc_utils::auth_token::read_token(&path) {
-        Ok(token) => Ok(Some(token)),
-        Err(e) => {
-            // File-not-found is the common case (server not yet started).
-            // Other errors (corrupted file, permission denied) are worth logging.
-            if path.exists() {
-                tracing::warn!(
-                    path = %path.display(),
-                    error = %e,
-                    "Failed to read authorization token; dashboard will connect without auth"
-                );
-            }
-            Ok(None)
-        }
-    }
 }
 
 /// Resolve the topic path to an absolute filesystem path.

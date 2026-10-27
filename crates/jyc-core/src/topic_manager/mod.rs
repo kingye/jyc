@@ -27,6 +27,7 @@ mod worker;
 pub use lifecycle::PurgeOutcome;
 pub use live_status::LiveStatus;
 pub use managers::TopicManagers;
+pub use queue::QueueFull;
 pub use topics::TopicDisplayState;
 
 /// Per-topic queue stats.

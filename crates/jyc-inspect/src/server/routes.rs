@@ -49,6 +49,7 @@ pub fn build_router(context: Arc<InspectContext>) -> Router {
             post(api::post_inbound_file).layer(DefaultBodyLimit::max(INBOUND_BODY_LIMIT)),
         )
         .route("/api/topics", post(api::post_topic))
+        .route("/api/send", post(api::post_send))
         .route("/api/config/reload", post(api::post_reload_config))
         .route("/ws", get(ws_bare))
         .route("/ws/{channel}", get(ws_channel))

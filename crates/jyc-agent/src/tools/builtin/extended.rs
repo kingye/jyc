@@ -46,7 +46,7 @@ pub const EXTENDED_TOOLS: &[(&str, &str)] = &[
     ("jyc_publish_file", "publish a file as a download link"),
     ("read_image", "view an image"),
     ("webfetch", "fetch a URL as text"),
-    ("context_browse", "page the transcript for earlier turns"),
+    ("context_browse", "browse earlier turns"),
     ("lesson_add", "record a reusable lesson"),
     ("lesson_read", "read earlier recorded lessons"),
 ];
@@ -127,9 +127,8 @@ impl LoadExtendedToolsTool {
     /// The description, built from the tools this registry actually has.
     fn description_for(present: &[(&str, &str)], core: &[&str]) -> String {
         let mut text = String::from(
-            "Load the extended tools into your tool list — they stay out of it until you call \
-             this once, and remain in it while this topic's tool registry is reused. Call it \
-             before you need any of:",
+            "Load the extended tools into your tool list; they remain there while this topic's \
+             registry is reused. Call before using:",
         );
         for (name, what) in present {
             text.push_str(&format!(" {name} ({what});"));

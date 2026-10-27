@@ -110,7 +110,7 @@ const BUDGETS: &[(&str, usize, usize)] = &[
     ("lesson_add", 220, 0),
     ("lesson_read", 114, 0),
     ("list_topics", 240, 0),
-    ("load_extended_tools", 800, 0),
+    ("load_extended_tools", 680, 0),
     ("task_list", 278, 0),
     ("task_create", 345, 46),
     ("task_update", 305, 81),
@@ -135,6 +135,11 @@ const BUDGETS: &[(&str, usize, usize)] = &[
 /// and the loader's index), but the *advertised* set — what a request
 /// actually carries — went down, which is the number that matters. See
 /// [`ADVERTISED_TOTAL_BUDGET`].
+///
+/// The 2026-10-27 rebalance added three low-frequency tools to the group and
+/// three core names plus three one-liners to the loader index. Tightening the
+/// loader's fixed preamble and the longest new one-liner kept the whole set at
+/// 7,781, under this unchanged ceiling.
 const TOTAL_BUDGET: usize = 7_800;
 
 /// The advertised set — the core tools plus the loader's index — in

@@ -451,20 +451,17 @@ async fn send_returns_429_when_the_queue_is_full() {
         }),
     )
     .await;
-    match response {
-        Err(e) => {
-            let response = e.into_response();
-            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-            release.add_permits(32);
-            return;
-        }
-        Ok(_) => {}
+    if let Err(e) = response {
+        let response = e.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        release.add_permits(32);
+    } else {
+        panic!(
+            "the API handler accepted a message while the queue was full; \
+             direct_probe: {probe}; seed_finished: {}",
+            finished.load(Ordering::SeqCst)
+        );
     }
-    panic!(
-        "the API handler accepted a message while the queue was full; \
-         direct_probe: {probe}; seed_finished: {}",
-        finished.load(Ordering::SeqCst)
-    );
 }
 
 #[tokio::test]

@@ -13,7 +13,7 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 /// Usage:
 ///   /context              Show current strategy
 ///   /context full         Switch to full context (send everything)
-///   /context sliding [N] [M] [CAP] [TURNCAP] [MAXHIST]
+///   /context sliding [N] [M] [CAP] [TURNCAP] [MAXHIST] [MULT]
 ///     Switch to sliding window (default N = 10 turns). M is the optional
 ///     note window: only the most recent M windowed turns carry tool-call
 ///     history notes (default: 5). CAP is the optional per-tool-result
@@ -23,7 +23,12 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///     oversized result keeps its head and tail with the middle replaced
 ///     by a paging marker. Unset by default. MAXHIST is the optional token
 ///     budget for the two history regions (① + ②): when they estimate over
-///     it, the oldest history is dropped first. Unset by default.
+///     it, the oldest history is dropped first. Unset by default. MULT is
+///     the optional region-① block multiplier (default: 2): the compact
+///     block holds up to `N × MULT` pairs before its head jumps one window
+///     forward, keeping the region's wire prefix stable between jumps;
+///     `MULT = 1` slides every turn, fractional values (e.g. 0.5) shrink
+///     the block below a window.
 ///
 ///     Per-slot semantics: an absent slot falls back to the *configured*
 ///     value (the config.toml chain) — not to whatever an earlier
@@ -58,6 +63,11 @@ const MAX_TURN_TOOL_RESULT_CAP: usize = 1024 * 1024;
 /// window is not what is costing money — the per-result caps are the lever
 /// there — so a larger value would only disguise a misconfiguration.
 const MAX_HISTORY_TOKENS: usize = 4_000_000;
+
+/// Upper bound for the region-① block multiplier. The reader parses
+/// `window × mult` pair-turns per turn-start, so an unbounded multiplier
+/// would turn the bounded reader back into a full-journal scan.
+const MAX_MULT: f64 = 64.0;
 
 #[async_trait]
 impl CommandHandler for ContextCommandHandler {
@@ -133,6 +143,7 @@ impl CommandHandler for ContextCommandHandler {
                         tool_result_cap: configured.tool_result_cap,
                         turn_tool_result_cap: configured.turn_tool_result_cap,
                         max_history_tokens: configured.max_history_tokens,
+                        mult: configured.mult,
                     },
                 )
                 .await?;
@@ -305,6 +316,29 @@ impl CommandHandler for ContextCommandHandler {
                 };
                 let max_history_tokens =
                     max_history_tokens.unwrap_or(configured.max_history_tokens);
+                // Optional block multiplier MULT (args[6]): caps region ①
+                // at `window × MULT` compact pairs before the head jumps.
+                // Fractional values are allowed; the same 0-sentinel
+                // convention as CAP does not apply — 0 is rejected outright
+                // because a zero-size block is meaningless.
+                let mult = if let Some(arg) = context.args.get(6) {
+                    match arg.parse::<f64>() {
+                        Ok(m) if m.is_finite() && (0.1..=MAX_MULT).contains(&m) => Some(Some(m)),
+                        _ => {
+                            return Ok(CommandResult {
+                                success: false,
+                                message: format!(
+                                    "/context: invalid mult '{arg}', expected a number in 0.1..={MAX_MULT}"
+                                ),
+                                error: None,
+                                append_body: None,
+                            });
+                        }
+                    }
+                } else {
+                    None
+                };
+                let mult = mult.unwrap_or(configured.mult);
                 let cfg = ContextStrategyConfig {
                     mode: ContextStrategy::SlidingWindow,
                     window,
@@ -312,6 +346,7 @@ impl CommandHandler for ContextCommandHandler {
                     tool_result_cap,
                     turn_tool_result_cap,
                     max_history_tokens,
+                    mult,
                 };
                 write_override(&state_dir, &override_path, cfg.clone()).await?;
                 Ok(CommandResult {
@@ -325,7 +360,7 @@ impl CommandHandler for ContextCommandHandler {
             other => Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/context: unknown argument '{other}'. Use: /context sliding [N] [M] [CAP] [TURNCAP] [MAXHIST] | full | reset | dump [on|off]"
+                    "/context: unknown argument '{other}'. Use: /context sliding [N] [M] [CAP] [TURNCAP] [MAXHIST] [MULT] | full | reset | dump [on|off]"
                 ),
                 error: None,
                 append_body: None,
@@ -412,6 +447,9 @@ fn describe_strategy(cfg: &ContextStrategyConfig) -> String {
             }
             if let Some(t) = cfg.max_history_tokens {
                 s.push_str(&format!(", max_history_tokens={t}"));
+            }
+            if let Some(m) = cfg.mult {
+                s.push_str(&format!(", mult={m}"));
             }
             s.push(')');
             s
@@ -611,6 +649,66 @@ mod tests {
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
         assert!(result.message.contains("invalid window"));
+    }
+
+    #[tokio::test]
+    async fn test_sliding_with_fractional_mult_sixth_arg() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_mult_sixth_arg";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec![
+            "sliding".into(),
+            "10".into(),
+            "3".into(),
+            "1024".into(),
+            "8192".into(),
+            "60000".into(),
+            "0.5".into(),
+        ];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success, "{}", result.message);
+        assert!(result.message.contains("mult=0.5"), "{}", result.message);
+        let written =
+            tokio::fs::read_to_string(tmp.path().join(".jyc").join("context-strategy.json"))
+                .await
+                .unwrap();
+        let cfg: ContextStrategyConfig = serde_json::from_str(&written).unwrap();
+        assert_eq!(cfg.mult, Some(0.5));
+        // Absent slots fall back to the configured value, so the other
+        // fields carry what the arguments said.
+        assert_eq!(cfg.window, 10);
+        assert_eq!(cfg.note_window, Some(3));
+    }
+
+    #[tokio::test]
+    async fn test_sliding_rejects_out_of_range_mult() {
+        for (topic, arg) in [
+            ("test_sliding_mult_zero", "0"),
+            ("test_sliding_mult_huge", "100"),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+            let handler = ContextCommandHandler;
+            let mut ctx = test_context(topic, tmp.path());
+            ctx.args = vec![
+                "sliding".into(),
+                "10".into(),
+                "3".into(),
+                "1024".into(),
+                "8192".into(),
+                "60000".into(),
+                arg.into(),
+            ];
+            let result = handler.execute(ctx).await.unwrap();
+            assert!(!result.success, "mult={arg} must be rejected");
+            assert!(
+                result.message.contains("invalid mult"),
+                "{}",
+                result.message
+            );
+        }
     }
 
     #[tokio::test]
@@ -1036,6 +1134,7 @@ mod tests {
             tool_result_cap: Some(5000),
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         };
         let s = describe_strategy(&cfg);
         assert!(s.contains("window=10"));
@@ -1257,6 +1356,7 @@ mod tests {
             tool_result_cap: Some(2048),
             turn_tool_result_cap: None,
             max_history_tokens: Some(30000),
+            mult: None,
         };
         assert!(describe_strategy(&cfg).contains("max_history_tokens=30000"));
 
@@ -1264,6 +1364,7 @@ mod tests {
         let unset = ContextStrategyConfig {
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
             ..cfg.clone()
         };
         assert!(!describe_strategy(&unset).contains("max_history_tokens"));

@@ -11,11 +11,16 @@ use crate::types::{ContentBlock, PriorDepth};
 
 /// How much of the prior context the strategy needs to build its payload.
 ///
-/// The sliding window reads the last `window` pair-producing turns and the
-/// last `note_window` turn openers — an unanswered user message is an
-/// opener without a pair, and the verbatim region counts openers.
-/// `full` mode and an unset `note_window` send the whole prior, so no
-/// bounded slice can replace it.
+/// The sliding window reads the last `window × mult + note_window`
+/// pair-producing turns — the region-① block capacity plus the verbatim
+/// region's pairs. The block is anchored independently of the verbatim
+/// turns (the head can sit anywhere inside the block span), so the reader
+/// must cover both or a reader-slice build would see a shorter compact
+/// region than a whole-journal build (the differential test pins payload
+/// equality); opener-only trailing turns ride on the `openers` count. An
+/// unanswered user message is an opener without a pair, and the verbatim
+/// region counts openers. `full` mode and an unset `note_window` send the
+/// whole prior, so no bounded slice can replace it.
 ///
 /// The reader is told this before it reads: it parses only that much of
 /// the journal, which is what keeps a long history cheap.
@@ -24,7 +29,10 @@ pub(crate) fn prior_depth(strategy: &ContextStrategyConfig) -> PriorDepth {
         ContextStrategy::Full => PriorDepth::All,
         ContextStrategy::SlidingWindow => match strategy.note_window {
             Some(openers) => PriorDepth::Window {
-                pairs: strategy.window,
+                pairs: (((strategy.window.max(1) as f64) * strategy.mult())
+                    .round()
+                    .max(1.0) as usize)
+                    .saturating_add(openers),
                 openers,
             },
             // Without a note window the whole prior is verbatim — the
@@ -60,7 +68,8 @@ fn format_cleaned_message(
 /// Cold build — [`build_send_context_cached`] with a throwaway cache.
 ///
 /// Test-only: the loop passes its own [`SendContextCache`], so a turn's calls
-/// reuse the history regions instead of rebuilding them.
+/// reuse the history regions instead of rebuilding them. Starts from no
+/// block anchor; block tests use [`build_send_context_anchor_with_regions`].
 #[cfg(test)]
 pub(crate) fn build_send_context_with_regions<'a>(
     provider: &dyn Provider,
@@ -68,13 +77,31 @@ pub(crate) fn build_send_context_with_regions<'a>(
     prior_len: usize,
     strategy: &ContextStrategyConfig,
 ) -> (Cow<'a, [serde_json::Value]>, Vec<u8>) {
-    build_send_context_cached(
+    let (payload, regions, _anchor) =
+        build_send_context_anchor_with_regions(provider, raw_context, prior_len, strategy, None);
+    (payload, regions)
+}
+
+/// Cold build that also threads the region-① block anchor in and out —
+/// what the loop does across turns, without a cache to reuse.
+#[cfg(test)]
+fn build_send_context_anchor_with_regions<'a>(
+    provider: &dyn Provider,
+    raw_context: &'a [serde_json::Value],
+    prior_len: usize,
+    strategy: &ContextStrategyConfig,
+    block_anchor: Option<[u64; 2]>,
+) -> (Cow<'a, [serde_json::Value]>, Vec<u8>, Option<[u64; 2]>) {
+    let mut cache = SendContextCache::default();
+    let (payload, regions) = build_send_context_cached(
         provider,
         raw_context,
         prior_len,
         strategy,
-        &mut SendContextCache::default(),
-    )
+        block_anchor,
+        &mut cache,
+    );
+    (payload, regions, cache.block_anchor())
 }
 
 /// Cross-iteration memo for the sliding-window history regions (①+②).
@@ -103,6 +130,12 @@ pub(crate) struct SendContextCache {
     /// (`Some(false)`), or built nothing at all (`None`, `Full` mode — the log
     /// must not read that as "reused").
     rebuilt: Option<bool>,
+    /// Region-① block anchor computed at the last rebuild: hashes of the
+    /// block-head pair's user/assistant text. The caller persists it to
+    /// the session file when it changed (a block jump or a cold rebuild),
+    /// so the next turn continues the same block instead of re-deriving
+    /// the head. Meaningless for `Full` mode, which never rebuilds.
+    block_anchor: Option<[u64; 2]>,
 }
 
 impl SendContextCache {
@@ -110,6 +143,12 @@ impl SendContextCache {
     /// regions, or `None` when it built nothing (`Full` mode).
     pub(crate) fn history_rebuilt(&self) -> Option<bool> {
         self.rebuilt
+    }
+
+    /// Region-① block anchor from the last rebuild — the value the caller
+    /// persists when it differs from what the session file holds.
+    pub(crate) fn block_anchor(&self) -> Option<[u64; 2]> {
+        self.block_anchor
     }
 }
 
@@ -120,9 +159,13 @@ impl SendContextCache {
 ///
 /// * `Full` — borrow the full context (no copy).
 /// * `SlidingWindow` — three parts, in order:
-///   1. The last `window - recent` user+assistant text pairs from the
-///      older prior, reformatted in provider wire format (string content →
-///      provider-correct content shape).
+///   1. The block-anchored compact pairs: everything from the persisted
+///      block head (`block_anchor`) up to the verbatim region, reformatted
+///      in provider wire format (string content → provider-correct content
+///      shape). The head stays put while the block holds `window × mult`
+///      pairs or fewer, so within a block this region only *appends* each
+///      turn and the wire prefix stays byte-stable; only a block jump (or
+///      a cold rebuild when the anchor is missing) rewrites it.
 ///   2. The most recent `note_window` prior turns **verbatim** (structured
 ///      `tool_calls` + tool results intact, like the current turn), so the
 ///      model keeps seeing tool calls in the wire format it is supposed to
@@ -155,6 +198,11 @@ impl SendContextCache {
 /// goes first (see [`fit_history_to_budget`]). Region ③ is never part of
 /// it. `Some(0)` or `None` sends the windowed history untouched.
 ///
+/// `block_anchor` is the persisted region-① block head (hashes of the
+/// head pair's user/assistant text, from the session file); the rebuild
+/// stores the computed anchor back into `cache` for the caller to persist
+/// when it changed.
+///
 /// `cache` lets a turn's calls reuse the history regions instead of
 /// rebuilding them per call (see [`SendContextCache`]).
 pub(crate) fn build_send_context_cached<'a>(
@@ -162,6 +210,7 @@ pub(crate) fn build_send_context_cached<'a>(
     raw_context: &'a [serde_json::Value],
     prior_len: usize,
     strategy: &ContextStrategyConfig,
+    block_anchor: Option<[u64; 2]>,
     cache: &mut SendContextCache,
 ) -> (Cow<'a, [serde_json::Value]>, Vec<u8>) {
     match strategy.mode {
@@ -179,10 +228,15 @@ pub(crate) fn build_send_context_cached<'a>(
             let current = &raw_context[boundary..];
 
             if cache.boundary != Some(boundary) {
-                let (region1, region2) =
-                    build_history_regions(provider, &raw_context[..boundary], strategy);
+                let (region1, region2, anchor) = build_history_regions(
+                    provider,
+                    &raw_context[..boundary],
+                    strategy,
+                    block_anchor,
+                );
                 cache.region1 = region1;
                 cache.region2 = region2;
+                cache.block_anchor = anchor;
                 cache.boundary = Some(boundary);
                 cache.rebuilt = Some(true);
             } else {
@@ -223,11 +277,20 @@ pub(crate) fn build_send_context_cached<'a>(
 
 /// Build regions ① (compacted older pairs) and ② (recent turns verbatim) from
 /// the persisted prefix, fitted to `max_history_tokens`.
+///
+/// Also computes the region-① block anchor (hashes of the block-head
+/// pair's user/assistant text) so the caller can persist it when it
+/// changed; the next turn feeds it back in via `block_anchor`.
 fn build_history_regions(
     provider: &dyn Provider,
     prior: &[serde_json::Value],
     strategy: &ContextStrategyConfig,
-) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    block_anchor: Option<[u64; 2]>,
+) -> (
+    Vec<serde_json::Value>,
+    Vec<serde_json::Value>,
+    Option<[u64; 2]>,
+) {
     // `tool_result_cap`: Some(0) and None both mean "off" — let the
     // helper short-circuit on cap == 0.
     let cap = strategy.tool_result_cap.unwrap_or(0);
@@ -244,13 +307,52 @@ fn build_history_regions(
     let verbatim_start = crate::session::verbatim_start_index(prior, note_window);
     let (compact_prior, verbatim_prior) = prior.split_at(verbatim_start);
 
+    // Region ① is block-anchored. The persisted anchor names the block
+    // head, so within a block the region only *appends* one pair per turn
+    // and the wire prefix stays byte-stable (prompt-cache friendly); the
+    // head jumps forward on the turn after the block outgrew
+    // `window × mult` pairs, and that jump turn is the one turn where the
+    // prefix breaks. A missing or unmatched anchor rebuilds the block
+    // cold, holding the last `max_pairs` pairs.
+    //
+    // Capacity and landing floor both derive from the fractional `mult`:
+    // below 1 the block shrinks below a window and slides every turn
+    // (constant size), at 1 it is exactly one window (slide by one pair,
+    // the pre-block behavior), above 1 it widens and jumps in
+    // `window`-sized steps.
+    let window = strategy.window.max(1);
+    let mult = strategy.mult();
+    let max_pairs = ((window as f64) * mult).round().max(1.0) as usize;
+    let landing_floor = ((window as f64) * mult.min(1.0)).round().max(1.0) as usize;
+
+    let pairs = crate::session::extract_pairs(compact_prior);
+    let pair_count = pairs.len();
+
+    // Locate the block head: the persisted anchor pair while it is still
+    // in the delivered slice, otherwise the cold tail block.
+    let mut head = block_anchor
+        .and_then(|anchor| pairs.iter().position(|p| pair_anchor_hash(p) == anchor))
+        .unwrap_or_else(|| pair_count.saturating_sub(max_pairs));
+
+    // Aging adds one pair per turn, so this fires on the turn right after
+    // the block reached capacity. The landing keeps at least
+    // `landing_floor` pairs — what makes `mult = 1` a constant-size slide
+    // instead of an ever-shrinking block.
+    if pair_count.saturating_sub(head) > max_pairs {
+        let landing = (max_pairs - landing_floor + 1).max(landing_floor);
+        head = pair_count - landing;
+    }
+
     // Older pairs compact to text-only user/assistant. No history
     // notes here — the recent pairs are already verbatim, so notes
     // would be redundant (and are the leak trigger).
-    let verbatim_pairs = crate::session::extract_pairs(verbatim_prior).len();
-    let compact_keep = strategy.window.saturating_sub(verbatim_pairs);
-    let compacted =
-        crate::session::extract_user_assistant_pairs(compact_prior, compact_keep, Some(0));
+    let keep = pair_count - head;
+    let compacted = crate::session::extract_user_assistant_pairs(compact_prior, keep, Some(0));
+    let new_anchor = if keep > 0 {
+        Some(pair_anchor_hash(&pairs[head]))
+    } else {
+        None
+    };
 
     // Built region by region so `max_history_tokens` can weigh and
     // trim them as blocks before anything reaches the payload.
@@ -286,7 +388,36 @@ fn build_history_regions(
 
     fit_history_to_budget(&mut region1, &mut region2, strategy.max_history_tokens);
 
-    (region1, region2)
+    (region1, region2, new_anchor)
+}
+
+/// FNV-1a 64-bit hash. Deliberately hand-rolled and stable across builds
+/// and platforms: the block anchor must compare equal between the process
+/// that wrote it and any later process reading it, so `DefaultHasher`
+/// (deliberately unspecified across Rust versions) is off the table.
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET_BASIS;
+    for &b in bytes {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
+}
+
+/// Identity of one compact pair for the block anchor: independent FNV-1a
+/// hashes of the user-side and assistant-side text. Hashes *text* (not
+/// the raw message value) so the anchor survives provider-shape
+/// differences between the session that wrote it and the one reading it.
+fn pair_anchor_hash(pair: &crate::session::TurnPair) -> [u64; 2] {
+    let user = crate::session::extract_message_text(&pair.user);
+    let assistant = pair
+        .assistant
+        .as_ref()
+        .map(crate::session::extract_message_text)
+        .unwrap_or_default();
+    [fnv1a_64(user.as_bytes()), fnv1a_64(assistant.as_bytes())]
 }
 
 /// Per-message constant added to every wire message's estimate — the role,
@@ -806,6 +937,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg).0;
         assert!(matches!(sent, Cow::Borrowed(_)));
@@ -833,10 +965,11 @@ mod render_raw_context_tests {
         let mut ctx = prior.clone();
         ctx.extend(current.clone());
 
-        // window=2, note_window=1: the last prior turn (u3, a3) is verbatim,
-        // the older turn (u2 with its tool call) compacts to text-only. No
-        // history note anywhere — notes taught the model to write tool calls
-        // as text (the thinking-leak trigger).
+        // window=2, note_window=1, mult=0.5: the last prior turn (u3, a3)
+        // is verbatim; mult=0.5 caps the compact block at one pair, so the
+        // older turn (u2 with its tool call) compacts to text-only. No
+        // history note anywhere — notes taught the model to write tool
+        // calls as text (the thinking-leak trigger).
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 2,
@@ -844,6 +977,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: Some(0.5),
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg).0;
         let sent = sent.into_owned();
@@ -881,6 +1015,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, 99, &cfg)
             .0
@@ -905,6 +1040,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, 0, &cfg)
             .0
@@ -949,6 +1085,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         };
         let sent = build_send_context_with_regions(&anthropic(), &ctx, prior_len, &cfg)
             .0
@@ -1025,6 +1162,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg)
             .0
@@ -1072,6 +1210,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg)
             .0
@@ -1095,6 +1234,191 @@ mod render_raw_context_tests {
         );
     }
 
+    // ── Region-① block anchor ─────────────────────────────────────────
+
+    /// N plain user/assistant turns, contents unique per index.
+    fn turns(n: usize) -> Vec<serde_json::Value> {
+        let mut v = Vec::new();
+        for i in 1..=n {
+            v.push(json!({"role": "user", "content": format!("u{i}")}));
+            v.push(json!({"role": "assistant", "content": format!("a{i}")}));
+        }
+        v
+    }
+
+    /// Region-① texts (history marker included) from a payload + labels.
+    fn region1_texts(sent: &[serde_json::Value], regions: &[u8]) -> Vec<String> {
+        sent.iter()
+            .zip(regions)
+            .filter(|(_, r)| **r == 1)
+            .map(|(m, _)| text_of(m))
+            .collect()
+    }
+
+    /// window=w, note_window=1 (so a k-turn prior compacts k−1 pairs), no
+    /// caps, explicit block multiplier.
+    fn block_cfg(window: usize, mult: f64) -> ContextStrategyConfig {
+        ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window,
+            note_window: Some(1),
+            tool_result_cap: None,
+            turn_tool_result_cap: None,
+            max_history_tokens: None,
+            mult: Some(mult),
+        }
+    }
+
+    /// The block head stays put while the block holds `window × mult`
+    /// pairs: every turn's region ① is a strict extension of the previous
+    /// turn's. The turn after the block reached capacity is the jump —
+    /// the one turn where the prefix breaks — and the landing keeps
+    /// `capacity − floor + 1` pairs.
+    #[test]
+    fn block_head_stable_within_block_and_jumps_at_capacity() {
+        // window=2, mult=2 → capacity 4, landing floor 2.
+        let cfg = block_cfg(2, 2.0);
+        let mut anchor = None;
+        let mut prev_region1: Option<Vec<String>> = None;
+        let mut jump_at = None;
+        for k in 2..=6 {
+            let prior = turns(k);
+            let (sent, regions, next_anchor) =
+                build_send_context_anchor_with_regions(&prov(), &prior, prior.len(), &cfg, anchor);
+            let r1 = region1_texts(&sent, &regions);
+            assert_eq!(r1[0], crate::session::HISTORY_MARKER_TEXT);
+            if let Some(prev) = &prev_region1 {
+                let extended = r1.len() > prev.len() && r1[..prev.len()] == prev[..];
+                if !extended {
+                    jump_at = Some(k);
+                }
+            }
+            prev_region1 = Some(r1);
+            anchor = next_anchor;
+        }
+        // Compact pairs 1..=4 (turns 2..=5) grow the block without a jump;
+        // the 5th compact pair (turn 6) triggers it, landing on 3 pairs
+        // whose head is pair 3.
+        assert_eq!(jump_at, Some(6));
+        let r1 = prev_region1.unwrap();
+        assert_eq!(r1.len(), 1 + 2 * 3);
+        assert_eq!(r1[1], "u3");
+        assert_eq!(r1[r1.len() - 1], "a5");
+    }
+
+    /// Feeding the persisted anchor back in reproduces the block exactly,
+    /// and while the compact region fits inside the capacity a cold build
+    /// (no anchor) agrees with the anchored one.
+    #[test]
+    fn block_anchor_roundtrip_is_deterministic() {
+        let cfg = block_cfg(2, 2.0);
+        let prior = turns(4); // 3 compact pairs, inside the capacity of 4
+        let (s1, r1, anchor) =
+            build_send_context_anchor_with_regions(&prov(), &prior, prior.len(), &cfg, None);
+        assert!(anchor.is_some());
+        let (s2, r2, anchor2) =
+            build_send_context_anchor_with_regions(&prov(), &prior, prior.len(), &cfg, anchor);
+        assert_eq!(s1.as_ref(), s2.as_ref());
+        assert_eq!(r1, r2);
+        assert_eq!(anchor, anchor2);
+        let r1_texts = region1_texts(&s1, &r1);
+        assert_eq!(
+            r1_texts.len(),
+            1 + 2 * 3,
+            "cold block keeps every compact pair"
+        );
+    }
+
+    /// `mult = 1` degenerates to the pre-block behavior: a constant
+    /// `window`-sized block whose head slides one pair forward every turn,
+    /// re-anchoring each time.
+    #[test]
+    fn block_mult_one_slides_one_pair_every_turn() {
+        let cfg = block_cfg(2, 1.0); // capacity 2, floor 2 → constant 2-pair block
+        let mut anchor = None;
+        for k in 3..=5 {
+            let prior = turns(k);
+            let (sent, regions, next_anchor) =
+                build_send_context_anchor_with_regions(&prov(), &prior, prior.len(), &cfg, anchor);
+            let r1 = region1_texts(&sent, &regions);
+            assert_eq!(r1.len(), 1 + 2 * 2, "constant-size block at turn {k}");
+            assert_eq!(r1[1], format!("u{}", k - 2));
+            assert_eq!(r1[r1.len() - 1], format!("a{}", k - 1));
+            assert_ne!(anchor, next_anchor, "mult=1 must re-anchor every turn");
+            anchor = next_anchor;
+        }
+    }
+
+    /// Fractional `mult` shrinks the block below a window: capacity
+    /// `round(window × mult)`, constant size, sliding every turn.
+    #[test]
+    fn block_fractional_mult_shrinks_below_window() {
+        let cfg = block_cfg(4, 0.5); // capacity round(4 × 0.5) = 2, floor 2
+        let prior = turns(6); // 5 compact pairs
+        let (sent, regions, anchor) =
+            build_send_context_anchor_with_regions(&prov(), &prior, prior.len(), &cfg, None);
+        let r1 = region1_texts(&sent, &regions);
+        assert_eq!(r1.len(), 1 + 2 * 2, "block capped at half a window");
+        assert_eq!(r1[1], "u4");
+        assert!(anchor.is_some());
+    }
+
+    /// An anchor whose pair left the delivered slice (journal rewritten,
+    /// strategy changed) rebuilds the block cold from the tail capacity
+    /// pairs, and the rebuilt anchor continues the block on the next turn.
+    #[test]
+    fn block_cold_rebuilds_when_anchor_pair_is_gone() {
+        let cfg = block_cfg(2, 2.0); // capacity 4
+        let prior = turns(7); // 6 compact pairs
+        let (sent, regions, anchor) = build_send_context_anchor_with_regions(
+            &prov(),
+            &prior,
+            prior.len(),
+            &cfg,
+            Some([0, 0]), // garbage: matches no pair
+        );
+        let r1 = region1_texts(&sent, &regions);
+        assert_eq!(r1.len(), 1 + 2 * 4, "cold block holds the capacity");
+        assert_eq!(r1[1], "u3");
+
+        // Next turn: the rebuilt anchor (pair 3) is found, and the block
+        // jumps from 5 pairs to the 3-pair landing.
+        let prior2 = turns(8); // 7 compact pairs; pair 3 is still pair 3
+        let (sent2, regions2, _) =
+            build_send_context_anchor_with_regions(&prov(), &prior2, prior2.len(), &cfg, anchor);
+        let r2 = region1_texts(&sent2, &regions2);
+        assert_eq!(r2.len(), 1 + 2 * 3);
+        assert_eq!(r2[1], "u5");
+    }
+
+    /// The reader depth covers the block capacity *plus* the verbatim
+    /// region's pairs: the block is anchored independently of the
+    /// verbatim turns, and a reader-slice build must see the same compact
+    /// pairs as a whole-journal build.
+    #[test]
+    fn prior_depth_covers_block_capacity_plus_verbatim() {
+        assert_eq!(
+            prior_depth(&block_cfg(4, 2.0)),
+            PriorDepth::Window {
+                pairs: 9,
+                openers: 1
+            }
+        );
+        assert_eq!(
+            prior_depth(&block_cfg(4, 0.5)),
+            PriorDepth::Window {
+                pairs: 3,
+                openers: 1
+            }
+        );
+        let no_note = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            note_window: None,
+            ..Default::default()
+        };
+        assert_eq!(prior_depth(&no_note), PriorDepth::All);
+    }
+
     /// `with_regions` and `dump_send_context` — verify region partition is
     /// stable across `Full` and `SlidingWindow` strategies.
     #[test]
@@ -1111,6 +1435,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         };
         let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, 0, &cfg);
         assert_eq!(sent.len(), 3);
@@ -1146,6 +1471,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         };
         let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, prior.len(), &cfg);
         assert_eq!(sent.len(), 6);
@@ -1187,6 +1513,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         };
         let prior_len = prior.len();
         let mut ctx = prior.clone();
@@ -1194,7 +1521,7 @@ mod render_raw_context_tests {
 
         let mut cache = SendContextCache::default();
         let (first, first_regions) =
-            build_send_context_cached(&prov(), &ctx, prior_len, &cfg, &mut cache);
+            build_send_context_cached(&prov(), &ctx, prior_len, &cfg, None, &mut cache);
         let (cold, cold_regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
         assert_eq!(first.as_ref(), cold.as_ref());
         assert_eq!(first_regions, cold_regions);
@@ -1203,7 +1530,7 @@ mod render_raw_context_tests {
         // cached prefix did not — the history regions are reused as-is.
         ctx.push(json!({"role": "assistant", "content": "a3"}));
         let (second, second_regions) =
-            build_send_context_cached(&prov(), &ctx, prior_len, &cfg, &mut cache);
+            build_send_context_cached(&prov(), &ctx, prior_len, &cfg, None, &mut cache);
         let (cold2, cold2_regions) =
             build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
         assert_eq!(second.as_ref(), cold2.as_ref());
@@ -1213,7 +1540,7 @@ mod render_raw_context_tests {
         let next_prior_len = ctx.len();
         ctx.push(json!({"role": "user", "content": "u4"}));
         let (third, third_regions) =
-            build_send_context_cached(&prov(), &ctx, next_prior_len, &cfg, &mut cache);
+            build_send_context_cached(&prov(), &ctx, next_prior_len, &cfg, None, &mut cache);
         let (cold3, cold3_regions) =
             build_send_context_with_regions(&prov(), &ctx, next_prior_len, &cfg);
         assert_eq!(third.as_ref(), cold3.as_ref());
@@ -1241,13 +1568,14 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         };
         let prior_len = prior.len();
         let mut ctx = prior.clone();
         ctx.push(json!({"role": "user", "content": "u3"}));
 
         let mut cache = SendContextCache::default();
-        let _ = build_send_context_cached(&prov(), &ctx, prior_len, &cfg, &mut cache);
+        let _ = build_send_context_cached(&prov(), &ctx, prior_len, &cfg, None, &mut cache);
         assert_eq!(
             cache.history_rebuilt(),
             Some(true),
@@ -1259,7 +1587,7 @@ mod render_raw_context_tests {
         cache
             .region1
             .push(json!({"role": "user", "content": "CACHED-SENTINEL"}));
-        let (warm, _) = build_send_context_cached(&prov(), &ctx, prior_len, &cfg, &mut cache);
+        let (warm, _) = build_send_context_cached(&prov(), &ctx, prior_len, &cfg, None, &mut cache);
         assert!(
             warm.iter()
                 .any(|m| m.get("content").and_then(|c| c.as_str()) == Some("CACHED-SENTINEL")),
@@ -1271,7 +1599,7 @@ mod render_raw_context_tests {
         ctx.push(json!({"role": "assistant", "content": "a3"}));
         let next_prior_len = ctx.len();
         let (rebuilt, _) =
-            build_send_context_cached(&prov(), &ctx, next_prior_len, &cfg, &mut cache);
+            build_send_context_cached(&prov(), &ctx, next_prior_len, &cfg, None, &mut cache);
         assert!(
             !rebuilt
                 .iter()
@@ -1298,6 +1626,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         };
         let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, prior.len(), &cfg);
         assert_eq!(sent.len(), 3);
@@ -1336,6 +1665,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         };
 
         let (sent1, _) = build_send_context_with_regions(&prov(), &prior1, prior1.len(), &cfg);
@@ -1367,6 +1697,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         };
         let (sent, _) = build_send_context_with_regions(&prov(), &ctx, 0, &cfg);
         let texts: Vec<&str> = sent.iter().filter_map(|m| m["content"].as_str()).collect();
@@ -1496,6 +1827,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         };
         let (uncapped, _) =
             build_send_context_with_regions(&prov(), &ctx, prior_len, &uncapped_cfg);
@@ -1555,6 +1887,7 @@ mod render_raw_context_tests {
             tool_result_cap: Some(50), // cap is ON
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         };
         let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
         let wire = serde_json::to_string(out.as_ref()).unwrap();
@@ -1608,6 +1941,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: Some(600),
             max_history_tokens: None,
+            mult: None,
         };
         let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
         let wire = serde_json::to_string(out.as_ref()).unwrap();
@@ -1663,6 +1997,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: Some(600),
             max_history_tokens: None,
+            mult: None,
         };
         let (out, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
         let wire = serde_json::to_string(out.as_ref()).unwrap();
@@ -1694,10 +2029,12 @@ mod render_raw_context_tests {
             tool_result_cap: Some(2048),
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         };
         let zero_cfg = ContextStrategyConfig {
             turn_tool_result_cap: Some(0),
             max_history_tokens: None,
+            mult: None,
             ..none_cfg.clone()
         };
         let (a, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &none_cfg);
@@ -1732,6 +2069,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         };
         let cfg_zero = ContextStrategyConfig {
             tool_result_cap: Some(0),
@@ -1831,6 +2169,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         }
     }
 
@@ -1842,6 +2181,7 @@ mod render_raw_context_tests {
         let base = budget_base();
         let zero = ContextStrategyConfig {
             max_history_tokens: Some(0),
+            mult: None,
             ..base.clone()
         };
         let (a, ra) = build_send_context_with_regions(&prov(), &ctx, prior_len, &base);
@@ -1862,6 +2202,7 @@ mod render_raw_context_tests {
         let base = budget_base();
         let roomy = ContextStrategyConfig {
             max_history_tokens: Some(1_000_000),
+            mult: None,
             ..base.clone()
         };
         let (plain, plain_regions) =
@@ -1896,6 +2237,7 @@ mod render_raw_context_tests {
 
         let tight = ContextStrategyConfig {
             max_history_tokens: Some(budget),
+            mult: None,
             ..base.clone()
         };
         let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &tight);
@@ -1932,6 +2274,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         };
         let (uncapped, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &base);
         let expected: Vec<serde_json::Value> = uncapped
@@ -1946,6 +2289,7 @@ mod render_raw_context_tests {
 
         let tight = ContextStrategyConfig {
             max_history_tokens: Some(budget),
+            mult: None,
             ..base.clone()
         };
         let (out, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &tight);
@@ -1979,6 +2323,7 @@ mod render_raw_context_tests {
         let (ctx, prior_len) = three_turn_context();
         let tiny = ContextStrategyConfig {
             max_history_tokens: Some(1),
+            mult: None,
             ..budget_base()
         };
         let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &tiny);
@@ -2019,6 +2364,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         };
         let (uncapped, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &base);
         let expected: Vec<serde_json::Value> = uncapped
@@ -2038,6 +2384,7 @@ mod render_raw_context_tests {
 
         let tight = ContextStrategyConfig {
             max_history_tokens: Some(budget),
+            mult: None,
             ..base
         };
         let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &tight);
@@ -2090,6 +2437,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            mult: None,
         };
 
         // The journal the reader reads back.

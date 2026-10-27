@@ -84,9 +84,10 @@ finds and hands out the window the caller asked for.
   an opener without a pair), and the strategies read both kinds.
 - **The depth comes from the strategy.**
   `agent_loop::context::prior_depth()` turns the config into a
-  `PriorDepth`: `sliding_window` asks for the last `window` pairs and
-  the last `note_window` openers; `full` mode and an unset
-  `note_window` ask for everything.
+  `PriorDepth`: `sliding_window` asks for the last `window × mult`
+  pairs (the region-① block capacity — the block head can sit anywhere
+  inside that span) and the last `note_window` openers; `full` mode and
+  an unset `note_window` ask for everything.
 - **The slice starts at a turn boundary**, so the strategies see the
   same turns they would have seen in the full journal — the payload is
   byte-identical either way (a differential test in
@@ -138,9 +139,12 @@ pairs_in_prior` when unset (the implementation in
 `build_send_context_cached`
 computes this via `verbatim_start_index` + `extract_pairs(...).len()`):
 
-1. **Compacted history** — the last `max(0, window − recent)` older
-   prior turns, reduced to pure text and reformatted in the active
-   provider's wire format.
+1. **Compacted history** — the pairs from the **block head** up to the
+   verbatim region, reduced to pure text and reformatted in the active
+   provider's wire format. The head is block-anchored (below): it stays
+   put while the block holds `window × mult` pairs or fewer, so within
+   a block this region only *appends* one pair per turn and its wire
+   prefix is byte-stable across turns (prompt-cache friendly).
 2. **Recent turns, verbatim** — the last `recent` prior turns with
    their **structured `tool_calls` / `tool_use` and tool results
    intact**, passed through untouched.
@@ -172,7 +176,38 @@ flowchart TB
 
 ② shows a single turn for brevity; in practice it holds up to
 `note_window` completed prior turns (default `3`), and ① absorbs the
-remaining `max(0, window − recent)` pairs as text-only.
+pairs before it, from the block head onward.
+
+#### The region-① block anchor
+
+Region ① is **block-anchored** so its wire prefix stays stable across
+turns. The head position persists across turns as two FNV-1a hashes
+(block-head pair's user/assistant text) in
+`agent-session.json` (`SessionState.history_block_anchor`) — same file,
+same lifecycle: `/reset` and `/new` delete it together with the journal
+acknowledgement, which is exactly when an anchor must be dropped.
+
+- **Within a block** the head does not move: each turn only *appends*
+  one pair at the region's tail, so the bytes before it are identical
+  to last turn's — the provider's prefix cache keeps hitting.
+- **Jump.** When the block outgrows `window × mult` pairs (capacity
+  `round(window × mult)`, landing floor `round(window × min(mult, 1))`),
+  the head jumps forward so the block lands on `max(floor, capacity −
+  floor + 1)` pairs. One turn in `window × (mult − 1) + 1` breaks the
+  prefix; the rest hit the cache. `mult = 1` makes the landing equal
+  the capacity — a constant-size block that slides one pair every turn
+  (the pre-block behavior); fractional `mult` (e.g. `0.5`) shrinks the
+  block below a window (constant size, sliding every turn).
+- **Cold rebuild.** When the anchor is absent (fresh session, or a
+  session file written before the field existed) or its pair is no
+  longer in the delivered slice (journal rewritten, window/mult
+  changed beyond the reader depth), the block rebuilds from the last
+  `capacity` pairs and re-anchors. All paths converge to the same
+  state for the same journal and config.
+- The reader depth `window × mult + note_window` guarantees the
+  anchored head is always inside the delivered slice for a
+  journal-consistent session: the block never exceeds the capacity and
+  the verbatim region is the openers on top.
 
 ① and ② are built **once per turn**, not once per LLM call: they depend
 only on `raw_context[..prior_len]`, which is fixed while a turn runs

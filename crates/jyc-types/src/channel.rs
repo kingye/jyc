@@ -777,7 +777,9 @@ pub enum ContextStrategy {
 ///
 /// `mode` selects which strategy to apply; `window` is the number of
 /// latest user+assistant turns to keep in `sliding_window` mode.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+// `Eq` is not derived: the `mult` field is an `f64`, which has no total
+// order. Nothing compares strategies by hashing, so `PartialEq` suffices.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ContextStrategyConfig {
     /// Context strategy mode. Default: `sliding_window`.
     #[serde(default = "default_context_strategy")]
@@ -846,6 +848,38 @@ pub struct ContextStrategyConfig {
     /// compatible.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_history_tokens: Option<usize>,
+    /// Multiplier on `window` bounding how many compact pairs region ①
+    /// accumulates before its head jumps forward. The block head stays put
+    /// while the block holds `window × mult` pairs or fewer, so within one
+    /// block the region ① prefix is byte-stable across turns (prompt-cache
+    /// friendly); each jump is the one turn where the prefix breaks.
+    /// Fractional values are allowed: `mult = 1` makes every turn slide by
+    /// one pair (the pre-block behavior), `mult = 0.5` caps the block at
+    /// half a window (constant-size, sliding every turn), larger values
+    /// space the jumps further apart. `None` (the default) resolves to
+    /// [`DEFAULT_MULT`] (2); values are clamped into `0.1..=64.0` with
+    /// non-finite input falling back to the default. Only meaningful when
+    /// `mode = "sliding_window"`. Omitted from serialized override files
+    /// when unset so existing readers stay compatible.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mult: Option<f64>,
+}
+
+/// Default for [`ContextStrategyConfig::mult`]: region ① spans up to
+/// `2 × window` compact pairs before the head jumps forward.
+pub const DEFAULT_MULT: f64 = 2.0;
+
+impl ContextStrategyConfig {
+    /// Resolve `mult` to a usable multiplier: the default when unset or
+    /// non-finite, clamped into `0.1..=64.0` so degenerate config values
+    /// (0, negative, NaN, huge) cannot produce a zero-size or absurdly
+    /// deep region ①.
+    pub fn mult(&self) -> f64 {
+        match self.mult {
+            Some(m) if m.is_finite() => m.clamp(0.1, 64.0),
+            _ => DEFAULT_MULT,
+        }
+    }
 }
 
 impl Default for ContextStrategyConfig {
@@ -864,6 +898,10 @@ impl Default for ContextStrategyConfig {
             // users already know, and a token budget silently truncating
             // history is the more surprising default.
             max_history_tokens: None,
+            // Block-jump spacing uses the default (2): enough turns for
+            // the stable prefix to dominate the cache-hit ratio, small
+            // enough that a jump's one broken-prefix turn stays rare.
+            mult: None,
         }
     }
 }

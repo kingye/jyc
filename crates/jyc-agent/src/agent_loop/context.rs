@@ -1424,7 +1424,7 @@ mod render_raw_context_tests {
             let (sent, regions, next_anchor) =
                 build_send_context_anchor_with_regions(&prov(), &prior, prior.len(), &cfg, anchor);
             let r1 = region1_texts(&sent, &regions);
-            assert_eq!(r1.len(), 1 + 2 * 1, "constant-size block at turn {k}");
+            assert_eq!(r1.len(), 1 + 2, "constant-size block at turn {k}");
             assert_eq!(r1[1], format!("u{}", k - 1));
             assert_eq!(r1[r1.len() - 1], format!("a{}", k - 1));
             assert_ne!(anchor, next_anchor, "ext_rate=0 must re-anchor every turn");
@@ -1505,7 +1505,7 @@ mod render_raw_context_tests {
         let (sent2, regions2, _) =
             build_send_context_anchor_with_regions(&prov(), &prior2, prior2.len(), &cfg, anchor);
         let r2 = region1_texts(&sent2, &regions2);
-        assert_eq!(r2.len(), 1 + 2 * 1);
+        assert_eq!(r2.len(), 1 + 2);
         assert_eq!(r2[1], "u7");
     }
 
@@ -1557,7 +1557,7 @@ mod render_raw_context_tests {
         //   block extends to 2 pairs without a jump.
         // - k=7: anchor "u4, keep 2" → expected head = 6 − 2 − 1 = 3, the
         //   block extends to 3 pairs without a jump.
-        assert_eq!(r1_lens[4], 1 + 2 * 1, "jumped block at k=5: {r1_lens:?}");
+        assert_eq!(r1_lens[4], 1 + 2, "jumped block at k=5: {r1_lens:?}");
         assert_eq!(r1_lens[5], 1 + 2 * 2, "extended block at k=6: {r1_lens:?}");
         assert_eq!(
             r1_lens[6],

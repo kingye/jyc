@@ -9,7 +9,6 @@
 
 ### Changed
 
-- `sliding_window` now builds a stable-prefix history: the compacted region's oldest pair advances only when the `window` cap or the `max_history_tokens` high-water target requires it, instead of rebuilding a rolling last-N block every turn. Regions ② and ③ also share one tool-result cap and truncation policy, so a completed current turn is promoted into the verbatim prior without changing cached request bytes. `tool_result_cap` therefore applies to the current turn when `turn_tool_result_cap` is unset, and `turn_tool_result_cap` overrides the policy across both verbatim regions; no configuration key was added (#1011)
 - `jyc_send_message` stays in the core advertised tool set instead of the on-demand group: it carries attachment-bearing replies (for example a ZIP on WeCom), so the model must be able to discover it without a loader call. The tool, outbound-adapter path, hub relay and channel attachment support are unchanged; ordinary text-only replies still use the turn's final message (#1007)
 - `context_browse`, `lesson_add` and `lesson_read` moved to the on-demand group: they serve occasional transcript paging and lesson maintenance rather than every turn. The task tools (`task_list`, `task_create`, `task_update`) moved there too: whether work needs a plan is a project convention, not a framework-wide cost, so the loader's index points multi-step work at them and drops that sentence when `disabled_tools` removes them. `jyc_send_message` remains the core tool that must work without a discovery call (#1007)
 - The channel/topic roster no longer rides every turn: it was a per-turn block that changed whenever a topic appeared or closed, and it was repeated in the history of every later turn. The subagent roster stays in the `<runtime-state>` block (it names the children this topic may reuse), and the channel/topic table is fetched by `list_topics` when the model wants to address someone (#1004)
@@ -19,6 +18,7 @@
 
 ### Fixed
 
+- Revert the sliding-window context prefix stabilization (#1011): the region rebuild dropped the cross-turn provider-cache prefix anchor — in production the first-call cache hit collapsed from ~97% to ~15-21% (wire-dump verified: cross-turn common prefix shrank from 96.8% to ~0.1% at the messages level). The turn-internal stability work from that PR is lost with the revert and will be re-landed together with a persisted per-topic checkpoint that anchors the compact region's start (#1014)
 - The dashboard reports a broken connection instead of looking healthy: the topic info pane says `Failed to load topic details — will retry` when the detail request failed (it used to read `Loading topic details...` forever, because a failed fetch and a pending one left the same empty detail), and the chat status block shows `Not connected: …` for a failed poll and `WebSocket disconnected — reconnecting...` for a lost socket (#998)
 - The dashboard's WebSocket client now pings the server and treats a silent socket as dead, so a half-open tunnel — a VPN switching the network under a `jyc connect` session — is detected and reconnected instead of leaving the chat pane quietly frozen (#998)
 

@@ -392,41 +392,27 @@ async fn send_returns_429_when_the_queue_is_full() {
     let first = send("first").await.unwrap();
     assert_eq!(first.status(), 200);
 
-    // Fill the queue through the same manager the API resolves to. The worker is
-    // blocked in the seed turn, so these messages cannot be consumed and the
-    // queue must report itself full instead of accepting without bound.
-    let mut queue_full = false;
-    for i in 0..8 {
-        let message = test_message("agents", topic, &format!("filler-{i}"));
-        if tm
-            .try_enqueue(
-                message,
-                topic.to_string(),
-                test_pattern("agents"),
-                None,
-                false,
-                None,
-            )
-            .await
-            .is_err()
-        {
-            queue_full = true;
-            break;
+    // Keep sending through the API until the target queue reports itself full.
+    // The worker is blocked in the seed turn, so a bounded queue must reject
+    // instead of accepting without bound; asking through the same endpoint
+    // avoids assuming which manager instance the handler resolved.
+    let mut statuses = Vec::new();
+    for _ in 0..8 {
+        let response = send("filler").await.unwrap();
+        statuses.push(response.status());
+        if response.status() == 429 {
+            let body: serde_json::Value = response.json().await.unwrap();
+            assert!(
+                body["error"]
+                    .as_str()
+                    .is_some_and(|e| e.contains("queue is full")),
+                "{body}"
+            );
+            release.notify_waiters();
+            return;
         }
     }
-    assert!(queue_full, "the topic queue never reported itself full");
-
-    let second = send("second").await.unwrap();
-    assert_eq!(second.status(), 429);
-    let body: serde_json::Value = second.json().await.unwrap();
-    assert!(
-        body["error"]
-            .as_str()
-            .is_some_and(|e| e.contains("queue is full")),
-        "{body}"
-    );
-
-    release.notify_waiters();
+    panic!("queue never filled; statuses: {statuses:?}");
 }
 
 #[tokio::test]

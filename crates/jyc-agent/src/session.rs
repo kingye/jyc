@@ -1430,14 +1430,11 @@ pub(crate) fn extract_user_assistant_pairs_range(
         return Vec::new();
     }
     // `start` opens the `skip_pairs`-th oldest pair; `end` opens the pair
-    // right after the range (or the slice end when the range runs to the
-    // newest pair).
+    // right after the range. `keep == remaining` (keep-to-end) yields
+    // `remaining - keep == 0`, where `pairs_tail_start` already returns
+    // `raw_context.len()`.
     let start = pairs_tail_start(raw_context, remaining).0;
-    let end = if keep >= remaining {
-        raw_context.len()
-    } else {
-        pairs_tail_start(raw_context, remaining - keep).0
-    };
+    let end = pairs_tail_start(raw_context, remaining - keep).0;
     extract_user_assistant_pairs_impl(&raw_context[start..end], keep, note_window)
 }
 

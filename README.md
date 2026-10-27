@@ -403,11 +403,22 @@ jyc send jyc --topic reports "Collect data" "Generate report" "Summarize"
 jyc --data-dir /srv/jyc send jyc "Run the hourly report"
 ```
 
-A cron entry should use absolute paths and the same `--data-dir` as the hub:
+A local cron entry running as the same account can use the defaults for the
+inspect address and token. Use an absolute binary path because cron's `PATH` is
+minimal:
 
 ```cron
-0 * * * * /usr/local/bin/jyc --data-dir /srv/jyc send jyc "Run the hourly report"
+0 * * * * /usr/local/bin/jyc send jyc "Run the hourly report"
 ```
+
+If `jyc serve` uses a non-default data dir, pass the same `--data-dir` here; if
+its bind cannot be resolved from the config under that data dir, pass the
+matching `--addr` as well.
+
+The shipped `jyc-cron` skill carries the full install runbook: confirming the
+schedule, preserving existing crontab entries, idempotent `# jyc-send:<id>`
+markers, quoting and logging. Enable it for an agent or topic that should
+handle scheduling requests (`skills = ["jyc-cron"]` or `/skill on jyc-cron`).
 
 **Remote hub over SSH**: `jyc connect <host>` points the dashboard at a
 `jyc serve` on another machine. Unless `--remote-bind` says otherwise, the

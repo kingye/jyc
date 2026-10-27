@@ -197,18 +197,25 @@ anchor must be dropped.
   one pair at the region's tail, so the bytes before it are identical
   to last turn's — the provider's prefix cache keeps hitting.
 - **Jump.** When the block outgrows the capacity — `(window −
-  note_window) + round(window × ext_rate)` pairs — the head jumps
-  forward so the block lands on `window − note_window` pairs, the
-  landing. The visible history span thus oscillates between `window`
-  and `window + ext_rate × window` turns, and the jump period is
-  `capacity + 1 − landing` = `round(window × ext_rate) + 1` turns:
-  one prefix-breaking turn per period, everything between cached. The
-  drop discards `round(window × ext_rate)` pairs — above `ext_rate =
-  1` that is more than a full window at once, which is why the
-  accepted range stops at 1 (larger values would only retain more
-  history per turn, at token cost). `ext_rate = 0` makes the capacity
-  equal the landing: a constant-size block whose head slides one pair
-  every turn — the pre-block sliding window, no special case.
+  note_window) + round(window × ext_rate)` pairs, capped at
+  `MAX_BLOCK_PAIRS` — the head jumps forward so the block lands on
+  `window − note_window` pairs, the landing (itself clamped to the
+  capacity, so a config-file `window` past `MAX_BLOCK_PAIRS +
+  note_window` degenerates to a constant-capacity slide instead of
+  underflowing). With `note_window ≤ window` the visible history span
+  thus oscillates between `window` and `window + ext_rate × window`
+  turns, and the jump period is `capacity + 1 − landing` = `round(window
+  × ext_rate) + 1` turns. When the cap binds the extension saturates:
+  the span tops out at `MAX_BLOCK_PAIRS + note_window` turns and the
+  jump period becomes `MAX_BLOCK_PAIRS − (window − note_window) + 1`
+  turns. Either way there is one prefix-breaking turn per period,
+  everything between cached. The drop discards `capacity − landing`
+  pairs — above `ext_rate = 1` that is more than a full window at
+  once, which is why the accepted range stops at 1 (larger values
+  would only retain more history per turn, at token cost).
+  `ext_rate = 0` makes the capacity equal the landing: a constant-size
+  block whose head slides one pair every turn — the pre-block sliding
+  window, no special case.
 - **Cold rebuild.** When the anchor is absent (fresh session, or a
   session file written before the field existed) or its pair is no
   longer in the delivered slice (journal rewritten, window/ext_rate
@@ -323,15 +330,17 @@ window compact to text-only. Boundary cases (matching
   `usize::MAX`, so `verbatim_start_index` finds no `M`-th turn and
   returns 0. To get a `window`-bounded prior, set `note_window`
   explicitly.
-- **`M = 0`** — pure text window; the entire prior is compacted, last
-  `window` pairs kept as text-only.
+- **`M = 0`** — pure text window; the entire prior is compacted, the
+  block keeping up to `window + round(window × ext_rate)` (capped at
+  `MAX_BLOCK_PAIRS`) pairs as text-only.
 - **`0 < M ≤ window`, prior ≥ `M`** — last `M` prior turns verbatim;
-  older turns compacted to last `window − M` pairs as text-only.
+  older turns compacted to a block of `(window − M) + round(window ×
+  ext_rate)` pairs (capped at `MAX_BLOCK_PAIRS`) as text-only.
 - **`M > window`, prior ≥ `M`** — verbatim region exceeds `window` and
-  ① shrinks to 0. **There is no clamp** — `compact_keep =
-  window.saturating_sub(verbatim_pairs)` only prevents the compact
-  region from going negative, never the verbatim region from growing.
-  To bound the prior to `window`, set `M ≤ window`.
+  ① stays empty: the block capacity is 0 (`window − M` saturates to
+  0 and an extension would only rewrite the wire prefix every turn).
+  **There is no clamp** — the verbatim region is never cut back to
+  `window`. To bound the prior to `window`, set `M ≤ window`.
 - **`0 < M`, prior < `M`** — `recent = pairs_in_prior`; the entire
   prior becomes verbatim (`compact_prior` is empty because
   `verbatim_start_index` returns 0) and ① is empty regardless of
@@ -473,21 +482,27 @@ context_strategy = { mode = "full" }
 `mode` accepts `full` or `sliding_window` (alias `sliding`; default).
 `window` counts **turns**, not messages or tokens. `note_window` is
 optional (unset = entire prior verbatim, `window` ignored; `0` = pure
-text window of the last `window` pairs) — see `note_window` above for
-the full boundary table. `tool_result_cap` is a per-tool-result byte
+text window: the whole prior compacted into the block) — see
+`note_window` above for the full boundary table. `tool_result_cap` is a per-tool-result byte
 cap on the verbatim region — see below. `ext_rate` extends how much
 history the sliding window retains beyond `window` — see below.
 
 ### History extension (`ext_rate`)
 
 `ext_rate` (default `0.5`, range `0..=1`) is how far the retained
-history extends beyond `window` turns, as a fraction of `window`. The
-visible span grows from `window` up to `window + ext_rate × window`
-turns; when it hits the ceiling, the oldest `round(window ×
-ext_rate)` turns drop at once and the span returns to `window`. The
-compacted turns between the verbatim tail and the drop point form an
-anchored block (above), so consecutive turns reuse the provider's
-prefix cache and only the drop turn misses it.
+history extends beyond `window` turns, as a fraction of `window`. With
+`note_window ≤ window` the visible span grows from `window` up to
+`window + ext_rate × window` turns (with `note_window ≥ window` there
+is no compact region and the extension is inert); when the span hits
+the ceiling, the oldest `capacity − landing` turns drop at once and
+the span returns to `window`. The capacity `(window − note_window) +
+round(window × ext_rate)` saturates at `MAX_BLOCK_PAIRS` (200): once
+the cap binds the span tops out at `MAX_BLOCK_PAIRS + note_window`
+turns and the jump period becomes `MAX_BLOCK_PAIRS − (window −
+note_window) + 1` turns. The compacted turns between the verbatim
+tail and the drop point form an anchored block (above), so consecutive
+turns reuse the provider's prefix cache and only the drop turn misses
+it.
 
 - `ext_rate = 0` — the classic sliding window: a constant `window`-
   turn span, one turn dropping per turn, no cache stability.

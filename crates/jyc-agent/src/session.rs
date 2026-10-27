@@ -198,7 +198,7 @@ pub struct SessionState {
     /// compact-history block only advances its head when it exceeds
     /// block capacity (`window − note_window + round(window × ext_rate)`)
     /// pairs; `None`, or a hash no longer present in the
-    /// delivered slice, rebuilds the block from the last `window` pairs.
+    /// delivered slice, rebuilds the block from the last `capacity` pairs.
     /// Lives here because the session file's existence is what makes the
     /// journal prefix count at all (`load_context` treats a missing session
     /// file as a fresh start), so `/reset` and `/new` wipe the anchor

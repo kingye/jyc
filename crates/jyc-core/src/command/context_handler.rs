@@ -13,10 +13,10 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 /// Usage:
 ///   /context              Show current strategy
 ///   /context full         Switch to full context (send everything)
-///   /context sliding [N] [M] [CAP] [TURNCAP] [MAXHIST] [MULT]
+///   /context sliding [N] [M] [CAP] [TURNCAP] [MAXHIST] [EXT_RATE]
 ///     Switch to sliding window (default N = 10 turns). M is the optional
 ///     note window: only the most recent M windowed turns carry tool-call
-///     history notes (default: 5). CAP is the optional per-tool-result
+///     history notes (default: 3). CAP is the optional per-tool-result
 ///     byte cap on the verbatim prior region (region ②; default: 2048).
 ///     TURNCAP is the optional per-tool-result byte cap on the current
 ///     turn (region ③), which CAP deliberately leaves uncapped; an
@@ -24,11 +24,12 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///     by a paging marker. Unset by default. MAXHIST is the optional token
 ///     budget for the two history regions (① + ②): when they estimate over
 ///     it, the oldest history is dropped first. Unset by default. EXT_RATE
-///     is the optional history extension fraction (default: 0.5): the
-///     retained span grows from `N` up to `N + EXT_RATE × N` turns before
-///     the oldest drop at once, so the compact block's wire prefix stays
-///     stable between drops; `EXT_RATE = 0` is the classic sliding window
-///     (one turn drops per turn).
+///     is the optional history extension fraction (default: 0.5): with
+///     `M ≤ N` the retained span grows from `N` up to `N + EXT_RATE × N`
+///     turns before the oldest drop at once (saturating at
+///     `MAX_BLOCK_PAIRS` compact pairs), so the compact block's wire
+///     prefix stays stable between drops; `EXT_RATE = 0` is the classic
+///     sliding window (one turn drops per turn).
 ///
 ///     Per-slot semantics: an absent slot falls back to the *configured*
 ///     value (the config.toml chain) — not to whatever an earlier
@@ -364,7 +365,7 @@ impl CommandHandler for ContextCommandHandler {
             other => Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/context: unknown argument '{other}'. Use: /context sliding [N] [M] [CAP] [TURNCAP] [MAXHIST] [MULT] | full | reset | dump [on|off]"
+                    "/context: unknown argument '{other}'. Use: /context sliding [N] [M] [CAP] [TURNCAP] [MAXHIST] [EXT_RATE] | full | reset | dump [on|off]"
                 ),
                 error: None,
                 append_body: None,
@@ -452,13 +453,12 @@ fn describe_strategy(cfg: &ContextStrategyConfig) -> String {
             if let Some(t) = cfg.max_history_tokens {
                 s.push_str(&format!(", max_history_tokens={t}"));
             }
-            if cfg.ext_rate.is_some() {
-                // Print the resolved fraction: the config resolver clamps,
-                // and reporting the configured value (e.g. ext_rate=2 for
-                // an effective 1) would lie about the block the strategy
-                // actually builds.
-                s.push_str(&format!(", ext_rate={}", cfg.ext_rate()));
-            }
+            // Always print the resolved fraction (the `window`/`note_window`
+            // fields do the same): the config resolver clamps, and omitting
+            // the default would hide the extension the strategy actually
+            // applies — e.g. reporting `ext_rate=2` for an effective 1
+            // would lie about the block the strategy actually builds.
+            s.push_str(&format!(", ext_rate={}", cfg.ext_rate()));
             s.push(')');
             s
         }

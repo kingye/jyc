@@ -12,38 +12,56 @@ use crate::types::{ContentBlock, PriorDepth};
 /// Region-① block capacity: how many compact pairs the block holds
 /// before its head jumps forward. `(window − note_window) +
 /// round(window × ext_rate)` — the classic sliding window's `window −
-/// note_window` pairs plus the `ext_rate` extension. The visible history
-/// span therefore oscillates between `window` and `window +
-/// ext_rate × window` turns. Capped at
+/// note_window` pairs plus the `ext_rate` extension. With `note_window ≤
+/// window` the visible history span therefore oscillates between `window`
+/// and `window + ext_rate × window` turns; with `note_window ≥ window`
+/// there is no compact region at all (every prior turn is verbatim) and
+/// the span stays at `note_window` turns. Capped at
 /// [`jyc_types::channel::MAX_BLOCK_PAIRS`] so a large window × rate
 /// composition cannot inflate the per-turn payload and the reader scan
-/// back towards a full-journal read.
+/// back towards a full-journal read; when the cap binds the extension
+/// saturates — the span tops out at `MAX_BLOCK_PAIRS + note_window`
+/// turns and the jump period becomes `MAX_BLOCK_PAIRS − landing + 1`
+/// turns.
 ///
 /// Shared by [`prior_depth`] (the reader depth) and
 /// [`build_history_regions`] (the block builder): the reader must deliver
 /// exactly the pairs the builder anchors in, and the differential test
 /// pins the two against drift.
 fn block_capacity(strategy: &ContextStrategyConfig) -> usize {
-    // `None` note_window (whole prior verbatim) leaves no compact region;
-    // `usize::MAX` saturates the base to 0, matching `build_history_regions`.
     let base = strategy
         .window
         .max(1)
         .saturating_sub(strategy.note_window.unwrap_or(usize::MAX));
-    let extended = base + (strategy.window.max(1) as f64 * strategy.ext_rate()).round() as usize;
+    if base == 0 {
+        // `window ≤ note_window`: every prior turn is verbatim, so there
+        // is no compact region to anchor. An extension here would only
+        // rewrite the wire prefix every turn — the cache regression this
+        // block exists to fix.
+        return 0;
+    }
+    let extended =
+        base.saturating_add((strategy.window.max(1) as f64 * strategy.ext_rate()).round() as usize);
     extended.min(jyc_types::channel::MAX_BLOCK_PAIRS)
 }
 
 /// Region-① jump landing: the block keeps this many pairs after a jump.
 /// Constant `window − note_window`, independent of `ext_rate`, so every
-/// jump returns the visible history to exactly `window` turns. With
+/// jump returns the visible history to exactly `window` turns (provided
+/// `note_window ≤ window` and the capacity cap does not bind). With
 /// `ext_rate = 0` the capacity equals the landing and the head advances
 /// one pair per turn — the classic sliding window, no special case.
 fn block_landing(strategy: &ContextStrategyConfig) -> usize {
-    strategy
+    let base = strategy
         .window
         .max(1)
-        .saturating_sub(strategy.note_window.unwrap_or(usize::MAX))
+        .saturating_sub(strategy.note_window.unwrap_or(usize::MAX));
+    // Clamp to the capacity: `base` alone is uncapped, so a config-file
+    // `window` past `MAX_BLOCK_PAIRS + note_window` would otherwise make
+    // `pair_count - landing` underflow (`block_capacity` clamps the
+    // extension but not the base). Landing on the capacity degenerates
+    // the block to a constant-capacity slide — never a panic.
+    base.min(block_capacity(strategy))
 }
 
 /// How much of the prior context the strategy needs to build its payload.
@@ -363,11 +381,14 @@ fn build_history_regions(
     // holding the last `capacity` pairs.
     //
     // Capacity is the classic sliding window (`window − note_window`
-    // pairs) plus the `ext_rate` extension, so the visible history grows
-    // from `window` up to `window + ext_rate × window` turns and a jump
-    // returns it to `window` (see `ContextStrategyConfig::ext_rate`'s
-    // doc). At `ext_rate = 0` capacity equals the landing and the block
-    // degenerates to the pre-block sliding window.
+    // pairs) plus the `ext_rate` extension, so with `note_window ≤
+    // window` the visible history grows from `window` up to `window +
+    // ext_rate × window` turns and a jump returns it to `window` (see
+    // `ContextStrategyConfig::ext_rate`'s doc). The capacity caps at
+    // `MAX_BLOCK_PAIRS`; the landing clamps to the capacity so an
+    // uncapped `window − note_window` can never underflow
+    // `pair_count - landing`. At `ext_rate = 0` capacity equals the
+    // landing and the block degenerates to the pre-block sliding window.
     let max_pairs = block_capacity(strategy);
     let landing = block_landing(strategy);
 
@@ -1612,6 +1633,141 @@ mod render_raw_context_tests {
         assert_eq!(prior_depth(&no_note), PriorDepth::All);
     }
 
+    /// `window ≤ note_window`: every prior turn is verbatim, so region ①
+    /// stays empty instead of alternating between a 1-pair block and an
+    /// empty region every other turn (which would rewrite the wire prefix
+    /// every turn — the cache regression the block exists to fix). The
+    /// extension is inert and no anchor is persisted.
+    #[test]
+    fn block_capacity_zero_when_note_window_covers_window() {
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 2,
+            note_window: Some(3),
+            tool_result_cap: None,
+            turn_tool_result_cap: None,
+            max_history_tokens: None,
+            ext_rate: Some(0.5),
+        };
+        assert_eq!(block_capacity(&cfg), 0);
+        assert_eq!(block_landing(&cfg), 0);
+        assert_eq!(
+            prior_depth(&cfg),
+            PriorDepth::Window {
+                pairs: 4,
+                openers: 3
+            }
+        );
+        let prior = turns(5);
+        let (sent, regions, anchor) =
+            build_send_context_anchor_with_regions(&prov(), &prior, prior.len(), &cfg, None);
+        assert!(
+            region1_texts(&sent, &regions).is_empty(),
+            "region ① must be empty when note_window covers window"
+        );
+        assert!(anchor.is_none(), "an empty block persists no anchor");
+    }
+
+    /// A config-file `window` past `MAX_BLOCK_PAIRS + note_window` used to
+    /// underflow `pair_count - landing` (the base is uncapped while the
+    /// capacity is capped). The landing now clamps to the capacity: the
+    /// block degenerates to a constant-capacity slide — never a panic.
+    #[test]
+    fn block_window_past_capacity_cap_degenerates_to_slide() {
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 300,
+            note_window: Some(3),
+            tool_result_cap: None,
+            turn_tool_result_cap: None,
+            max_history_tokens: None,
+            ext_rate: Some(0.5),
+        };
+        assert_eq!(block_capacity(&cfg), 200);
+        assert_eq!(block_landing(&cfg), 200);
+        let mut anchor = None;
+        let mut prev_len = None;
+        // note_window=3: a k-turn prior compacts k−3 pairs, so the block
+        // reaches its 200-pair capacity at k=203 and slides constantly
+        // from there on.
+        for k in 203..=206 {
+            let prior = turns(k);
+            let (sent, regions, next_anchor) =
+                build_send_context_anchor_with_regions(&prov(), &prior, prior.len(), &cfg, anchor);
+            let r1 = region1_texts(&sent, &regions);
+            // Landing == capacity: the block holds a constant 200 pairs
+            // (401 region-① messages with the history marker) and slides
+            // one pair per turn — no underflow, no oscillation.
+            assert_eq!(r1.len(), 1 + 2 * 200, "constant block at k={k}");
+            if let Some(prev) = prev_len {
+                assert_eq!(r1.len(), prev, "block size must not oscillate at k={k}");
+            }
+            prev_len = Some(r1.len());
+            assert_eq!(r1[r1.len() - 1], format!("a{}", k - 3));
+            anchor = next_anchor;
+        }
+    }
+
+    /// When `MAX_BLOCK_PAIRS` binds, the extension saturates: capacity
+    /// clamps to 200 while the landing stays at `window − note_window`,
+    /// so the jump period becomes `capacity − landing + 1` = 4 turns at
+    /// `window = 200, note_window = 3` (instead of the uncapped
+    /// `round(window × ext_rate) + 1` = 201).
+    #[test]
+    fn block_cap_binding_shortens_jump_period() {
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 200,
+            note_window: Some(3),
+            tool_result_cap: None,
+            turn_tool_result_cap: None,
+            max_history_tokens: None,
+            ext_rate: Some(1.0),
+        };
+        assert_eq!(block_capacity(&cfg), 200);
+        assert_eq!(block_landing(&cfg), 197);
+        let mut anchor = None;
+        let mut jump_ks = Vec::new();
+        let mut prev_r1: Option<Vec<String>> = None;
+        let mut lens = Vec::new();
+        // note_window=3: a k-turn prior compacts k−3 pairs.
+        for k in 200..=210 {
+            let prior = turns(k);
+            let (sent, regions, next_anchor) =
+                build_send_context_anchor_with_regions(&prov(), &prior, prior.len(), &cfg, anchor);
+            let r1 = region1_texts(&sent, &regions);
+            if let Some(prev) = &prev_r1 {
+                let extended = r1.len() > prev.len() && r1[..prev.len()] == prev[..];
+                if !extended {
+                    jump_ks.push(k);
+                }
+            }
+            lens.push(r1.len());
+            prev_r1 = Some(r1);
+            anchor = next_anchor;
+        }
+        // Cold build at k=200 keeps the last 197 pairs (under capacity);
+        // the block then extends 197 → 200 by k=203, jumps (landing on
+        // 197), and repeats every 4 turns: 197 → 200 pairs, drop 4.
+        assert_eq!(jump_ks, vec![204, 208], "jumps: {jump_ks:?}");
+        assert_eq!(
+            lens[0],
+            1 + 2 * 197,
+            "cold build keeps the last 197 pairs: {lens:?}"
+        );
+        assert_eq!(
+            lens[3],
+            1 + 2 * 200,
+            "block extends to capacity by k=203: {lens:?}"
+        );
+        assert_eq!(lens[4], 1 + 2 * 197, "jump lands on 197 pairs: {lens:?}");
+        assert_eq!(
+            lens[7],
+            1 + 2 * 200,
+            "block re-extends to capacity: {lens:?}"
+        );
+    }
+
     /// `with_regions` and `dump_send_context` — verify region partition is
     /// stable across `Full` and `SlidingWindow` strategies.
     #[test]
@@ -1752,16 +1908,19 @@ mod render_raw_context_tests {
             json!({"role": "user", "content": "u2"}),
             json!({"role": "assistant", "content": "a2"}),
         ];
-        // `window: 1` leaves one pair in the compacted region ①, so the
-        // sentinel proves reuse of a populated region, not of an empty one.
+        // One verbatim turn + `window: 2, ext_rate: 0` leaves one pair in
+        // the compacted region ①, so the sentinel proves reuse of a
+        // populated region, not of an empty one. (`window: 1` would put
+        // the block capacity at 0 — `window ≤ note_window` leaves no
+        // compact region.)
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
-            window: 1,
+            window: 2,
             note_window: Some(1),
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            ext_rate: None,
+            ext_rate: Some(0.0),
         };
         let prior_len = prior.len();
         let mut ctx = prior.clone();

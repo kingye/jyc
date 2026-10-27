@@ -849,13 +849,19 @@ pub struct ContextStrategyConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_history_tokens: Option<usize>,
     /// How far the retained history extends beyond `window` turns, as a
-    /// fraction of `window`. The retained span grows from `window` up to
-    /// `window + ext_rate × window` turns — the compacted turns between
-    /// the verbatim tail and the drop point form an anchored block whose
-    /// wire prefix stays byte-stable across turns (prompt-cache friendly),
-    /// so only the drop turn misses the cache. `ext_rate = 0` degenerates
-    /// to the classic sliding window (constant `window`-turn span, the
-    /// head advancing one turn per turn). Values are clamped into
+    /// fraction of `window`. With `note_window ≤ window` the retained span
+    /// grows from `window` up to `window + ext_rate × window` turns — the
+    /// compacted turns between the verbatim tail and the drop point form
+    /// an anchored block whose wire prefix stays byte-stable across turns
+    /// (prompt-cache friendly), so only the drop turn misses the cache.
+    /// With `note_window ≥ window` there is no compact region and the
+    /// extension is inert. Saturating at [`MAX_BLOCK_PAIRS`] caps the
+    /// extension: once the cap binds, the span tops out at
+    /// `MAX_BLOCK_PAIRS + note_window` turns and the jump period becomes
+    /// `MAX_BLOCK_PAIRS − (window − note_window) + 1` turns. `ext_rate =
+    /// 0` degenerates to the classic sliding window (constant `window`-
+    /// turn span, the head advancing one turn per turn). Values are
+    /// clamped into
     /// `0.0..=[MAX_EXT_RATE]` (1) with non-finite input falling back to
     /// [`DEFAULT_EXT_RATE`]; the useful range is `0..=1`, larger values
     /// only retain more history per turn at token cost and drop more than

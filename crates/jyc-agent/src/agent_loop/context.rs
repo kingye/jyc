@@ -1394,17 +1394,18 @@ mod render_raw_context_tests {
         let (next_first, _) =
             build_send_context_with_regions(&prov(), &next_turn, next_prior_len, &cfg);
 
-        let turn_end_wire = serde_json::to_string(turn_end.as_ref()).unwrap();
-        let next_first_wire = serde_json::to_string(next_first.as_ref()).unwrap();
+        // Message-level prefix: equal values serialize to equal wire bytes,
+        // so this is the byte-prefix guarantee minus the array framing — a
+        // serialized `[...]` never byte-extends `[..., <new>]` because the
+        // old array's closing `]` sits where the new array has a `,`.
         assert!(
-            next_first_wire.starts_with(&turn_end_wire),
-            "next turn must extend the previous wire prefix; common prefix diverged first at {}",
-            next_first_wire
-                .char_indices()
-                .zip(turn_end_wire.chars())
-                .find(|((_, a), b)| a != b)
-                .map(|((idx, _), _)| idx)
-                .unwrap_or_else(|| turn_end_wire.len().min(next_first_wire.len()))
+            next_first.len() > turn_end.len(),
+            "next turn must append the new user message to the previous wire payload"
+        );
+        assert_eq!(
+            &next_first[..turn_end.len()],
+            turn_end.as_ref(),
+            "next turn must extend the previous wire prefix message-for-message"
         );
     }
 
@@ -1827,10 +1828,13 @@ mod render_raw_context_tests {
         };
         let (a, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &none_cfg);
         let (b, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &zero_cfg);
+        // The shared verbatim policy truncates with the keeping-edges
+        // marker (`… [N bytes dropped from the middle — …]`), not the
+        // head-only `… [truncated N bytes]` one — assert on the 4000-byte
+        // run being gone rather than on a specific marker phrasing.
+        let wire_a = serde_json::to_string(a.as_ref()).unwrap();
         assert!(
-            serde_json::to_string(a.as_ref())
-                .unwrap()
-                .contains("[truncated"),
+            !wire_a.contains(&big) && wire_a.contains("dropped from the middle"),
             "history cap remains active when the turn cap is unset"
         );
         assert!(

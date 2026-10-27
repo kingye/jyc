@@ -1408,9 +1408,12 @@ pub(crate) fn extract_user_assistant_pairs(
     extract_user_assistant_pairs_impl(raw_context, keep_pairs, note_window)
 }
 
-/// Like [`extract_user_assistant_pairs`], but skips the oldest `skip_pairs`
-/// pair-producing turns first. Used by the stable-prefix sliding window to
-/// advance the compacted-history start without rebuilding the kept tail.
+/// Like [`extract_user_assistant_pairs`], but returns the pair range
+/// `[skip_pairs, skip_pairs + keep_pairs)`: the oldest `skip_pairs`
+/// pair-producing turns are dropped first, then the NEXT `keep_pairs` of
+/// what remains are kept. Used by the stable-prefix sliding window to
+/// advance the compacted-history start without rebuilding the kept tail
+/// (it calls with `skip_pairs + keep_pairs == total`, i.e. keep-to-end).
 pub(crate) fn extract_user_assistant_pairs_range(
     raw_context: &[serde_json::Value],
     skip_pairs: usize,
@@ -1421,13 +1424,21 @@ pub(crate) fn extract_user_assistant_pairs_range(
         return Vec::new();
     }
     let (_, total_pairs) = pairs_tail_start(raw_context, usize::MAX);
-    let tail_pairs = total_pairs.saturating_sub(skip_pairs);
-    let tail_start = pairs_tail_start(raw_context, tail_pairs).0;
-    extract_user_assistant_pairs_impl(
-        &raw_context[tail_start..],
-        keep_pairs.min(tail_pairs),
-        note_window,
-    )
+    let remaining = total_pairs.saturating_sub(skip_pairs);
+    let keep = keep_pairs.min(remaining);
+    if keep == 0 {
+        return Vec::new();
+    }
+    // `start` opens the `skip_pairs`-th oldest pair; `end` opens the pair
+    // right after the range (or the slice end when the range runs to the
+    // newest pair).
+    let start = pairs_tail_start(raw_context, remaining).0;
+    let end = if keep >= remaining {
+        raw_context.len()
+    } else {
+        pairs_tail_start(raw_context, remaining - keep).0
+    };
+    extract_user_assistant_pairs_impl(&raw_context[start..end], keep, note_window)
 }
 
 fn extract_user_assistant_pairs_impl(

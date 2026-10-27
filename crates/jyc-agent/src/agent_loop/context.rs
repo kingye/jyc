@@ -10,31 +10,40 @@ use crate::provider::Provider;
 use crate::types::{ContentBlock, PriorDepth};
 
 /// Region-① block capacity: how many compact pairs the block holds
-/// before its head jumps forward. `round(window × mult)`, at least one
-/// pair, capped at [`jyc_types::channel::MAX_BLOCK_PAIRS`] so a large
-/// window × multiplier composition cannot inflate the per-turn payload
-/// and the reader scan back towards a full-journal read.
+/// before its head jumps forward. `(window − note_window) +
+/// round(window × ext_rate)` — the classic sliding window's `window −
+/// note_window` pairs plus the `ext_rate` extension. The visible history
+/// span therefore oscillates between `window` and `window +
+/// ext_rate × window` turns. Capped at
+/// [`jyc_types::channel::MAX_BLOCK_PAIRS`] so a large window × rate
+/// composition cannot inflate the per-turn payload and the reader scan
+/// back towards a full-journal read.
 ///
 /// Shared by [`prior_depth`] (the reader depth) and
 /// [`build_history_regions`] (the block builder): the reader must deliver
 /// exactly the pairs the builder anchors in, and the differential test
 /// pins the two against drift.
 fn block_capacity(strategy: &ContextStrategyConfig) -> usize {
-    (((strategy.window.max(1) as f64) * strategy.mult())
-        .round()
-        .max(1.0) as usize)
-        .min(jyc_types::channel::MAX_BLOCK_PAIRS)
+    // `None` note_window (whole prior verbatim) leaves no compact region;
+    // `usize::MAX` saturates the base to 0, matching `build_history_regions`.
+    let base = strategy
+        .window
+        .max(1)
+        .saturating_sub(strategy.note_window.unwrap_or(usize::MAX));
+    let extended = base + (strategy.window.max(1) as f64 * strategy.ext_rate()).round() as usize;
+    extended.min(jyc_types::channel::MAX_BLOCK_PAIRS)
 }
 
-/// Region-① landing floor: the smallest block the head may land on after
-/// a jump. `round(window × min(mult, 1))`, at least one pair — below
-/// `mult = 1` the block would otherwise shrink by one pair per jump
-/// instead of sliding at a constant size. Shared by [`prior_depth`]'s
-/// counterpart [`block_capacity`] for the same no-drift reason.
-fn block_landing_floor(strategy: &ContextStrategyConfig) -> usize {
-    ((strategy.window.max(1) as f64) * strategy.mult().min(1.0))
-        .round()
-        .max(1.0) as usize
+/// Region-① jump landing: the block keeps this many pairs after a jump.
+/// Constant `window − note_window`, independent of `ext_rate`, so every
+/// jump returns the visible history to exactly `window` turns. With
+/// `ext_rate = 0` the capacity equals the landing and the head advances
+/// one pair per turn — the classic sliding window, no special case.
+fn block_landing(strategy: &ContextStrategyConfig) -> usize {
+    strategy
+        .window
+        .max(1)
+        .saturating_sub(strategy.note_window.unwrap_or(usize::MAX))
 }
 
 /// How much of the prior context the strategy needs to build its payload.
@@ -198,10 +207,11 @@ impl SendContextCache {
 ///   1. The block-anchored compact pairs: everything from the persisted
 ///      block head (`block_anchor`) up to the verbatim region, reformatted
 ///      in provider wire format (string content → provider-correct content
-///      shape). The head stays put while the block holds `window × mult`
-///      pairs or fewer, so within a block this region only *appends* each
-///      turn and the wire prefix stays byte-stable; only a block jump (or
-///      a cold rebuild when the anchor is missing) rewrites it.
+///      shape). The head stays put while the block holds `capacity`
+///      (`window − note_window + round(window × ext_rate)`) pairs or fewer,
+///      so within a block this region only *appends* each turn and the
+///      wire prefix stays byte-stable; only a block jump (or a cold
+///      rebuild when the anchor is missing) rewrites it.
 ///   2. The most recent `note_window` prior turns **verbatim** (structured
 ///      `tool_calls` + tool results intact, like the current turn), so the
 ///      model keeps seeing tool calls in the wire format it is supposed to
@@ -347,20 +357,19 @@ fn build_history_regions(
     // Region ① is block-anchored. The persisted anchor names the block
     // head, so within a block the region only *appends* one pair per turn
     // and the wire prefix stays byte-stable (prompt-cache friendly); the
-    // head jumps forward on the turn after the block outgrew
-    // `window × mult` pairs, and that jump turn is the one turn where the
-    // prefix breaks. A missing or unmatched anchor rebuilds the block
-    // cold, holding the last `capacity` pairs.
+    // head jumps forward on the turn after the block outgrew the
+    // capacity, and that jump turn is the one turn where the prefix
+    // breaks. A missing or unmatched anchor rebuilds the block cold,
+    // holding the last `capacity` pairs.
     //
-    // Capacity and landing floor both derive from the fractional `mult`:
-    // below 1 the block shrinks below a window and slides every turn
-    // (constant size), at 1 it is exactly one window (slide by one pair,
-    // the pre-block behavior), above 1 it widens and jumps in
-    // `window`-sized steps. Past `mult ≈ 2` the jump period saturates at
-    // `window` turns — extra multiplier only enlarges the block (see
-    // `ContextStrategyConfig::mult`'s doc).
+    // Capacity is the classic sliding window (`window − note_window`
+    // pairs) plus the `ext_rate` extension, so the visible history grows
+    // from `window` up to `window + ext_rate × window` turns and a jump
+    // returns it to `window` (see `ContextStrategyConfig::ext_rate`'s
+    // doc). At `ext_rate = 0` capacity equals the landing and the block
+    // degenerates to the pre-block sliding window.
     let max_pairs = block_capacity(strategy);
-    let landing_floor = block_landing_floor(strategy);
+    let landing = block_landing(strategy);
 
     let pairs = crate::session::extract_pairs(compact_prior);
     let pair_count = pairs.len();
@@ -401,11 +410,12 @@ fn build_history_regions(
     );
 
     // Aging adds one pair per turn, so this fires on the turn right after
-    // the block reached capacity. The landing keeps at least
-    // `landing_floor` pairs — what makes `mult = 1` a constant-size slide
-    // instead of an ever-shrinking block.
+    // the block reached capacity. The landing keeps `window − note_window`
+    // pairs — the visible history returns to `window` turns; the dropped
+    // pairs number `round(window × ext_rate)`, so at `ext_rate = 0`
+    // nothing drops except the pair that aged in, which is the classic
+    // one-pair-per-turn slide.
     if pair_count.saturating_sub(head) > max_pairs {
-        let landing = (max_pairs - landing_floor + 1).max(landing_floor);
         head = pair_count - landing;
     }
 
@@ -1006,7 +1016,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg).0;
         assert!(matches!(sent, Cow::Borrowed(_)));
@@ -1034,11 +1044,12 @@ mod render_raw_context_tests {
         let mut ctx = prior.clone();
         ctx.extend(current.clone());
 
-        // window=2, note_window=1, mult=0.5: the last prior turn (u3, a3)
-        // is verbatim; mult=0.5 caps the compact block at one pair, so the
-        // older turn (u2 with its tool call) compacts to text-only. No
-        // history note anywhere — notes taught the model to write tool
-        // calls as text (the thinking-leak trigger).
+        // window=2, note_window=1, ext_rate=0.5: the last prior turn (u3,
+        // a3) is verbatim; the compact block holds (2−1)+round(0.5×2) = 2
+        // pairs, so both older turns (u2 with its tool call included)
+        // compact to text-only. No history note anywhere — notes taught
+        // the model to write tool calls as text (the thinking-leak
+        // trigger).
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 2,
@@ -1046,28 +1057,30 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: Some(0.5),
+            ext_rate: Some(0.5),
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg).0;
         let sent = sent.into_owned();
 
-        // 1. Compacted history marker, then older pair in pure text (no note,
-        //    tool_calls dropped).
+        // 1. Compacted history marker, then both older pairs in pure text
+        //    (no note, tool_calls dropped).
         assert_eq!(
             sent[0],
             json!({"role": "user", "content": crate::session::HISTORY_MARKER_TEXT})
         );
-        assert_eq!(sent[1], json!({"role": "user", "content": "u2"}));
-        assert_eq!(sent[2], json!({"role": "assistant", "content": "a2"}));
+        assert_eq!(sent[1], json!({"role": "user", "content": "u1"}));
+        assert_eq!(sent[2], json!({"role": "assistant", "content": "a1"}));
+        assert_eq!(sent[3], json!({"role": "user", "content": "u2"}));
+        assert_eq!(sent[4], json!({"role": "assistant", "content": "a2"}));
 
         // 2. Recent pair verbatim.
-        assert_eq!(sent[3], json!({"role": "user", "content": "u3"}));
-        assert_eq!(sent[4], json!({"role": "assistant", "content": "a3"}));
+        assert_eq!(sent[5], json!({"role": "user", "content": "u3"}));
+        assert_eq!(sent[6], json!({"role": "assistant", "content": "a3"}));
 
         // 3. Current turn verbatim (tool_calls preserved).
-        assert_eq!(sent[5], current[0]);
-        assert_eq!(sent[6], current[1]);
-        assert_eq!(sent[7], current[2]);
+        assert_eq!(sent[7], current[0]);
+        assert_eq!(sent[8], current[1]);
+        assert_eq!(sent[9], current[2]);
     }
 
     #[test]
@@ -1084,7 +1097,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, 99, &cfg)
             .0
@@ -1109,7 +1122,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, 0, &cfg)
             .0
@@ -1154,7 +1167,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let sent = build_send_context_with_regions(&anthropic(), &ctx, prior_len, &cfg)
             .0
@@ -1231,7 +1244,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg)
             .0
@@ -1279,7 +1292,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg)
             .0
@@ -1325,8 +1338,8 @@ mod render_raw_context_tests {
     }
 
     /// window=w, note_window=1 (so a k-turn prior compacts k−1 pairs), no
-    /// caps, explicit block multiplier.
-    fn block_cfg(window: usize, mult: f64) -> ContextStrategyConfig {
+    /// caps, explicit `ext_rate`.
+    fn block_cfg(window: usize, ext_rate: f64) -> ContextStrategyConfig {
         ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window,
@@ -1334,19 +1347,19 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: Some(mult),
+            ext_rate: Some(ext_rate),
         }
     }
 
-    /// The block head stays put while the block holds `window × mult`
-    /// pairs: every turn's region ① is a strict extension of the previous
-    /// turn's. The turn after the block reached capacity is the jump —
-    /// the one turn where the prefix breaks — and the landing keeps
-    /// `capacity − floor + 1` pairs.
+    /// The block head stays put while the block holds `capacity` pairs:
+    /// every turn's region ① is a strict extension of the previous turn's.
+    /// The turn after the block reached capacity is the jump — the one
+    /// turn where the prefix breaks — and the landing keeps `window −
+    /// note_window` pairs, returning the visible history to `window` turns.
     #[test]
     fn block_head_stable_within_block_and_jumps_at_capacity() {
-        // window=2, mult=2 → capacity 4, landing floor 2.
-        let cfg = block_cfg(2, 2.0);
+        // window=2, ext_rate=1 → capacity (2−1)+2 = 3, landing 2−1 = 1.
+        let cfg = block_cfg(2, 1.0);
         let mut anchor = None;
         let mut prev_region1: Option<Vec<String>> = None;
         let mut jump_at = None;
@@ -1365,13 +1378,13 @@ mod render_raw_context_tests {
             prev_region1 = Some(r1);
             anchor = next_anchor;
         }
-        // Compact pairs 1..=4 (turns 2..=5) grow the block without a jump;
-        // the 5th compact pair (turn 6) triggers it, landing on 3 pairs
-        // whose head is pair 3.
-        assert_eq!(jump_at, Some(6));
+        // Compact pairs 1..=3 (turns 2..=4) grow the block without a jump;
+        // the 4th compact pair (turn 5) triggers it, landing on 1 pair
+        // whose head is pair 3; turn 6 extends that block again.
+        assert_eq!(jump_at, Some(5));
         let r1 = prev_region1.unwrap();
-        assert_eq!(r1.len(), 1 + 2 * 3);
-        assert_eq!(r1[1], "u3");
+        assert_eq!(r1.len(), 1 + 2 * 2);
+        assert_eq!(r1[1], "u4");
         assert_eq!(r1[r1.len() - 1], "a5");
     }
 
@@ -1380,8 +1393,8 @@ mod render_raw_context_tests {
     /// (no anchor) agrees with the anchored one.
     #[test]
     fn block_anchor_roundtrip_is_deterministic() {
-        let cfg = block_cfg(2, 2.0);
-        let prior = turns(4); // 3 compact pairs, inside the capacity of 4
+        let cfg = block_cfg(2, 1.0); // capacity (2−1)+2 = 3
+        let prior = turns(4); // 3 compact pairs, exactly at capacity
         let (s1, r1, anchor) =
             build_send_context_anchor_with_regions(&prov(), &prior, prior.len(), &cfg, None);
         assert!(anchor.is_some());
@@ -1398,38 +1411,71 @@ mod render_raw_context_tests {
         );
     }
 
-    /// `mult = 1` degenerates to the pre-block behavior: a constant
-    /// `window`-sized block whose head slides one pair forward every turn,
+    /// `ext_rate = 0` degenerates to the pre-block behavior: the capacity
+    /// equals the landing (`window − note_window` pairs), so the block is
+    /// constant-size and its head slides one pair forward every turn,
     /// re-anchoring each time.
     #[test]
-    fn block_mult_one_slides_one_pair_every_turn() {
-        let cfg = block_cfg(2, 1.0); // capacity 2, floor 2 → constant 2-pair block
+    fn block_ext_rate_zero_slides_one_pair_every_turn() {
+        let cfg = block_cfg(2, 0.0); // capacity = landing = 2−1 = 1 pair
         let mut anchor = None;
         for k in 3..=5 {
             let prior = turns(k);
             let (sent, regions, next_anchor) =
                 build_send_context_anchor_with_regions(&prov(), &prior, prior.len(), &cfg, anchor);
             let r1 = region1_texts(&sent, &regions);
-            assert_eq!(r1.len(), 1 + 2 * 2, "constant-size block at turn {k}");
-            assert_eq!(r1[1], format!("u{}", k - 2));
+            assert_eq!(r1.len(), 1 + 2 * 1, "constant-size block at turn {k}");
+            assert_eq!(r1[1], format!("u{}", k - 1));
             assert_eq!(r1[r1.len() - 1], format!("a{}", k - 1));
-            assert_ne!(anchor, next_anchor, "mult=1 must re-anchor every turn");
+            assert_ne!(anchor, next_anchor, "ext_rate=0 must re-anchor every turn");
             anchor = next_anchor;
         }
     }
 
-    /// Fractional `mult` shrinks the block below a window: capacity
-    /// `round(window × mult)`, constant size, sliding every turn.
+    /// `ext_rate = 1` gives the widest admissible block: capacity
+    /// `(window − note_window) + window`, landing `window − note_window`.
+    /// The span oscillates between them — here 1..=3 pairs, a jump every
+    /// `round(window × ext_rate) + 1 = 3` turns.
     #[test]
-    fn block_fractional_mult_shrinks_below_window() {
-        let cfg = block_cfg(4, 0.5); // capacity round(4 × 0.5) = 2, floor 2
-        let prior = turns(6); // 5 compact pairs
+    fn block_ext_rate_one_oscillates_between_landing_and_capacity() {
+        let cfg = block_cfg(2, 1.0); // capacity 3, landing 1
+        let mut anchor = None;
+        let mut lens = Vec::new();
+        for k in 2..=7 {
+            let prior = turns(k);
+            let (sent, regions, next_anchor) =
+                build_send_context_anchor_with_regions(&prov(), &prior, prior.len(), &cfg, anchor);
+            lens.push(region1_texts(&sent, &regions).len());
+            anchor = next_anchor;
+        }
+        assert_eq!(
+            lens,
+            vec![3, 5, 7, 3, 5, 7],
+            "span grows 1→3 pairs, jumps back to 1, repeats every 3 turns"
+        );
+    }
+
+    /// Spec check for the `window + ext_rate × window` span, the w=4 /
+    /// note=1 / ext_rate=0.5 shape: turns t1..t6 accumulate (5 compact
+    /// pairs), t7 overgrows the capacity and the visible history jumps
+    /// back to [t4, t5, t6, t7] — `window` turns.
+    #[test]
+    fn block_ext_rate_half_jumps_back_to_window_turns() {
+        let cfg = block_cfg(4, 0.5); // capacity (4−1)+2 = 5, landing 4−1 = 3
+        let prior = turns(6); // 5 compact pairs: at capacity, no jump yet
         let (sent, regions, anchor) =
             build_send_context_anchor_with_regions(&prov(), &prior, prior.len(), &cfg, None);
         let r1 = region1_texts(&sent, &regions);
-        assert_eq!(r1.len(), 1 + 2 * 2, "block capped at half a window");
-        assert_eq!(r1[1], "u4");
-        assert!(anchor.is_some());
+        assert_eq!(r1.len(), 1 + 2 * 5, "t1..t5 compacted, t6 verbatim");
+        assert_eq!(r1[1], "u1");
+
+        let prior = turns(7); // 6 compact pairs > capacity 5
+        let (sent, regions, _) =
+            build_send_context_anchor_with_regions(&prov(), &prior, prior.len(), &cfg, anchor);
+        let r1 = region1_texts(&sent, &regions);
+        assert_eq!(r1.len(), 1 + 2 * 3, "jump keeps the last 3 compact pairs");
+        assert_eq!(r1[1], "u4", "visible history is [t4,t5,t6] + verbatim t7");
+        assert_eq!(r1[r1.len() - 1], "a6");
     }
 
     /// An anchor whose pair left the delivered slice (journal rewritten,
@@ -1437,7 +1483,7 @@ mod render_raw_context_tests {
     /// pairs, and the rebuilt anchor continues the block on the next turn.
     #[test]
     fn block_cold_rebuilds_when_anchor_pair_is_gone() {
-        let cfg = block_cfg(2, 2.0); // capacity 4
+        let cfg = block_cfg(2, 1.0); // capacity (2−1)+2 = 3, landing 1
         let prior = turns(7); // 6 compact pairs
         let (sent, regions, anchor) = build_send_context_anchor_with_regions(
             &prov(),
@@ -1450,29 +1496,29 @@ mod render_raw_context_tests {
             }), // garbage: matches no pair
         );
         let r1 = region1_texts(&sent, &regions);
-        assert_eq!(r1.len(), 1 + 2 * 4, "cold block holds the capacity");
-        assert_eq!(r1[1], "u3");
+        assert_eq!(r1.len(), 1 + 2 * 3, "cold block holds the capacity");
+        assert_eq!(r1[1], "u4");
 
         // Next turn: the rebuilt anchor (pair 3) is found, and the block
-        // jumps from 5 pairs to the 3-pair landing.
+        // jumps from 4 pairs to the 1-pair landing.
         let prior2 = turns(8); // 7 compact pairs; pair 3 is still pair 3
         let (sent2, regions2, _) =
             build_send_context_anchor_with_regions(&prov(), &prior2, prior2.len(), &cfg, anchor);
         let r2 = region1_texts(&sent2, &regions2);
-        assert_eq!(r2.len(), 1 + 2 * 3);
-        assert_eq!(r2[1], "u5");
+        assert_eq!(r2.len(), 1 + 2 * 1);
+        assert_eq!(r2[1], "u7");
     }
 
     /// Two pairs with identical text hash to the same anchor. The
-    /// persisted `keep` names which occurrence is the head: resolved with
-    /// a bare `position` the *oldest* duplicate would be picked, the block
-    /// would read as over capacity and slide every turn — the silent
-    /// degradation to `mult = 1` behaviour.
+    /// persisted `keep` names which occurrence is the head: resolved by
+    /// position alone a duplicate near the tail would be picked, the
+    /// block would read as under capacity and never jump — the silent
+    /// degradation to an ever-growing block.
     #[test]
     fn block_anchor_resolves_duplicate_text_to_the_expected_pair() {
-        // window=2, mult=2 → capacity 4, landing floor 2. Turns 1 and 3
-        // are text-identical ("ping"/"pong").
-        let cfg = block_cfg(2, 2.0);
+        // window=2, ext_rate=1 → capacity 3, landing 1. Turns 1 and 3 are
+        // text-identical ("ping"/"pong").
+        let cfg = block_cfg(2, 1.0);
         let script = [
             ("ping", "pong"),
             ("u2", "a2"),
@@ -1502,28 +1548,26 @@ mod render_raw_context_tests {
         }
         // Turn-by-turn (k = turns so far; the last turn is verbatim, so
         // the compact region holds k−1 pairs):
-        // - k=4: cold block, 3 pairs.
-        // - k=5: 4 pairs, inside the capacity — no jump.
-        // - k=6: block at capacity, head jumps to the landing (3 pairs).
-        // - k=7: the anchor resolves to the *second* "ping" (expected head
-        //   = 6 − 3 − 1 = 2), the block extends without a jump. A bare
-        //   `position` would pin the first "ping", read 6 pairs, and jump
-        //   again — 7 texts instead of 9.
-        assert_eq!(
-            r1_lens[4],
-            1 + 2 * 4,
-            "block inside capacity at k=5: {r1_lens:?}"
-        );
-        assert_eq!(r1_lens[5], 1 + 2 * 3, "jumped block at k=6: {r1_lens:?}");
+        // - k=4: 3 pairs, at capacity — no jump. The anchor from k=3 says
+        //   "ping, keep 2", so the expected head is pair 0: the *first*
+        //   "ping" wins by distance, not the tail-most duplicate.
+        // - k=5: 4 pairs over the capacity — the head jumps to the landing
+        //   (1 pair, pair 3 = "u4").
+        // - k=6: anchor "u4, keep 1" → expected head = 5 − 1 − 1 = 3, the
+        //   block extends to 2 pairs without a jump.
+        // - k=7: anchor "u4, keep 2" → expected head = 6 − 2 − 1 = 3, the
+        //   block extends to 3 pairs without a jump.
+        assert_eq!(r1_lens[4], 1 + 2 * 1, "jumped block at k=5: {r1_lens:?}");
+        assert_eq!(r1_lens[5], 1 + 2 * 2, "extended block at k=6: {r1_lens:?}");
         assert_eq!(
             r1_lens[6],
-            1 + 2 * 4,
+            1 + 2 * 3,
             "duplicate-text anchor must extend the block, not re-jump: {r1_lens:?}"
         );
-        // The k=7 build resolved the duplicate to the second "ping" and
-        // did not jump, so the head pair is unchanged (`keep` recomputes
-        // to the fresh block size every build — the persisted guard
-        // compares the hash only).
+        // The k=7 build resolved the anchor to pair 3 ("u4") and did not
+        // jump, so the head pair is unchanged (`keep` recomputes to the
+        // fresh block size every build — the persisted guard compares the
+        // hash only).
         assert_eq!(
             anchors[5].map(|a| a.hash),
             anchors[6].map(|a| a.hash),
@@ -1537,17 +1581,26 @@ mod render_raw_context_tests {
     /// see the same compact pairs as a whole-journal build.
     #[test]
     fn prior_depth_covers_block_capacity_plus_verbatim() {
+        // block_cfg has note_window=1: capacity = (w−1) + round(ext_rate×w),
+        // reader pairs = capacity + note_window + 1 slack.
         assert_eq!(
-            prior_depth(&block_cfg(4, 2.0)),
+            prior_depth(&block_cfg(4, 1.0)), // capacity 3+4 = 7
             PriorDepth::Window {
-                pairs: 10,
+                pairs: 9,
                 openers: 1
             }
         );
         assert_eq!(
-            prior_depth(&block_cfg(4, 0.5)),
+            prior_depth(&block_cfg(4, 0.5)), // capacity 3+2 = 5
             PriorDepth::Window {
-                pairs: 4,
+                pairs: 7,
+                openers: 1
+            }
+        );
+        assert_eq!(
+            prior_depth(&block_cfg(4, 0.0)), // capacity 3+0 = 3: the classic window
+            PriorDepth::Window {
+                pairs: 5,
                 openers: 1
             }
         );
@@ -1575,7 +1628,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, 0, &cfg);
         assert_eq!(sent.len(), 3);
@@ -1611,7 +1664,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, prior.len(), &cfg);
         assert_eq!(sent.len(), 6);
@@ -1653,7 +1706,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let prior_len = prior.len();
         let mut ctx = prior.clone();
@@ -1708,7 +1761,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let prior_len = prior.len();
         let mut ctx = prior.clone();
@@ -1766,7 +1819,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, prior.len(), &cfg);
         assert_eq!(sent.len(), 3);
@@ -1805,7 +1858,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
 
         let (sent1, _) = build_send_context_with_regions(&prov(), &prior1, prior1.len(), &cfg);
@@ -1837,7 +1890,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let (sent, _) = build_send_context_with_regions(&prov(), &ctx, 0, &cfg);
         let texts: Vec<&str> = sent.iter().filter_map(|m| m["content"].as_str()).collect();
@@ -1967,7 +2020,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let (uncapped, _) =
             build_send_context_with_regions(&prov(), &ctx, prior_len, &uncapped_cfg);
@@ -2027,7 +2080,7 @@ mod render_raw_context_tests {
             tool_result_cap: Some(50), // cap is ON
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
         let wire = serde_json::to_string(out.as_ref()).unwrap();
@@ -2081,7 +2134,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: Some(600),
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
         let wire = serde_json::to_string(out.as_ref()).unwrap();
@@ -2137,7 +2190,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: Some(600),
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let (out, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
         let wire = serde_json::to_string(out.as_ref()).unwrap();
@@ -2169,12 +2222,12 @@ mod render_raw_context_tests {
             tool_result_cap: Some(2048),
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let zero_cfg = ContextStrategyConfig {
             turn_tool_result_cap: Some(0),
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
             ..none_cfg.clone()
         };
         let (a, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &none_cfg);
@@ -2209,7 +2262,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let cfg_zero = ContextStrategyConfig {
             tool_result_cap: Some(0),
@@ -2309,7 +2362,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         }
     }
 
@@ -2321,7 +2374,7 @@ mod render_raw_context_tests {
         let base = budget_base();
         let zero = ContextStrategyConfig {
             max_history_tokens: Some(0),
-            mult: None,
+            ext_rate: None,
             ..base.clone()
         };
         let (a, ra) = build_send_context_with_regions(&prov(), &ctx, prior_len, &base);
@@ -2342,7 +2395,7 @@ mod render_raw_context_tests {
         let base = budget_base();
         let roomy = ContextStrategyConfig {
             max_history_tokens: Some(1_000_000),
-            mult: None,
+            ext_rate: None,
             ..base.clone()
         };
         let (plain, plain_regions) =
@@ -2377,7 +2430,7 @@ mod render_raw_context_tests {
 
         let tight = ContextStrategyConfig {
             max_history_tokens: Some(budget),
-            mult: None,
+            ext_rate: None,
             ..base.clone()
         };
         let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &tight);
@@ -2414,7 +2467,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let (uncapped, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &base);
         let expected: Vec<serde_json::Value> = uncapped
@@ -2429,7 +2482,7 @@ mod render_raw_context_tests {
 
         let tight = ContextStrategyConfig {
             max_history_tokens: Some(budget),
-            mult: None,
+            ext_rate: None,
             ..base.clone()
         };
         let (out, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &tight);
@@ -2463,7 +2516,7 @@ mod render_raw_context_tests {
         let (ctx, prior_len) = three_turn_context();
         let tiny = ContextStrategyConfig {
             max_history_tokens: Some(1),
-            mult: None,
+            ext_rate: None,
             ..budget_base()
         };
         let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &tiny);
@@ -2504,7 +2557,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let (uncapped, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &base);
         let expected: Vec<serde_json::Value> = uncapped
@@ -2524,7 +2577,7 @@ mod render_raw_context_tests {
 
         let tight = ContextStrategyConfig {
             max_history_tokens: Some(budget),
-            mult: None,
+            ext_rate: None,
             ..base
         };
         let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &tight);
@@ -2577,7 +2630,7 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
 
         // The journal the reader reads back.
@@ -2623,8 +2676,8 @@ mod render_raw_context_tests {
     /// short of the anchor's pair would silently cold-rebuild into a
     /// different block, so the anchored path needs its own parity pin —
     /// including after a jump (the anchor below comes from a build one
-    /// turn short, where the block had already jumped) and with a
-    /// fractional multiplier.
+    /// turn short, where the block had already jumped) and across
+    /// `ext_rate` values.
     #[tokio::test]
     async fn the_anchored_window_payload_is_the_same_from_a_reader_slice() {
         let mut prior: Vec<serde_json::Value> = Vec::new();
@@ -2667,21 +2720,22 @@ mod render_raw_context_tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
 
         for cfg in [
             base.clone(),
             ContextStrategyConfig {
-                mult: Some(0.5),
+                ext_rate: Some(1.0),
                 ..base.clone()
             },
         ] {
             // The anchor a whole-journal build at one turn short would
-            // have persisted: 9 compact pairs against a capacity of 8 —
-            // at capacity, so the next build overgrows it and jumps. The
-            // full-journal build below must land on the same pair as a
-            // reader-slice build fed the same anchor.
+            // have persisted: 9 compact pairs against a capacity of 4
+            // (default ext_rate 0.5) or 6 (ext_rate 1.0) — past capacity,
+            // so the next build overgrows it and jumps. The full-journal
+            // build below must land on the same pair as a reader-slice
+            // build fed the same anchor.
             let short = &prior[..prior.len() - 2];
             let (_, _, anchor) =
                 build_send_context_anchor_with_regions(&prov(), short, short.len(), &cfg, None);
@@ -2708,20 +2762,20 @@ mod render_raw_context_tests {
             let windowed_payload = windowed_payload.into_owned();
             assert_eq!(
                 whole_payload, windowed_payload,
-                "the window must not change the anchored payload (mult={:?})",
-                cfg.mult
+                "the window must not change the anchored payload (ext_rate={:?})",
+                cfg.ext_rate
             );
             assert_eq!(whole_regions, windowed_regions);
 
-            // The default-mult build must actually have taken the
-            // anchored path: with 10 compact pairs and capacity 8 a cold
-            // build would start at pair 2 ("u3"); the anchor names pair 1
-            // ("u2"), the block overgrows it, and the jump lands on
-            // pair 5 ("u6").
-            if cfg.mult.is_none() {
+            // The default-ext_rate build must actually have taken the
+            // anchored path: with 10 compact pairs and capacity 4 a cold
+            // build would start at pair 6 ("u7"); the anchor names pair 5
+            // ("u6"), the block overgrows it, and the jump lands on
+            // pair 8 ("u9").
+            if cfg.ext_rate.is_none() {
                 let r1 = region1_texts(&whole_payload, &whole_regions);
                 assert_eq!(
-                    r1[1], "u6",
+                    r1[1], "u9",
                     "anchor must resolve inside the slice, not cold-rebuild"
                 );
             }

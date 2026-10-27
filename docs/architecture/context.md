@@ -84,10 +84,11 @@ finds and hands out the window the caller asked for.
   an opener without a pair), and the strategies read both kinds.
 - **The depth comes from the strategy.**
   `agent_loop::context::prior_depth()` turns the config into a
-  `PriorDepth`: `sliding_window` asks for the last `window × mult`
-  pairs (the region-① block capacity — the block head can sit anywhere
-  inside that span) and the last `note_window` openers; `full` mode and
-  an unset `note_window` ask for everything.
+  `PriorDepth`: `sliding_window` asks for the last `block_capacity +
+  note_window + 1` pair-turns (the region-① block capacity plus the
+  verbatim region — the block head can sit anywhere inside that span)
+  and the last `note_window` openers; `full` mode and an unset
+  `note_window` ask for everything.
 - **The slice starts at a turn boundary**, so the strategies see the
   same turns they would have seen in the full journal — the payload is
   byte-identical either way (a differential test in
@@ -142,8 +143,8 @@ computes this via `verbatim_start_index` + `extract_pairs(...).len()`):
 1. **Compacted history** — the pairs from the **block head** up to the
    verbatim region, reduced to pure text and reformatted in the active
    provider's wire format. The head is block-anchored (below): it stays
-   put while the block holds `window × mult` pairs or fewer, so within
-   a block this region only *appends* one pair per turn and its wire
+   put while the block holds `capacity` pairs or fewer, so within a
+   block this region only *appends* one pair per turn and its wire
    prefix is byte-stable across turns (prompt-cache friendly).
 2. **Recent turns, verbatim** — the last `recent` prior turns with
    their **structured `tool_calls` / `tool_use` and tool results
@@ -195,21 +196,22 @@ anchor must be dropped.
 - **Within a block** the head does not move: each turn only *appends*
   one pair at the region's tail, so the bytes before it are identical
   to last turn's — the provider's prefix cache keeps hitting.
-- **Jump.** When the block outgrows `window × mult` pairs (capacity
-  `round(window × mult)`, landing floor `round(window × min(mult, 1))`),
-  the head jumps forward so the block lands on `max(floor, capacity −
-  floor + 1)` pairs. The jump period is `capacity + 1 − landing`: one
-  prefix-breaking turn every `window × (mult − 1) + 1` turns while the
-  capacity is below `2 × window − 1`, and every `window` turns past
-  that point — past `mult ≈ 2` a larger multiplier does **not** space
-  the jumps further apart, it only enlarges the block (retains more
-  history per turn, at token cost). `mult = 1` makes the landing equal
-  the capacity — a constant-size block that slides one pair every turn
-  (the pre-block behavior); fractional `mult` (e.g. `0.5`) shrinks the
-  block below a window (constant size, sliding every turn).
+- **Jump.** When the block outgrows the capacity — `(window −
+  note_window) + round(window × ext_rate)` pairs — the head jumps
+  forward so the block lands on `window − note_window` pairs, the
+  landing. The visible history span thus oscillates between `window`
+  and `window + ext_rate × window` turns, and the jump period is
+  `capacity + 1 − landing` = `round(window × ext_rate) + 1` turns:
+  one prefix-breaking turn per period, everything between cached. The
+  drop discards `round(window × ext_rate)` pairs — above `ext_rate =
+  1` that is more than a full window at once, which is why the
+  accepted range stops at 1 (larger values would only retain more
+  history per turn, at token cost). `ext_rate = 0` makes the capacity
+  equal the landing: a constant-size block whose head slides one pair
+  every turn — the pre-block sliding window, no special case.
 - **Cold rebuild.** When the anchor is absent (fresh session, or a
   session file written before the field existed) or its pair is no
-  longer in the delivered slice (journal rewritten, window/mult
+  longer in the delivered slice (journal rewritten, window/ext_rate
   changed beyond the reader depth), the block rebuilds from the last
   `capacity` pairs and re-anchors. All paths converge to the same
   state for the same journal and config.
@@ -224,9 +226,9 @@ anchor must be dropped.
 - The reader depth `block_capacity + note_window + 1` guarantees the
   anchored head is inside the delivered slice for a journal-consistent
   session: the block never exceeds the capacity (itself capped at
-  `MAX_BLOCK_PAIRS` so window × mult compositions stay bounded), the
-  verbatim region is the openers on top, and the `+ 1` slack absorbs a
-  verbatim turn that ever yields more than one pair.
+  `MAX_BLOCK_PAIRS` so large window × ext_rate compositions stay
+  bounded), the verbatim region is the openers on top, and the `+ 1`
+  slack absorbs a verbatim turn that ever yields more than one pair.
 
 ① and ② are built **once per turn**, not once per LLM call: they depend
 only on `raw_context[..prior_len]`, which is fixed while a turn runs
@@ -473,7 +475,29 @@ context_strategy = { mode = "full" }
 optional (unset = entire prior verbatim, `window` ignored; `0` = pure
 text window of the last `window` pairs) — see `note_window` above for
 the full boundary table. `tool_result_cap` is a per-tool-result byte
-cap on the verbatim region — see below.
+cap on the verbatim region — see below. `ext_rate` extends how much
+history the sliding window retains beyond `window` — see below.
+
+### History extension (`ext_rate`)
+
+`ext_rate` (default `0.5`, range `0..=1`) is how far the retained
+history extends beyond `window` turns, as a fraction of `window`. The
+visible span grows from `window` up to `window + ext_rate × window`
+turns; when it hits the ceiling, the oldest `round(window ×
+ext_rate)` turns drop at once and the span returns to `window`. The
+compacted turns between the verbatim tail and the drop point form an
+anchored block (above), so consecutive turns reuse the provider's
+prefix cache and only the drop turn misses it.
+
+- `ext_rate = 0` — the classic sliding window: a constant `window`-
+  turn span, one turn dropping per turn, no cache stability.
+- `0 < ext_rate ≤ 1` — one cache-breaking drop every `round(window ×
+  ext_rate) + 1` turns; the default `0.5` drops every `window/2 + 1`
+  turns and retains up to `1.5 × window` turns of history.
+
+Set it from a command: `/context sliding 10 3 2048 0 0 0.5` (sixth
+positional; omitting it keeps the configured value), or from config
+as `context_strategy = { …, ext_rate = 0.5 }`.
 
 ### Verbatim tool-result cap (`tool_result_cap`)
 
@@ -624,7 +648,7 @@ weight runs away.
 |---------|--------|
 | `/context` | Show current strategy and its source (`override` / `default`) |
 | `/context full` | Send the full context |
-| `/context sliding [N] [M] [CAP] [TURNCAP] [MAXHIST]` | Sliding window, N turns (default 10, max 200); M = note window (default 3, max 200); CAP = tool-result byte cap on verbatim region (0..1 MiB, default 2048); TURNCAP = same for the current turn (0..1 MiB, unset by default); MAXHIST = token budget for regions ① + ② (0..4M, unset by default). An absent slot falls back to the configured value; `0` switches a cap off |
+| `/context sliding [N] [M] [CAP] [TURNCAP] [MAXHIST] [EXT_RATE]` | Sliding window, N turns (default 10, max 200); M = note window (default 3, max 200); CAP = tool-result byte cap on verbatim region (0..1 MiB, default 2048); TURNCAP = same for the current turn (0..1 MiB, unset by default); MAXHIST = token budget for regions ① + ② (0..4M, unset by default); EXT_RATE = history extension fraction (0..1, default 0.5 — `0` is the classic sliding window). An absent slot falls back to the configured value; `0` switches a cap off |
 | `/context reset` | Remove the runtime override, revert to configured default |
 
 ## Code map

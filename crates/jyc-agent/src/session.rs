@@ -196,7 +196,8 @@ pub struct SessionState {
     /// Sliding-window block anchor for region ①: FNV-1a hashes of the
     /// block-head pair's user/assistant text. Persists across turns so the
     /// compact-history block only advances its head when it exceeds
-    /// `window × mult` pairs; `None`, or a hash no longer present in the
+    /// block capacity (`window − note_window + round(window × ext_rate)`)
+    /// pairs; `None`, or a hash no longer present in the
     /// delivered slice, rebuilds the block from the last `window` pairs.
     /// Lives here because the session file's existence is what makes the
     /// journal prefix count at all (`load_context` treats a missing session
@@ -2407,7 +2408,7 @@ mod tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let wire = vec![serde_json::json!({"role":"user","content":"hi"})];
         let regions = vec![3u8];
@@ -2465,7 +2466,7 @@ mod tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let empty_wire: Vec<serde_json::Value> = vec![];
         let empty_regions: Vec<u8> = vec![];

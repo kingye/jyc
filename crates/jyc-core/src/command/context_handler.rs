@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use jyc_types::state_dir::resolve_state_dir;
 
-use jyc_types::channel::{ContextStrategy, ContextStrategyConfig, MAX_MULT};
+use jyc_types::channel::{ContextStrategy, ContextStrategyConfig, MAX_EXT_RATE};
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
@@ -23,12 +23,12 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///     oversized result keeps its head and tail with the middle replaced
 ///     by a paging marker. Unset by default. MAXHIST is the optional token
 ///     budget for the two history regions (① + ②): when they estimate over
-///     it, the oldest history is dropped first. Unset by default. MULT is
-///     the optional region-① block multiplier (default: 2): the compact
-///     block holds up to `N × MULT` pairs before its head jumps one window
-///     forward, keeping the region's wire prefix stable between jumps;
-///     `MULT = 1` slides every turn, fractional values (e.g. 0.5) shrink
-///     the block below a window.
+///     it, the oldest history is dropped first. Unset by default. EXT_RATE
+///     is the optional history extension fraction (default: 0.5): the
+///     retained span grows from `N` up to `N + EXT_RATE × N` turns before
+///     the oldest drop at once, so the compact block's wire prefix stays
+///     stable between drops; `EXT_RATE = 0` is the classic sliding window
+///     (one turn drops per turn).
 ///
 ///     Per-slot semantics: an absent slot falls back to the *configured*
 ///     value (the config.toml chain) — not to whatever an earlier
@@ -64,12 +64,12 @@ const MAX_TURN_TOOL_RESULT_CAP: usize = 1024 * 1024;
 /// there — so a larger value would only disguise a misconfiguration.
 const MAX_HISTORY_TOKENS: usize = 4_000_000;
 
-// The region-① block multiplier range comes from
-// [`jyc_types::channel::MAX_MULT`] (imported above) — the same range the
+// The region-① history-extension range comes from
+// [`jyc_types::channel::MAX_EXT_RATE`] (imported above) — the same range the
 // config resolver clamps to. The reader parses `block_capacity`
 // pair-turns per turn-start (capped at
-// [`jyc_types::channel::MAX_BLOCK_PAIRS`]), so an unbounded multiplier
-// would turn the bounded reader back into a full-journal scan.
+// [`jyc_types::channel::MAX_BLOCK_PAIRS`]), so an unbounded rate would turn
+// the bounded reader back into a full-journal scan.
 
 #[async_trait]
 impl CommandHandler for ContextCommandHandler {
@@ -145,7 +145,7 @@ impl CommandHandler for ContextCommandHandler {
                         tool_result_cap: configured.tool_result_cap,
                         turn_tool_result_cap: configured.turn_tool_result_cap,
                         max_history_tokens: configured.max_history_tokens,
-                        mult: configured.mult,
+                        ext_rate: configured.ext_rate,
                     },
                 )
                 .await?;
@@ -318,19 +318,21 @@ impl CommandHandler for ContextCommandHandler {
                 };
                 let max_history_tokens =
                     max_history_tokens.unwrap_or(configured.max_history_tokens);
-                // Optional block multiplier MULT (args[6]): caps region ①
-                // at `window × MULT` compact pairs before the head jumps.
-                // Fractional values are allowed; the same 0-sentinel
-                // convention as CAP does not apply — 0 is rejected outright
-                // because a zero-size block is meaningless.
-                let mult = if let Some(arg) = context.args.get(6) {
+                // Optional history extension EXT_RATE (args[6]): the
+                // retained span reaches `window + EXT_RATE × window` turns
+                // before the oldest drop at once. Fractional values are
+                // allowed; 0 is meaningful — it is the classic sliding
+                // window.
+                let ext_rate = if let Some(arg) = context.args.get(6) {
                     match arg.parse::<f64>() {
-                        Ok(m) if m.is_finite() && (0.1..=MAX_MULT).contains(&m) => Some(Some(m)),
+                        Ok(m) if m.is_finite() && (0.0..=MAX_EXT_RATE).contains(&m) => {
+                            Some(Some(m))
+                        }
                         _ => {
                             return Ok(CommandResult {
                                 success: false,
                                 message: format!(
-                                    "/context: invalid mult '{arg}', expected a number in 0.1..={MAX_MULT}"
+                                    "/context: invalid ext_rate '{arg}', expected a number in 0.0..={MAX_EXT_RATE}"
                                 ),
                                 error: None,
                                 append_body: None,
@@ -340,7 +342,7 @@ impl CommandHandler for ContextCommandHandler {
                 } else {
                     None
                 };
-                let mult = mult.unwrap_or(configured.mult);
+                let ext_rate = ext_rate.unwrap_or(configured.ext_rate);
                 let cfg = ContextStrategyConfig {
                     mode: ContextStrategy::SlidingWindow,
                     window,
@@ -348,7 +350,7 @@ impl CommandHandler for ContextCommandHandler {
                     tool_result_cap,
                     turn_tool_result_cap,
                     max_history_tokens,
-                    mult,
+                    ext_rate,
                 };
                 write_override(&state_dir, &override_path, cfg.clone()).await?;
                 Ok(CommandResult {
@@ -450,12 +452,12 @@ fn describe_strategy(cfg: &ContextStrategyConfig) -> String {
             if let Some(t) = cfg.max_history_tokens {
                 s.push_str(&format!(", max_history_tokens={t}"));
             }
-            if cfg.mult.is_some() {
-                // Print the resolved multiplier: the config resolver
-                // clamps, and reporting the configured value (e.g.
-                // mult=0.02 for an effective 0.1) would lie about the
-                // block the strategy actually builds.
-                s.push_str(&format!(", mult={}", cfg.mult()));
+            if cfg.ext_rate.is_some() {
+                // Print the resolved fraction: the config resolver clamps,
+                // and reporting the configured value (e.g. ext_rate=2 for
+                // an effective 1) would lie about the block the strategy
+                // actually builds.
+                s.push_str(&format!(", ext_rate={}", cfg.ext_rate()));
             }
             s.push(')');
             s
@@ -658,9 +660,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sliding_with_fractional_mult_sixth_arg() {
+    async fn test_sliding_with_fractional_ext_rate_sixth_arg() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_sliding_mult_sixth_arg";
+        let topic = "test_sliding_ext_rate_sixth_arg";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
         let mut ctx = test_context(topic, tmp.path());
@@ -675,13 +677,17 @@ mod tests {
         ];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success, "{}", result.message);
-        assert!(result.message.contains("mult=0.5"), "{}", result.message);
+        assert!(
+            result.message.contains("ext_rate=0.5"),
+            "{}",
+            result.message
+        );
         let written =
             tokio::fs::read_to_string(tmp.path().join(".jyc").join("context-strategy.json"))
                 .await
                 .unwrap();
         let cfg: ContextStrategyConfig = serde_json::from_str(&written).unwrap();
-        assert_eq!(cfg.mult, Some(0.5));
+        assert_eq!(cfg.ext_rate, Some(0.5));
         // Absent slots fall back to the configured value, so the other
         // fields carry what the arguments said.
         assert_eq!(cfg.window, 10);
@@ -689,10 +695,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sliding_rejects_out_of_range_mult() {
+    async fn test_sliding_accepts_zero_ext_rate() {
+        // ext_rate = 0 is the classic sliding window, not an error.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_ext_rate_zero";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec![
+            "sliding".into(),
+            "10".into(),
+            "3".into(),
+            "1024".into(),
+            "8192".into(),
+            "60000".into(),
+            "0".into(),
+        ];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success, "{}", result.message);
+        assert!(result.message.contains("ext_rate=0"), "{}", result.message);
+    }
+
+    #[tokio::test]
+    async fn test_sliding_rejects_out_of_range_ext_rate() {
         for (topic, arg) in [
-            ("test_sliding_mult_zero", "0"),
-            ("test_sliding_mult_huge", "100"),
+            ("test_sliding_ext_rate_negative", "-1"),
+            ("test_sliding_ext_rate_huge", "100"),
         ] {
             let tmp = tempfile::tempdir().unwrap();
             jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
@@ -708,9 +736,9 @@ mod tests {
                 arg.into(),
             ];
             let result = handler.execute(ctx).await.unwrap();
-            assert!(!result.success, "mult={arg} must be rejected");
+            assert!(!result.success, "ext_rate={arg} must be rejected");
             assert!(
-                result.message.contains("invalid mult"),
+                result.message.contains("invalid ext_rate"),
                 "{}",
                 result.message
             );
@@ -1140,7 +1168,7 @@ mod tests {
             tool_result_cap: Some(5000),
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
         };
         let s = describe_strategy(&cfg);
         assert!(s.contains("window=10"));
@@ -1362,7 +1390,7 @@ mod tests {
             tool_result_cap: Some(2048),
             turn_tool_result_cap: None,
             max_history_tokens: Some(30000),
-            mult: None,
+            ext_rate: None,
         };
         assert!(describe_strategy(&cfg).contains("max_history_tokens=30000"));
 
@@ -1370,7 +1398,7 @@ mod tests {
         let unset = ContextStrategyConfig {
             turn_tool_result_cap: None,
             max_history_tokens: None,
-            mult: None,
+            ext_rate: None,
             ..cfg.clone()
         };
         assert!(!describe_strategy(&unset).contains("max_history_tokens"));

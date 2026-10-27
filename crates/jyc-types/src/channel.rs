@@ -777,7 +777,7 @@ pub enum ContextStrategy {
 ///
 /// `mode` selects which strategy to apply; `window` is the number of
 /// latest user+assistant turns to keep in `sliding_window` mode.
-// `Eq` is not derived: the `mult` field is an `f64`, which has no total
+// `Eq` is not derived: the `ext_rate` field is an `f64`, which has no total
 // order. Nothing compares strategies by hashing, so `PartialEq` suffices.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ContextStrategyConfig {
@@ -848,52 +848,51 @@ pub struct ContextStrategyConfig {
     /// compatible.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_history_tokens: Option<usize>,
-    /// Multiplier on `window` bounding how many compact pairs region ①
-    /// accumulates before its head jumps forward. The block head stays put
-    /// while the block holds `window × mult` pairs or fewer, so within one
-    /// block the region ① prefix is byte-stable across turns (prompt-cache
-    /// friendly); each jump is the one turn where the prefix breaks.
-    /// Fractional values are allowed: `mult = 1` makes every turn slide by
-    /// one pair (the pre-block behavior), `mult = 0.5` caps the block at
-    /// half a window (constant-size, sliding every turn). Larger values
-    /// do **not** space the jumps further apart without bound: while
-    /// `capacity < 2 × window − 1` one jump occurs every
-    /// `window × (mult − 1) + 1` turns, but past that point the landing
-    /// floor saturates and the jump period floors at `window` turns —
-    /// extra `mult` only enlarges the block (retains more history per
-    /// turn, at token cost). `None` (the default) resolves to
-    /// [`DEFAULT_MULT`] (2); values are clamped into `0.1..=[MAX_MULT]`
-    /// with non-finite input falling back to the default. Only meaningful
-    /// when `mode = "sliding_window"`. Omitted from serialized override
-    /// files when unset so existing readers stay compatible.
+    /// How far the retained history extends beyond `window` turns, as a
+    /// fraction of `window`. The retained span grows from `window` up to
+    /// `window + ext_rate × window` turns — the compacted turns between
+    /// the verbatim tail and the drop point form an anchored block whose
+    /// wire prefix stays byte-stable across turns (prompt-cache friendly),
+    /// so only the drop turn misses the cache. `ext_rate = 0` degenerates
+    /// to the classic sliding window (constant `window`-turn span, the
+    /// head advancing one turn per turn). Values are clamped into
+    /// `0.0..=[MAX_EXT_RATE]` (1) with non-finite input falling back to
+    /// [`DEFAULT_EXT_RATE`]; the useful range is `0..=1`, larger values
+    /// only retain more history per turn at token cost and drop more than
+    /// a full window at once. `None` (the default) resolves to
+    /// [`DEFAULT_EXT_RATE`] (0.5). Only meaningful when
+    /// `mode = "sliding_window"`. Omitted from serialized override files
+    /// when unset so existing readers stay compatible.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub mult: Option<f64>,
+    pub ext_rate: Option<f64>,
 }
 
-/// Default for [`ContextStrategyConfig::mult`]: region ① spans up to
-/// `2 × window` compact pairs before the head jumps forward.
-pub const DEFAULT_MULT: f64 = 2.0;
+/// Default for [`ContextStrategyConfig::ext_rate`]: the retained span
+/// reaches `1.5 × window` turns before the oldest drop at once.
+pub const DEFAULT_EXT_RATE: f64 = 0.5;
 
-/// Upper bound for [`ContextStrategyConfig::mult`]. Shared by the config
-/// resolver ([`ContextStrategyConfig::mult`]) and the `/context` parser so
-/// both accept the same range.
-pub const MAX_MULT: f64 = 64.0;
+/// Upper bound for [`ContextStrategyConfig::ext_rate`]. Shared by the
+/// config resolver ([`ContextStrategyConfig::ext_rate`]) and the `/context`
+/// parser so both accept the same range. Values above 1 only retain more
+/// history per turn at token cost and drop more than a full window at
+/// once, so the range stops at 1.
+pub const MAX_EXT_RATE: f64 = 1.0;
 
-/// Upper bound on the region-① block capacity (in compact pairs), applied
-/// on top of `window × mult` so a large window × multiplier composition
-/// cannot inflate the per-turn payload and reader scan back towards a
-/// full-journal read. Matches the largest admissible sliding window.
+/// Upper bound on the region-① block capacity (in compact pairs): a large
+/// window × ext_rate composition cannot inflate the per-turn payload and
+/// reader scan back towards a full-journal read. Matches the largest
+/// admissible sliding window.
 pub const MAX_BLOCK_PAIRS: usize = 200;
 
 impl ContextStrategyConfig {
-    /// Resolve `mult` to a usable multiplier: the default when unset or
-    /// non-finite, clamped into `0.1..=[MAX_MULT]` so degenerate config
-    /// values (0, negative, NaN, huge) cannot produce a zero-size or
-    /// absurdly deep region ①.
-    pub fn mult(&self) -> f64 {
-        match self.mult {
-            Some(m) if m.is_finite() => m.clamp(0.1, MAX_MULT),
-            _ => DEFAULT_MULT,
+    /// Resolve `ext_rate` to a usable fraction: the default when unset or
+    /// non-finite, clamped into `0.0..=[MAX_EXT_RATE]` so degenerate config
+    /// values (negative, NaN, huge) cannot produce an absurdly deep
+    /// region ①. `0` is meaningful — it is the classic sliding window.
+    pub fn ext_rate(&self) -> f64 {
+        match self.ext_rate {
+            Some(m) if m.is_finite() => m.clamp(0.0, MAX_EXT_RATE),
+            _ => DEFAULT_EXT_RATE,
         }
     }
 }
@@ -914,10 +913,9 @@ impl Default for ContextStrategyConfig {
             // users already know, and a token budget silently truncating
             // history is the more surprising default.
             max_history_tokens: None,
-            // Block-jump spacing uses the default (2): enough turns for
-            // the stable prefix to dominate the cache-hit ratio, small
-            // enough that a jump's one broken-prefix turn stays rare.
-            mult: None,
+            // History extension uses the default (0.5): half a window of
+            // extra retained history, a prefix-stable block between jumps.
+            ext_rate: None,
         }
     }
 }
@@ -1127,24 +1125,25 @@ topic_path = "~/projects/jyc"
     }
 
     #[test]
-    fn test_mult_resolves_degenerate_values() {
-        // The only guard between a malformed config and a zero-size or
-        // absurd region-① block: unset and non-finite resolve to the
-        // default, finite values clamp into 0.1..=MAX_MULT.
-        let cfg = |mult: Option<f64>| ContextStrategyConfig {
-            mult,
+    fn test_ext_rate_resolves_degenerate_values() {
+        // The only guard between a malformed config and an absurd region-①
+        // block: unset and non-finite resolve to the default, finite values
+        // clamp into 0.0..=MAX_EXT_RATE. 0 is meaningful (classic sliding
+        // window), not degenerate.
+        let cfg = |ext_rate: Option<f64>| ContextStrategyConfig {
+            ext_rate,
             ..ContextStrategyConfig::default()
         };
-        assert_eq!(cfg(None).mult(), DEFAULT_MULT);
-        assert_eq!(cfg(Some(f64::NAN)).mult(), DEFAULT_MULT);
-        assert_eq!(cfg(Some(f64::INFINITY)).mult(), DEFAULT_MULT);
-        assert_eq!(cfg(Some(f64::NEG_INFINITY)).mult(), DEFAULT_MULT);
-        assert_eq!(cfg(Some(-1.0)).mult(), 0.1);
-        assert_eq!(cfg(Some(0.0)).mult(), 0.1);
-        assert_eq!(cfg(Some(0.05)).mult(), 0.1);
-        assert_eq!(cfg(Some(MAX_MULT + 0.1)).mult(), MAX_MULT);
-        assert_eq!(cfg(Some(2.5)).mult(), 2.5);
-        assert_eq!(cfg(Some(1.0)).mult(), 1.0);
+        assert_eq!(cfg(None).ext_rate(), DEFAULT_EXT_RATE);
+        assert_eq!(cfg(Some(f64::NAN)).ext_rate(), DEFAULT_EXT_RATE);
+        assert_eq!(cfg(Some(f64::INFINITY)).ext_rate(), DEFAULT_EXT_RATE);
+        assert_eq!(cfg(Some(f64::NEG_INFINITY)).ext_rate(), DEFAULT_EXT_RATE);
+        assert_eq!(cfg(Some(-1.0)).ext_rate(), 0.0);
+        assert_eq!(cfg(Some(0.0)).ext_rate(), 0.0);
+        assert_eq!(cfg(Some(0.05)).ext_rate(), 0.05);
+        assert_eq!(cfg(Some(MAX_EXT_RATE + 0.1)).ext_rate(), MAX_EXT_RATE);
+        assert_eq!(cfg(Some(2.5)).ext_rate(), MAX_EXT_RATE);
+        assert_eq!(cfg(Some(1.0)).ext_rate(), 1.0);
     }
 
     #[test]

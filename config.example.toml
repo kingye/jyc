@@ -497,21 +497,25 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # (region ① oldest pairs, then region ② oldest whole turns). The estimate
 # is heuristic (CJK characters ~1 token, other bytes ~1/4), not a tokenizer.
 # The current turn is not part of it. Unset by default.
-# mult: region-① block multiplier (sliding_window only). The compact block
-# holds up to window × mult pairs (capped at MAX_BLOCK_PAIRS = 200) before
-# its head jumps forward; between jumps the block only appends, so the
-# wire prefix stays byte-stable across turns (prompt-cache friendly).
-# Default: 2. 1 = slide by one pair every turn (pre-block behavior);
-# fractional values (e.g. 0.5) shrink the block below a window (constant
-# size, sliding every turn). Past mult ≈ 2 the jump interval saturates at
-# `window` turns — larger values only enlarge the block (more history
-# retained per turn, at token cost), they do not space the jumps further
-# apart. Note: a binding max_history_tokens trims region ① oldest-first
+# ext_rate: history extension fraction (sliding_window only, default 0.5,
+# range 0..=1). The retained span grows from `window` up to
+# `window + ext_rate × window` turns; when it hits the ceiling the oldest
+# turns drop at once and the span returns to `window`. The compact turns
+# between the verbatim tail and the drop form an anchored block: between
+# drops it only appends, so the wire prefix stays byte-stable across
+# turns (prompt-cache friendly) and only the drop turn misses the cache.
+# ext_rate = 0 is the classic sliding window (constant `window`-turn span,
+# one turn dropping per turn, no cache stability); the drop discards
+# round(window × ext_rate) pairs, so values above 1 would drop more than a
+# full window at once — the range stops at 1. The block capacity
+# ((window − note_window) + round(window × ext_rate) pairs) is capped at
+# MAX_BLOCK_PAIRS = 200 so large window × ext_rate compositions stay
+# bounded. Note: a binding max_history_tokens trims region ① oldest-first
 # after the build and breaks the cross-turn prefix stability the block
 # buys.
 # context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048 }
 # context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048, max_history_tokens = 30000 }
-# context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048, mult = 2.0 }
+# context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048, ext_rate = 0.5 }
 
 
 [ai.attachments]

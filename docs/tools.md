@@ -233,9 +233,10 @@ takes them with it.
 ## Extended Tools (loaded on demand)
 
 Some tools are worth having but not worth paying for on every call: a topic
-that never delegates, never publishes and never fetches a URL should not carry
-their schemas in every request. They are **registered but not advertised** —
-the model gets them by calling one tool.
+that never delegates, never publishes, never fetches a URL, never browses its
+transcript, never records a lesson and never needs a multi-step plan should
+not carry their schemas in every request. They are **registered but not
+advertised** — the model gets them by calling one tool.
 
 ### `load_extended_tools`
 
@@ -256,14 +257,27 @@ channel, is not part of it):
 |------|----------------|
 | `jyc_spawn_subagent` | Delegate a task to a subagent topic |
 | `jyc_send_to_topic` | Message another topic |
-| `jyc_send_message` | Send a proactive message to a channel |
 | `list_topics` | List the channels and their active topics |
 | `jyc_publish_file` | Publish a file as a download link |
 | `read_image` | View an image |
 | `webfetch` | Fetch a URL as text |
+| `context_browse` | Page the transcript for earlier turns |
+| `lesson_add` | Record a reusable lesson |
+| `lesson_read` | Read earlier recorded lessons |
+| `task_list` | Read the plan and its item statuses |
+| `task_create` | Write a new plan |
+| `task_update` | Mark one item's status |
 
-The loader's own description is the index of the group, so the model learns
-what it holds without the group's schemas being in the request.
+`jyc_send_message` is not in this group: the send tool must be discoverable
+for attachment-bearing replies without a loader call, so it stays advertised
+with the core tools. The task tools are in the group because whether work
+needs a plan is a project convention, not a framework-wide cost. The loader
+points multi-step work at them, and omits that sentence when `disabled_tools`
+removes every task tool.
+
+The loader's own description is the index of the group and names the core
+tools already available, so the model learns what it holds without the group's
+schemas being in the request.
 
 **Only advertisement is gated.** The tools stay registered and executable, so
 a model that names one before loading it gets a working call rather than a
@@ -302,7 +316,8 @@ There is no reply tool. The agent's final message at the end of a turn IS the in
 
 ### `jyc_send_message`
 
-Send a proactive out-of-topic message to an arbitrary recipient.
+Send a channel message to an arbitrary recipient, with optional attachments.
+It is part of the core advertised tool set, not the extended group.
 
 **Parameters:**
 - `recipient` (string, required): Channel-specific recipient identifier
@@ -320,13 +335,13 @@ Send a proactive out-of-topic message to an arbitrary recipient.
 - Other channels: channel-specific format
 
 **Constraints:**
-- Use ONLY for alerts and notifications
-- NEVER use for in-topic replies (the final message of the turn is the reply)
+- Use for proactive alerts, cross-channel messages, and replies that carry attachments
+- Use the final message of the turn for ordinary text-only replies
 - Requires a pre-warmed outbound adapter (`ToolContext.outbound`)
 
 **Example:**
 ```json
-{"recipient": "wecomkf:kf001:wmE8OcHAAA...", "subject": "System Alert", "message": "Disk usage exceeded 90%"}
+{"recipient": "wecomkf:kf001:wmE8OcHAAA...", "message": "Invoice package attached.", "attachments": ["invoices.zip"]}
 ```
 
 ---

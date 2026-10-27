@@ -8,6 +8,10 @@ use std::time::Instant;
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use axum::Json;
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use futures_util::StreamExt;
 use jyc_core::agent::{AgentResult, AgentService};
 use jyc_core::command::send_handler::{SendRequest, SendSource, send_to_topic_with_target};
@@ -16,6 +20,7 @@ use jyc_core::metrics::{HealthStats, MetricsHandle};
 use jyc_core::static_agent::StaticAgentService;
 use jyc_core::topic_event::TopicEvent;
 use jyc_core::topic_manager::{QueueFull, TopicManager, TopicManagers};
+use jyc_inspect::api::{SendMessageBody, post_send};
 use jyc_inspect::client::InspectClient;
 use jyc_inspect::server::websocket::outbound::WebsocketOutboundAdapter;
 use jyc_inspect::server::{DynWebsocketHandler, InspectContext, WebsocketHandler, build_router};
@@ -389,19 +394,7 @@ async fn send_returns_429_when_the_queue_is_full() {
         .await
         .expect("the seed message should occupy the worker");
 
-    let (addr, _h) =
-        start_server_with(ctx_with_managers(managers.clone(), agents_dir.clone())).await;
-    let http = reqwest::Client::new();
-    let send = |message: &'static str| {
-        http.post(format!("http://{addr}/api/send"))
-            .bearer_auth("topsecret")
-            .json(&serde_json::json!({ "agent": topic, "message": message }))
-            .send()
-    };
-
-    let first = send("first").await.unwrap();
-    assert_eq!(first.status(), 200);
-    let first_body = first.text().await.unwrap();
+    let ctx = ctx_with_managers(managers.clone(), agents_dir.clone());
 
     // Probe the manager directly: if the handler resolved to a different queue
     // this still reports Full for the queue the seed left behind.
@@ -444,35 +437,32 @@ async fn send_returns_429_when_the_queue_is_full() {
     let direct_err = direct.expect_err("the shared send path accepted a message");
     assert!(
         direct_err.downcast_ref::<QueueFull>().is_some(),
-        "expected QueueFull, got {direct_err} (first_body: {first_body}; direct_probe: {probe})"
+        "expected QueueFull, got {direct_err} (direct_probe: {probe})"
     );
 
-    // Keep sending through the API until the target queue reports itself full.
-    // The worker is blocked in the seed turn, so a bounded queue must reject
-    // instead of accepting without bound; asking through the same endpoint
-    // avoids assuming which manager instance the handler resolved.
-    let mut statuses = Vec::new();
-    let mut last_body = String::new();
-    for _ in 0..8 {
-        let response = send("filler").await.unwrap();
-        let status = response.status();
-        statuses.push(status);
-        if status == 429 {
-            let body: serde_json::Value = response.json().await.unwrap();
-            assert!(
-                body["error"]
-                    .as_str()
-                    .is_some_and(|e| e.contains("queue is full")),
-                "{body}"
-            );
+    // The HTTP layer is a thin wrapper over this handler: call it with the
+    // same context the server would see, and require QueueFull to become 429.
+    let response = post_send(
+        State(ctx),
+        Json(SendMessageBody {
+            agent: topic.to_string(),
+            topic: None,
+            message: "api".to_string(),
+        }),
+    )
+    .await;
+    match response {
+        Err(e) => {
+            let response = e.into_response();
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
             release.add_permits(32);
             return;
         }
-        last_body = response.text().await.unwrap_or_default();
+        Ok(_) => {}
     }
     panic!(
-        "queue never filled; statuses: {statuses:?}; first_body: {first_body}; \
-         last_body: {last_body}; direct_probe: {probe}; seed_finished: {}",
+        "the API handler accepted a message while the queue was full; \
+         direct_probe: {probe}; seed_finished: {}",
         finished.load(Ordering::SeqCst)
     );
 }

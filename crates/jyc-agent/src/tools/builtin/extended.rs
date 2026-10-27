@@ -46,15 +46,19 @@ pub const EXTENDED_TOOLS: &[(&str, &str)] = &[
     ("jyc_publish_file", "publish a file as a download link"),
     ("read_image", "view an image"),
     ("webfetch", "fetch a URL as text"),
+    ("context_browse", "page the transcript for earlier turns"),
+    ("lesson_add", "record a reusable lesson"),
+    ("lesson_read", "read earlier recorded lessons"),
 ];
 
 /// The core tools the loader mentions as already available.
 ///
 /// These are the ones a request carries whatever the model does — the file
-/// tools, the shell, the question tool and `jyc_send_message`, which carries
-/// attachment-bearing replies. The list is filtered by what the registry
-/// actually holds, so a role that disables one of them is never told it is
-/// there.
+/// tools, the shell, the question tool, `jyc_send_message` (which carries
+/// attachment-bearing replies), and the task tools (which every multi-step
+/// turn and every post-compaction resume needs). The list is filtered by what
+/// the registry actually holds, so a role that disables one of them is never
+/// told it is there.
 const CORE_TOOLS: &[&str] = &[
     "read",
     "write",
@@ -63,6 +67,9 @@ const CORE_TOOLS: &[&str] = &[
     "grep",
     "ask_user",
     "jyc_send_message",
+    "task_list",
+    "task_create",
+    "task_update",
 ];
 
 /// Bring the extended group into a registry: mark the tools it names, and
@@ -281,9 +288,10 @@ mod tests {
             loader.description
         );
         assert!(
-            loader
-                .description
-                .contains("Already available: read, write, edit, grep, ask_user."),
+            loader.description.contains(
+                "Already available: read, write, edit, grep, ask_user, task_list, task_create, \
+                 task_update."
+            ),
             "the loader must still say what is available: {}",
             loader.description
         );

@@ -233,9 +233,10 @@ takes them with it.
 ## Extended Tools (loaded on demand)
 
 Some tools are worth having but not worth paying for on every call: a topic
-that never delegates, never publishes and never fetches a URL should not carry
-their schemas in every request. They are **registered but not advertised** —
-the model gets them by calling one tool.
+that never delegates, never publishes, never fetches a URL, never browses its
+transcript and never records a lesson should not carry their schemas in every
+request. They are **registered but not advertised** — the model gets them by
+calling one tool.
 
 ### `load_extended_tools`
 
@@ -260,12 +261,19 @@ channel, is not part of it):
 | `jyc_publish_file` | Publish a file as a download link |
 | `read_image` | View an image |
 | `webfetch` | Fetch a URL as text |
+| `context_browse` | Page the transcript for earlier turns |
+| `lesson_add` | Record a reusable lesson |
+| `lesson_read` | Read earlier recorded lessons |
 
-`jyc_send_message` is not in this group: it stays advertised with the core
-tools so an attachment-bearing reply is discoverable without a loader call.
+`jyc_send_message` and the task tools (`task_list`, `task_create`,
+`task_update`) are not in this group: they stay advertised with the core tools.
+The send tool must be discoverable for attachment-bearing replies without a
+loader call, and every multi-step turn — including one resuming after context
+compression — needs the task tools.
 
-The loader's own description is the index of the group, so the model learns
-what it holds without the group's schemas being in the request.
+The loader's own description is the index of the group and names the core
+tools already available, so the model learns what it holds without the group's
+schemas being in the request.
 
 **Only advertisement is gated.** The tools stay registered and executable, so
 a model that names one before loading it gets a working call rather than a

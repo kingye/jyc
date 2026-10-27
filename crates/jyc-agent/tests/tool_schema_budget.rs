@@ -82,6 +82,15 @@ fn advertised_tools() -> Vec<ToolDefinition> {
     built_in_registry().definitions()
 }
 
+/// The names after `Already available:` in the loader's description.
+fn already_available(loader: &ToolDefinition) -> Vec<&str> {
+    loader
+        .description
+        .split_once("Already available: ")
+        .map(|(_, tail)| tail.trim_end_matches('.').split(", ").collect())
+        .unwrap_or_default()
+}
+
 /// Per tool: `(name, description budget, parameter-description budget)` in
 /// characters. Measured against the 2026-10-18 slimming pass and rounded up with
 /// slack; a tool added or removed shows up as a failure here rather than as a
@@ -101,7 +110,7 @@ const BUDGETS: &[(&str, usize, usize)] = &[
     ("lesson_add", 220, 0),
     ("lesson_read", 114, 0),
     ("list_topics", 240, 0),
-    ("load_extended_tools", 600, 0),
+    ("load_extended_tools", 800, 0),
     ("task_list", 278, 0),
     ("task_create", 345, 46),
     ("task_update", 305, 81),
@@ -130,14 +139,17 @@ const TOTAL_BUDGET: usize = 7_800;
 
 /// The advertised set — the core tools plus the loader's index — in
 /// characters. This is the standing per-call cost after the extended group
-/// was moved out of the request: the six extended tools are advertised only
+/// was moved out of the request: the nine extended tools are advertised only
 /// after the model loads them, and the loader's own index is what it reads
 /// instead. `jyc_send_message` stays in the advertised set because attachment
-/// replies must be discoverable without a loader call.
+/// replies must be discoverable without a loader call, and the task tools stay
+/// there because every multi-step turn and every post-compaction resume needs
+/// them.
 ///
-/// A topic that never delegates, never publishes and never fetches a URL
-/// pays this and not the whole registry.
-const ADVERTISED_TOTAL_BUDGET: usize = 4_600;
+/// A topic that never delegates, never publishes, never fetches a URL, never
+/// browses its transcript and never records a lesson pays this and not the
+/// whole registry.
+const ADVERTISED_TOTAL_BUDGET: usize = 4_300;
 
 /// `jyc_spawn_subagent`'s `type` description ends with the catalog of roles
 /// configured *on this machine*, so its length is configuration rather than
@@ -207,30 +219,37 @@ fn the_extended_tools_are_not_advertised_until_they_are_loaded() {
     );
 }
 
-/// `jyc_send_message` carries attachment-bearing replies, so it must be
-/// discoverable in the core set rather than behind the loader.
+/// The messaging and task workflows are needed without a discovery call:
+/// attachment replies must not sit behind the loader, and every multi-step
+/// turn needs the task tools (including right after context compression).
 #[test]
-fn send_message_is_advertised_without_loading_the_extended_group() {
+fn core_message_and_task_tools_are_advertised_and_indexed() {
     let registry = built_in_registry();
     let advertised = registry.definitions();
     let names: Vec<&str> = advertised.iter().map(|d| d.name.as_str()).collect();
-
-    assert!(
-        names.contains(&"jyc_send_message"),
-        "jyc_send_message must be advertised before the group is loaded: {names:?}"
-    );
 
     let loader = advertised
         .iter()
         .find(|d| d.name == "load_extended_tools")
         .expect("the loader is advertised");
-    assert!(
-        loader
-            .description
-            .contains("Already available: read, write, edit, grep, ask_user, jyc_send_message."),
-        "the loader must list jyc_send_message as already available: {}",
-        loader.description
-    );
+    let available = already_available(loader);
+
+    for name in [
+        "jyc_send_message",
+        "task_list",
+        "task_create",
+        "task_update",
+    ] {
+        assert!(
+            names.contains(&name),
+            "{name} must be advertised before the group is loaded: {names:?}"
+        );
+        assert!(
+            available.contains(&name),
+            "{name} must be listed as already available: {}",
+            loader.description
+        );
+    }
     assert!(
         !loader
             .description
@@ -238,6 +257,35 @@ fn send_message_is_advertised_without_loading_the_extended_group() {
         "jyc_send_message must not remain in the loaded group: {}",
         loader.description
     );
+}
+
+/// The low-frequency tools are part of the on-demand group and are still
+/// discoverable through its one-line index.
+#[test]
+fn low_frequency_tools_are_hidden_but_indexed() {
+    let registry = built_in_registry();
+    let advertised = registry.definitions();
+    let names: Vec<&str> = advertised.iter().map(|d| d.name.as_str()).collect();
+    let loader = advertised
+        .iter()
+        .find(|d| d.name == "load_extended_tools")
+        .expect("the loader is advertised");
+
+    for name in ["context_browse", "lesson_add", "lesson_read"] {
+        assert!(
+            EXTENDED_TOOLS.iter().any(|(extended, _)| *extended == name),
+            "{name} must belong to the extended group"
+        );
+        assert!(
+            !names.contains(&name),
+            "{name} must not be advertised before the group is loaded: {names:?}"
+        );
+        assert!(
+            loader.description.contains(&format!("{name} (")),
+            "{name} must still be discoverable through the loader index: {}",
+            loader.description
+        );
+    }
 }
 
 /// Loading the group advertises it: the flag is what the registry reads on

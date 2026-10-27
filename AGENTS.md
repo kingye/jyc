@@ -128,6 +128,7 @@ and uses an in-process AI agent to generate replies.
 - Use `jyc_send_to_topic` to send a message to another topic for agent processing.
 
 ### Task List
+- The task tools are in the extended group: in a fresh registry, call `load_extended_tools` before the first `task_create`; the loader description points multi-step work at them.
 - Multi-step work (a plan, an implementation, a cross-file fix) must start with `task_create`; the list is the topic's single plan of record.
 - Mark an item `in_progress` when picking it up and `completed` with `task_update` as soon as it is genuinely done — never ahead of the work, never with validation still failing.
 - Re-plan with a new `task_create` (it replaces the list and renumbers ids) rather than patching a stale one item by item.

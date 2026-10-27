@@ -110,7 +110,7 @@ const BUDGETS: &[(&str, usize, usize)] = &[
     ("lesson_add", 220, 0),
     ("lesson_read", 114, 0),
     ("list_topics", 240, 0),
-    ("load_extended_tools", 680, 0),
+    ("load_extended_tools", 760, 0),
     ("task_list", 278, 0),
     ("task_create", 345, 46),
     ("task_update", 305, 81),
@@ -136,25 +136,27 @@ const BUDGETS: &[(&str, usize, usize)] = &[
 /// actually carries — went down, which is the number that matters. See
 /// [`ADVERTISED_TOTAL_BUDGET`].
 ///
-/// The 2026-10-27 rebalance added three low-frequency tools to the group and
-/// three core names plus three one-liners to the loader index. Tightening the
-/// loader's fixed preamble and the longest new one-liner kept the whole set at
-/// 7,781, under this unchanged ceiling.
-const TOTAL_BUDGET: usize = 7_800;
+/// The 2026-10-27 rebalance added six low-frequency tools to the group. They
+/// add only their names and one-liners to the loader index, so the whole set
+/// grew by 93 characters to 7,874 even while an ordinary request stopped
+/// paying for their schemas. The ceiling is raised by 100 rather than made
+/// exact: the next index entry needs room, but the advertised set below is
+/// where the saving shows.
+const TOTAL_BUDGET: usize = 7_900;
 
 /// The advertised set — the core tools plus the loader's index — in
 /// characters. This is the standing per-call cost after the extended group
-/// was moved out of the request: the nine extended tools are advertised only
+/// was moved out of the request: the twelve extended tools are advertised only
 /// after the model loads them, and the loader's own index is what it reads
 /// instead. `jyc_send_message` stays in the advertised set because attachment
-/// replies must be discoverable without a loader call, and the task tools stay
-/// there because every multi-step turn and every post-compaction resume needs
-/// them.
+/// replies must be discoverable without a loader call; the task tools are in
+/// the group because when a plan is required is a project convention, and the
+/// loader points multi-step work at them.
 ///
 /// A topic that never delegates, never publishes, never fetches a URL, never
-/// browses its transcript and never records a lesson pays this and not the
-/// whole registry.
-const ADVERTISED_TOTAL_BUDGET: usize = 4_300;
+/// browses its transcript, never records a lesson and never needs a plan pays
+/// this and not the whole registry.
+const ADVERTISED_TOTAL_BUDGET: usize = 3_050;
 
 /// `jyc_spawn_subagent`'s `type` description ends with the catalog of roles
 /// configured *on this machine*, so its length is configuration rather than
@@ -224,11 +226,10 @@ fn the_extended_tools_are_not_advertised_until_they_are_loaded() {
     );
 }
 
-/// The messaging and task workflows are needed without a discovery call:
-/// attachment replies must not sit behind the loader, and every multi-step
-/// turn needs the task tools (including right after context compression).
+/// Attachment replies must not sit behind the loader: a send the user asked
+/// for has to be discoverable without a discovery call of its own.
 #[test]
-fn core_message_and_task_tools_are_advertised_and_indexed() {
+fn core_message_tool_is_advertised_and_indexed() {
     let registry = built_in_registry();
     let advertised = registry.definitions();
     let names: Vec<&str> = advertised.iter().map(|d| d.name.as_str()).collect();
@@ -239,22 +240,15 @@ fn core_message_and_task_tools_are_advertised_and_indexed() {
         .expect("the loader is advertised");
     let available = already_available(loader);
 
-    for name in [
-        "jyc_send_message",
-        "task_list",
-        "task_create",
-        "task_update",
-    ] {
-        assert!(
-            names.contains(&name),
-            "{name} must be advertised before the group is loaded: {names:?}"
-        );
-        assert!(
-            available.contains(&name),
-            "{name} must be listed as already available: {}",
-            loader.description
-        );
-    }
+    assert!(
+        names.contains(&"jyc_send_message"),
+        "jyc_send_message must be advertised before the group is loaded: {names:?}"
+    );
+    assert!(
+        available.contains(&"jyc_send_message"),
+        "jyc_send_message must be listed as already available: {}",
+        loader.description
+    );
     assert!(
         !loader
             .description
@@ -265,7 +259,9 @@ fn core_message_and_task_tools_are_advertised_and_indexed() {
 }
 
 /// The low-frequency tools are part of the on-demand group and are still
-/// discoverable through its one-line index.
+/// discoverable through its one-line index. The task tools are here because
+/// requiring a plan is a project convention, not a framework-wide cost; the
+/// loader points multi-step work at them.
 #[test]
 fn low_frequency_tools_are_hidden_but_indexed() {
     let registry = built_in_registry();
@@ -276,7 +272,14 @@ fn low_frequency_tools_are_hidden_but_indexed() {
         .find(|d| d.name == "load_extended_tools")
         .expect("the loader is advertised");
 
-    for name in ["context_browse", "lesson_add", "lesson_read"] {
+    for name in [
+        "context_browse",
+        "lesson_add",
+        "lesson_read",
+        "task_list",
+        "task_create",
+        "task_update",
+    ] {
         assert!(
             EXTENDED_TOOLS.iter().any(|(extended, _)| *extended == name),
             "{name} must belong to the extended group"
@@ -291,6 +294,13 @@ fn low_frequency_tools_are_hidden_but_indexed() {
             loader.description
         );
     }
+    assert!(
+        loader
+            .description
+            .contains("For multi-step work, use the task tools."),
+        "the loader must point multi-step work at the task tools: {}",
+        loader.description
+    );
 }
 
 /// Loading the group advertises it: the flag is what the registry reads on

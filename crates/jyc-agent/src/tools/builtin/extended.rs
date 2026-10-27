@@ -1,8 +1,9 @@
 //! The extended tools — the group the model loads on demand.
 //!
 //! A tool schema is a standing per-call cost: it rides in every request's
-//! stable prompt prefix, and a topic that never delegates, never publishes
-//! and never looks at the web pays for those schemas on every single call.
+//! stable prompt prefix, and a topic that never delegates, never publishes,
+//! never looks at the web, never browses its transcript, never records a
+//! lesson and never needs a plan pays for those schemas on every single call.
 //! The extended group is the part of the tool set that is *not* worth that:
 //! the tools most topics use rarely or never.
 //!
@@ -49,16 +50,18 @@ pub const EXTENDED_TOOLS: &[(&str, &str)] = &[
     ("context_browse", "browse earlier turns"),
     ("lesson_add", "record a reusable lesson"),
     ("lesson_read", "read earlier recorded lessons"),
+    ("task_list", "read the plan"),
+    ("task_create", "write a new plan"),
+    ("task_update", "set an item's status"),
 ];
 
 /// The core tools the loader mentions as already available.
 ///
 /// These are the ones a request carries whatever the model does — the file
-/// tools, the shell, the question tool, `jyc_send_message` (which carries
-/// attachment-bearing replies), and the task tools (which every multi-step
-/// turn and every post-compaction resume needs). The list is filtered by what
-/// the registry actually holds, so a role that disables one of them is never
-/// told it is there.
+/// tools, the shell, the question tool, and `jyc_send_message` (which carries
+/// attachment-bearing replies). The list is filtered by what the registry
+/// actually holds, so a role that disables one of them is never told it is
+/// there.
 const CORE_TOOLS: &[&str] = &[
     "read",
     "write",
@@ -67,10 +70,12 @@ const CORE_TOOLS: &[&str] = &[
     "grep",
     "ask_user",
     "jyc_send_message",
-    "task_list",
-    "task_create",
-    "task_update",
 ];
+
+/// The task tools, which the loader points at for work that needs a plan.
+fn is_task_tool(name: &str) -> bool {
+    matches!(name, "task_list" | "task_create" | "task_update")
+}
 
 /// Bring the extended group into a registry: mark the tools it names, and
 /// register the tool that loads them.
@@ -127,9 +132,13 @@ impl LoadExtendedToolsTool {
     /// The description, built from the tools this registry actually has.
     fn description_for(present: &[(&str, &str)], core: &[&str]) -> String {
         let mut text = String::from(
-            "Load the extended tools into your tool list; they remain there while this topic's \
-             registry is reused. Call before using:",
+            "Load the extended tools into your tool list; they remain while this topic's \
+             registry is reused.",
         );
+        if present.iter().any(|(name, _)| is_task_tool(name)) {
+            text.push_str(" For multi-step work, use the task tools.");
+        }
+        text.push_str(" Call before using:");
         for (name, what) in present {
             text.push_str(&format!(" {name} ({what});"));
         }
@@ -287,11 +296,50 @@ mod tests {
             loader.description
         );
         assert!(
-            loader.description.contains(
-                "Already available: read, write, edit, grep, ask_user, task_list, task_create, \
-                 task_update."
-            ),
+            loader
+                .description
+                .contains("Already available: read, write, edit, grep, ask_user."),
             "the loader must still say what is available: {}",
+            loader.description
+        );
+        assert!(
+            loader
+                .description
+                .contains("For multi-step work, use the task tools."),
+            "the loader must point multi-step work at the task tools: {}",
+            loader.description
+        );
+        for entry in [
+            "task_list (read the plan)",
+            "task_create (write a new plan)",
+            "task_update (set an item's status)",
+        ] {
+            assert!(
+                loader.description.contains(entry),
+                "the loader index must name {entry}: {}",
+                loader.description
+            );
+        }
+    }
+
+    /// Guidance for an absent tool would be a lie: a role that removes every
+    /// task tool must not be told to use them.
+    #[test]
+    fn the_loader_mentions_task_tools_only_when_they_are_there() {
+        let mut registry = create_builtin_registry();
+        for name in ["task_list", "task_create", "task_update"] {
+            registry.remove(name);
+        }
+        register_extended_tools(&mut registry);
+
+        let loader = registry
+            .definitions()
+            .into_iter()
+            .find(|d| d.name == "load_extended_tools")
+            .expect("the loader is registered");
+        assert!(
+            !loader.description.contains("task_"),
+            "the loader must not name a task tool this registry does not have: {}",
             loader.description
         );
     }

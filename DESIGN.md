@@ -2390,29 +2390,30 @@ JYC uses the following subset of the agent service API:
 
    **The extended tools.** A tool schema rides in every request, so a topic
    that never delegates, never publishes, never fetches a URL, never browses
-   its transcript and never records a lesson pays for those schemas on every
-   call. The nine tools most topics use rarely —
-   `jyc_spawn_subagent`, `jyc_send_to_topic`, `list_topics`,
+   its transcript, never records a lesson and never needs a multi-step plan
+   pays for those schemas on every call. The twelve tools most topics use
+   rarely — `jyc_spawn_subagent`, `jyc_send_to_topic`, `list_topics`,
    `jyc_publish_file`, `read_image`, `webfetch`, `context_browse`,
-   `lesson_add`, `lesson_read` — are therefore **registered but not
-   advertised**: the registry filters them out of the `tools` array until the
-   model calls `load_extended_tools`, whose description is the index of what
-   the group holds. `jyc_send_message` stays in the core advertised set: an
-   attachment-bearing reply must be discoverable without a loader call. The
-   task tools stay there too: every multi-step turn and every post-compaction
-   resume needs `task_list`, and making the plan of record depend on a
-   discovery call would add a failure mode for no per-call saving. The loader
-   names both groups explicitly. The flag lives in the registry, which is
-   cached per topic, so a load sticks for the rest of that topic's registry
+   `lesson_add`, `lesson_read`, `task_list`, `task_create`, `task_update` —
+   are therefore **registered but not advertised**: the registry filters them
+   out of the `tools` array until the model calls `load_extended_tools`, whose
+   description is the index of what the group holds. `jyc_send_message` stays
+   in the core advertised set: an attachment-bearing reply must be
+   discoverable without a loader call. The task tools are in the group
+   because whether work needs a plan is a project convention, not a
+   framework-wide cost; the loader points multi-step work at them, and that
+   sentence is omitted when `disabled_tools` removes every task tool. The
+   loader names both groups explicitly. The flag lives in the registry, which
+   is cached per topic, so a load sticks for the rest of that topic's registry
    lifetime (a config reload rebuilds it and starts over). Only
    *advertisement* is gated: the tools stay executable, so a model that names
    one before loading it gets a working call instead of an error — the group
    is a cost optimization, and `disabled_tools` remains the boundary that
    removes a tool for good, the loader included (the loader is registered after
    the exclusion pass, so the pass is applied to it once more). The advertised
-   set went from 6,925 chars of schema text to about 4,100, and the tools array
-   is re-read on every agent loop iteration, so the schemas are in the *next*
-   request of the *same* turn.
+   set went from 6,925 chars of schema text to about 2,974 (−57%), and the
+   tools array is re-read on every agent loop iteration, so the schemas are in
+   the *next* request of the *same* turn.
 
    **What still moves the prompt, and why that is correct.** Spawning a
    child calls `access_grants::grant_subagent()`, which registers the

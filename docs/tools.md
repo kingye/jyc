@@ -234,9 +234,9 @@ takes them with it.
 
 Some tools are worth having but not worth paying for on every call: a topic
 that never delegates, never publishes, never fetches a URL, never browses its
-transcript and never records a lesson should not carry their schemas in every
-request. They are **registered but not advertised** — the model gets them by
-calling one tool.
+transcript, never records a lesson and never needs a multi-step plan should
+not carry their schemas in every request. They are **registered but not
+advertised** — the model gets them by calling one tool.
 
 ### `load_extended_tools`
 
@@ -264,12 +264,16 @@ channel, is not part of it):
 | `context_browse` | Page the transcript for earlier turns |
 | `lesson_add` | Record a reusable lesson |
 | `lesson_read` | Read earlier recorded lessons |
+| `task_list` | Read the plan and its item statuses |
+| `task_create` | Write a new plan |
+| `task_update` | Mark one item's status |
 
-`jyc_send_message` and the task tools (`task_list`, `task_create`,
-`task_update`) are not in this group: they stay advertised with the core tools.
-The send tool must be discoverable for attachment-bearing replies without a
-loader call, and every multi-step turn — including one resuming after context
-compression — needs the task tools.
+`jyc_send_message` is not in this group: the send tool must be discoverable
+for attachment-bearing replies without a loader call, so it stays advertised
+with the core tools. The task tools are in the group because whether work
+needs a plan is a project convention, not a framework-wide cost. The loader
+points multi-step work at them, and omits that sentence when `disabled_tools`
+removes every task tool.
 
 The loader's own description is the index of the group and names the core
 tools already available, so the model learns what it holds without the group's

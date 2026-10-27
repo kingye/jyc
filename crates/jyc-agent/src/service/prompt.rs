@@ -195,7 +195,6 @@ impl JycAgentService {
             .lock()
             .expect("topic_managers poisoned")
             .clone();
-        let outbounds_configured = self.outbounds.lock().expect("outbounds poisoned").is_some();
         if managers_opt.is_some() {
             prompt.push_str(
                 "\n## Cross-Topic Communication\n\n\
@@ -225,18 +224,6 @@ impl JycAgentService {
                  there was none. An explicit reply is still better: it carries the whole result, \
                  while the forward carries only your last message.\n",
             );
-
-            // Note about direct outbound messaging via jyc_send_message
-            if outbounds_configured {
-                prompt.push_str(
-                    "For direct outbound messaging (bypassing agent processing), \
-                     use `jyc_send_message` with the optional `channel` parameter set to \
-                     a target channel name.\n\
-                     `jyc_send_message` sends directly through the channel's outbound adapter \
-                     without agent processing. `jyc_send_to_topic` injects into a topic queue \
-                     for agent processing.\n\n",
-                );
-            }
 
             // The live channel/topic roster is deliberately NOT enumerated
             // here: topics come and go, and one line of churn in the system

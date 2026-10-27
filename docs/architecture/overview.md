@@ -172,12 +172,11 @@ sequenceDiagram
     Note over C,P: GitHub: also post<br/>via create_comment API
 ```
 
-Proactive sends follow the same path: `jyc_send_message` to an agent channel
-broadcasts a `reply` payload keyed by topic, which the channel's forwarder
-relays. Known limitation: the topic→address mapping is in-memory and rebuilt
-on inbound traffic, so proactive sends right after restart are dropped until
-the next inbound message. Persisting the mapping (e.g. a `.jyc/` file in the
-topic directory) is a planned follow-up.
+Replies follow that path keyed by topic, which the channel's forwarder relays.
+Known limitation: the topic→address mapping is in-memory and rebuilt on
+inbound traffic, so a reply right after restart is dropped until the next
+inbound message. Persisting the mapping (e.g. a `.jyc/` file in the topic
+directory) is a planned follow-up.
 
 ## Design rules
 

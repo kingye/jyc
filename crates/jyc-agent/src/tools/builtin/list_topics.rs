@@ -25,9 +25,9 @@ impl Tool for ListTopicsTool {
     }
 
     fn description(&self) -> &str {
-        "List the channels and their active topics, for addressing `jyc_send_to_topic` and \
-         `jyc_send_message`. Use it when you need a channel or topic name you do not know; \
-         the names it returns are the ones those tools accept."
+        "List the channels and their active topics, for addressing `jyc_send_to_topic`. \
+         Use it when you need a channel or topic name you do not know; the names it returns \
+         are the ones the tool accepts."
     }
 
     fn input_schema(&self) -> Value {

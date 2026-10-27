@@ -49,17 +49,6 @@ impl jyc_types::OutboundAdapter for NoopOutbound {
             chat_seq: 0,
         })
     }
-    async fn send_message(
-        &self,
-        _recipient: &str,
-        _subject: &str,
-        _body: &str,
-    ) -> anyhow::Result<jyc_types::SendResult> {
-        Ok(jyc_types::SendResult {
-            message_id: "noop".to_string(),
-            chat_seq: 0,
-        })
-    }
 }
 
 /// A topic manager for the `agents` channel, with no worker behind it: the

@@ -387,8 +387,7 @@ pub(crate) async fn store_staged_file(
 
 /// Content type from file extension for published files.
 ///
-/// Duplicated from jyc-agent's `mcp_bridge::detect_content_type` (private
-/// there); jyc-inspect does not depend on jyc-agent.
+/// Kept local because jyc-inspect does not depend on jyc-agent.
 fn exchange_content_type(path: &std::path::Path) -> &'static str {
     let ext = path
         .extension()

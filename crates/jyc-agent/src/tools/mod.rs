@@ -4,7 +4,6 @@
 
 pub mod builtin;
 pub mod mcp_auth;
-pub mod mcp_bridge;
 pub mod mcp_client;
 pub mod registry;
 
@@ -156,8 +155,7 @@ pub async fn deliver_reply(
 }
 
 /// Shared outbound adapters map keyed by channel name.
-/// Used by `jyc_send_message` to support the `channel` parameter for
-/// cross-channel proactive messaging.
+/// Used by `ask_user` to select the adapter for the topic's origin channel.
 pub type OutboundsMap = Arc<tokio::sync::Mutex<HashMap<String, Arc<dyn OutboundAdapter>>>>;
 
 /// Context provided to tools during execution.
@@ -196,10 +194,10 @@ pub struct ToolContext<'a> {
     /// behavior between auto-injection and tool-driven image analysis.
     /// Default: `false` (opt-in for safety).
     pub pattern_inject_images: bool,
-    /// Optional outbound adapter for proactive messaging tools (e.g.
-    /// `jyc_send_message`). Injected by `JycAgentService` when building
-    /// the tool registry. `None` when the agent runs in contexts without
-    /// a pre-warmed outbound adapter.
+    /// Optional outbound adapter for reply delivery and interactive
+    /// questions. Injected by `JycAgentService` when building the tool
+    /// registry. `None` when the agent runs in contexts without a
+    /// pre-warmed outbound adapter.
     pub outbound: Option<Arc<dyn OutboundAdapter>>,
     /// Cross-channel topic managers keyed by channel name.
     /// Used by `jyc_send_to_topic` tool to inject messages into topics
@@ -213,10 +211,9 @@ pub struct ToolContext<'a> {
     /// `jyc_send_to_topic` sets `source_topic` metadata from this).
     pub current_topic: Option<String>,
     /// Cross-channel outbound adapters keyed by channel name.
-    /// Used by `jyc_send_message` to support the `channel` parameter for
-    /// sending proactive messages through any channel's outbound adapter.
-    /// `None` when running in contexts without cross-channel support
-    /// (e.g. unit tests).
+    /// Used by `ask_user` to select the adapter for the topic's origin
+    /// channel. `None` when running in contexts without cross-channel
+    /// support (e.g. unit tests).
     pub outbounds: Option<OutboundsMap>,
     /// The current turn's messages, injected by the agent loop at the
     /// start of the current tool batch. The turns before it are not in

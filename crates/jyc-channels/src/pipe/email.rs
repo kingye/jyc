@@ -34,7 +34,7 @@ use crate::imap::monitor::ImapMonitor;
 use crate::pipe::hub::HubPipe;
 use crate::pipe::{
     collect_pipe_target_channels, fetch_topic_file, match_pipe, parse_reply_attachments,
-    proactive_frame, retarget_or_drop, warn_on_bad_pipe_patterns,
+    retarget_or_drop, warn_on_bad_pipe_patterns,
 };
 use crate::state_manager::StateManager;
 
@@ -185,57 +185,6 @@ pub async fn spawn_email_pipe(
                             ) else {
                                 continue;
                             };
-                            // A proactive message (alert or notification,
-                            // with or without files) names its own recipient
-                            // and subject, so it goes out as a fresh mail and
-                            // never consults the topic → address mapping — a
-                            // missing entry there is normal, not a stale reply.
-                            if let Some(proactive) = proactive_frame(&v, &channel_name) {
-                                let attachments = load_reply_attachments(
-                                    files_base.as_deref(),
-                                    &token,
-                                    &v,
-                                    &config,
-                                )
-                                .await;
-                                let body = crate::email_parser::strip_trailing_separators(
-                                    proactive.text,
-                                );
-                                let mut smtp = smtp.lock().await;
-                                // Lazy connect, same as the reply path.
-                                if !smtp.is_connected()
-                                    && let Err(e) = smtp.connect().await
-                                {
-                                    tracing::error!(
-                                        error = %e,
-                                        recipient = %proactive.recipient,
-                                        "email pipe: SMTP connect failed, proactive message dropped"
-                                    );
-                                    continue;
-                                }
-                                if let Err(e) = smtp
-                                    .send_mail(
-                                        &from_address,
-                                        from_name.as_deref(),
-                                        proactive.recipient,
-                                        proactive.subject,
-                                        &body,
-                                        if attachments.is_empty() {
-                                            None
-                                        } else {
-                                            Some(&attachments)
-                                        },
-                                    )
-                                    .await
-                                {
-                                    tracing::error!(
-                                        error = format!("{e:#}"),
-                                        recipient = %proactive.recipient,
-                                        "email pipe: failed to relay proactive message"
-                                    );
-                                }
-                                continue;
-                            }
                             let Some(state) = topic_state.lock().unwrap().get(topic).cloned()
                             else {
                                 tracing::debug!(

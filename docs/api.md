@@ -583,7 +583,7 @@ Server-pushed events are JSON text frames from a shared
 | `chat_message` | `{ "channel", "topic", "id", "entry": ChatMessageEntry }`         | An incoming message or a sent reply arrives. The row's `id` is its chat sequence number, from a different number space than `activity`'s. |
 | `thinking`     | `{ "channel", "topic", "text" }`                                  | The agent publishes a thinking chunk.                                         |
 | `processing`   | `{ "channel", "topic", "is_processing": bool, "has_error": bool }` | A topic enters / leaves the Processing state.                                |
-| `reply`        | `{ "topic": "<name>", "text": "...", "id": u64 }`                 | A websocket-channel `WebsocketOutboundAdapter` broadcasts an AI reply; `id` is the chat sequence number of its log row (`0` for a proactive send, which logs none). |
+| `reply`        | `{ "topic": "<name>", "text": "...", "id": u64 }`                 | A websocket-channel `WebsocketOutboundAdapter` broadcasts an AI reply; `id` is the chat sequence number of its log row. |
 | `loop_tick`    | `{ "channel", "topic", "elapsed_ms": u64 }`                       | 1 Hz wall-clock tick during a processing cycle (first tick at `t=0`). Drives the dashboard's live-duration ticker. Not persisted. |
 | `resync`       | `{ "channel", "topic", "dropped": <n> }`                          | The client's broadcast receiver lagged and missed messages.                   |
 

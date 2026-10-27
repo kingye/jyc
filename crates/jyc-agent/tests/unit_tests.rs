@@ -1747,11 +1747,9 @@ mod tools {
     }
 }
 
-mod mcp_bridge {
-    use jyc_agent::tools::mcp_bridge::SendMessageTool;
-    use jyc_agent::tools::{Tool, ToolContext, deliver_reply};
+mod reply_delivery {
+    use jyc_agent::tools::{ToolContext, deliver_reply};
     use jyc_types::{InboundMessage, OutboundAdapter, OutboundAttachment, SendResult};
-    use serde_json::json;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
@@ -1811,17 +1809,6 @@ mod mcp_bridge {
             ));
             Ok(SendResult {
                 message_id: "direct-1".to_string(),
-                chat_seq: 0,
-            })
-        }
-        async fn send_message(
-            &self,
-            _recipient: &str,
-            _subject: &str,
-            _body: &str,
-        ) -> anyhow::Result<SendResult> {
-            Ok(SendResult {
-                message_id: "msg-1".to_string(),
                 chat_seq: 0,
             })
         }
@@ -1927,22 +1914,6 @@ mod mcp_bridge {
             "done!"
         );
         assert!(state_dir.join("reply-sent.flag").exists());
-    }
-
-    /// The proactive send-message tool still reports a clean tool error
-    /// when no outbound adapter is configured.
-    #[tokio::test]
-    async fn send_message_tool_errors_without_outbound() {
-        let tmp = tempfile::tempdir().unwrap();
-        let ctx = ToolContext::new(tmp.path());
-        let tool = SendMessageTool;
-        let result = tool
-            .execute(
-                json!({"recipient": "wecom:user1", "message": "alert"}),
-                &ctx,
-            )
-            .await;
-        assert!(result.is_err() || result.unwrap().is_error);
     }
 }
 

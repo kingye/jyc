@@ -55,17 +55,6 @@ impl jyc_types::OutboundAdapter for RecordingOutbound {
             chat_seq: 0,
         })
     }
-    async fn send_message(
-        &self,
-        _recipient: &str,
-        _subject: &str,
-        _body: &str,
-    ) -> Result<jyc_types::SendResult> {
-        Ok(jyc_types::SendResult {
-            message_id: "recorded".to_string(),
-            chat_seq: 0,
-        })
-    }
 }
 
 /// Agent service that queues its reply via the `.jyc/reply.md` +

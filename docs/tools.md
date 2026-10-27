@@ -1,6 +1,6 @@
 # JYC Tools Reference
 
-This document lists all tools available to the AI agent in JYC, including built-in tools, MCP bridge tools, and externally configurable MCP tools.
+This document lists all tools available to the AI agent in JYC, including built-in tools and externally configurable MCP tools.
 
 **Audience:** AI agents (for understanding available capabilities) and developers/operators (for configuration and debugging).
 
@@ -11,7 +11,6 @@ This document lists all tools available to the AI agent in JYC, including built-
 | Category | Description | Configuration |
 |----------|-------------|---------------|
 | **Built-in** | Core file system and execution tools. Always available unless explicitly disabled. | Hardcoded in `jyc-agent` |
-| **MCP Bridge** | In-process JYC-specific tools (send message). | Always registered |
 | **Cross-Topic** | Cross-channel topic communication tool. | Registered when cross-channel `topic_managers` available |
 | **External MCP** | Optional tools provided by external MCP servers configured in `config.toml`. | `[[mcps]]` config |
 
@@ -256,7 +255,6 @@ channel, is not part of it):
 |------|----------------|
 | `jyc_spawn_subagent` | Delegate a task to a subagent topic |
 | `jyc_send_to_topic` | Message another topic |
-| `jyc_send_message` | Send a proactive message to a channel |
 | `list_topics` | List the channels and their active topics |
 | `jyc_publish_file` | Publish a file as a download link |
 | `read_image` | View an image |
@@ -275,7 +273,7 @@ then stays out of every request (its tools remain callable by name, as always).
 ### `list_topics`
 
 Lists the channels and their active topics — the addressing table for
-`jyc_send_to_topic` and `jyc_send_message`.
+`jyc_send_to_topic`.
 
 **Parameters:** none.
 
@@ -284,11 +282,7 @@ one `- Channel "name" (type)` line per channel, and the topic names under it.
 
 ---
 
-## MCP Bridge Tools
-
-These are JYC-specific tools implemented as in-process bridges (not external MCP subprocesses). They are always registered unless excluded via `disabled_tools`.
-
-### Reply Delivery (no tool)
+## Reply Delivery
 
 There is no reply tool. The agent's final message at the end of a turn IS the in-topic reply:
 
@@ -300,44 +294,13 @@ There is no reply tool. The agent's final message at the end of a turn IS the in
 
 ---
 
-### `jyc_send_message`
-
-Send a proactive out-of-topic message to an arbitrary recipient.
-
-**Parameters:**
-- `recipient` (string, required): Channel-specific recipient identifier
-- `message` (string, required): Message body to send
-- `subject` (string, optional): Message subject (channel-dependent)
-- `channel` (string, optional): Target channel for a cross-channel send
-- `attachments` (string[], optional): Files within the current topic directory
-  to attach. Supported by `email`, `feishu` and `wecom_bot` (including when they
-  run in `jyc-pipe`: the hub relays the files through the pipe); every other
-  channel rejects the send instead of dropping the files.
-
-**Recipient Format:**
-- WeCom KF: `wecomkf:{open_kfid}:{external_userid}`
-- Email: `user@example.com`
-- Other channels: channel-specific format
-
-**Constraints:**
-- Use ONLY for alerts and notifications
-- NEVER use for in-topic replies (the final message of the turn is the reply)
-- Requires a pre-warmed outbound adapter (`ToolContext.outbound`)
-
-**Example:**
-```json
-{"recipient": "wecomkf:kf001:wmE8OcHAAA...", "subject": "System Alert", "message": "Disk usage exceeded 90%"}
-```
-
----
-
 ## Cross-Topic Communication Tools
 
 ### `jyc_send_to_topic`
 
 Send a message to another agent for agent processing: its own topic by default, or one of its topics with `topic`.
 
-Unlike `jyc_send_message` (which bypasses agent processing for direct outbound delivery), `jyc_send_to_topic` injects the message into the target topic's queue so the target topic's agent picks it up and processes it.
+`jyc_send_to_topic` injects the message into the target topic's queue so the target topic's agent picks it up and processes it.
 
 The command form is `/send <agent> [--topic|-t <topic>] [--reply] [--attach <file>] [--recipient <id>] <message>`; both call the same `command::send_handler::send_to_topic`.
 
@@ -465,7 +428,7 @@ disabled_mcps = []
 
 | Field | Scope | Description |
 |-------|-------|-------------|
-| `disabled_tools` | Agent / Topic | List of tool names to remove. Matches built-in tools, MCP bridge tools, and external MCP tools by registration name. **External MCP tools can also be targeted as `server_name/tool_name` for precise exclusion when multiple servers provide the same tool name.** |
+| `disabled_tools` | Agent / Topic | List of tool names to remove. Matches built-in tools and external MCP tools by registration name. **External MCP tools can also be targeted as `server_name/tool_name` for precise exclusion when multiple servers provide the same tool name.** |
 | `disabled_mcps` | Agent / Topic | List of MCP server names to skip during tool loading. **Renamed from `disabled_mcp_servers`; the old key is still accepted.** |
 | `disabled_builtin_tools` | Agent only | **Backward-compatible alias.** Merged into `disabled_tools` for built-in tool names. |
 | `disabled_tools` | Topic (L3) | Same list in the topic's own `.jyc/config.toml` — where a subagent type's `disabled_tools` lands, so a spawned role can be bounded structurally (e.g. `["write", "edit", "jyc_spawn_subagent"]` for the `review` role) instead of by instruction. Only the tools listed are affected: `bash` is a shell and can still write, so a role that keeps it (a reviewer needs `git diff`) leans on plan mode and its instructions for the rest. |
@@ -501,7 +464,7 @@ disabled_tools = ["write", "edit"]
 disabled_tools = ["jin_public_mcp/product_list"]
 ```
 
-> **Note:** The `server_name/tool_name` format filters MCP tools **before** they are registered. Built-in and bridge tools should always use plain names (e.g. `"bash"`, not `"builtin/bash"`).
+> **Note:** The `server_name/tool_name` format filters MCP tools **before** they are registered. Built-in tools should always use plain names (e.g. `"bash"`, not `"builtin/bash"`).
 
 **Disable all MCP tools for an agent:**
 ```toml
@@ -523,7 +486,6 @@ disabled_mcps = ["*"]  # Disables all external MCP servers
 | `webfetch` | None (network tool) | HTTPS only; 30s default timeout |
 | `read_image` | `check_path_boundary()` working_dir + temp dir + read_roots + write_roots | URL mode requires http(s) |
 | `context_browse` | None (in-memory transcript only) | Read-only; never touches the filesystem |
-| `jyc_send_message` | Recipient format validation | Channel-specific format check |
 | `jyc_send_to_topic` | Attachment path validation | Must be within topic directory; a named topic must be owned by a channel that is running, can locate it, or is recorded in its state |
 
 `check_path_boundary()` itself only iterates `additional_read_roots`; write paths
@@ -610,7 +572,6 @@ build_tool_registry()
   ├─ Register built-in tools: bash, read, write, edit, grep, webfetch, context_browse
   ├─ Register read_image (when model supports images OR vision_client configured)
   ├─ Register jyc_publish_file (base URL from [inspect] base_url)
-  ├─ Register MCP bridge tools: jyc_send_message
   ├─ Register jyc_send_to_topic (when the topic managers are available)
   ├─ Load external MCP tools (filtered by disabled_mcps)
   ├─ Apply exclusions: remove tools matching disabled_tools

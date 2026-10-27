@@ -596,7 +596,7 @@ pub struct ChannelConfig {
 
     /// Channel-level tools to disable for all patterns in this channel.
     ///
-    /// Tool names match `Tool::name()` (e.g. `"bash"`, `"jyc_send_message"`,
+    /// Tool names match `Tool::name()` (e.g. `"bash"`, `"webfetch"`,
     /// `"invoice/process"`). Merged with pattern-level `disabled_tools`.
     #[serde(default)]
     pub disabled_tools: Option<Vec<String>>,

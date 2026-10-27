@@ -88,9 +88,9 @@ pub struct AgentLoopConfig<'a> {
     /// tool should not use vision-fallback mode even if a `VisionClient`
     /// is configured (consistent with `build_user_blocks` behavior).
     pub pattern_inject_images: bool,
-    /// Optional outbound adapter for proactive messaging tools (e.g.
-    /// `jyc_send_message`). Passed through to `ToolContext` so tools
-    /// can send messages directly without signal-file indirection.
+    /// Optional outbound adapter for reply delivery and interactive
+    /// questions. Passed through to `ToolContext` so tools can use the
+    /// pre-warmed channel adapter without signal-file indirection.
     pub outbound: Option<Arc<dyn jyc_types::channel::OutboundAdapter>>,
     /// Cross-channel topic managers keyed by channel name.
     /// Passed through to `ToolContext` so the `jyc_send_to_topic` tool
@@ -100,8 +100,8 @@ pub struct AgentLoopConfig<'a> {
     /// (e.g. `jyc_send_to_topic` sets `source_channel` metadata from this).
     pub current_channel: Option<String>,
     /// Cross-channel outbound adapters keyed by channel name.
-    /// Passed through to `ToolContext` so the `jyc_send_message` tool can
-    /// send proactive messages through any channel's outbound adapter.
+    /// Passed through to `ToolContext` so `ask_user` can select the adapter
+    /// for the topic's origin channel.
     pub outbounds: Option<OutboundsMap>,
     /// Context window size in tokens — the model's whole budget. Recorded
     /// with the token counts so the dashboard can show how full the window

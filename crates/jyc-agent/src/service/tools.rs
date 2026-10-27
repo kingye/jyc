@@ -90,9 +90,6 @@ impl JycAgentService {
             ));
         }
 
-        // Add MCP bridge tools (reply_message, etc.)
-        crate::tools::mcp_bridge::register_mcp_tools(&mut registry);
-
         let live_ch = live_cfg.channels.get(&self.channel_name);
         let patterns: Vec<ChannelPattern> =
             live_ch.and_then(|c| c.patterns.clone()).unwrap_or_default();

@@ -750,7 +750,7 @@ fn test_disabled_tools_valid_passes() {
     let toml = r#"
 [general]
 [agents.work]
-disabled_tools = ["bash", "jyc_send_message"]
+disabled_tools = ["bash", "webfetch"]
 disabled_mcps = ["invoice"]
 
 [agent]

@@ -446,13 +446,13 @@ fn derive_agent_config_applies_channel_overrides() {
 }
 
 #[tokio::test]
-async fn disabled_tools_removes_builtin_and_bridge() {
-    let tname = "disabled_tools_removes_builtin_and_bridge";
+async fn disabled_tools_removes_builtin_and_extended() {
+    let tname = "disabled_tools_removes_builtin_and_extended";
     jyc_types::state_dir::register(tname, Path::new("/tmp/test-topic/.jyc"));
 
     let patterns = vec![ChannelPattern {
         name: "test".to_string(),
-        disabled_tools: Some(vec!["bash".to_string(), "jyc_send_message".to_string()]),
+        disabled_tools: Some(vec!["bash".to_string(), "webfetch".to_string()]),
         ..ChannelPattern::default()
     }];
     let svc = service_with_exclusion(patterns, None, None);
@@ -474,10 +474,7 @@ async fn disabled_tools_removes_builtin_and_bridge() {
     let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
 
     assert!(!names.contains(&"bash"), "bash should be disabled");
-    assert!(
-        !names.contains(&"jyc_send_message"),
-        "jyc_send_message should be disabled"
-    );
+    assert!(!names.contains(&"webfetch"), "webfetch should be disabled");
     assert!(names.contains(&"read"), "read should still be available");
 }
 
@@ -581,7 +578,7 @@ async fn disabled_mcps_skips_matching_server() {
 
     // Registry should still contain built-in tools
     assert!(registry.has_tool("bash"));
-    assert!(registry.has_tool("jyc_send_message"));
+    assert!(registry.has_tool("webfetch"));
 }
 
 #[tokio::test]
@@ -625,7 +622,7 @@ async fn empty_disabled_tools_disables_nothing() {
         .await;
 
     assert!(registry.has_tool("bash"), "bash should still be available");
-    assert!(registry.has_tool("jyc_send_message"));
+    assert!(registry.has_tool("webfetch"));
 }
 
 #[tokio::test]
@@ -689,7 +686,7 @@ async fn disabled_mcps_filters_channel_configs() {
 
     // Registry should contain built-in tools (no panic from MCP loading)
     assert!(registry.has_tool("bash"));
-    assert!(registry.has_tool("jyc_send_message"));
+    assert!(registry.has_tool("webfetch"));
 }
 
 #[tokio::test]

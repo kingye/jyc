@@ -42,7 +42,6 @@ use crate::tools::registry::{ExtendedTools, ToolRegistry};
 pub const EXTENDED_TOOLS: &[(&str, &str)] = &[
     ("jyc_spawn_subagent", "delegate a task to a subagent topic"),
     ("jyc_send_to_topic", "message another topic"),
-    ("jyc_send_message", "send a proactive message to a channel"),
     ("list_topics", "list the channels and their active topics"),
     ("jyc_publish_file", "publish a file as a download link"),
     ("read_image", "view an image"),

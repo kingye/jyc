@@ -28,7 +28,7 @@ use crate::wecom_bot::inbound::{WecomBotInboundAdapter, WecomBotMatcher};
 
 use super::{
     HubPipe, ReplyAttachmentRef, collect_pipe_target_channels, fetch_topic_file, match_pipe,
-    parse_reply_attachments, proactive_frame, retarget_or_drop, warn_on_bad_pipe_patterns,
+    parse_reply_attachments, retarget_or_drop, warn_on_bad_pipe_patterns,
 };
 
 /// State tracked per piped topic for the wecom_bot reply forwarder.
@@ -133,7 +133,6 @@ pub(crate) fn spawn_wecom_bot_pipe(
                 let files_base = files_base.clone();
                 let token = token.clone();
                 let config = config.clone();
-                let channel_name = channel_name.clone();
                 let target = target.clone();
                 tokio::spawn(async move {
                     let mut rx = hub.subscribe_replies();
@@ -166,42 +165,6 @@ pub(crate) fn spawn_wecom_bot_pipe(
                         // here; consider narrowing the key when a
                         // concrete case appears.
                         //
-                        // A proactive message is recognized *before* this
-                        // lookup and never touches the state table: it is not
-                        // a reply to anything, so a missing entry is expected
-                        // rather than a sign that the frame is stale.
-                        if let Some(proactive) = proactive_frame(&v, &channel_name) {
-                            let Some(handle) = handle_arc.lock().await.clone() else {
-                                tracing::warn!(
-                                    recipient = %proactive.recipient,
-                                    "wecom_bot pipe: handle not set, dropping proactive message"
-                                );
-                                continue;
-                            };
-                            if let Err(e) = send_wecom_proactive_text(
-                                &handle,
-                                proactive.recipient,
-                                proactive.text,
-                            )
-                            .await
-                            {
-                                tracing::error!(
-                                    error = format!("{e:#}"),
-                                    recipient = %proactive.recipient,
-                                    "wecom_bot pipe: failed to send proactive text"
-                                );
-                            }
-                            relay_wecom_attachments(
-                                &handle,
-                                files_base.as_deref(),
-                                token.as_deref(),
-                                proactive.recipient,
-                                &v,
-                                &config,
-                            )
-                            .await;
-                            continue;
-                        }
                         let state = topic_state.lock().await.remove(topic);
                         let Some(state) = state else {
                             tracing::debug!(

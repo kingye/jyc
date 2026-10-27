@@ -210,22 +210,21 @@ User sends message (any channel) → Pattern Match → Topic Queue → Worker (A
 6. **Topic Event System** — Per-topic isolated event bus for progress events (ProcessingStarted/Progress/Completed, ToolStarted/Completed, Thinking, SessionStatus). Used by the inspect dashboard for realtime monitoring.
 7. **Prompt Builder** — Builds channel-agnostic prompts from InboundMessage; supports multimodal first turns with ContentBlock::Image
 8. **Reply Delivery** — the agent's final message at the end of the turn IS the reply (no reply tool). `deliver_reply` sends it synchronously via the channel's pre-warmed outbound adapter when a reply target is live; otherwise (or on send failure) it writes `reply.md` + signal file for the watcher/monitor to deliver
-9. **MCP SendMessage Tool** — `jyc_send_message` in-process tool, sends proactive out-of-topic messages to any recipient via the pre-warmed outbound adapter. Used for alerts and notifications only, never for in-topic replies
-10. **MCP Vision Tool** — `analyze_image` tool via `rmcp`, analyzes images using OpenAI-compatible vision API. Configure via `[[mcps]]` in `config.toml`
-11. **Question Tool** — `ask_user` renders the user's decision options on whichever channel the message arrived on: a `question` frame to a channel with a question box (the TUI), the same set as a plain-text message on the ordinary reply path everywhere else (feishu, email, any pipe-only channel). Up to 5 questions go in one call and come back in one answer. It never waits: the tool ends the turn the moment the questions are handed over, and the user's reply — a numbered message on the TUI, free text anywhere else — arrives as the input to the next turn. On the TUI each question also takes a typed answer: the option list ends with a `✎` row whose one-line draft answers for that question on its own line (`Q2: their own words`, carrying no option number, so a pick and a typed answer are told apart), which is what makes the free text the other channels always had reachable on the one surface that draws a box. Skipping one question (`d`) or closing the box (`Esc`) are client-side choices with no protocol of their own, which is why there is no hub, no timeout, and no answer frame on any channel.
-12. **Pending Delivery Watcher** — Background task that runs alongside SSE stream, watches for signal files and delivers messages immediately
-13. **Message Storage** — Unified chat log storage: daily log files (`chat_history_YYYY-MM-DD.jsonl`) with JSON metadata
-14. **State Manager** — Track processed UIDs per channel, handle migrations
-15. **Security Module** — Path validation, file size/extension checks for attachments; tool boundary checks for write/edit/grep/bash/read_image
-16. **Attachment Storage** — Channel-agnostic attachment saving with path traversal protection
-17. **Inspect Server + Dashboard** — TCP JSON line protocol for runtime state queries, TUI dashboard for live monitoring
-18. **MetricsCollector** — Lightweight stats accumulation for monitoring topic/channel activity
-19. **Command System** — `/command` parsing and execution (`/model`, `/plan`, `/build`, `/reset`, `/close`, `/template`)
-20. **Topic Lifecycle** — Channel-agnostic topic close mechanism via `on_topic_close` callback
-21. **Template System** — Initialize new topics with predefined files from `templates/` directory
-22. **AgentService** — Unified agent dispatch trait for static and in-process agent modes; resolves effective model from pattern/channel/global config
-23. **Channel Orchestrator** — Manages channel lifecycle across config reloads. Registers per-channel status (topic manager, cancel token). On reload, diffs old/new config: cancels removed channels gracefully, warns on new channels (requires restart). Updates shared `InspectContext` state (`topic_managers`, `channels`, `workspace_dirs`) via `ArcSwap`.
-24. **BillingLogStore** — Durable central cost ledger. Appends one line per LLM call to `<data dir>/billing/bill-YYYY-MM-DD.jsonl` (topic label + token counts + computed cost + currency). Central rather than per-topic because topic directories are deleted on close, which would destroy cost history. Day-stamped files bound the dashboard's per-poll read to a single day; never rotated or truncated, unlike the bounded `activity.jsonl` debug buffer. Complements `session_cost` in `agent-session.json`, which is session-scoped and zeroes on reset.
+9. **MCP Vision Tool** — `analyze_image` tool via `rmcp`, analyzes images using OpenAI-compatible vision API. Configure via `[[mcps]]` in `config.toml`
+10. **Question Tool** — `ask_user` renders the user's decision options on whichever channel the message arrived on: a `question` frame to a channel with a question box (the TUI), the same set as a plain-text message on the ordinary reply path everywhere else (feishu, email, any pipe-only channel). Up to 5 questions go in one call and come back in one answer. It never waits: the tool ends the turn the moment the questions are handed over, and the user's reply — a numbered message on the TUI, free text anywhere else — arrives as the input to the next turn. On the TUI each question also takes a typed answer: the option list ends with a `✎` row whose one-line draft answers for that question on its own line (`Q2: their own words`, carrying no option number, so a pick and a typed answer are told apart), which is what makes the free text the other channels always had reachable on the one surface that draws a box. Skipping one question (`d`) or closing the box (`Esc`) are client-side choices with no protocol of their own, which is why there is no hub, no timeout, and no answer frame on any channel.
+11. **Pending Delivery Watcher** — Background task that runs alongside SSE stream, watches for signal files and delivers messages immediately
+12. **Message Storage** — Unified chat log storage: daily log files (`chat_history_YYYY-MM-DD.jsonl`) with JSON metadata
+13. **State Manager** — Track processed UIDs per channel, handle migrations
+14. **Security Module** — Path validation, file size/extension checks for attachments; tool boundary checks for write/edit/grep/bash/read_image
+15. **Attachment Storage** — Channel-agnostic attachment saving with path traversal protection
+16. **Inspect Server + Dashboard** — TCP JSON line protocol for runtime state queries, TUI dashboard for live monitoring
+17. **MetricsCollector** — Lightweight stats accumulation for monitoring topic/channel activity
+18. **Command System** — `/command` parsing and execution (`/model`, `/plan`, `/build`, `/reset`, `/close`, `/template`)
+19. **Topic Lifecycle** — Channel-agnostic topic close mechanism via `on_topic_close` callback
+20. **Template System** — Initialize new topics with predefined files from `templates/` directory
+21. **AgentService** — Unified agent dispatch trait for static and in-process agent modes; resolves effective model from pattern/channel/global config
+22. **Channel Orchestrator** — Manages channel lifecycle across config reloads. Registers per-channel status (topic manager, cancel token). On reload, diffs old/new config: cancels removed channels gracefully, warns on new channels (requires restart). Updates shared `InspectContext` state (`topic_managers`, `channels`, `workspace_dirs`) via `ArcSwap`.
+23. **BillingLogStore** — Durable central cost ledger. Appends one line per LLM call to `<data dir>/billing/bill-YYYY-MM-DD.jsonl` (topic label + token counts + computed cost + currency). Central rather than per-topic because topic directories are deleted on close, which would destroy cost history. Day-stamped files bound the dashboard's per-poll read to a single day; never rotated or truncated, unlike the bounded `activity.jsonl` debug buffer. Complements `session_cost` in `agent-session.json`, which is session-scoped and zeroes on reset.
 
 ### Design Principles: Component Responsibilities
 
@@ -2390,9 +2389,9 @@ JYC uses the following subset of the agent service API:
 
    **The extended tools.** A tool schema rides in every request, so a topic
    that never delegates, never publishes and never fetches a URL pays for
-   those schemas on every call. The seven tools most topics use rarely —
-   `jyc_spawn_subagent`, `jyc_send_to_topic`, `jyc_send_message`,
-   `list_topics`, `jyc_publish_file`, `read_image`, `webfetch` — are
+   those schemas on every call. The six tools most topics use rarely —
+   `jyc_spawn_subagent`, `jyc_send_to_topic`, `list_topics`,
+   `jyc_publish_file`, `read_image`, `webfetch` — are
    therefore **registered but not advertised**: the registry filters them out
    of the `tools` array until the model calls `load_extended_tools`, whose
    description is the index of what the group holds. The flag lives in the
@@ -2402,10 +2401,10 @@ JYC uses the following subset of the agent service API:
    names one before loading it gets a working call instead of an error — the
    group is a cost optimization, and `disabled_tools` remains the boundary
    that removes a tool for good, the loader included (the loader is registered
-   after the exclusion pass, so the pass is applied to it once more). The advertised set went from 6,925 chars of
-   schema text to about 3,800, and the tools array is re-read on every agent
-   loop iteration, so the schemas are in the *next* request of the *same*
-   turn.
+   after the exclusion pass, so the pass is applied to it once more). The
+   advertised set sheds all six schemas, and the tools array is re-read on
+   every agent loop iteration, so the schemas are in the *next* request of the
+   *same* turn.
 
    **What still moves the prompt, and why that is correct.** Spawning a
    child calls `access_grants::grant_subagent()`, which registers the
@@ -2453,20 +2452,16 @@ JYC uses the following subset of the agent service API:
    `JycAgentService::build_tool_registry` makes (so registering a
    tool without budgeting it fails the test) and **budgets** its
    description text: the 2026-10-18 slimming pass took the natural
-   language from 10,108 to 8,349 chars (-17.4%) across those 20 tool
-   files — the 21 tools the budget covers, bridge tool included, run
-   about 9,000 — by cutting examples
-   and redundant prose while leaving every name, parameter, type and
-   `required` list untouched. Editing a description thus costs one
-   round of prefix-cache misses — make such an edit its own change,
-   where the diff shows it on its own. Every built-in tool is
-   budgeted, including `jyc_send_message` — the MCP **bridge** tool
-   `register_mcp_tools` adds to every registry, whose schema is ours
-   rather than a server's. Two things sit outside the budget: MCP
-   **server** tools, whose schemas belong to whoever runs the server,
-   and `jyc_spawn_subagent`'s `type` description, which ends with the
-   role catalog of the machine the agent runs on — configuration, not
-   text we may pin.
+   language from 10,108 to 8,349 chars (-17.4%) across those tool files
+   by cutting examples and redundant prose while leaving every name,
+   parameter, type and `required` list untouched. Editing a description
+   thus costs one round of prefix-cache misses — make such an edit its
+   own change, where the diff shows it on its own. Every built-in tool
+   is budgeted. Two things sit outside the budget: MCP **server** tools,
+   whose schemas belong to whoever runs the server, and
+   `jyc_spawn_subagent`'s `type` description, which ends with the role
+   catalog of the machine the agent runs on — configuration, not text we
+   may pin.
 
 **Payload Layout After The Change:**
 
@@ -2701,30 +2696,19 @@ the cycle-boundary heartbeat — the single delivery path, no tool involved.
      `reply_send` hooks there)
   3. Empty final text → nothing is sent (absorbs the old `silent` mode)
 
-### MCP Tool: `jyc_send_message`
+### ToolContext outbound injection
 
-Sends a proactive out-of-topic message to any recipient. Unlike `reply_message` which replies within the current topic context, this tool is for alerts, notifications, and other proactive messaging.
-
-```
-In-process tool (jyc-agent/src/tools/mcp_bridge.rs):
-  Tool schema: recipient (string), subject (string, optional), message (string)
-
-  1. Validate recipient format (channel-specific, e.g. "wecomkf:kf001:wmE8OcHAAA...")
-  2. Parse recipient to extract channel routing info
-  3. Call OutboundAdapter::send_message() on the pre-warmed outbound adapter
-  4. Return success message with delivery confirmation
-```
-
-**ToolContext outbound injection**: `ToolContext` carries an optional `outbound: Arc<dyn OutboundAdapter>` field. When the agent loop builds the tool registry, it injects the current topic's outbound adapter into `ToolContext`. The `jyc_send_message` tool uses this adapter directly for immediate delivery — no signal file indirection needed.
-
-**Usage constraints** (enforced by AGENTS.md rules):
-- Must NOT be used for in-topic replies (use `reply_message` instead)
-- Must NOT be used to spam users (limit to alerts and notifications)
-- Recipient format is channel-specific; the tool validates format before attempting delivery
+`ToolContext` carries an optional `outbound: Arc<dyn OutboundAdapter>` and an
+optional cross-channel `outbounds` map. The agent loop injects the current
+topic's pre-warmed adapter (and the channel map) when it builds the tool
+registry, so `deliver_reply` and `ask_user` use the channel directly without
+signal-file indirection.
 
 ### Built-in Tool: `jyc_send_to_topic` and `/send`
 
-Injects a message into another agent's topic queue for agent processing. Unlike `jyc_send_message` which bypasses agent processing (direct outbound delivery), `jyc_send_to_topic` enqueues an `InboundMessage` into the target topic's `TopicManager`, so the target topic's agent picks it up and processes it.
+Injects a message into another agent's topic queue for agent processing:
+`jyc_send_to_topic` enqueues an `InboundMessage` into the target topic's
+`TopicManager`, so the target topic's agent picks it up and processes it.
 
 **Addressing is by agent, not by channel.** A topic is identified by its name — the identity the state dir registry keys on — and the manager that serves it is resolved rather than named:
 

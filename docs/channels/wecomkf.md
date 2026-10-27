@@ -235,34 +235,7 @@ POST /cgi-bin/kf/send_msg?access_token={token}
 The adapter always sends as `"text"` since the KF `send_msg` API does
 not support the `"markdown"` type.
 
-### Alert Format
 
-Alerts use the recipient format `wecomkf:{open_kfid}:{external_userid}` and
-are sent as text with the subject prefixed by `## `:
-
-```json
-{
-  "touser": "user123",
-  "open_kfid": "kf1234567",
-  "msgtype": "text",
-  "text": {
-    "content": "## Alert Title\n\nAlert body content"
-  }
-}
-```
-
-### Proactive Messaging (`send_message`)
-
-The `send_message` method (renamed from `send_alert`) sends proactive messages
-to any WeCom KF customer. It is used by the `jyc_send_message` MCP tool for
-out-of-topic notifications.
-
-**Recipient format**: `wecomkf:{open_kfid}:{external_userid}`
-
-Example:
-```
-wecomkf:kf001:wmE8OcHAAA...
-```
 
 The adapter parses this format, extracts `open_kfid` and `external_userid`,
 and sends via the `kf/send_msg` API. Subject is optional for WeCom KF (ignored

@@ -7,7 +7,7 @@
 //! * **the built-in tool set, by name** — a rename or a drop changes what the
 //!   model may call, and it invalidates every provider prefix cache. The
 //!   expected set is derived from the same calls `build_tool_registry` makes,
-//!   so registering a 20th tool without saying so here fails the test rather
+//!   so registering another tool without saying so here fails the test rather
 //!   than quietly enlarging every prompt.
 //! * **the advertised set** — the tools a request actually carries. The
 //!   extended group (`load_extended_tools`) is registered but kept out of that
@@ -17,8 +17,8 @@
 //!   in-process natural language from 10,108 to 8,349 chars (-17.4%) without
 //!   touching a single name, parameter name, type or required list. The
 //!   2026-10-26 pass removed five tools (the four `job_*` and `glob`, whose
-//!   text was 1,319 chars) and trimmed the rest by a further 1,272 chars, so
-//!   the set is now 6,925. The budgets
+//!   text was 1,319 chars) and trimmed the rest by a further 1,272 chars;
+//!   removing the proactive send tool lowered the set again. The budgets
 //!   carry a few percent of slack, so an ordinary wording fix does not have to
 //!   bump them. The *total* ceiling is a different thing: it is the standing
 //!   per-call cost of the whole set, and it was raised once on purpose (#971,
@@ -37,7 +37,6 @@ use jyc_agent::tools::builtin::spawn_subagent::SpawnSubagentTool;
 use jyc_agent::tools::builtin::{
     create_builtin_registry, register_publish_file, register_read_image,
 };
-use jyc_agent::tools::mcp_bridge::register_mcp_tools;
 use jyc_agent::tools::registry::ToolRegistry;
 use jyc_agent::types::ToolDefinition;
 use jyc_types::AppConfig;
@@ -46,9 +45,7 @@ use jyc_types::AppConfig;
 /// them: the built-in registry, then `read_image` and `publish_file`, then
 /// `spawn_subagent` — which is registered only on the synthesized `agents`
 /// channel, the one place a sibling topic is addressable, so taking it here is
-/// the generous reading — and finally the MCP *bridge* tools, which
-/// `register_mcp_tools` adds to every registry and which ship a built-in
-/// schema of their own rather than a server's.
+/// the generous reading.
 ///
 /// The extended group goes on last, exactly as the service wires it: the
 /// group is whatever the registry ended up with.
@@ -66,7 +63,6 @@ fn built_in_registry() -> ToolRegistry {
     registry.register(Box::new(SpawnSubagentTool {
         config: Arc::new(ArcSwap::from_pointee(AppConfig::default())),
     }));
-    register_mcp_tools(&mut registry);
     register_extended_tools(&mut registry);
     registry
 }
@@ -95,7 +91,6 @@ const BUDGETS: &[(&str, usize, usize)] = &[
     ("jyc_publish_file", 211, 224),
     ("read", 121, 199),
     ("read_image", 327, 196),
-    ("jyc_send_message", 131, 430),
     ("jyc_send_to_topic", 230, 562),
     ("jyc_spawn_subagent", 1173, 380),
     ("lesson_add", 220, 0),
@@ -110,17 +105,12 @@ const BUDGETS: &[(&str, usize, usize)] = &[
 ];
 
 /// The whole registered set, in characters. It was 8,349 when the budgets
-/// above were set; other tools have grown it since, and the two lesson
-/// tools (#971) brought it to 9,511 — 9,487 after the send tool's wording
-/// was trimmed to say what a send does not do, and 9,479 after the spawn
-/// tool's said what a send to a closed child does. The 2026-10-26 pass —
-/// five tools removed, the rest trimmed — brought it to 6,888; the
-/// follow-up that put back the two rules the trim had cut (the spawn tool's
-/// "its state dir stays its own", the ask_user tool's "the turn ends") took
-/// it to 6,925. The ceiling is the standing per-call cost of every
-/// request's prefix, so raising it is a deliberate act — it was raised for
-/// #971, where the alternative was to cut a tool's description until the
-/// model stopped understanding what the tool was for.
+/// above were set; the 2026-10-26 pass — tools removed, the rest trimmed —
+/// brought it below 7,000, and removing the proactive send tool lowered it
+/// further. The ceiling is the standing per-call cost of every request's
+/// prefix, so raising it is a deliberate act — it was raised for #971, where
+/// the alternative was to cut a tool's description until the model stopped
+/// understanding what the tool was for.
 ///
 /// The extended group raised it once more (the two new tools: `list_topics`
 /// and the loader's index), but the *advertised* set — what a request
@@ -130,9 +120,9 @@ const TOTAL_BUDGET: usize = 7_800;
 
 /// The advertised set — the core tools plus the loader's index — in
 /// characters. This is the standing per-call cost after the extended group
-/// was moved out of the request: the seven extended tools (their schemas
-/// were 3,867 chars together) are advertised only after the model loads
-/// them, and the loader's own index is what it reads instead.
+/// was moved out of the request: the six extended tools are advertised only
+/// after the model loads them, and the loader's own index is what it reads
+/// instead.
 ///
 /// A topic that never delegates, never publishes and never fetches a URL
 /// pays this and not the whole registry.

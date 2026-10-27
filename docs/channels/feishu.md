@@ -163,17 +163,8 @@ INFO  feishu pipe reply forwarder subscribed
 ### Reply not delivered
 
 - **Check the pipe forwarder**: replies are relayed by the pipe reply forwarder subscribed to the agent channel's broadcast. Look for `feishu pipe reply forwarder subscribed` at startup and `failed to relay reply to feishu` errors.
-- **No chat mapping**: the topic→chat_id mapping is in-memory, recorded when a feishu message is piped in. After a restart it is empty until the next inbound message — replies/proactive sends to not-yet-seen topics are skipped (`no chat mapping for reply`).
+- **No chat mapping**: the topic→chat_id mapping is in-memory, recorded when a feishu message is piped in. After a restart it is empty until the next inbound message — replies to not-yet-seen topics are skipped (`no chat mapping for reply`).
 - **Check Feishu API access**: The server must be able to reach `open.feishu.cn` for sending messages
-
-### Proactive messages to a feishu chat
-
-`jyc_send_message(channel = "<agent channel>", recipient = "<topic>")` broadcasts
-a reply payload keyed by topic, which the pipe forwarder relays to the wired
-feishu chat — use the agent (e.g. `jin`), not the feishu channel, as the
-target. The recipient must be the exact piped topic name (the sanitized
-chat name). Limitation: after a restart the topic→chat mapping only exists
-once a new feishu message has arrived (see above).
 
 ### Interactive questions (`ask_user`)
 
@@ -247,9 +238,3 @@ Feishu pipe reply forwarder (subscribed to the agent broadcast)
      ▼
 Feishu Server → User sees reply in chat
 ```
-
-The same forwarder also relays a proactive message (`jyc_send_message`, an
-alert or a notification to an arbitrary chat, optionally with files): that frame
-carries `proactive: true`, the addressed channel and the recipient itself, so it
-skips the topic→chat lookup — nothing is being replied to — and goes out as a
-fresh text message plus one uploaded file/image per attachment.

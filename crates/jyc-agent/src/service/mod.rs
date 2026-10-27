@@ -65,7 +65,7 @@ pub struct JycAgentService {
     /// `mcp-override.json` (new mtime), so either change invalidates the
     /// cache key automatically.
     registry_cache: Mutex<HashMap<(String, usize, u128), Arc<ToolRegistry>>>,
-    /// Outbound adapter for proactive messaging tools (e.g. `jyc_send_message`).
+    /// Outbound adapter for reply delivery and interactive questions.
     outbound: Option<Arc<dyn jyc_types::channel::OutboundAdapter>>,
     /// Channel-level skills whitelist.
     channel_skills: Option<Vec<String>>,
@@ -78,8 +78,8 @@ pub struct JycAgentService {
     /// Current channel name for source context in cross-topic tools.
     channel_name: String,
     /// Cross-channel outbound adapters keyed by channel name.
-    /// Passed through to `AgentLoopConfig` so the `jyc_send_message` tool
-    /// can send proactive messages through any channel's outbound adapter.
+    /// Passed through to `AgentLoopConfig` so `ask_user` can select the
+    /// adapter for the topic's origin channel.
     /// Uses `std::sync::Mutex` for interior mutability (set after construction
     /// via `set_outbounds()` on an `Arc<Self>`).
     outbounds: std::sync::Mutex<Option<OutboundsMap>>,

@@ -27,7 +27,7 @@ use crate::feishu::inbound::{FeishuInboundAdapter, FeishuMatcher};
 use crate::pipe::hub::HubPipe;
 use crate::pipe::{
     ReplyAttachmentRef, collect_pipe_target_channels, match_pipe, parse_reply_attachments,
-    proactive_frame, retarget_or_drop, warn_on_bad_pipe_patterns,
+    retarget_or_drop, warn_on_bad_pipe_patterns,
 };
 
 /// Shared per-process state for one feishu pipe channel.
@@ -129,35 +129,6 @@ pub fn spawn_feishu_pipe(
                     ) else {
                         continue;
                     };
-                    // A proactive message (alert or notification, with or
-                    // without files) names its own recipient, so it is sent as
-                    // a fresh message and never consults the topic → chat
-                    // mapping — a missing entry there is normal, not a stale
-                    // reply.
-                    if let Some(proactive) = proactive_frame(&v, &channel_name) {
-                        let text = if proactive.subject.is_empty() {
-                            proactive.text.to_string()
-                        } else {
-                            format!("**{}**\n\n{}", proactive.subject, proactive.text)
-                        };
-                        if let Err(e) = client.send_text_message(proactive.recipient, &text).await {
-                            tracing::error!(
-                                error = %e,
-                                recipient = %proactive.recipient,
-                                "feishu pipe: failed to relay proactive message"
-                            );
-                        }
-                        relay_attachments(
-                            &client,
-                            files_base.as_deref(),
-                            token.as_deref(),
-                            proactive.recipient,
-                            &v,
-                            &config,
-                        )
-                        .await;
-                        continue;
-                    }
                     let Some(chat_id) = state.topic_chat.lock().unwrap().get(topic).cloned()
                     else {
                         tracing::debug!(topic = %topic, "feishu pipe: no chat mapping for reply, skipping");

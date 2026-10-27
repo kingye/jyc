@@ -92,18 +92,6 @@ impl OutboundAdapter for CapturingOutbound {
         })
     }
 
-    async fn send_message(
-        &self,
-        _recipient: &str,
-        _subject: &str,
-        _body: &str,
-    ) -> anyhow::Result<SendResult> {
-        Ok(SendResult {
-            message_id: "mock-msg".to_string(),
-            chat_seq: 0,
-        })
-    }
-
     async fn send_question(&self, request: &QuestionRequest) -> Result<()> {
         self.log.record("question", request.question.clone());
         // Recorded separately from the question text: the box shows it above
@@ -528,15 +516,6 @@ impl OutboundAdapter for BrokenChannel {
         _topic_path: &Path,
         _message_dir: &str,
         _attachments: Option<&[OutboundAttachment]>,
-    ) -> anyhow::Result<SendResult> {
-        Err(anyhow::anyhow!("channel is down"))
-    }
-
-    async fn send_message(
-        &self,
-        _recipient: &str,
-        _subject: &str,
-        _body: &str,
     ) -> anyhow::Result<SendResult> {
         Err(anyhow::anyhow!("channel is down"))
     }

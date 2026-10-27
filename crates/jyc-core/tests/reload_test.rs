@@ -69,18 +69,6 @@ impl jyc_types::OutboundAdapter for MockOutbound {
             chat_seq: 0,
         })
     }
-
-    async fn send_message(
-        &self,
-        _recipient: &str,
-        _subject: &str,
-        _body: &str,
-    ) -> anyhow::Result<jyc_types::SendResult> {
-        Ok(jyc_types::SendResult {
-            message_id: "".to_string(),
-            chat_seq: 0,
-        })
-    }
 }
 
 fn create_test_config(pattern_names: Vec<&str>) -> jyc_types::AppConfig {

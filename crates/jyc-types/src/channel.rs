@@ -41,8 +41,8 @@ pub const SUPPORTED_CHANNEL_TYPES: &[&str] = &[
 ///   (the synthesized channel name)
 ///
 /// Lives here rather than with the pipe adapters because both sides need it:
-/// the pipe to open one connection per target, and the hub to know which hub
-/// channel a proactive message for a pipe-owned channel must travel over.
+/// the pipe to open one connection per target, and the hub to locate the
+/// outbound adapter behind a pipe-owned channel.
 pub fn collect_pipe_target_channels(patterns: &[ChannelPattern]) -> HashSet<String> {
     let mut out = HashSet::new();
     for p in patterns.iter().filter(|p| p.enabled) {
@@ -56,15 +56,6 @@ pub fn collect_pipe_target_channels(patterns: &[ChannelPattern]) -> HashSet<Stri
     }
     out
 }
-
-/// Channel types a proactive message can reach.
-///
-/// These are the channels whose adapter sent proactive messages of its own
-/// before the pipe split, so the ones their pipe forwarder still accepts —
-/// files included (`email`, `feishu`, `wecom_bot`). Every other type answers
-/// with the long-standing error instead of reporting a success that delivers
-/// nothing.
-pub const PROACTIVE_CAPABLE_CHANNEL_TYPES: &[&str] = &["email", "feishu", "wecom_bot"];
 
 /// Channel-agnostic normalized message.
 ///
@@ -170,36 +161,6 @@ pub struct SendResult {
     /// `ReplySent` event with it, so the live row and the logged row share
     /// one number — see `jyc_core::chat_seq`.
     pub chat_seq: u64,
-}
-
-/// A proactive (non-reply) message on its way out through a channel.
-///
-/// Built by the `jyc_send_message` tool, which is the only caller that knows
-/// all three of the recipient, the channel it is addressed to, and where the
-/// attachment files live. A channel relaying through a pipe process needs all
-/// of them (the pipe has neither the files nor the channel routing); one
-/// sending in-process needs only recipient/subject/body/attachments.
-pub struct OutboundMessage<'a> {
-    /// Channel-specific recipient identifier (a WeCom chat id, an email
-    /// address, a Feishu chat id, …), as documented for `jyc_send_message`.
-    pub recipient: &'a str,
-    /// Channel config name the message is addressed to (e.g. `"wecom_bot"`).
-    /// Empty when the caller only knows the hub channel the topic lives in —
-    /// the adapter then resolves it from its own pipe routing table.
-    pub channel: &'a str,
-    /// Message subject: the mail subject for email, the bold lead-in for
-    /// feishu, ignored by channels that have no notion of one.
-    pub subject: &'a str,
-    /// Message body.
-    pub body: &'a str,
-    /// Files to send along, when the channel supports attachments.
-    pub attachments: Option<&'a [OutboundAttachment]>,
-    /// Hub channel holding those files. The inspect server's file endpoint is
-    /// addressed by channel and topic name, so a relay that does not share a
-    /// filesystem with the hub needs both. Empty without attachments.
-    pub origin_channel: &'a str,
-    /// Topic under `origin_channel` holding those files.
-    pub origin_topic: &'a str,
 }
 
 /// Close-event callback: upstream item number (GitHub issue/PR) plus its type
@@ -347,51 +308,6 @@ pub trait OutboundAdapter: Send + Sync {
         message_dir: &str,
         attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult>;
-
-    /// Send a fresh (non-reply) message to an arbitrary recipient.
-    async fn send_message(&self, recipient: &str, subject: &str, body: &str) -> Result<SendResult>;
-
-    /// Send a fresh message with file attachments.
-    ///
-    /// Default implementation returns an error so non-email channels fail
-    /// gracefully rather than silently dropping attachments.
-    async fn send_message_with_attachments(
-        &self,
-        _recipient: &str,
-        _subject: &str,
-        _body: &str,
-        _attachments: Option<&[OutboundAttachment]>,
-    ) -> Result<SendResult> {
-        Err(anyhow::anyhow!(
-            "Attachments not supported for this channel type"
-        ))
-    }
-
-    /// Send a proactive message with the context that only pipe-relayed
-    /// channels need: the channel it is addressed to and where the attachment
-    /// files live.
-    ///
-    /// Defaults to the two methods above, so a channel that sends in-process
-    /// keeps its behaviour unchanged. A channel that relays through a pipe
-    /// overrides this, because the pipe holds the credentials and has no
-    /// shared filesystem with the hub.
-    async fn send_proactive(&self, message: &OutboundMessage<'_>) -> Result<SendResult> {
-        match message.attachments.filter(|a| !a.is_empty()) {
-            Some(attachments) => {
-                self.send_message_with_attachments(
-                    message.recipient,
-                    message.subject,
-                    message.body,
-                    Some(attachments),
-                )
-                .await
-            }
-            None => {
-                self.send_message(message.recipient, message.subject, message.body)
-                    .await
-            }
-        }
-    }
 
     /// Render an interactive question for the user.
     ///
@@ -615,7 +531,7 @@ pub struct ChannelPattern {
     /// Tools to disable for this pattern.
     ///
     /// Tool names match `Tool::name()` (e.g. `"bash"`, `"write"`,
-    /// `"jyc_send_message"`, `"invoice/process"`).
+    /// `"jyc_send_to_topic"`, `"invoice/process"`).
     ///
     /// When set to `Some(list)`, those tools are removed from the registry
     /// before the agent loop starts. When `None` (default), all tools remain

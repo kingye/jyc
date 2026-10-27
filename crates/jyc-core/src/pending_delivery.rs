@@ -309,18 +309,6 @@ mod tests {
                 chat_seq: 0,
             })
         }
-
-        async fn send_message(
-            &self,
-            _recipient: &str,
-            _subject: &str,
-            _body: &str,
-        ) -> anyhow::Result<SendResult> {
-            Ok(SendResult {
-                message_id: "mock-id".to_string(),
-                chat_seq: 0,
-            })
-        }
     }
 
     fn test_message() -> InboundMessage {

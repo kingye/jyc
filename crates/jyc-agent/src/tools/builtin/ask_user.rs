@@ -351,14 +351,6 @@ mod tests {
         ) -> Result<jyc_types::SendResult> {
             unimplemented!()
         }
-        async fn send_message(
-            &self,
-            _recipient: &str,
-            _subject: &str,
-            _body: &str,
-        ) -> Result<jyc_types::SendResult> {
-            unimplemented!()
-        }
         async fn send_question(&self, request: &QuestionRequest) -> Result<()> {
             self.sent.lock().await.push(request.clone());
             Ok(())
@@ -386,14 +378,6 @@ mod tests {
             _topic_path: &Path,
             _message_dir: &str,
             _attachments: Option<&[jyc_types::OutboundAttachment]>,
-        ) -> Result<jyc_types::SendResult> {
-            unimplemented!()
-        }
-        async fn send_message(
-            &self,
-            _recipient: &str,
-            _subject: &str,
-            _body: &str,
         ) -> Result<jyc_types::SendResult> {
             unimplemented!()
         }

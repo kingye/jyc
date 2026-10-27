@@ -2,8 +2,8 @@
 
 ### Added
 
-- The extended tools: seven tools most topics use rarely — `jyc_spawn_subagent`, `jyc_send_to_topic`, `jyc_send_message`, `list_topics`, `jyc_publish_file`, `read_image`, `webfetch` — are registered but kept out of the request's `tools` array until the model calls the new `load_extended_tools`, whose description is the index of the group. The advertised schema text goes from 6,925 to about 3,800 characters (−45%); the group is loaded once per registry lifetime — a config reload rebuilds the registry and the group hides again until it is loaded once more. Only *advertisement* is gated — the tools stay executable, so a model that names one before loading it gets a working call, and `disabled_tools` remains the boundary that removes a tool for good, the loader included (#1004)
-- `list_topics` lists the channels and their active topics — the addressing table for `jyc_send_to_topic` and `jyc_send_message` — on demand, in the shape the per-turn runtime-state block used to carry (#1004)
+- The extended tools: six tools most topics use rarely — `jyc_spawn_subagent`, `jyc_send_to_topic`, `list_topics`, `jyc_publish_file`, `read_image`, `webfetch` — are registered but kept out of the request's `tools` array until the model calls the new `load_extended_tools`, whose description is the index of the group. The group is loaded once per registry lifetime — a config reload rebuilds the registry and the group hides again until it is loaded once more. Only *advertisement* is gated — the tools stay executable, so a model that names one before loading it gets a working call, and `disabled_tools` remains the boundary that removes a tool for good, the loader included (#1004)
+- `list_topics` lists the channels and their active topics — the addressing table for `jyc_send_to_topic` — on demand, in the shape the per-turn runtime-state block used to carry (#1004)
 
 ### Changed
 
@@ -19,6 +19,7 @@
 
 ### Removed
 
+- The agent-facing `jyc_send_message` tool is gone, together with the proactive outbound path behind it: `OutboundAdapter::send_message` / `send_message_with_attachments` / `send_proactive`, `OutboundMessage`, the hub's proactive broadcast relay and pipe routing table, and each pipe forwarder's `proactive` branch. A future notification mechanism will replace it; normal replies, reply attachments, `ask_user`, and `jyc_send_to_topic` are unchanged (#1005)
 - Scheduled jobs are gone: the `job_list` / `job_create` / `job_delete` / `job_toggle` tools, the background scheduler behind them (`[scheduler]` in the config, `JobScheduler`, the per-topic `<topic>/.jyc/jobs/` store) and the cron parsing. A config still carrying a `[scheduler]` block loads unchanged — the key is inert — and job files left in a topic's state dir are neither read nor deleted. Waiting for a CI run is the `ci-watch` subagent's job now (#1003)
 - The `glob` tool is gone: `rg --files` or `find` cover the same ground, and the tool's own description claimed a modification-time order it never applied. The `glob` crate stays in `jyc-core` — the `/new` command still uses it (#1003)
 - `disabled_skills` is gone from every config layer (channel, pattern, agent, topic config): with skills opt-in there is no implicit set of skills left to subtract from — a name is either in the allow-list or not, and the one way to take a skill out of a topic remains the runtime `/skill off <name>`. A config still carrying the key loads unchanged; the key is inert (#1002)

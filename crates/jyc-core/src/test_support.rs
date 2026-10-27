@@ -67,14 +67,6 @@ impl jyc_types::OutboundAdapter for NoopOutbound {
     ) -> Result<jyc_types::SendResult> {
         Ok(noop_send_result())
     }
-    async fn send_message(
-        &self,
-        _recipient: &str,
-        _subject: &str,
-        _body: &str,
-    ) -> Result<jyc_types::SendResult> {
-        Ok(noop_send_result())
-    }
 }
 
 /// The fixed result every no-op send reports.

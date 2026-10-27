@@ -927,8 +927,8 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # Disable specific tools or entire MCP servers at agent level.
 # #
 # # [agents.my_hub]
-# # # Disable proactive messaging for all topics of this agent
-# # disabled_tools = ["jyc_send_message"]
+# # # Disable web fetching for all topics of this agent
+# # disabled_tools = ["webfetch"]
 # #
 # # # Disable entire MCP servers
 # # disabled_mcps = ["invoice"]

@@ -55,60 +55,6 @@ fn parse_reply_attachments_absent_or_malformed() {
     assert_eq!(atts[0].filename, "y");
 }
 
-/// A proactive frame carries the recipient in `topic` (it answers no topic, so
-/// there is no state to look up) and the channel it is addressed to in
-/// `channel` — the forwarder named there, and only that one, may send it.
-#[test]
-fn proactive_frame_reads_recipient_and_subject() {
-    let v = serde_json::json!({
-        "type": "reply",
-        "proactive": true,
-        "channel": "wecom_bot",
-        "topic": "chat-42",
-        "text": "报表好了",
-        "subject": "日报",
-        "attachments": [{"filename": "a.pdf", "path": "/api/topics/agents/t/files/a.pdf"}]
-    });
-
-    let frame = proactive_frame(&v, "wecom_bot").expect("frame is for this channel");
-    assert_eq!(frame.recipient, "chat-42");
-    assert_eq!(frame.text, "报表好了");
-    assert_eq!(frame.subject, "日报");
-    // Attachments keep the reply shape, so the existing relay helpers apply.
-    assert_eq!(parse_reply_attachments(&v).len(), 1);
-}
-
-/// Anything a reply forwarder must keep treating as a reply: a frame without
-/// the marker, and a proactive frame for a *different* channel (several pipe
-/// channels can share one hub channel).
-#[test]
-fn proactive_frame_ignores_replies_and_other_channels() {
-    let reply = serde_json::json!({"type": "reply", "topic": "t", "text": "done"});
-    assert!(proactive_frame(&reply, "wecom_bot").is_none());
-
-    let other = serde_json::json!({
-        "type": "reply", "proactive": true, "channel": "feishu",
-        "topic": "chat-42", "text": "hello"
-    });
-    assert!(proactive_frame(&other, "wecom_bot").is_none());
-
-    // An unnamed channel matches nothing: the hub always names it for a pipe
-    // channel, so an unnamed proactive frame is not this forwarder's.
-    let unnamed = serde_json::json!({"proactive": true, "topic": "chat-42", "text": "hello"});
-    assert!(proactive_frame(&unnamed, "wecom_bot").is_none());
-}
-
-/// A proactive frame without a subject (every channel but email/feishu sends
-/// none) parses to an empty subject rather than being dropped.
-#[test]
-fn proactive_frame_tolerates_missing_subject() {
-    let v = serde_json::json!({
-        "proactive": true, "channel": "feishu", "topic": "oc_x", "text": "alert"
-    });
-    let frame = proactive_frame(&v, "feishu").expect("frame is for this channel");
-    assert_eq!(frame.subject, "");
-}
-
 #[test]
 fn loopback_addr_replaces_wildcards() {
     assert_eq!(loopback_addr("127.0.0.1:9876"), "127.0.0.1:9876");

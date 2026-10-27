@@ -3741,6 +3741,36 @@ construction time from the URL path.
 - On `Lagged(n)`, the server sends `{"type":"resync", "dropped": n}` and the
   client clears the live buffer and re-hydrates via REST.
 
+#### Non-interactive Send (`jyc send`)
+
+A cron job or script has no dashboard and no source topic, so it cannot send
+through the chat WebSocket. `jyc send <agent> [--topic <topic>] <message>...`
+connects to the running inspect server and calls `POST /api/send`, which
+invokes `send_handler::send_to_topic_with_target` — the same address resolution
+and queue entry point as `/send` and `jyc_send_to_topic`. The target must
+already exist; the send never creates a topic.
+
+```
+cron/script
+  └── jyc send <agent> [--topic <topic>] <message>...
+        └── POST /api/send (bearer auth)
+              └── send_to_topic_with_target
+                    └── TopicManager::enqueue
+                          └── target topic's FIFO worker
+```
+
+The CLI loops one HTTP request per message, awaiting each response before the
+next, and stops at the first rejection. Messages already accepted stay queued;
+there is no batch transaction or rollback. It never waits for an AI reply. The
+injected message carries no source channel/topic and no attachments, so a
+target reply follows the topic's normal outbound path rather than being routed
+back to the caller.
+
+This is deliberately not the removed dashboard `inject_message` fallback: that
+was a channel-scoped direct injection in which the dashboard supplied routing
+metadata. `/api/send` has no channel in its request — it addresses a topic name
+through the live managers and refuses an unknown target.
+
 #### Component Map
 
 ```

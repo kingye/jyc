@@ -367,6 +367,15 @@ jyc-pipe               # Peripheral pipe process (separate binary, not a `jyc`
                        #     the config's [inspect] bind)
                        #   --no-idle           Use polling instead of IMAP IDLE (email)
                        #   --reset             Reset mailbox state before starting (email)
+jyc send <agent> [--topic|-t <topic>] <message>...
+                       # Enqueue one or more messages for an existing agent/topic
+                       #   --addr <ADDR>     Inspect server address (same default
+                       #                     as dashboard)
+                       #   --token <TOKEN>   Auth token. Falls back to
+                       #                     $JYC_DASHBOARD_TOKEN, then
+                       #                     <data dir>/auth.token
+                       # Messages are sent one by one, in argument order;
+                       # stops at the first rejection (non-zero exit)
 jyc token show         # Print the dashboard authorization token
 jyc plugins install <archive>   # Install a plugin bundle into the config dir
                        #   <archive>        A .tar.gz (or a directory) holding
@@ -381,6 +390,24 @@ Address resolution reads the same layered config as `jyc serve` (the platform
 `<config dir>/config.toml`, plus `config.toml` in `--data-dir` when given). A
 hub started with `jyc serve --config <custom file>` is not covered by that
 lookup — pass the matching `--addr` explicitly.
+
+**Non-interactive send (cron/scripts)**: `jyc send` talks to a running
+`jyc serve` (it does not start one), enqueues each message in order, and exits
+after the last one is accepted. It does not wait for an AI reply. A rejected
+target or message stops the batch with a non-zero exit; messages already
+enqueued stay queued.
+
+```bash
+jyc send jyc "Run the hourly report"
+jyc send jyc --topic reports "Collect data" "Generate report" "Summarize"
+jyc --data-dir /srv/jyc send jyc "Run the hourly report"
+```
+
+A cron entry should use absolute paths and the same `--data-dir` as the hub:
+
+```cron
+0 * * * * /usr/local/bin/jyc --data-dir /srv/jyc send jyc "Run the hourly report"
+```
 
 **Remote hub over SSH**: `jyc connect <host>` points the dashboard at a
 `jyc serve` on another machine. Unless `--remote-bind` says otherwise, the

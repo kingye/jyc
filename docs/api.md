@@ -125,6 +125,7 @@ users who have no dashboard token.
 | GET    | `/api/topics/{channel}/{topic}/files/{file...}` | Topic-local file (bearer-gated; see §2.4.9).     |
 | POST   | `/api/inbound?filename=`                     | Stage an inbound attachment for a pipe (see §2.4.10). |
 | POST   | `/api/topics`                                | Register a new ad-hoc topic.                      |
+| POST   | `/api/send`                                  | Enqueue one message for an existing agent/topic.  |
 | POST   | `/api/config/reload`                          | Reload the layered config (global + data dir).      |
 | GET    | `/exchange/{channel}/{topic}/{file...}?token=` | Agent-published file (no bearer auth; see §2.2).   |
 
@@ -459,7 +460,13 @@ curl -s -H 'Authorization: Bearer <token>' -X POST \
   -d '{"channel":"feishu_bot","topic":"my-adhoc","path":"/tmp/x"}' \
   http://127.0.0.1:9876/api/topics
 
-# 4. Reload config
+# 4. Send one message to an existing agent (its own topic)
+curl -s -H 'Authorization: Bearer <token>' -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"agent":"jyc","message":"Run the hourly report"}' \
+  http://127.0.0.1:9876/api/send
+
+# 5. Reload config
 curl -s -H 'Authorization: Bearer <token>' -X POST \
   http://127.0.0.1:9876/api/config/reload
 ```
@@ -501,6 +508,45 @@ tracker has not seen yet.
 
 `404` when the channel has no topic manager, or that channel has no topic of
 this name.
+
+#### 2.4.12 `POST /api/send`
+
+Enqueues one message for an existing agent/topic. This is the HTTP path behind
+`jyc send` and uses the same resolver and queue as the `/send` command and the
+`jyc_send_to_topic` tool: the target must already exist (a send never creates a
+topic). The injected message has no source topic and no attachments, so no
+reply route is recorded.
+
+**Request body:**
+
+```json
+{
+  "agent": "jyc",
+  "topic": "reports",
+  "message": "Generate the hourly report"
+}
+```
+
+`topic` is optional; omitting it addresses the agent's own topic. Every field
+is required except `topic`, and `message` must be non-empty.
+
+**Response (200):**
+
+```json
+{ "message": "Message sent to topic 'reports'. The target topic will process it." }
+```
+
+**Errors:**
+
+| Status | Body | Trigger |
+|--------|------|---------|
+| `401`  | `{"error":"auth_failed"}` | Missing or wrong bearer token. |
+| `422`  | `{"error":"Message cannot be empty"}` | Empty or whitespace-only message. |
+| `422`  | `{"error":"…"}` | Invalid name, unknown topic, or no manager currently serving it. |
+
+A successful response means the message entered the target's queue. The target
+topic's single worker processes it in FIFO order; the response does not wait for
+the AI reply.
 
 ## §3 WebSocket API
 

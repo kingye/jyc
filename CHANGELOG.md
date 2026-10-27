@@ -2,6 +2,7 @@
 
 ### Added
 
+- `jyc send <agent> [--topic <topic>] <message>...` enqueues one or more messages, in argument order, for an existing agent/topic through a running `jyc serve`, for use from cron and scripts. It reuses the `/send` resolver and adds authenticated `POST /api/send`; it stops at the first rejection, leaves already-enqueued messages queued, and does not wait for an AI reply (#1009)
 - The extended tools: twelve tools most topics use rarely — `jyc_spawn_subagent`, `jyc_send_to_topic`, `list_topics`, `jyc_publish_file`, `read_image`, `webfetch`, `context_browse`, `lesson_add`, `lesson_read`, `task_list`, `task_create`, `task_update` — are registered but kept out of the request's `tools` array until the model calls the new `load_extended_tools`, whose description is the index of the group and names the core tools already available. The advertised schema text goes from 6,925 to about 3,000 characters (−57%); the group is loaded once per registry lifetime — a config reload rebuilds the registry and the group hides again until it is loaded once more. Only *advertisement* is gated — the tools stay executable, so a model that names one before loading it gets a working call, and `disabled_tools` remains the boundary that removes a tool for good, the loader included (#1004, #1007)
 - `list_topics` lists the channels and their active topics — the addressing table for `jyc_send_to_topic` and `jyc_send_message` — on demand, in the shape the per-turn runtime-state block used to carry (#1004)
 

@@ -23,8 +23,42 @@ use super::live_status::TurnStatusGuard;
 use super::template::{TemplateMismatch, initialize_topic_from_template};
 use super::worker::process_message;
 
+/// A message was rejected because the target topic's queue was full.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("topic '{topic}' queue is full")]
+pub struct QueueFull {
+    /// The topic whose bounded queue had no room.
+    pub topic: String,
+}
+
 impl TopicManager {
+    /// Enqueue a message, preserving the historical drop-on-full policy.
+    ///
+    /// Callers that must know whether a message was accepted use
+    /// [`Self::try_enqueue`].
     pub async fn enqueue(
+        &self,
+        message: InboundMessage,
+        topic_name: String,
+        pattern_match: PatternMatch,
+        attachment_config: Option<InboundAttachmentConfig>,
+        live_injection: bool,
+        topic_path_override: Option<PathBuf>,
+    ) {
+        let _ = self
+            .try_enqueue(
+                message,
+                topic_name,
+                pattern_match,
+                attachment_config,
+                live_injection,
+                topic_path_override,
+            )
+            .await;
+    }
+
+    /// Enqueue a message, reporting a full bounded queue instead of dropping.
+    pub async fn try_enqueue(
         &self,
         mut message: InboundMessage,
         topic_name: String,
@@ -32,7 +66,7 @@ impl TopicManager {
         attachment_config: Option<InboundAttachmentConfig>,
         live_injection: bool,
         topic_path_override: Option<PathBuf>,
-    ) {
+    ) -> Result<(), QueueFull> {
         let mut queues = self.topic_queues.lock().await;
 
         // Periodic cleanup: remove closed senders to prevent unbounded HashMap growth.
@@ -126,12 +160,12 @@ impl TopicManager {
                         event_client_msg_id.as_deref(),
                     )
                     .await;
-                    return;
+                    return Ok(());
                 }
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     tracing::warn!(topic = %topic_name, "Queue full, dropping message");
                     self.metrics.queue_dropped(&topic_name);
-                    return;
+                    return Err(QueueFull { topic: topic_name });
                 }
                 Err(mpsc::error::TrySendError::Closed(item)) => {
                     // Worker exited (e.g. after /cancel) and dropped its
@@ -151,7 +185,7 @@ impl TopicManager {
                         event_client_msg_id.as_deref(),
                     )
                     .await;
-                    return;
+                    return Ok(());
                 }
             }
         }
@@ -166,6 +200,7 @@ impl TopicManager {
             event_client_msg_id.as_deref(),
         )
         .await;
+        Ok(())
     }
 
     /// Build the per-worker TopicManager clone used inside a topic worker.

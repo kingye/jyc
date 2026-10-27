@@ -232,7 +232,7 @@ pub async fn send_to_topic_with_target(
     };
 
     target_tm
-        .enqueue(
+        .try_enqueue(
             inbound,
             topic_name.to_string(),
             pattern_match,
@@ -240,7 +240,7 @@ pub async fn send_to_topic_with_target(
             live_injection,
             topic_path_override,
         )
-        .await;
+        .await?;
 
     tracing::info!(
         target_channel = %target_tm.channel_name(),

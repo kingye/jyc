@@ -40,6 +40,7 @@ use jyc_core::{
     activity_log_store::ActivityLogStore,
     chat_log_store::load_recent_chat_history,
     command::send_handler::{SendRequest, SendSource, send_to_topic_with_target},
+    topic_manager::QueueFull,
     topic_path::inbound_dir,
 };
 use jyc_types::{
@@ -129,6 +130,12 @@ impl ApiError {
     pub fn unprocessable(msg: impl Into<String>) -> Self {
         Self {
             status: StatusCode::UNPROCESSABLE_ENTITY,
+            message: msg.into(),
+        }
+    }
+    pub fn too_many_requests(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
             message: msg.into(),
         }
     }
@@ -527,7 +534,13 @@ pub async fn post_send(
         },
     )
     .await
-    .map_err(|e| ApiError::unprocessable(e.to_string()))?;
+    .map_err(|e| {
+        if e.downcast_ref::<QueueFull>().is_some() {
+            ApiError::too_many_requests(e.to_string())
+        } else {
+            ApiError::unprocessable(e.to_string())
+        }
+    })?;
     Ok(Json(SendMessageResult {
         message: outcome.message,
     }))

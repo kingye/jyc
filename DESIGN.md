@@ -3766,6 +3766,11 @@ injected message carries no source channel/topic and no attachments, so a
 target reply follows the topic's normal outbound path rather than being routed
 back to the caller.
 
+`send_to_topic_with_target` now uses `TopicManager::try_enqueue`, so a full
+bounded queue reaches the caller as `QueueFull` instead of the historical
+silent drop; `/api/send` maps it to `429`. Other inbound paths keep
+`TopicManager::enqueue`, whose drop-on-full policy is unchanged.
+
 This is deliberately not the removed dashboard `inject_message` fallback: that
 was a channel-scoped direct injection in which the dashboard supplied routing
 metadata. `/api/send` has no channel in its request — it addresses a topic name

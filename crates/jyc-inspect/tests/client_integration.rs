@@ -8,6 +8,7 @@ use std::time::Instant;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use jyc_core::agent::{AgentResult, AgentService};
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::metrics::{HealthStats, MetricsHandle};
 use jyc_core::static_agent::StaticAgentService;
@@ -18,11 +19,11 @@ use jyc_inspect::server::websocket::outbound::WebsocketOutboundAdapter;
 use jyc_inspect::server::{DynWebsocketHandler, InspectContext, WebsocketHandler, build_router};
 use jyc_types::{
     ActivityEntry, AppConfig, ChannelInfo, InboundMessage, InspectState, MessageContent,
-    PatternMatch, load_config_from_str,
+    PatternMatch, QueueItem, load_config_from_str,
 };
 use tempfile::TempDir;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 
@@ -85,16 +86,32 @@ mode = "agent"
 }
 
 fn make_tm(tmp: &TempDir, workspace: &Path, channel: &str) -> Arc<TopicManager> {
+    make_tm_with_agent(
+        tmp,
+        workspace,
+        channel,
+        10,
+        Arc::new(StaticAgentService::new("ok")),
+    )
+}
+
+fn make_tm_with_agent(
+    tmp: &TempDir,
+    workspace: &Path,
+    channel: &str,
+    max_queue_size: usize,
+    agent: Arc<dyn AgentService>,
+) -> Arc<TopicManager> {
     let storage = Arc::new(MessageStorage::new(workspace));
     Arc::new(TopicManager::new(
         1,
-        10,
+        max_queue_size,
         storage.clone(),
         Arc::new(WebsocketOutboundAdapter::new(
             tokio::sync::broadcast::channel(4).0,
             storage,
         )),
-        Arc::new(StaticAgentService::new("ok")),
+        agent,
         tokio_util::sync::CancellationToken::new(),
         workspace.join("templates"),
         Arc::new(ArcSwap::new(test_config())),
@@ -104,6 +121,39 @@ fn make_tm(tmp: &TempDir, workspace: &Path, channel: &str) -> Arc<TopicManager> 
         workspace.to_path_buf(),
         MetricsHandle::noop(),
     ))
+}
+
+struct BlockingAgent {
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+#[async_trait]
+impl AgentService for BlockingAgent {
+    async fn base_url(&self) -> anyhow::Result<String> {
+        Ok(String::new())
+    }
+
+    async fn process(
+        &self,
+        _message: &InboundMessage,
+        _topic_name: &str,
+        _topic_path: &Path,
+        _message_dir: &str,
+        _pending_rx: &mut tokio::sync::mpsc::Receiver<QueueItem>,
+        _topic_cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<AgentResult> {
+        self.started.notify_one();
+        self.release.notified().await;
+        Ok(AgentResult {
+            reply_delivered: true,
+            reply_text: Some("ok".to_string()),
+        })
+    }
+
+    async fn reset_session(&self, _topic_path: &Path, _topic_name: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 async fn seed_topic(tm: &Arc<TopicManager>, channel: &str, topic: &str) {
@@ -294,6 +344,55 @@ async fn client_sends_to_an_explicit_topic() {
     .await
     .expect("the message should reach the named topic");
     assert_eq!(text.as_deref(), Some("explicit topic"));
+}
+
+#[tokio::test]
+async fn send_returns_429_when_the_queue_is_full() {
+    let tmp = TempDir::new().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let agents_dir = tmp.path().join("agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let agent = Arc::new(BlockingAgent {
+        started: started.clone(),
+        release: release.clone(),
+    });
+    let tm = make_tm_with_agent(&tmp, &workspace, "agents", 1, agent);
+    let managers = Arc::new(TopicManagers::new());
+    managers.set(vec![tm.clone()]);
+    tm.set_managers(&managers);
+
+    let topic = "api-send-full";
+    let _registered = RegisteredState(topic.to_string());
+    seed_topic(&tm, "agents", topic).await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+        .await
+        .expect("the seed message should occupy the worker");
+
+    let (addr, _h) = start_server_with(ctx_with_managers(managers, agents_dir)).await;
+    let http = reqwest::Client::new();
+    let send = |message: &'static str| {
+        http.post(format!("http://{addr}/api/send"))
+            .json(&serde_json::json!({ "agent": topic, "message": message }))
+            .send()
+    };
+
+    let first = send("first").await.unwrap();
+    assert_eq!(first.status(), 200);
+    let second = send("second").await.unwrap();
+    assert_eq!(second.status(), 429);
+    let body: serde_json::Value = second.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("queue is full")),
+        "{body}"
+    );
+
+    release.notify_waiters();
 }
 
 #[tokio::test]

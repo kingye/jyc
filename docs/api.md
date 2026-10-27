@@ -543,10 +543,12 @@ is required except `topic`, and `message` must be non-empty.
 | `401`  | `{"error":"auth_failed"}` | Missing or wrong bearer token. |
 | `422`  | `{"error":"Message cannot be empty"}` | Empty or whitespace-only message. |
 | `422`  | `{"error":"…"}` | Invalid name, unknown topic, or no manager currently serving it. |
+| `429`  | `{"error":"topic '…' queue is full"}` | The target topic's bounded queue has no room. |
 
 A successful response means the message entered the target's queue. The target
 topic's single worker processes it in FIFO order; the response does not wait for
-the AI reply.
+the AI reply. A full queue is a rejection, never a silent drop — `jyc send`
+stops the batch with a non-zero exit.
 
 ## §3 WebSocket API
 

@@ -1401,13 +1401,6 @@ pub trait OutboundAdapter: Send + Sync {
         message_dir: &str,
         attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult>;
-
-    async fn send_message(
-        &self,
-        recipient: &str,
-        subject: &str,
-        body: &str,
-    ) -> Result<SendResult>;
 }
 
 #[derive(Debug)]
@@ -2698,11 +2691,11 @@ the cycle-boundary heartbeat — the single delivery path, no tool involved.
 
 ### ToolContext outbound injection
 
-`ToolContext` carries an optional `outbound: Arc<dyn OutboundAdapter>` and an
-optional cross-channel `outbounds` map. The agent loop injects the current
-topic's pre-warmed adapter (and the channel map) when it builds the tool
-registry, so `deliver_reply` and `ask_user` use the channel directly without
-signal-file indirection.
+`ToolContext` carries an optional `outbound: Arc<dyn OutboundAdapter>`. The
+agent loop injects the current topic's pre-warmed adapter when it builds the
+tool registry, so `deliver_reply` and `ask_user` use the channel directly
+without signal-file indirection. A question piped in from an external channel
+has no adapter on the hub, so `ask_user` asks in plain text there.
 
 ### Built-in Tool: `jyc_send_to_topic` and `/send`
 

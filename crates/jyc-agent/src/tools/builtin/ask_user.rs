@@ -262,22 +262,13 @@ impl Tool for AskUserTool {
                     .and_then(|value| value.as_str())
             })
             .filter(|origin| Some(*origin) != ctx.current_channel.as_deref());
-        let outbound = match piped_from {
-            Some(name) => match &ctx.outbounds {
-                Some(map) => map.lock().await.get(name).cloned(),
-                None => None,
-            },
-            None => ctx.outbound.clone(),
-        };
-        let Some(outbound) = outbound else {
-            if let Some(name) = piped_from {
-                // Which pipe channel is missing an adapter is the one thing a
-                // misconfiguration would need; the fallback text has no name.
-                tracing::debug!(
-                    channel = name,
-                    "ask_user: no adapter for the origin channel"
-                );
-            }
+        // A piped channel has no outbound adapter on the hub: its only route
+        // is the pipe's reply relay, which has no question-box rendering. Ask
+        // in plain text so the question reaches the user where they wrote.
+        if piped_from.is_some() {
+            return Ok(ask_in_plain_text(ctx, &asks));
+        }
+        let Some(outbound) = ctx.outbound.clone() else {
             return Ok(ask_in_plain_text(ctx, &asks));
         };
 
@@ -424,9 +415,6 @@ mod tests {
         ctx.outbound = Some(outbound);
         ctx.current_channel = Some("ws".to_string());
         ctx.current_topic = Some("topic-a".to_string());
-        ctx.outbounds = Some(Arc::new(tokio::sync::Mutex::new(
-            std::collections::HashMap::new(),
-        )));
         ctx.reply_target = Some(crate::tools::ReplyTarget {
             original: message("ws", metadata),
             message_dir: "2026-09-29_00-00-00".to_string(),

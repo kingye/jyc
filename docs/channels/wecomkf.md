@@ -237,10 +237,6 @@ not support the `"markdown"` type.
 
 
 
-The adapter parses this format, extracts `open_kfid` and `external_userid`,
-and sends via the `kf/send_msg` API. Subject is optional for WeCom KF (ignored
-since KF messages have no subject line).
-
 ## Topic Naming
 
 Topics are named using the `open_kfid` and `external_userid` fields from

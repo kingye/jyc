@@ -22,7 +22,6 @@ use jyc_types::{ChannelPattern, InboundMessage, QueueItem};
 use crate::agent_loop::{self, AgentLoopConfig};
 use crate::provider;
 use crate::session;
-use crate::tools::OutboundsMap;
 use crate::tools::registry::ToolRegistry;
 use crate::vision::VisionClient;
 use std::sync::Arc;
@@ -77,12 +76,6 @@ pub struct JycAgentService {
     topic_managers: std::sync::Mutex<Option<Arc<TopicManagers>>>,
     /// Current channel name for source context in cross-topic tools.
     channel_name: String,
-    /// Cross-channel outbound adapters keyed by channel name.
-    /// Passed through to `AgentLoopConfig` so `ask_user` can select the
-    /// adapter for the topic's origin channel.
-    /// Uses `std::sync::Mutex` for interior mutability (set after construction
-    /// via `set_outbounds()` on an `Arc<Self>`).
-    outbounds: std::sync::Mutex<Option<OutboundsMap>>,
 }
 
 impl JycAgentService {
@@ -109,7 +102,6 @@ impl JycAgentService {
             registry_cache: Mutex::new(HashMap::new()),
             topic_managers: std::sync::Mutex::new(None),
             channel_name,
-            outbounds: std::sync::Mutex::new(None),
         }
     }
 
@@ -135,14 +127,6 @@ impl JycAgentService {
     /// into each agent service after all channels have been initialized.
     pub fn set_topic_managers(&self, tm: Arc<TopicManagers>) {
         *self.topic_managers.lock().expect("topic_managers poisoned") = Some(tm);
-    }
-
-    /// Set the cross-channel outbound adapters map.
-    ///
-    /// Called by the monitor during startup to inject the outbound adapter map
-    /// into each agent service after all channels have been initialized.
-    pub fn set_outbounds(&self, outbounds: OutboundsMap) {
-        *self.outbounds.lock().expect("outbounds poisoned") = Some(outbounds);
     }
 
     /// Answer the `require_reply` requests this turn owes.
@@ -610,7 +594,6 @@ impl AgentService for JycAgentService {
             .lock()
             .expect("topic_managers poisoned")
             .clone();
-        let outbounds = self.outbounds.lock().expect("outbounds poisoned").clone();
         let result = match agent_loop::run(AgentLoopConfig {
             provider: provider.as_ref(),
             small_provider: small_provider
@@ -637,7 +620,6 @@ impl AgentService for JycAgentService {
             outbound: self.outbound.clone(),
             topic_managers: topic_managers.clone(),
             current_channel: Some(self.channel_name.clone()),
-            outbounds,
             context_window,
             thinking_enabled: read_thinking_enabled(topic_name, topic_path),
             pricing,

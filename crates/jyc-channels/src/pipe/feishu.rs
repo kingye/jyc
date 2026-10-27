@@ -391,9 +391,8 @@ async fn handle_disband(
 
 /// Relay every attachment of a frame into `chat_id`.
 ///
-/// Shared by the reply path and a proactive message: both carry the same
-/// `attachments` entries. One bad file never stops the rest and never fails the
-/// message — the text is already sent.
+/// One bad file never stops the rest and never fails the message — the text is
+/// already sent.
 async fn relay_attachments(
     client: &FeishuClient,
     files_base: Option<&str>,

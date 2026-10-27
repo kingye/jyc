@@ -10,7 +10,6 @@ pub mod registry;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -154,10 +153,6 @@ pub async fn deliver_reply(
     })
 }
 
-/// Shared outbound adapters map keyed by channel name.
-/// Used by `ask_user` to select the adapter for the topic's origin channel.
-pub type OutboundsMap = Arc<tokio::sync::Mutex<HashMap<String, Arc<dyn OutboundAdapter>>>>;
-
 /// Context provided to tools during execution.
 pub struct ToolContext<'a> {
     /// Working directory for the tool.
@@ -210,11 +205,7 @@ pub struct ToolContext<'a> {
     /// Current topic name, for tools that need source context (e.g.
     /// `jyc_send_to_topic` sets `source_topic` metadata from this).
     pub current_topic: Option<String>,
-    /// Cross-channel outbound adapters keyed by channel name.
-    /// Used by `ask_user` to select the adapter for the topic's origin
-    /// channel. `None` when running in contexts without cross-channel
-    /// support (e.g. unit tests).
-    pub outbounds: Option<OutboundsMap>,
+
     /// The current turn's messages, injected by the agent loop at the
     /// start of the current tool batch. The turns before it are not in
     /// memory — the agent loop reads only the window the context
@@ -275,7 +266,6 @@ impl<'a> ToolContext<'a> {
             topic_managers: None,
             current_channel: None,
             current_topic: None,
-            outbounds: None,
             raw_context: Vec::new(),
             question_context: None,
             reply_target: None,
@@ -296,7 +286,6 @@ impl<'a> ToolContext<'a> {
             topic_managers: None,
             current_channel: None,
             current_topic: None,
-            outbounds: None,
             raw_context: Vec::new(),
             question_context: None,
             reply_target: None,

@@ -126,7 +126,6 @@ mod integration_tests {
             outbound: None,
             topic_managers: None,
             current_channel: None,
-            outbounds: None,
             context_window: None,
             thinking_enabled: true,
             pricing: None,

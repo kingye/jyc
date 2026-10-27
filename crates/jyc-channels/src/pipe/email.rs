@@ -384,9 +384,8 @@ pub(super) fn email_pipe_with_topic(
 
 /// Load every attachment of a frame from the hub's files endpoint.
 ///
-/// Shared by the reply path and a proactive message: both carry the same
-/// `attachments` entries. One bad file never stops the rest and never fails the
-/// message — the text is already sent.
+/// One bad file never stops the rest and never fails the message — the text is
+/// already sent.
 async fn load_reply_attachments(
     files_base: Option<&str>,
     token: &Option<String>,

@@ -278,8 +278,7 @@ pub fn loopback_addr(bind: &str) -> String {
 /// Collect the distinct hub-channel targets that a pipe channel's patterns
 /// route through — one pipe connection (and reply relay) per entry.
 ///
-/// Re-exported from `jyc-types`, where the pattern types live: the hub needs
-/// the same answer to route a proactive message to a pipe-owned channel.
+/// Re-exported from `jyc-types`, where the pattern types live.
 pub use jyc_types::collect_pipe_target_channels;
 
 /// Validate that every enabled pattern names a pipe target; warn about

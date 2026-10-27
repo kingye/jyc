@@ -466,23 +466,12 @@ async fn send_aibot_msg(handle: &WecomBotConnectionHandle, body: serde_json::Val
     Ok(())
 }
 
-/// Download one reply attachment from the hub's files endpoint, upload
-/// it to WeCom media, and send the media message via `aibot_send_msg`
-/// (proactive) keyed by the recipient.
+/// Relay every attachment of a reply frame to `recipient`.
 ///
-/// Same wiring as feishu's `relay_attachment`, sharing the download +
-/// outbound-policy check (`fetch_topic_file`) and differing only in the
-/// upload/send calls. Proactive send is used here instead of
-/// `aibot_respond_msg` because the agent's reply is async and the WeCom
-/// passive reply window may have closed by the time the forwarder
-/// relays attachments.
-/// Relay every attachment of a frame to `recipient` through the proactive
-/// `aibot_send_msg` path.
-///
-/// Both a reply's attachments and a proactive message's go this way: the
-/// passive reply window is usually closed by the time a file is ready, and
-/// `aibot_send_msg` has no such limit. One bad file never stops the rest, and
-/// none of them fails the message — the text is already sent.
+/// Files go through `aibot_send_msg` rather than `aibot_respond_msg`: the
+/// agent's reply is async, so the passive reply window may already be closed
+/// when a file is ready. One bad file never stops the rest and none of them
+/// fails the message — the text is already sent.
 async fn relay_wecom_attachments(
     handle: &WecomBotConnectionHandle,
     files_base: Option<&str>,

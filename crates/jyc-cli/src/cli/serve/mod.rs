@@ -15,7 +15,6 @@ use jyc_core::message_router::MessageRouter;
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::metrics::MetricsCollector;
 use jyc_core::topic_manager::TopicManager;
-use jyc_inspect::server::pipe_proxy::{PipeChannel, PipeProxyOutboundAdapter};
 use jyc_inspect::server::websocket::inbound::WebsocketInboundAdapter;
 use jyc_types::OutboundAdapter;
 use jyc_types::{load_config_layered, validation};
@@ -86,8 +85,6 @@ pub async fn run(
     let mut tasks = Vec::new();
     // Collect JycAgentService instances for wiring cross-channel topic managers
     let mut all_agent_services: Vec<Arc<JycAgentService>> = Vec::new();
-    // Collect outbound adapters keyed by channel name for cross-channel messaging
-    let mut all_outbounds: Vec<(String, Arc<dyn OutboundAdapter>)> = Vec::new();
 
     let orchestrator = Arc::new(jyc_core::channel_orchestrator::ChannelOrchestrator::new(
         config.clone(),
@@ -124,34 +121,6 @@ pub async fn run(
         } else {
             None
         };
-
-    // Channels the external `jyc-pipe` process owns. Collect their hub-channel
-    // targets once so the cross-channel outbound map can register a proxy for
-    // each one, preserving channel identity for `ask_user` and reply routing.
-    let pipe_channels: HashMap<String, PipeChannel> = config_snapshot
-        .channels
-        .iter()
-        .filter(|(_, channel_config)| {
-            jyc_types::SUPPORTED_CHANNEL_TYPES.contains(&channel_config.channel_type.as_str())
-        })
-        .map(|(name, channel_config)| {
-            let mut targets: Vec<String> = jyc_types::collect_pipe_target_channels(
-                channel_config.patterns.as_deref().unwrap_or(&[]),
-            )
-            .into_iter()
-            .collect();
-            // Stable order: the proxy registration below picks the first
-            // target, and any of them reaches the pipe's forwarder.
-            targets.sort();
-            (
-                name.clone(),
-                PipeChannel {
-                    channel_type: channel_config.channel_type.clone(),
-                    targets,
-                },
-            )
-        })
-        .collect();
 
     // Collect websocket inbound adapters to register with the inspect server later
     let mut websocket_handlers: Vec<Arc<WebsocketInboundAdapter>> = vec![];
@@ -240,9 +209,6 @@ pub async fn run(
             .await
             .with_context(|| format!("channel '{channel_name}': outbound connection failed"))?;
         tracing::info!(channel = %channel_name, channel_type = %channel_type, "Outbound connected");
-
-        // Collect outbound adapter for cross-channel messaging
-        all_outbounds.push((channel_name.clone(), outbound.clone()));
 
         // Create agent based on configured mode
         let agent_result = crate::cli::agent_builder::build_agent_service(
@@ -347,57 +313,13 @@ pub async fn run(
         anyhow::bail!("No channels configured");
     }
 
-    // Cross-channel lookups for a pipe-owned channel: its entry in the outbound
-    // map is a proxy onto the hub channel that reaches the pipe, so `ask_user`
-    // selects the right adapter instead of treating the topic as hub-owned.
-    // Registered after the loop, and only for the hub channels that exist — a
-    // pipe channel whose patterns route nowhere the hub hosts has no adapter
-    // to delegate to.
-    {
-        let hub_outbounds: HashMap<String, Arc<dyn OutboundAdapter>> =
-            all_outbounds.iter().cloned().collect();
-        for (name, channel) in &pipe_channels {
-            let Some(hub) = channel
-                .targets
-                .iter()
-                .find_map(|target| hub_outbounds.get(target))
-            else {
-                tracing::warn!(
-                    channel = %name,
-                    targets = ?channel.targets,
-                    "pipe channel routes into no hub channel; cross-channel lookups will fall back"
-                );
-                continue;
-            };
-            all_outbounds.push((
-                name.clone(),
-                Arc::new(PipeProxyOutboundAdapter::new(
-                    channel.channel_type.clone(),
-                    hub.clone(),
-                )),
-            ));
-        }
-    }
-
-    // 5.5. Wire the topic managers and outbound adapters into agent services
+    // 5.5. Wire the topic managers into agent services
     {
         for svc in &all_agent_services {
             svc.set_topic_managers(orchestrator.topic_managers());
         }
         tracing::info!(
             "Wired topic managers into {} agent service(s)",
-            all_agent_services.len()
-        );
-
-        // Build and inject outbound adapters map
-        let outbounds_map: HashMap<String, Arc<dyn OutboundAdapter>> =
-            all_outbounds.into_iter().collect();
-        let outbounds_map = Arc::new(tokio::sync::Mutex::new(outbounds_map));
-        for svc in &all_agent_services {
-            svc.set_outbounds(outbounds_map.clone());
-        }
-        tracing::info!(
-            "Wired outbound adapters into {} agent service(s)",
             all_agent_services.len()
         );
     }

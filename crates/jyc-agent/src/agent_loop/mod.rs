@@ -19,7 +19,7 @@ use jyc_types::QueueItem;
 use jyc_types::channel::ContextStrategyConfig;
 
 use crate::provider::Provider;
-use crate::tools::{OutboundsMap, ToolContext, ToolOutput, registry::ToolRegistry};
+use crate::tools::{ToolContext, ToolOutput, registry::ToolRegistry};
 use crate::types::{AgentLoopResult, ContentBlock, Message, Role};
 
 /// Default maximum number of tool-call iterations before giving up.
@@ -99,10 +99,6 @@ pub struct AgentLoopConfig<'a> {
     /// Current channel name, for tools that need source context
     /// (e.g. `jyc_send_to_topic` sets `source_channel` metadata from this).
     pub current_channel: Option<String>,
-    /// Cross-channel outbound adapters keyed by channel name.
-    /// Passed through to `ToolContext` so `ask_user` can select the adapter
-    /// for the topic's origin channel.
-    pub outbounds: Option<OutboundsMap>,
     /// Context window size in tokens — the model's whole budget. Recorded
     /// with the token counts so the dashboard can show how full the window
     /// is.
@@ -170,7 +166,6 @@ pub async fn run(
         outbound,
         topic_managers,
         current_channel,
-        outbounds,
         context_window,
         thinking_enabled,
         pricing,
@@ -257,7 +252,6 @@ pub async fn run(
     ctx.topic_managers = topic_managers.clone();
     ctx.current_channel = current_channel.clone();
     ctx.current_topic = Some(topic_name.to_string());
-    ctx.outbounds = outbounds.clone();
     ctx.reply_target = reply_target.clone();
     let start_time = Instant::now();
 

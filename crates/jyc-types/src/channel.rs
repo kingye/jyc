@@ -40,9 +40,8 @@ pub const SUPPORTED_CHANNEL_TYPES: &[&str] = &[
 /// - new `pipe = { agent = "x", topic = "..." }` → inserts "agents"
 ///   (the synthesized channel name)
 ///
-/// Lives here rather than with the pipe adapters because both sides need it:
-/// the pipe to open one connection per target, and the hub to locate the
-/// outbound adapter behind a pipe-owned channel.
+/// Lives here because it works on the pattern types; the pipe uses it to open
+/// one connection per target.
 pub fn collect_pipe_target_channels(patterns: &[ChannelPattern]) -> HashSet<String> {
     let mut out = HashSet::new();
     for p in patterns.iter().filter(|p| p.enabled) {

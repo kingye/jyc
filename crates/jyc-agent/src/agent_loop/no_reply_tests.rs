@@ -188,7 +188,6 @@ fn base_config<'a>(
         outbound: None,
         topic_managers: None,
         current_channel: None,
-        outbounds: None,
         context_window: None,
         thinking_enabled: false,
         pricing: None,

@@ -199,50 +199,6 @@ impl SmtpClient {
         Ok(message_id)
     }
 
-    /// Send a fresh message (not a reply): no `In-Reply-To` / `References`
-    /// headers, and the subject as given rather than `Re: …`.
-    ///
-    /// Used by the email pipe to relay a proactive message from the hub — an
-    /// alert or notification addressed to an arbitrary recipient, possibly
-    /// carrying files.
-    pub async fn send_mail(
-        &mut self,
-        from: &str,
-        from_name: Option<&str>,
-        to: &str,
-        subject: &str,
-        markdown_body: &str,
-        attachments: Option<&[EmailAttachment]>,
-    ) -> Result<String> {
-        let email = self.build_email(
-            from,
-            from_name,
-            to,
-            subject,
-            markdown_body,
-            None,
-            None,
-            attachments,
-        )?;
-
-        let message_id = email
-            .headers()
-            .get_raw("Message-ID")
-            .unwrap_or_default()
-            .to_string();
-
-        self.send_with_retry(email).await?;
-
-        tracing::info!(
-            to = %to,
-            subject = %subject,
-            attachments = attachments.map_or(0, |a| a.len()),
-            "Email sent"
-        );
-
-        Ok(message_id)
-    }
-
     /// Private helper: build a lettre `Message` from the given components.
     ///
     /// Handles markdown→HTML conversion, multipart/alternative body,
@@ -488,12 +444,9 @@ fn format_smtp_code(code: Option<u16>) -> String {
 mod tests {
     use super::*;
 
-    /// `send_mail` is the proactive path: a fresh message, so it must not
-    /// thread itself into anything (`In-Reply-To` / `References`) and must keep
-    /// the caller's subject as given rather than prefixing `Re:` — a reply to
-    /// an alert nobody sent would thread into nothing.
+    /// An attached reply is multipart/mixed, with each file named in the body.
     #[test]
-    fn test_build_email_for_a_fresh_mail_has_no_threading_and_keeps_subject() {
+    fn test_build_email_with_attachments_uses_multipart_mixed() {
         let client = SmtpClient::new(SmtpConfig {
             host: "smtp.example.com".to_string(),
             port: 465,
@@ -521,10 +474,7 @@ mod tests {
             )
             .expect("fresh mail builds");
 
-        let headers = email.headers();
-        assert!(headers.get_raw("In-Reply-To").is_none());
-        assert!(headers.get_raw("References").is_none());
-        assert_eq!(headers.get_raw("Subject"), Some("daily report"));
+        assert_eq!(email.headers().get_raw("Subject"), Some("daily report"));
         let formatted = email.formatted();
         let rendered = String::from_utf8_lossy(&formatted);
         assert!(rendered.contains("multipart/mixed"), "{rendered}");

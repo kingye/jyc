@@ -215,18 +215,15 @@ auto-starts (an already running hub cannot be retrofitted, and warns about
 it). The Docker image's default command passes it, so the shipped container
 runs one service; the child keeps its own `<data dir>/jyc-pipe.log` there.
 
-### Outbound replies and proxies
+### Outbound replies
 
 Replies cross to the pipe as a broadcast frame, exactly as before: the hub
 channel's outbound adapter broadcasts a `reply` payload keyed by topic, and
 the pipe's forwarder for that channel looks up the topic's address and sends.
 
-The hub's cross-channel outbound map still keys each pipe-owned channel to a
-[`PipeProxyOutboundAdapter`](../../crates/jyc-inspect/src/server/pipe_proxy.rs)
-onto its hub channel. The proxy keeps the pipe channel's identity so `ask_user`
-selects the right adapter; it deliberately has no question box, so questions
-go out as plain text instead of drawing a box on the hub that a user reading
-WeCom or mail would never see.
+A topic piped in from a channel has no question box: `ask_user` asks in plain
+text on the hub, because a box drawn there would be invisible to a user reading
+WeCom or mail.
 
 ## Open decisions
 

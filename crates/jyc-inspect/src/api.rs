@@ -12,6 +12,7 @@
 //! | GET    | `/api/channels/{channel}/patterns`                      | Pattern names. |
 //! | GET    | `/api/topics/{channel}/{topic}/files/{file...}`       | Topic-local file. |
 //! | POST   | `/api/topics`                                          | Register a topic. |
+//! | POST   | `/api/send`                                            | Enqueue one message for an agent/topic. |
 //! | POST   | `/api/config/reload`                                    | Reload config. |
 //!
 //! Mounted WITHOUT the bearer middleware (access control is the per-topic
@@ -36,7 +37,10 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use jyc_core::{
-    activity_log_store::ActivityLogStore, chat_log_store::load_recent_chat_history,
+    activity_log_store::ActivityLogStore,
+    chat_log_store::load_recent_chat_history,
+    command::send_handler::{SendRequest, SendSource, send_to_topic_with_target},
+    topic_manager::QueueFull,
     topic_path::inbound_dir,
 };
 use jyc_types::{
@@ -69,6 +73,20 @@ pub struct CreateThreadBody {
 #[derive(Debug, Serialize)]
 pub struct PatternsBody {
     pub patterns: Vec<String>,
+}
+
+/// Request body for `POST /api/send`.
+#[derive(Debug, Deserialize)]
+pub struct SendMessageBody {
+    pub agent: String,
+    pub topic: Option<String>,
+    pub message: String,
+}
+
+/// Response body for `POST /api/send`.
+#[derive(Debug, Serialize)]
+pub struct SendMessageResult {
+    pub message: String,
 }
 
 /// Response body for `POST /api/topics`.
@@ -112,6 +130,12 @@ impl ApiError {
     pub fn unprocessable(msg: impl Into<String>) -> Self {
         Self {
             status: StatusCode::UNPROCESSABLE_ENTITY,
+            message: msg.into(),
+        }
+    }
+    pub fn too_many_requests(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
             message: msg.into(),
         }
     }
@@ -480,6 +504,45 @@ pub async fn get_patterns(
     })?;
     Ok(Json(PatternsBody {
         patterns: tm.pattern_names().await,
+    }))
+}
+
+/// `POST /api/send` — enqueue one message for an existing agent/topic.
+///
+/// This is the same send as the `/send` command: the target is resolved by the
+/// running topic managers and the message enters that topic's queue. A CLI
+/// caller has no source topic, so the injected message carries no reply route;
+/// only the message body is sent (no attachments).
+pub async fn post_send(
+    State(ctx): State<Arc<InspectContext>>,
+    Json(body): Json<SendMessageBody>,
+) -> Result<Json<SendMessageResult>, ApiError> {
+    let outcome = send_to_topic_with_target(
+        &ctx.topic_managers,
+        SendSource {
+            channel: None,
+            topic: None,
+            working_dir: &ctx.agents_dir,
+        },
+        SendRequest {
+            agent: &body.agent,
+            topic: body.topic.as_deref(),
+            message: &body.message,
+            attachments: &[],
+            recipient: None,
+            require_reply: false,
+        },
+    )
+    .await
+    .map_err(|e| {
+        if e.downcast_ref::<QueueFull>().is_some() {
+            ApiError::too_many_requests(e.to_string())
+        } else {
+            ApiError::unprocessable(e.to_string())
+        }
+    })?;
+    Ok(Json(SendMessageResult {
+        message: outcome.message,
     }))
 }
 

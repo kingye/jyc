@@ -1,25 +1,49 @@
 //! End-to-end test: InspectClient (reqwest) against a real axum server.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use axum::Json;
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use futures_util::StreamExt;
-use jyc_core::metrics::HealthStats;
-use jyc_core::topic_manager::TopicManagers;
+use jyc_core::agent::{AgentResult, AgentService};
+use jyc_core::command::send_handler::{SendRequest, SendSource, send_to_topic_with_target};
+use jyc_core::message_storage::MessageStorage;
+use jyc_core::metrics::{HealthStats, MetricsHandle};
+use jyc_core::static_agent::StaticAgentService;
+use jyc_core::topic_event::TopicEvent;
+use jyc_core::topic_manager::{QueueFull, TopicManager, TopicManagers};
+use jyc_inspect::api::{SendMessageBody, post_send};
 use jyc_inspect::client::InspectClient;
+use jyc_inspect::server::websocket::outbound::WebsocketOutboundAdapter;
 use jyc_inspect::server::{DynWebsocketHandler, InspectContext, WebsocketHandler, build_router};
-use jyc_types::{ActivityEntry, ChannelInfo, InspectState};
+use jyc_types::{
+    ActivityEntry, AppConfig, ChannelInfo, InboundMessage, InspectState, MessageContent,
+    PatternMatch, QueueItem, load_config_from_str,
+};
+use tempfile::TempDir;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify, Semaphore};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 
 fn ctx() -> Arc<InspectContext> {
+    ctx_with_managers(
+        Arc::new(TopicManagers::new()),
+        PathBuf::from("/nonexistent/agents"),
+    )
+}
+
+fn ctx_with_managers(managers: Arc<TopicManagers>, agents_dir: PathBuf) -> Arc<InspectContext> {
     Arc::new(InspectContext {
-        topic_managers: Arc::new(TopicManagers::new()),
+        topic_managers: managers,
         channels: Arc::new(ArcSwap::from_pointee(vec![ChannelInfo {
             name: "demo".into(),
             channel_type: "email".into(),
@@ -38,14 +62,172 @@ fn ctx() -> Arc<InspectContext> {
         auth_token: Some("topsecret".into()),
         inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(1).0),
         ws_shutdown: tokio_util::sync::CancellationToken::new(),
-        agents_dir: std::path::PathBuf::from("/nonexistent/agents"),
+        agents_dir,
     })
 }
 
+fn test_config() -> Arc<AppConfig> {
+    Arc::new(
+        load_config_from_str(
+            r#"
+[general]
+[channels.test]
+type = "email"
+[channels.test.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.test.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[agent]
+enabled = true
+mode = "agent"
+"#,
+        )
+        .unwrap(),
+    )
+}
+
+fn make_tm(tmp: &TempDir, workspace: &Path, channel: &str) -> Arc<TopicManager> {
+    make_tm_with_agent(
+        tmp,
+        workspace,
+        channel,
+        10,
+        Arc::new(StaticAgentService::new("ok")),
+    )
+}
+
+fn make_tm_with_agent(
+    tmp: &TempDir,
+    workspace: &Path,
+    channel: &str,
+    max_queue_size: usize,
+    agent: Arc<dyn AgentService>,
+) -> Arc<TopicManager> {
+    let storage = Arc::new(MessageStorage::new(workspace));
+    Arc::new(TopicManager::new(
+        1,
+        max_queue_size,
+        storage.clone(),
+        Arc::new(WebsocketOutboundAdapter::new(
+            tokio::sync::broadcast::channel(4).0,
+            storage,
+        )),
+        agent,
+        tokio_util::sync::CancellationToken::new(),
+        workspace.join("templates"),
+        Arc::new(ArcSwap::new(test_config())),
+        channel.to_string(),
+        "websocket".to_string(),
+        tmp.path().to_path_buf(),
+        workspace.to_path_buf(),
+        MetricsHandle::noop(),
+    ))
+}
+
+struct BlockingAgent {
+    started: Arc<Notify>,
+    release: Arc<Semaphore>,
+    finished: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl AgentService for BlockingAgent {
+    async fn base_url(&self) -> anyhow::Result<String> {
+        Ok(String::new())
+    }
+
+    async fn process(
+        &self,
+        _message: &InboundMessage,
+        _topic_name: &str,
+        _topic_path: &Path,
+        _message_dir: &str,
+        _pending_rx: &mut tokio::sync::mpsc::Receiver<QueueItem>,
+        _topic_cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<AgentResult> {
+        self.started.notify_one();
+        let permit = self.release.acquire().await.unwrap();
+        permit.forget();
+        self.finished.store(true, Ordering::SeqCst);
+        Ok(AgentResult {
+            reply_delivered: true,
+            reply_text: Some("ok".to_string()),
+        })
+    }
+
+    async fn reset_session(&self, _topic_path: &Path, _topic_name: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+fn test_message(channel: &str, topic: &str, text: &str) -> InboundMessage {
+    InboundMessage {
+        id: text.to_string(),
+        channel: channel.to_string(),
+        channel_uid: text.to_string(),
+        sender: "user".to_string(),
+        sender_address: "user@example.com".to_string(),
+        recipients: vec![],
+        topic: topic.to_string(),
+        content: MessageContent {
+            text: Some(text.to_string()),
+            html: None,
+            markdown: None,
+        },
+        timestamp: chrono::Utc::now(),
+        references: None,
+        reply_to_id: None,
+        external_id: None,
+        attachments: vec![],
+        metadata: HashMap::new(),
+        matched_pattern: None,
+    }
+}
+
+fn test_pattern(channel: &str) -> PatternMatch {
+    PatternMatch {
+        pattern_name: "invoice".to_string(),
+        channel: channel.to_string(),
+        matches: HashMap::new(),
+    }
+}
+
+async fn seed_topic(tm: &Arc<TopicManager>, channel: &str, topic: &str) {
+    tm.enqueue(
+        test_message(channel, topic, "seed"),
+        topic.to_string(),
+        test_pattern(channel),
+        None,
+        false,
+        None,
+    )
+    .await;
+}
+
+struct RegisteredState(String);
+
+impl Drop for RegisteredState {
+    fn drop(&mut self) {
+        jyc_types::state_dir::unregister(&self.0);
+    }
+}
+
 async fn start_server() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    start_server_with(ctx()).await
+}
+
+async fn start_server_with(
+    ctx: Arc<InspectContext>,
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let app = build_router(ctx());
+    let app = build_router(ctx);
     let handle = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
@@ -89,6 +271,209 @@ async fn client_get_topic_activity_unknown_topic_404() {
     assert!(r.is_err());
     let err = format!("{}", r.unwrap_err());
     assert!(err.contains("404"), "expected 404, got: {err}");
+}
+
+#[tokio::test]
+async fn client_sends_messages_to_an_agents_own_topic_in_order() {
+    let tmp = TempDir::new().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let agents_dir = tmp.path().join("agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+
+    let tm = make_tm(&tmp, &workspace, "agents");
+    let managers = Arc::new(TopicManagers::new());
+    managers.set(vec![tm.clone()]);
+    tm.set_managers(&managers);
+
+    let topic = "api-send-default";
+    let _registered = RegisteredState(topic.to_string());
+    seed_topic(&tm, "agents", topic).await;
+    let bus = tm.get_or_create_event_bus(topic).await.unwrap();
+    let mut events = bus.subscribe().await.unwrap();
+
+    let (addr, _h) =
+        start_server_with(ctx_with_managers(managers.clone(), agents_dir.clone())).await;
+    let client = InspectClient::with_token(&addr.to_string(), Some("topsecret"));
+    for message in ["first scheduled", "second scheduled"] {
+        let (ok, response) = client.send_to_topic(topic, None, message).await.unwrap();
+        assert!(ok, "{response}");
+    }
+
+    let mut texts = Vec::new();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while texts.len() < 2 {
+            match events.recv().await {
+                Some(TopicEvent::IncomingMessage { text, .. })
+                    if text == "first scheduled" || text == "second scheduled" =>
+                {
+                    texts.push(text);
+                }
+                Some(_) => {}
+                None => break,
+            }
+        }
+    })
+    .await
+    .expect("both messages should reach the topic");
+    assert_eq!(texts, ["first scheduled", "second scheduled"]);
+}
+
+#[tokio::test]
+async fn client_sends_to_an_explicit_topic() {
+    let tmp = TempDir::new().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let agents_dir = tmp.path().join("agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+
+    let tm = make_tm(&tmp, &workspace, "agents");
+    let managers = Arc::new(TopicManagers::new());
+    managers.set(vec![tm.clone()]);
+    tm.set_managers(&managers);
+
+    let topic = "api-send-explicit";
+    let _registered = RegisteredState(topic.to_string());
+    seed_topic(&tm, "agents", topic).await;
+    let bus = tm.get_or_create_event_bus(topic).await.unwrap();
+    let mut events = bus.subscribe().await.unwrap();
+
+    let (addr, _h) =
+        start_server_with(ctx_with_managers(managers.clone(), agents_dir.clone())).await;
+    let client = InspectClient::with_token(&addr.to_string(), Some("topsecret"));
+    let (ok, response) = client
+        .send_to_topic("some-agent", Some(topic), "explicit topic")
+        .await
+        .unwrap();
+    assert!(ok, "{response}");
+
+    let mut text = None;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while text.is_none() {
+            match events.recv().await {
+                Some(TopicEvent::IncomingMessage { text: body, .. })
+                    if body == "explicit topic" =>
+                {
+                    text = Some(body);
+                }
+                Some(_) => {}
+                None => break,
+            }
+        }
+    })
+    .await
+    .expect("the message should reach the named topic");
+    assert_eq!(text.as_deref(), Some("explicit topic"));
+}
+
+#[tokio::test]
+async fn send_returns_429_when_the_queue_is_full() {
+    let tmp = TempDir::new().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let agents_dir = tmp.path().join("agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Semaphore::new(0));
+    let finished = Arc::new(AtomicBool::new(false));
+    let agent = Arc::new(BlockingAgent {
+        started: started.clone(),
+        release: release.clone(),
+        finished: finished.clone(),
+    });
+    let tm = make_tm_with_agent(&tmp, &workspace, "agents", 1, agent);
+    let managers = Arc::new(TopicManagers::new());
+    managers.set(vec![tm.clone()]);
+    tm.set_managers(&managers);
+
+    let topic = "api-send-full";
+    let _registered = RegisteredState(topic.to_string());
+    seed_topic(&tm, "agents", topic).await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+        .await
+        .expect("the seed message should occupy the worker");
+
+    let ctx = ctx_with_managers(managers.clone(), agents_dir.clone());
+
+    // Probe the manager directly: if the handler resolved to a different queue
+    // this still reports Full for the queue the seed left behind.
+    let probe = tm
+        .try_enqueue(
+            test_message("agents", topic, "probe"),
+            topic.to_string(),
+            test_pattern("agents"),
+            None,
+            false,
+            None,
+        )
+        .await;
+    let probe = match probe {
+        Ok(()) => "accepted".to_string(),
+        Err(e) => format!("rejected: {e}"),
+    };
+
+    // With the seed occupying the only worker and the direct probe above (or
+    // the first API send) having taken the last queue slot, the shared send
+    // path must now report QueueFull. This separates "the queue is full" from
+    // "the HTTP layer maps it to 429".
+    let direct = send_to_topic_with_target(
+        &managers,
+        SendSource {
+            channel: None,
+            topic: None,
+            working_dir: &agents_dir,
+        },
+        SendRequest {
+            agent: topic,
+            topic: None,
+            message: "direct",
+            attachments: &[],
+            recipient: None,
+            require_reply: false,
+        },
+    )
+    .await;
+    let direct_err = direct.expect_err("the shared send path accepted a message");
+    assert!(
+        direct_err.downcast_ref::<QueueFull>().is_some(),
+        "expected QueueFull, got {direct_err} (direct_probe: {probe})"
+    );
+
+    // The HTTP layer is a thin wrapper over this handler: call it with the
+    // same context the server would see, and require QueueFull to become 429.
+    let response = post_send(
+        State(ctx),
+        Json(SendMessageBody {
+            agent: topic.to_string(),
+            topic: None,
+            message: "api".to_string(),
+        }),
+    )
+    .await;
+    if let Err(e) = response {
+        let response = e.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        release.add_permits(32);
+    } else {
+        panic!(
+            "the API handler accepted a message while the queue was full; \
+             direct_probe: {probe}; seed_finished: {}",
+            finished.load(Ordering::SeqCst)
+        );
+    }
+}
+
+#[tokio::test]
+async fn client_send_rejects_unknown_target() {
+    let (addr, _h) = start_server().await;
+    let client = InspectClient::with_token(&addr.to_string(), Some("topsecret"));
+    let (ok, response) = client
+        .send_to_topic("missing", None, "hello")
+        .await
+        .unwrap();
+    assert!(!ok);
+    assert!(response.contains("missing"), "{response}");
 }
 
 #[tokio::test]

@@ -6,6 +6,7 @@ pub mod install;
 pub mod mcp;
 pub mod plugins;
 pub mod resolve;
+pub mod send;
 pub mod serve;
 pub mod stop;
 pub mod token;

@@ -797,13 +797,11 @@ pub struct ContextStrategyConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub note_window: Option<usize>,
-    /// Byte cap on each tool result in the verbatim regions ② and ③
+    /// Byte cap on each tool result kept in the verbatim region
     /// (`sliding_window` mode). When a tool result exceeds `cap` bytes,
     /// its content is truncated and suffixed with a marker noting the
     /// dropped length. `Some(2048)` by default (sliding_window mode);
     /// `Some(0)` disables capping — every tool result is sent in full.
-    /// Regions ② and ③ share this policy so a completed current turn can be
-    /// promoted into the verbatim prior without changing request bytes.
     /// Only meaningful when `mode = "sliding_window"`. Omitted from
     /// serialized override files when unset so existing readers stay
     /// compatible.
@@ -812,18 +810,20 @@ pub struct ContextStrategyConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub tool_result_cap: Option<usize>,
-    /// Byte cap on each tool result in the verbatim regions ② and ③
-    /// (`sliding_window` mode), overriding `tool_result_cap` when set. The
-    /// override applies to the whole verbatim window — not just the current
-    /// turn — so a completed turn keeps identical bytes when it moves from
-    /// region ③ into region ② on the next turn. Each oversized result keeps
-    /// its head and tail with the middle replaced by a paging marker, since
-    /// what a result is usually read for (the command that ran, the error,
-    /// the summary line) sits at the ends. `Some(0)` disables capping and
-    /// overrides a configured `tool_result_cap`; `None` falls back to
-    /// `tool_result_cap`. Only meaningful when `mode = "sliding_window"`.
-    /// Omitted from serialized override files when unset so existing readers
-    /// stay compatible.
+    /// Byte cap on each tool result in the current turn
+    /// (`sliding_window` mode). `None` (the default) sends the current
+    /// turn uncapped — the model is reasoning over these results
+    /// mid-loop, so a long one (a big file read, a verbose command)
+    /// rides every remaining call of the turn. Setting a cap trims each
+    /// oversized result to at most `Some(cap)` bytes — marker included —
+    /// keeping its head and tail with the middle replaced by a paging
+    /// marker, since what a result is usually read for (the command that
+    /// ran, the error, the summary line) sits at the ends. Below ~128
+    /// bytes there is no room for both ends, so the head-only cut takes
+    /// over and its own marker sits on top of `cap`. `Some(0)` disables
+    /// capping, same as `None`. Only meaningful when `mode = "sliding_window"`. Omitted
+    /// from serialized override files when unset so existing readers stay
+    /// compatible.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_tool_result_cap: Option<usize>,
     /// Token budget for the two history regions — ① compacted text history
@@ -834,12 +834,10 @@ pub struct ContextStrategyConfig {
     /// `window` counts turns, so a window of 10 still costs whatever those
     /// 10 turns happen to weigh — a handful of small ones, or a few turns
     /// carrying megabyte-sized tool results. This budget caps that weight
-    /// directly. The builder first targets 75% of the configured value so a
-    /// newly completed turn can append without immediately moving the stable
-    /// history prefix; the absolute trim remains the backstop — ① loses its
-    /// oldest pairs, then ② loses its oldest whole turns. Region ③ (the
-    /// current turn) is never touched by the history budget; the verbatim
-    /// result caps govern its size.
+    /// directly: when ①+② estimate over budget, the oldest content goes
+    /// first — ① loses its oldest pairs, then ② loses its oldest whole
+    /// turns. Region ③ (the current turn) is never touched; it has
+    /// `turn_tool_result_cap` for that.
     ///
     /// The estimate is heuristic (CJK characters ×1, other bytes ÷4), not a
     /// tokenizer: it bounds history, and a few percent of drift is fine for
@@ -857,8 +855,10 @@ impl Default for ContextStrategyConfig {
             window: default_context_window_size(),
             note_window: default_note_window(),
             tool_result_cap: default_tool_result_cap(),
-            // No separate current-turn override by default: regions ② and ③
-            // share `tool_result_cap`, which keeps promoted turns byte-stable.
+            // Current turn uncapped by default: the mid-loop reasoning
+            // argument for region ②'s cap does not automatically extend
+            // here, but silently trimming results the model is still
+            // working through is the more damaging default — so it is opt-in.
             turn_tool_result_cap: None,
             // History weight is unbounded by default: `window` is the lever
             // users already know, and a token budget silently truncating

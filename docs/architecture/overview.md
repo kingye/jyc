@@ -122,8 +122,8 @@ request is governed by the context strategy — a separate concern from the
 layer architecture itself.
 
 **See [Context](context.md)** for the full treatment: data plane, `full`
-vs `sliding_window`, the stable-prefix ①②③ regions, `note_window`,
-shared verbatim tool-result caps, token safety nets, and override files.
+vs `sliding_window`, the ①②③ regions, `note_window`, `tool_result_cap`,
+token safety nets, and override files.
 
 ## Message flow
 

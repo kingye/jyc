@@ -10,11 +10,12 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use jyc_core::agent::{AgentResult, AgentService};
+use jyc_core::command::send_handler::{SendRequest, SendSource, send_to_topic_with_target};
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::metrics::{HealthStats, MetricsHandle};
 use jyc_core::static_agent::StaticAgentService;
 use jyc_core::topic_event::TopicEvent;
-use jyc_core::topic_manager::{TopicManager, TopicManagers};
+use jyc_core::topic_manager::{QueueFull, TopicManager, TopicManagers};
 use jyc_inspect::client::InspectClient;
 use jyc_inspect::server::websocket::outbound::WebsocketOutboundAdapter;
 use jyc_inspect::server::{DynWebsocketHandler, InspectContext, WebsocketHandler, build_router};
@@ -286,7 +287,8 @@ async fn client_sends_messages_to_an_agents_own_topic_in_order() {
     let bus = tm.get_or_create_event_bus(topic).await.unwrap();
     let mut events = bus.subscribe().await.unwrap();
 
-    let (addr, _h) = start_server_with(ctx_with_managers(managers, agents_dir)).await;
+    let (addr, _h) =
+        start_server_with(ctx_with_managers(managers.clone(), agents_dir.clone())).await;
     let client = InspectClient::with_token(&addr.to_string(), Some("topsecret"));
     for message in ["first scheduled", "second scheduled"] {
         let (ok, response) = client.send_to_topic(topic, None, message).await.unwrap();
@@ -331,7 +333,8 @@ async fn client_sends_to_an_explicit_topic() {
     let bus = tm.get_or_create_event_bus(topic).await.unwrap();
     let mut events = bus.subscribe().await.unwrap();
 
-    let (addr, _h) = start_server_with(ctx_with_managers(managers, agents_dir)).await;
+    let (addr, _h) =
+        start_server_with(ctx_with_managers(managers.clone(), agents_dir.clone())).await;
     let client = InspectClient::with_token(&addr.to_string(), Some("topsecret"));
     let (ok, response) = client
         .send_to_topic("some-agent", Some(topic), "explicit topic")
@@ -386,7 +389,8 @@ async fn send_returns_429_when_the_queue_is_full() {
         .await
         .expect("the seed message should occupy the worker");
 
-    let (addr, _h) = start_server_with(ctx_with_managers(managers, agents_dir)).await;
+    let (addr, _h) =
+        start_server_with(ctx_with_managers(managers.clone(), agents_dir.clone())).await;
     let http = reqwest::Client::new();
     let send = |message: &'static str| {
         http.post(format!("http://{addr}/api/send"))
@@ -415,6 +419,33 @@ async fn send_returns_429_when_the_queue_is_full() {
         Ok(()) => "accepted".to_string(),
         Err(e) => format!("rejected: {e}"),
     };
+
+    // With the seed occupying the only worker and the direct probe above (or
+    // the first API send) having taken the last queue slot, the shared send
+    // path must now report QueueFull. This separates "the queue is full" from
+    // "the HTTP layer maps it to 429".
+    let direct = send_to_topic_with_target(
+        &managers,
+        SendSource {
+            channel: None,
+            topic: None,
+            working_dir: &agents_dir,
+        },
+        SendRequest {
+            agent: topic,
+            topic: None,
+            message: "direct",
+            attachments: &[],
+            recipient: None,
+            require_reply: false,
+        },
+    )
+    .await;
+    let direct_err = direct.expect_err("the shared send path accepted a message");
+    assert!(
+        direct_err.downcast_ref::<QueueFull>().is_some(),
+        "expected QueueFull, got {direct_err} (first_body: {first_body}; direct_probe: {probe})"
+    );
 
     // Keep sending through the API until the target queue reports itself full.
     // The worker is blocked in the seed turn, so a bounded queue must reject

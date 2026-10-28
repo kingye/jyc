@@ -72,6 +72,7 @@ pub(crate) fn build_send_context_with_regions<'a>(
         provider,
         raw_context,
         prior_len,
+        0,
         strategy,
         &mut SendContextCache::default(),
     )
@@ -161,6 +162,7 @@ pub(crate) fn build_send_context_cached<'a>(
     provider: &dyn Provider,
     raw_context: &'a [serde_json::Value],
     prior_len: usize,
+    summary_len: usize,
     strategy: &ContextStrategyConfig,
     cache: &mut SendContextCache,
 ) -> (Cow<'a, [serde_json::Value]>, Vec<u8>) {
@@ -179,8 +181,19 @@ pub(crate) fn build_send_context_cached<'a>(
             let current = &raw_context[boundary..];
 
             if cache.boundary != Some(boundary) {
-                let (region1, region2) =
-                    build_history_regions(provider, &raw_context[..boundary], strategy);
+                let (region1, region2) = if summary_len > 0 {
+                    // Anchored load: the leading `summary_len` messages
+                    // are the persisted summary's compacted notes —
+                    // already the region ① extraction output, frozen
+                    // since the fold. The rest of the prior is the
+                    // verbatim tail, which grows by pure append between
+                    // refolds, so these regions only change when the
+                    // loader persisted a new summary.
+                    let summary_end = summary_len.min(boundary);
+                    build_summary_regions(provider, &raw_context[..boundary], summary_end, strategy)
+                } else {
+                    build_history_regions(provider, &raw_context[..boundary], strategy)
+                };
                 cache.region1 = region1;
                 cache.region2 = region2;
                 cache.boundary = Some(boundary);
@@ -289,6 +302,52 @@ fn build_history_regions(
     (region1, region2)
 }
 
+/// Build regions ①+② for an anchored load: the first `summary_end`
+/// messages of `prior` are the persisted summary's compacted notes
+/// (already [`extract_user_assistant_pairs`] output — no second
+/// extraction, which would re-walk the journal half the regions came
+/// from). They format to the same wire bytes on every build until the
+/// loader persists a new summary, so the region-① prefix stays
+/// cacheable across turns. Everything after them is the verbatim tail.
+///
+/// The budget fit still applies: it is the floor for a tail whose last
+/// `note_window` turns alone exceed `max_history_tokens`.
+fn build_summary_regions(
+    provider: &dyn Provider,
+    prior: &[serde_json::Value],
+    summary_end: usize,
+    strategy: &ContextStrategyConfig,
+) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    let cap = strategy.tool_result_cap.unwrap_or(0);
+
+    let mut region1: Vec<serde_json::Value> = Vec::new();
+    region1.push(provider.format_user_message(&[ContentBlock::Text {
+        text: crate::session::HISTORY_MARKER_TEXT.into(),
+    }]));
+    for msg in &prior[..summary_end] {
+        // Defensive: skip messages with no extractable text so the
+        // wire payload never contains empty text blocks (which
+        // Anthropic rejects, especially under cache_control).
+        if let Some(formatted) = format_cleaned_message(provider, msg) {
+            region1.push(formatted);
+        }
+    }
+
+    // Region ② — the verbatim tail: same handling as the classic build —
+    // minus round-tripped history notes, tool-result cap applied.
+    let mut region2: Vec<serde_json::Value> = Vec::new();
+    for msg in &prior[summary_end..] {
+        if crate::session::is_history_note(msg) {
+            continue;
+        }
+        region2.push(cap_tool_result_content(msg, cap));
+    }
+
+    fit_history_to_budget(&mut region1, &mut region2, strategy.max_history_tokens);
+
+    (region1, region2)
+}
+
 /// Per-message constant added to every wire message's estimate — the role,
 /// block types and separators providers wrap a message in.
 const PER_MESSAGE_TOKENS: usize = 4;
@@ -368,7 +427,7 @@ fn oldest_turn_len(msgs: &[serde_json::Value]) -> Option<usize> {
 /// transcripts by a quarter — and everything else counts a quarter token
 /// per byte. Object keys are ignored: tool names are a rounding error next
 /// to the result text they carry.
-fn est_message_tokens(msg: &serde_json::Value) -> usize {
+pub(crate) fn est_message_tokens(msg: &serde_json::Value) -> usize {
     PER_MESSAGE_TOKENS + est_value_tokens(msg)
 }
 
@@ -1194,7 +1253,7 @@ mod render_raw_context_tests {
 
         let mut cache = SendContextCache::default();
         let (first, first_regions) =
-            build_send_context_cached(&prov(), &ctx, prior_len, &cfg, &mut cache);
+            build_send_context_cached(&prov(), &ctx, prior_len, 0, &cfg, &mut cache);
         let (cold, cold_regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
         assert_eq!(first.as_ref(), cold.as_ref());
         assert_eq!(first_regions, cold_regions);
@@ -1203,7 +1262,7 @@ mod render_raw_context_tests {
         // cached prefix did not — the history regions are reused as-is.
         ctx.push(json!({"role": "assistant", "content": "a3"}));
         let (second, second_regions) =
-            build_send_context_cached(&prov(), &ctx, prior_len, &cfg, &mut cache);
+            build_send_context_cached(&prov(), &ctx, prior_len, 0, &cfg, &mut cache);
         let (cold2, cold2_regions) =
             build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
         assert_eq!(second.as_ref(), cold2.as_ref());
@@ -1213,7 +1272,7 @@ mod render_raw_context_tests {
         let next_prior_len = ctx.len();
         ctx.push(json!({"role": "user", "content": "u4"}));
         let (third, third_regions) =
-            build_send_context_cached(&prov(), &ctx, next_prior_len, &cfg, &mut cache);
+            build_send_context_cached(&prov(), &ctx, next_prior_len, 0, &cfg, &mut cache);
         let (cold3, cold3_regions) =
             build_send_context_with_regions(&prov(), &ctx, next_prior_len, &cfg);
         assert_eq!(third.as_ref(), cold3.as_ref());
@@ -1247,7 +1306,7 @@ mod render_raw_context_tests {
         ctx.push(json!({"role": "user", "content": "u3"}));
 
         let mut cache = SendContextCache::default();
-        let _ = build_send_context_cached(&prov(), &ctx, prior_len, &cfg, &mut cache);
+        let _ = build_send_context_cached(&prov(), &ctx, prior_len, 0, &cfg, &mut cache);
         assert_eq!(
             cache.history_rebuilt(),
             Some(true),
@@ -1259,7 +1318,7 @@ mod render_raw_context_tests {
         cache
             .region1
             .push(json!({"role": "user", "content": "CACHED-SENTINEL"}));
-        let (warm, _) = build_send_context_cached(&prov(), &ctx, prior_len, &cfg, &mut cache);
+        let (warm, _) = build_send_context_cached(&prov(), &ctx, prior_len, 0, &cfg, &mut cache);
         assert!(
             warm.iter()
                 .any(|m| m.get("content").and_then(|c| c.as_str()) == Some("CACHED-SENTINEL")),
@@ -1271,7 +1330,7 @@ mod render_raw_context_tests {
         ctx.push(json!({"role": "assistant", "content": "a3"}));
         let next_prior_len = ctx.len();
         let (rebuilt, _) =
-            build_send_context_cached(&prov(), &ctx, next_prior_len, &cfg, &mut cache);
+            build_send_context_cached(&prov(), &ctx, next_prior_len, 0, &cfg, &mut cache);
         assert!(
             !rebuilt
                 .iter()
@@ -2128,5 +2187,95 @@ mod render_raw_context_tests {
             "the window must not change the payload"
         );
         assert_eq!(whole_regions, windowed_regions);
+    }
+
+    #[test]
+    fn anchored_summary_regions_keep_the_prior_a_stable_prefix_across_turns() {
+        // The #995 property at build level: with the anchored summary,
+        // adding a turn to the prior changes the payload only by appending
+        // — the previous payload is a strict prefix of the next one, so
+        // the provider cache survives the turn boundary.
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            note_window: Some(2),
+            max_history_tokens: None,
+            ..Default::default()
+        };
+        // Two folded pairs (the summary) + two verbatim turns.
+        let notes: Vec<serde_json::Value> = (1..=2)
+            .flat_map(|i| {
+                [
+                    json!({"role": "user", "content": format!("u{i}")}),
+                    json!({"role": "assistant", "content": format!("a{i}")}),
+                ]
+            })
+            .collect();
+        let summary_len = notes.len();
+        let tail: Vec<serde_json::Value> = (3..=4)
+            .flat_map(|i| {
+                [
+                    json!({"role": "user", "content": format!("u{i}")}),
+                    json!({"role": "assistant", "content": format!("a{i}")}),
+                ]
+            })
+            .collect();
+
+        let mut ctx = notes.clone();
+        ctx.extend(tail.clone());
+        let prior_len = ctx.len();
+        let (warm1, regions1) = build_send_context_cached(
+            &prov(),
+            &ctx,
+            prior_len,
+            summary_len,
+            &cfg,
+            &mut SendContextCache::default(),
+        );
+
+        // Region labels: marker + notes are ①, the verbatim tail is ②.
+        let region1_len = 1 + notes.len();
+        assert_eq!(regions1.len(), warm1.len());
+        assert!(
+            regions1[..region1_len].iter().all(|&r| r == 1),
+            "marker + summary notes are region ①"
+        );
+        assert!(
+            regions1[region1_len..].iter().all(|&r| r == 2),
+            "verbatim tail is region ②"
+        );
+        // The marker leads region ①.
+        assert!(
+            warm1[0]
+                .get("content")
+                .and_then(|c| c.as_str())
+                .is_some_and(|t| t.contains("earlier conversation follows")),
+            "region ① leads with the history marker"
+        );
+
+        // Next turn: the prior grows by one turn, the summary does not change.
+        // (A second vector: `warm1` borrows `ctx` through its Cow.)
+        let mut ctx2 = ctx.clone();
+        ctx2.push(json!({"role": "user", "content": "u5"}));
+        ctx2.push(json!({"role": "assistant", "content": "a5"}));
+        let (warm2, _) = build_send_context_cached(
+            &prov(),
+            &ctx2,
+            ctx2.len(),
+            summary_len,
+            &cfg,
+            &mut SendContextCache::default(),
+        );
+
+        assert!(warm2.len() > warm1.len());
+        assert_eq!(
+            warm2[..warm1.len()],
+            warm1[..],
+            "the previous payload is a byte-stable prefix of the next"
+        );
+        assert_eq!(
+            warm2[warm1.len()].get("content"),
+            Some(&json!("u5")),
+            "the new turn appends at the tail"
+        );
     }
 }

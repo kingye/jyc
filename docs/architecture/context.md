@@ -19,11 +19,11 @@ Three core principles govern the whole system:
 2. **Only the wire payload is shaped.** Every LLM request passes through
    `build_send_context_cached()` (`crates/jyc-agent/src/agent_loop/context.rs`),
    which decides what slice of the raw context to send and in what form.
-3. **The strategy keeps the request inside the window.** The sliding
-   window is the mechanism that bounds what is sent; there is no
-   separate token monitor that compresses or resets the session
-   underneath it (those layers were removed — the window never let the
-   context grow past the model's limit in the first place).
+3. **The strategy keeps the request inside the budget.** The anchored
+   sliding window grows the verbatim tail by whole turns and refolds
+   the oldest ones into the persisted summary when
+   `max_history_tokens` trips; there is no separate token monitor that
+   compresses or resets the session underneath it.
 4. **The system prompt is unchanged by runtime churn; volatile state
    rides the turn.** Every LLM call re-sends the whole prefix, and
    providers that cache by prefix only reuse what did not change, so the
@@ -85,8 +85,15 @@ finds and hands out the window the caller asked for.
 - **The depth comes from the strategy.**
   `agent_loop::context::prior_depth()` turns the config into a
   `PriorDepth`: `sliding_window` asks for the last `window` pairs and
-  the last `note_window` openers; `full` mode and an unset
-  `note_window` ask for everything.
+  the last `note_window` openers on the cold path; `full` mode and an
+  unset `note_window` ask for everything.
+- **Anchored loads read forward from a persisted offset.** Once the
+  sliding window's summary exists (`history-summary.json`), the load
+  reads the journal **forward** from the summary's byte offset —
+  `ContextReader::read_from` — attaching each message's line-start
+  offset so a refold can advance the summary without re-scanning. The
+  read amount grows between refolds but stays bounded by the token
+  budget that triggers them.
 - **The slice starts at a turn boundary**, so the strategies see the
   same turns they would have seen in the full journal — the payload is
   byte-identical either way (a differential test in
@@ -131,20 +138,33 @@ Not the default — opt in via `context_strategy = { mode = "full" }`.
 
 ### `sliding_window`
 
-Sends three parts, in order. Let `recent` = the count of completed
-prior turns placed in the verbatim region ② — `recent =
-min(note_window, pairs_in_prior)` when `note_window` is set, `recent =
-pairs_in_prior` when unset (the implementation in
-`build_send_context_cached`
-computes this via `verbatim_start_index` + `extract_pairs(...).len()`):
+Anchored, not per-turn sliding. A persisted per-topic summary
+(`history-summary.json` in the state dir) holds the compacted text notes
+of everything older than the verbatim tail, plus the journal byte offset
+where that tail begins:
 
-1. **Compacted history** — the last `max(0, window − recent)` older
-   prior turns, reduced to pure text and reformatted in the active
-   provider's wire format.
-2. **Recent turns, verbatim** — the last `recent` prior turns with
-   their **structured `tool_calls` / `tool_use` and tool results
-   intact**, passed through untouched.
+1. **Compacted history (region ①)** — the summary's notes, oldest
+   first, reformatted in the active provider's wire format. These bytes
+   are **frozen between refolds**: the summary only appends when a
+   refold folds more turns in, so region ① is a stable prefix of every
+   wire payload — the property that keeps the provider's cache alive
+   across turn boundaries.
+2. **Recent turns, verbatim (region ②)** — everything in the journal
+   from the summary's offset to the tail: **structured `tool_calls` /
+   `tool_use` and tool results intact**, passed through untouched. It
+   grows by pure append each turn; when `max_history_tokens` is
+   exceeded, the oldest whole turns **refold** into appended summary
+   notes (down to `note_window` turns, the verbatim floor) instead of
+   being silently dropped.
 3. **Current turn, verbatim** — `raw_context[prior_len..]`, untouched.
+
+A load with no summary (fresh topic, `/reset`, or a journal that shrank
+below the recorded offset) cold-starts: the whole journal is read once,
+folded down to `note_window` verbatim turns, and the summary is
+persisted. Journals above 32 MiB skip the fold and keep the classic
+windowed tail read (`window` bounds that fallback; `window` no longer
+bounds the anchored tail). The summary dies with `/reset` and `/new`, as
+the session file always did.
 
 ```mermaid
 flowchart TB
@@ -170,9 +190,10 @@ flowchart TB
     style R3 fill:#e8f5e9,stroke:#2e7d32
 ```
 
-② shows a single turn for brevity; in practice it holds up to
-`note_window` completed prior turns (default `3`), and ① absorbs the
-remaining `max(0, window − recent)` pairs as text-only.
+② shows a single turn for brevity; in practice it holds every
+completed prior turn since the last refold — at least `note_window`
+turns (default `3`), growing by append until the token budget refolds
+the oldest turns into ①. ① holds the folded notes of everything older.
 
 ① and ② are built **once per turn**, not once per LLM call: they depend
 only on `raw_context[..prior_len]`, which is fixed while a turn runs
@@ -181,6 +202,18 @@ ends the turn). `SendContextCache` (keyed on that split point) holds
 them for the turn's remaining calls; the log's `history_rebuilt` says
 whether a call rebuilt them (`rebuilt`), reused them (`reused`), or built
 nothing at all (`-`, `full` mode).
+
+Why anchored: providers cache by prefix, and the classic per-turn
+sliding window re-created region ① from the last `window − note_window`
+pairs on every turn — its head moved every turn, so the cross-turn
+prefix broke on every first call (production wire dumps showed the
+first-call cache hit collapsing to ~10%). The anchor that sized the
+read window to the block could not help: the reader pinned the
+delivered prior at a fixed pair count, so the block slid with the
+window anyway. Freezing the compacted notes and reading forward from a
+persisted offset makes the payload a pure append between refolds — the
+only cross-turn rewrite left is the refold itself, and even then the
+old notes stay a stable prefix of the new region ①.
 
 Why the split: the recent turns and the current turn are mid-flight tool
 activity, so their `tool_use` ↔ `tool_result` structure must stay legally
@@ -391,11 +424,16 @@ needs earlier turns of the current conversation.
 
 ## Token safety nets
 
-The sliding window is the safety net: it shapes every request so the
-context the model sees stays inside the model's context window. There is
-no second layer underneath it — no mid-loop compaction, no auto-reset, no
-reset-compression mode. A session reset (`/reset`) clears the context
-outright; it does not summarize or compact it.
+`max_history_tokens` is the safety net for the anchored tail: region ②
+grows by whole turns until the estimate (① + ②) exceeds it, then the
+oldest tail turns refold into appended summary notes; only if the
+`note_window` floor alone still exceeds the budget does the build shed
+content (①'s oldest notes, then ②'s oldest whole turns), same as the
+classic floor. `full` mode and an unset budget grow verbatim until the
+provider's own limit. There is no second layer underneath it — no
+mid-loop compaction, no auto-reset, no reset-compression mode. A
+session reset (`/reset`) clears the context outright; it does not
+summarize or compact it.
 
 The context-window figures the dashboard and `/info` show come from the
 same place: the most recent LLM call's `usage.input_tokens` plus that

@@ -21,9 +21,9 @@ Three core principles govern the whole system:
    which decides what slice of the raw context to send and in what form.
 3. **The strategy keeps the request inside the budget.** The anchored
    sliding window grows by whole turns and slides — drops whole turns off
-   its head — when it outgrows `max_window` turns or `max_history_tokens`'
-   weight; there is no separate token monitor that compresses or resets
-   the session underneath it.
+   its head — when it outgrows `max_window` turns, or on weight
+   (`max_history_tokens`) at the top of that cycle; there is no separate
+   token monitor that compresses or resets the session underneath it.
 4. **The system prompt is unchanged by runtime churn; volatile state
    rides the turn.** Every LLM call re-sends the whole prefix, and
    providers that cache by prefix only reuse what did not change, so the
@@ -91,8 +91,9 @@ finds and hands out the window the caller asked for.
   `max_history_tokens` weight) keep it small.
 - **The slice starts at a turn boundary.** A cold start (no anchor, or
   one that no longer lands on a turn opener) reads from the journal's
-  head once and slides down to `window` turns, persisting the anchor it
-  lands on.
+  head once. It slides only when that read exceeds `max_window` turns,
+  and that slide is what persists the new anchor; a journal that fits
+  keeps no anchor at all (see below).
 - **Dangling tool calls are repaired on the way out.** The slice drops
   an assistant message whose tool calls have no tool result, and
   everything after it, as the whole-file load path did. The repair
@@ -145,10 +146,11 @@ there:
    them; `context_browse` reads them back). This block only ever
    **grows**: nothing trims its head.
 2. **Recent turns, verbatim (region ②)** — the most recent `note_window`
-   turns (default `3`) with **structured `tool_calls` / `tool_use` and
-   tool results intact**, passed through untouched. It advances by one
-   turn per turn; `note_window = 0` makes region ② empty and region ①
-   strictly append-only.
+   turns with **structured `tool_calls` / `tool_use` and tool results
+   intact**, passed through untouched. Empty by default
+   (`note_window = 0`): history is then text-only and region ① is
+   strictly append-only. When it is set above `0` it advances by one turn
+   per turn, and each advancing turn is re-encoded.
 3. **Current turn, verbatim (region ③)** — `raw_context[prior_len..]`,
    untouched.
 
@@ -170,9 +172,11 @@ persists a new one, and every load after that is bounded by the window.
 
 The anchor is the whole point: providers cache by **prefix**, so the
 payload should grow only at its tail between slides. Region ① does
-exactly that; region ② advances by one turn per turn and is therefore
-re-encoded, so the cached prefix reaches as far as ① (set `note_window`
-to `0` or leave it unset for a fully append-only payload). Nothing trims
+exactly that, and with `note_window` at its default `0` region ② is empty,
+so the whole history block is append-only — the cached prefix reaches all
+of it, and only the turn that just ended plus the current turn are
+re-encoded. Raising `note_window` above `0` re-encodes that many turns per
+turn. Nothing trims
 the window's head in between — an earlier design trimmed the history to a token
 budget on *every* turn, and since that trim could never actually reduce
 the total below the budget, the head advanced on every turn and the
@@ -216,8 +220,8 @@ turn k+1  : [①②][ ① pairs … ][ +t_c+1 as a text pair ][ ② t_c+2 .. t_{
                                                              ^ these N turns are re-encoded
 ```
 
-The only per-turn rewrite is region ②'s `note_window` turns; region ① is
-append-only. At a slide everything after the anchor is re-encoded once,
+The only per-turn rewrite is region ②'s `note_window` turns — none at the
+default `0` — and region ① is append-only. At a slide everything after the anchor is re-encoded once,
 every `max_window − window` turns.
 
 ① and ② are built **once per turn**, not once per LLM call: they depend
@@ -237,8 +241,10 @@ calls into user-role *text* notes taught thinking models (MiniMax,
 DeepSeek) to write their process — tool calls and action announcements —
 as content instead of using the structured channel, which then leaked
 "thinking" into delivered replies. Older turns are compacted to text-only
-to bound the window size, and `note_window = 0` trades the recent turns'
-tool results away for the strictest append-only prefix.
+to bound the window size. The default `note_window = 0` folds the recent
+turns too: it trades their tool results away for the smallest payload and
+a prefix that never moves, and raising it is the escape hatch when a model
+reverts to writing its process as content.
 
 #### Turn pairing (`extract_pairs`, `crates/jyc-agent/src/session.rs`)
 
@@ -263,11 +269,14 @@ The pairing unit is the **turn**, not the single message:
 
 #### History notes
 
-History notes are the **storage** representation of a turn's tool calls
-(written to the stored context). The sliding-window **wire payload no
-longer emits them** — the most recent `note_window` turns are sent verbatim with their
-structured tool calls, and older turns compact to text-only; round-tripped
-notes are filtered out before sending.
+History notes are a **render-only** view of a turn's tool calls: they are
+built on demand from the journal by `extract_pairs`, and `context_browse`
+renders them. Nothing stores them (the journal holds the raw wire
+messages), and the sliding-window **wire payload no longer emits them** —
+history is sent as text-only user/assistant pairs, so notes would be
+redundant. A journal written by an older build can still contain
+round-tripped notes; those are filtered out before sending and skipped on
+re-parse.
 
 Each turn with tool calls gets one user-role message emitted **before**
 the assistant text (so no `assistant → user(note)` adjacency sits
@@ -291,7 +300,7 @@ to treat the note as a fresh instruction):
   their reply; the system prompt's "History Format" section states the
   contract explicitly.
 
-Size caps (constants in `session.rs`, applied when a note is *stored*):
+Size caps (constants in `session.rs`, applied when a note is *built*):
 
 | Limit | Value | Notes |
 |-------|-------|-------|
@@ -299,22 +308,22 @@ Size caps (constants in `session.rs`, applied when a note is *stored*):
 | Single tool result | 500 bytes | full result is one `context_browse` away |
 | **Whole note** | **2000 bytes** | overflow folds to `…(N more calls)` |
 
-These bound the journal, not the payload: the sliding window sends no
+These bound the note itself, not the payload: the sliding window sends no
 notes at all.
 
-**`note_window` (optional)** sizes the verbatim region ②: when set to
-`M`, the last `min(M, turns_in_prior)` prior turns keep their structured
-`tool_calls` / `tool_use` and tool results intact; every older turn in the
-window becomes a text-only pair in ①. Boundary cases (matching
+**`note_window` (optional, default `0`)** sizes the verbatim region ②: when
+set to `M`, the last `min(M, turns_in_prior)` prior turns keep their
+structured `tool_calls` / `tool_use` and tool results intact; every older
+turn in the window becomes a text-only pair in ①. Boundary cases (matching
 `verbatim_start_index` + `build_send_context_cached`):
 
+- **`M = 0` (the default)** — the entire prior is text-only and ② is
+  empty; the whole payload is append-only, and it is the cheapest shape.
+  The model then sees no structured tool calls in history.
 - **Unset** — the entire prior becomes verbatim and ① is empty. The
   implementation substitutes `usize::MAX`, so `verbatim_start_index`
-  finds no `M`-th turn and returns 0. This is one of the two
-  fully append-only shapes.
-- **`M = 0`** — the entire prior is text-only and ② is empty; also fully
-  append-only, and the cheapest payload. The model then sees no
-  structured tool calls in history.
+  finds no `M`-th turn and returns 0. Also append-only (nothing is ever
+  folded), and the most expensive payload.
 - **`0 < M`, prior ≥ `M`** — last `M` prior turns verbatim, ① holds
   every older turn. `window` no longer bounds the payload: the loader
   bounds the window at `max_window` turns, so ① holds at most
@@ -332,10 +341,10 @@ their process as content instead, leaking thinking into replies.)
 
 Trade-off: an older compacted turn loses tool-error visibility — the model
 may re-run a command that failed there; `context_browse` remains the
-fallback for recovering the original calls. History notes stay in the
-stored context (the journal keeps each turn's tool activity), but the
-sliding-window payload emits none of them: ① is text-only and
-round-tripped notes are filtered out before sending.
+fallback for recovering the original calls. The journal keeps each turn's
+raw messages (tool calls and results included), but the sliding-window
+payload emits none of them: ① is text-only and round-tripped notes are
+filtered out before sending.
 
 #### Anthropic compatibility defenses
 
@@ -386,7 +395,7 @@ Each line of `wire-payload.jsonl` is one JSON object:
 {
   "ts": "2026-08-24T12:34:56.789Z",
   "iter": 3,
-  "strategy": { "mode": "sliding_window", "window": 10, "note_window": 3 },
+  "strategy": { "mode": "sliding_window", "window": 10, "note_window": 0 },
   "regions": [1, 1, 2, 2, 3],
   "wire_payload": [ ... ]
 }
@@ -435,7 +444,12 @@ needs earlier turns of the current conversation.
 
 Two triggers, one action. The window slides (anchor forward, whole turns
 dropped, back to `window` turns) when it holds more than `max_window`
-turns, **or** when its estimated weight exceeds `max_history_tokens`.
+turns, and — only at the top of that extension cycle, where the turn bound
+is about to fire anyway — when its estimated weight exceeds
+`max_history_tokens`. A window below `max_window` turns never slides on
+budget alone: a window whose `window` turns already exceed the budget
+cannot get under it, and chasing it every turn would move the anchor on
+every turn.
 The slide is the only way history shrinks; nothing trims between slides,
 which is what keeps the wire prefix byte-stable and the provider cache
 alive. `full` mode grows verbatim until the provider's own limit. There
@@ -453,7 +467,7 @@ will carry — against the model's context window.
 ```toml
 # Global default for all channels/topics
 [ai]
-context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5, note_window = 3 }
+context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5 }
 
 # Per-pattern override (takes priority over [ai])
 [channels.jyc_repo.patterns."**"]
@@ -467,9 +481,9 @@ All counts are **turns**, not messages or tokens:
 |-------|---------|---------|
 | `window` | `10` | Turns kept after a slide — the window's floor |
 | `extend_rate` | `0.5` | Growth allowed before a slide: `max_window = window + round(extend_rate × window)`; `0` = hard window (slides every turn) |
-| `note_window` | `3` | Most recent turns sent verbatim (tool calls and results intact); older turns are text-only pairs. `0` = no tool results in history |
+| `note_window` | `0` | Most recent turns sent verbatim (tool calls and results intact); older turns are text-only pairs. `0` = text-only history, the smallest payload, fully append-only |
 | `turn_tool_result_cap` | unset | Per-result byte cap on the current turn — see below |
-| `max_history_tokens` | unset | Second slide trigger: over this estimated weight, slide back to `window` turns — see below |
+| `max_history_tokens` | unset | Second slide trigger, at the top of the extension cycle — see below |
 
 ## `turn_tool_result_cap` — bounding region ③
 
@@ -510,7 +524,7 @@ value, ceiling 1 MiB), or from config as
 
 **Interplay with `note_window`:** the cap only applies to the current
 turn. History tool results — the `note_window` verbatim turns of region
-② — are sent as recorded, uncapped.
+②, if any — are sent as recorded, uncapped.
 
 **Why per-result, not global:** a single 5 KB `read` result is usually
 fine; ten 100 KB results from one bash test suite are the actual
@@ -523,8 +537,10 @@ the wire payload is a separate concern (`max_history_tokens`).
 `window` counts turns, so the same `window = 10` costs 2k tokens on a
 quiet topic and 200k on one whose turns carry megabyte-sized tool
 results. `max_history_tokens` bounds that weight: when the window's
-estimate exceeds it, the window **slides** — the same action, and the
-same `window`-turn destination, as a window over `max_window` turns.
+estimate exceeds it **and the window has already reached `max_window`
+turns**, the window **slides** — the same action, and the same
+`window`-turn destination, as a window over `max_window` turns. Below
+`max_window` turns it never fires on budget alone.
 
 ```toml
 context_strategy = { …, max_history_tokens = 30000 }
@@ -566,7 +582,7 @@ much history survives before the next slide.
 3. Matched pattern's `context_strategy` (or synthesized `[agents.<name>]`)
 4. First pattern fallback
 5. Global `[ai].context_strategy`
-6. Built-in default: `sliding_window` / `window = 10` / `extend_rate = 0.5` / `note_window = 3` / `max_history_tokens` unset
+6. Built-in default: `sliding_window` / `window = 10` / `extend_rate = 0.5` / `note_window = 0` / `max_history_tokens` unset
 
 **Runtime commands:**
 
@@ -574,7 +590,7 @@ much history survives before the next slide.
 |---------|--------|
 | `/context` | Show current strategy and its source (`override` / `default`) |
 | `/context full` | Send the full context |
-| `/context sliding [N] [EXT] [M] [TURNCAP] [MAXHIST]` | Sliding window, N turns (default 10, max 200); EXT = extend rate (0..10, default 0.5); M = note window (default 3, max 200); TURNCAP = per-result byte cap on the current turn (0..1 MiB, unset by default); MAXHIST = weight trigger for a slide (0..4M, unset by default). An absent slot falls back to the configured value; `0` switches a cap off |
+| `/context sliding [N] [EXT] [M] [TURNCAP] [MAXHIST]` | Sliding window, N turns (default 10, max 200); EXT = extend rate (0..10, default 0.5); M = note window (default 0, max 200); TURNCAP = per-result byte cap on the current turn (0..1 MiB, unset by default); MAXHIST = weight trigger for a slide (0..4M, unset by default). An absent slot falls back to the configured value; `0` switches a cap off |
 | `/context reset` | Remove the runtime override, revert to configured default |
 
 ## Code map

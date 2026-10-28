@@ -2250,7 +2250,7 @@ JYC uses the following subset of the agent service API:
 - Sessions are created on first use per topic and persisted in `.jyc/agent-session.json`
 - Sessions are reused across messages, model switches, mode switches, and container restarts
 - Sessions track the context size (`context_input_tokens` + `context_output_tokens`) and the model's context window (`context_window`)
-- Sessions are never deleted automatically — `max_history_tokens` bounds the anchored sliding-window history (uncapped when unset)
+- Sessions are never deleted automatically — the anchored sliding-window history is bounded by turns (`window` / `max_window`), with `max_history_tokens` as a second slide trigger (uncapped when unset)
 - On session reset: the session state and the raw context are cleared — the next turn starts from an empty context
 
 
@@ -2270,7 +2270,7 @@ JYC uses the following subset of the agent service API:
      - Real-time token counting from SSE `step-finish` events
      - Immediate persistence to `agent-session.json` after each step
      - Token usage displayed in the reply footer and the info pane (e.g., `Tokens: 20.7K/122K`)
-   - **No auto-reset**: the sliding-window strategy slides — drops whole turns off its head — when it outgrows its turn bound or the token budget (unbounded when `max_history_tokens` is unset); the session is never reset automatically
+   - **No auto-reset**: the sliding-window strategy slides — drops whole turns off its head — when it outgrows its turn bound, or on the token budget at the top of that cycle (unbounded when `max_history_tokens` is unset); the session is never reset automatically
    - **Standardized units**:
      - Uses 1024 as K unit basis (1K = 1024 tokens)
      - Display format: `{current}K/{max}K` with 0.1K precision
@@ -2335,7 +2335,8 @@ JYC uses the following subset of the agent service API:
      retained turn begins, and each load reads the journal forward from
      there. The wire payload is region ① (older turns as text-only
      pairs — append-only, never trimmed), then region ② (the last
-     `note_window` turns verbatim, structured tool calls intact), then
+     `note_window` turns verbatim, structured tool calls intact — empty
+     by default, `note_window = 0`), then
      the current turn verbatim (`raw_context[prior_len..]`). The window
      grows by append until it holds more than `max_window = window +
      round(extend_rate × window)` turns — or has reached that bound and
@@ -2345,9 +2346,9 @@ JYC uses the following subset of the agent service API:
      remain, whole turns at a time.
      Slides are the only way history shrinks — a per-turn trim of the
      head is what destroys the cross-turn prefix cache. The prefix is
-     therefore append-only up to region ①'s end; region ② re-encodes as
-     its tail advances (`note_window = 0` or unset makes the whole
-     payload append-only). A cold start
+     therefore append-only up to region ①'s end, which by default is the
+     whole history; region ② re-encodes as its tail advances only when
+     `note_window` is raised above `0`. A cold start
      (fresh topic, reset, no anchor, or an anchor no longer on a turn
      boundary) reads the journal once from its head and drops the bad
      anchor; the next slide persists a fresh one.
@@ -2371,19 +2372,23 @@ JYC uses the following subset of the agent service API:
    Full mechanism reference (turn pairing, history notes, token safety
    nets, configuration): [docs/architecture/context.md](docs/architecture/context.md).
 
-   **`max_history_tokens` (2026-10-18).** `window` counts turns, so
-   `window = 10` costs 2k tokens on a quiet topic and 200k on one whose
-   turns carry huge tool results. The budget is the orthogonal lever: it
-   caps what regions ① + ② weigh together, dropping the oldest history
-   first (region ①'s oldest messages — the drop is per message, so a pair
-   can be split; then region ②'s oldest **whole** turns — a partial cut
-   would orphan a tool result from its `tool_use`, which providers
-   reject). Region ③ is excluded: the turn in flight has
-   `turn_tool_result_cap`. The estimate is a heuristic, not a
-   tokenizer — CJK characters ×1, other bytes ÷4, plus a small
-   per-message constant — because a tokenizer dependency would buy
-   precision this knob does not need. Unset by default: without it the
-   payload is byte-identical to today's.
+   **`max_history_tokens` (2026-10-18; corrected 2026-10-28).** `window`
+   counts turns, so `window = 10` costs 2k tokens on a quiet topic and
+   200k on one whose turns carry huge tool results. The budget is the
+   orthogonal lever, but it may not trim: an earlier version dropped the
+   oldest history per message on every turn, which moved the window's
+   head on every turn and destroyed the cross-turn prefix cache (and could
+   never get under the budget anyway, since folding turns into notes left
+   the total unchanged). It is now a **second trigger for the same
+   slide**: when the window has already reached `max_window` turns and its
+   estimated weight exceeds the budget, it slides back to `window` turns —
+   whole turns, anchor forward, exactly what the turn bound does. Below
+   `max_window` it never fires, because a window whose `window` turns
+   alone exceed the budget cannot get under it. Region ③ is excluded: the
+   turn in flight has `turn_tool_result_cap`. The estimate is a
+   heuristic, not a tokenizer — CJK characters ×1, other bytes ÷4, plus a
+   small per-message constant — because a tokenizer dependency would buy
+   precision this knob does not need. Unset by default.
 
    **System Prompt Stability (2026-10-18).** The system prompt is
    **unchanged by runtime churn on purpose** — everything except the
@@ -2506,11 +2511,11 @@ tokens ↓
 │  └ user/assistant 文本原样, tool call/result 丢弃 │ ← 只追加: 前缀字节不变
 │                                                   │    ★不做任何裁剪★
 │                                                   │
-│  region ② verbatim 尾部      note_window 轮      │
-│  └ 全结构保留 (tool_use / tool_result 原样)       │ ← 每轮前进一轮, 重编码这 M 轮
+│  region ② verbatim 尾部   note_window 轮 (默认 0) │
+│  └ 全结构保留 (tool_use / tool_result 原样)       │ ← 默认空; 设了则每轮前进一轮、重编码 M 轮
 │                                                   │
-│  ⟵ 窗口超 max_window 轮 或 超 max_history_tokens  │
-│     时整体前移锚点、丢整轮、回落到 window 轮       │ ← 每 (max_window-window) 轮一次
+│  ⟵ 窗口超 max_window 轮, 或已到 max_window 且超   │
+│     max_history_tokens 时, 前移锚点、丢整轮        │ ← 每 (max_window-window) 轮一次
 │                                                   │
 │  region ③ 当前轮            0 → 增长             │
 │  ├ user: <runtime-state> 参考块 ~300B ★易变★     │ ★新位置★

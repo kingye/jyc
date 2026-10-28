@@ -484,11 +484,12 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # grows between slides, until it reaches max_window turns, then slides back
 # to `window` turns. Slides are the only way history shrinks.
 #
-# The payload is append-only up to the end of its text-only block; the
-# newest `note_window` turns (sent verbatim, tool results included) advance
-# by one turn per turn and are re-encoded, so that is where the provider's
-# prefix cache stops matching. Set `note_window = 0` (or leave it out) for a
-# fully append-only payload.
+# History is text-only by default, so the payload is append-only: every turn
+# appends to the end and the provider's prefix cache keeps matching (another
+# turn's tool calls and results stay in the journal; `context_browse` still
+# reaches them). `note_window` can bring the newest turns back verbatim, and
+# each of those turns is re-encoded on the turn it advances — that is where
+# the cached prefix stops matching.
 #
 # window: the number of turns the window keeps after a slide — its floor.
 # Default: 10. 0 is treated as 1 (a window holds at least one turn);
@@ -501,11 +502,12 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # note_window: the most recent M prior turns are sent verbatim, with their
 # tool calls and results; older turns are sent as text-only user/assistant
 # pairs (no history notes, tool calls and results dropped from the payload).
-# Default: 3.
-# 0 sends no tool results in history at all — the cheapest tail, and the
-# strictest append-only prefix. Each turn the verbatim tail advances by one
-# turn, so the tail (M turns) is re-encoded per turn while the text-only
-# block only grows.
+# Default: 0 — history is text-only, which is both the smallest payload and
+# the only setting whose prefix never moves.
+# Raise it only when a thinking model starts writing its process (tool calls,
+# "let me look at…") as content: structured history is what keeps MiniMax and
+# DeepSeek in the structured channel. Each turn the verbatim tail advances by
+# one turn, so M turn's worth of bytes is re-encoded per turn.
 # turn_tool_result_cap: cap each tool result in the current turn, keeping
 # the head and tail of an oversized result. Unset by default (the current
 # turn is in flight, so trimming it is opt-in).
@@ -516,11 +518,11 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # `window` turns alone exceed the budget cannot get under it, and sliding
 # every turn to chase it would re-encode the payload every turn. It never
 # trims anything by itself, and the current turn is not part of it. window
-# counts turns, so a window of 10 weighs 2k tokens or 200k; this bounds the
-# weight instead. The estimate is heuristic (CJK characters ~1 token, other
-# bytes ~1/4), not a tokenizer. Unset by default.
-# context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5, note_window = 3 }
-# context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5, note_window = 3, max_history_tokens = 30000 }
+# counts turns, so a window of 10 weighs 2k tokens or 200k; this bounds that
+# weight by triggering the slide. The estimate is heuristic (CJK characters
+# ~1 token, other bytes ~1/4), not a tokenizer. Unset by default.
+# context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5 }
+# context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5, max_history_tokens = 30000 }
 
 
 [ai.attachments]
@@ -1152,9 +1154,9 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # slides back (defaults 10 and 0.5).
 # note_window: only the most recent M windowed turns are sent verbatim
 # (tool calls and results intact); older turns are text-only pairs.
-# Default: 3. 0 = no tool results in history at all.
+# Default: 0 = text-only history, no tool results in history at all.
 # See `[ai].context_strategy` above for the full field list.
-# context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5, note_window = 3 }
+# context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5 }
 # attachments = { enabled = true, allowed_extensions = [".pdf", ".md"] }
 #
 # --- Per-agent `[[commands]]` ---
@@ -1238,7 +1240,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #   # mode = "sliding_window"
 #   # window = 3
 #   # extend_rate = 0        # 0 = hard window: slide on every turn
-#   # note_window = 1        # only the newest turn keeps tool results
+#   # note_window = 1        # opt-in: keep the newest turn's tool results
 #   # max_history_tokens = 40000  # second slide trigger, at the top of a cycle
 #   # turn_tool_result_cap   # unset = current turn uncapped; 0 = off
 #

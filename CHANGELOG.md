@@ -1,4 +1,4 @@
-## [Unreleased]
+## [0.7.3] - 2026-10-28
 
 ### Added
 
@@ -19,7 +19,6 @@
 
 ### Fixed
 
-- Revert the sliding-window context prefix stabilization (#1011): the region rebuild dropped the cross-turn provider-cache prefix anchor — in production the first-call cache hit collapsed from ~97% to ~15-21% (wire-dump verified: cross-turn common prefix shrank from 96.8% to ~0.1% at the messages level). The turn-internal stability work from that PR is lost with the revert and will be re-landed together with a persisted per-topic checkpoint that anchors the compact region's start (#1014)
 - The dashboard reports a broken connection instead of looking healthy: the topic info pane says `Failed to load topic details — will retry` when the detail request failed (it used to read `Loading topic details...` forever, because a failed fetch and a pending one left the same empty detail), and the chat status block shows `Not connected: …` for a failed poll and `WebSocket disconnected — reconnecting...` for a lost socket (#998)
 - The dashboard's WebSocket client now pings the server and treats a silent socket as dead, so a half-open tunnel — a VPN switching the network under a `jyc connect` session — is detected and reconnected instead of leaving the chat pane quietly frozen (#998)
 

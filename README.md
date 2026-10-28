@@ -206,7 +206,7 @@ body line.
 | `/template update` | Re-apply template, overwrite existing files |
 | `/context` | Show the context management strategy (`full` / `sliding_window`) |
 | `/context full` | Send the full conversation context to the LLM (default) |
-| `/context sliding [N] [M] [CAP] [TURNCAP] [MAXHIST] [EXT_RATE]` | Send prior history compacted from a block anchor plus the current turn verbatim (tool calls/results intact) to the LLM (default N=10); M limits tool-call history notes to the most recent M windowed turns; CAP caps tool-result bytes in the verbatim prior region; TURNCAP caps them in the current turn; MAXHIST bounds the two history regions' token weight; EXT_RATE is the history extension fraction (default 0.5 — with M ≤ N the retained span grows from N up to N+EXT_RATE×N turns before the oldest drop at once, keeping the wire prefix stable between drops; 0 is the classic sliding window); `.jyc/agent-context.jsonl` keeps the full history |
+| `/context sliding [N] [M]` | Send the last N user/assistant turns from prior history plus the current turn verbatim (tool calls/results intact) to the LLM (default N=10); optional M limits tool-call history notes to the most recent M windowed turns (default: all N); `.jyc/agent-context.jsonl` keeps the full history |
 | `/context reset` | Remove the runtime override and revert to the configured default |
 | `/skill` | Show this topic's runtime skill toggles (`on`/`off` lists) |
 | `/skill on <name>` | Force-enable a discoverable skill for this topic, even if excluded by config; takes effect from the next message, persists until `/skill reset` |

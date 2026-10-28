@@ -222,10 +222,6 @@ pub async fn run(
     // them, so the counters describe the session rather than restarting
     // at zero every turn.
     let seed = crate::session::session_token_totals(topic_name, topic_path).await;
-    // Region-① block anchor persisted by an earlier turn. Feeds the first
-    // context build of this run; when the build computes a different
-    // anchor (a block jump or a cold rebuild) it is persisted back below.
-    let loaded_block_anchor = crate::session::session_block_anchor(topic_name, topic_path).await;
     let mut total_input_tokens: u64 = seed.input;
     let mut total_output_tokens: u64 = seed.output;
     // Sum of every LLM call's prompt-cache-hit tokens in the session.
@@ -452,25 +448,9 @@ pub async fn run(
             &raw_context,
             prior_len,
             &context_strategy,
-            loaded_block_anchor,
             &mut send_context_cache,
         );
         let context_build_ms = build_started.elapsed().as_millis() as u64;
-        // Persist the region-① block anchor when a rebuild moved it (a
-        // block jump or a cold rebuild). Normally that is the first build
-        // of the turn; a cancellation truncation can rebuild once more in
-        // the same turn, where the equality guard in persist_block_anchor
-        // makes the extra write a no-op.
-        if send_context_cache.history_rebuilt() == Some(true)
-            && send_context_cache.block_anchor() != loaded_block_anchor
-        {
-            crate::session::persist_block_anchor(
-                topic_name,
-                topic_path,
-                send_context_cache.block_anchor(),
-            )
-            .await;
-        }
         // Optional debug dump: when the user runs `/context dump on`, append
         // one JSON line per LLM call to `<topic>/.jyc/wire-payload.jsonl`
         // (capped at 50 lines). Best-effort — failures are not fatal.

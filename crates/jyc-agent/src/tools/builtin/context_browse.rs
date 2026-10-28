@@ -120,13 +120,13 @@ impl Tool for ContextBrowseTool {
             end,
             total
         );
-        let mut n = start;
         let mut shown = 0usize;
         let journal_slice =
             &journal_pairs[journal_from - journal_first..journal_to - journal_first];
         let current_slice =
             &current_pairs[current_from - journal_total..current_to - journal_total];
-        for pair in journal_slice.iter().chain(current_slice.iter()) {
+        let page = journal_slice.iter().chain(current_slice.iter());
+        for (n, pair) in (start..).zip(page) {
             let rendered = format_pair(n + 1, pair);
             // Per-pair and per-line bounds cap what one pair can cost; this
             // caps the page as a whole, so a long page of maximal pairs
@@ -136,7 +136,6 @@ impl Tool for ContextBrowseTool {
                 break;
             }
             out.push_str(&rendered);
-            n += 1;
             shown += 1;
         }
         let omitted = end - start - shown;

@@ -493,7 +493,7 @@ fn slice_start(messages: &[Value], depth: PriorDepth) -> usize {
         PriorDepth::All => 0,
         PriorDepth::Window { pairs, openers } => {
             let pair_start = crate::session::pairs_tail_start(messages, pairs).0;
-            let opener_start = crate::session::verbatim_start_index(messages, openers);
+            let opener_start = crate::session::turn_openers_start(messages, openers);
             pair_start.min(opener_start)
         }
     }

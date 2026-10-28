@@ -96,8 +96,8 @@ pub struct TopicConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
 
-    /// Context management strategy for this topic (window size, tool-result
-    /// cap, note window).
+    /// Context management strategy for this topic (window size, turn
+    /// tool-result cap, history token budget).
     ///
     /// The same layer as `mode`: a config layer, not an override — it beats the
     /// pattern/channel/global `[ai].context_strategy` and loses to

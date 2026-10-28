@@ -306,8 +306,8 @@ pub async fn run(
     let mut turn_llm_ms: u64 = 0;
     let mut turn_tool_ms: u64 = 0;
 
-    // Regions ①+② of the send context are rebuilt per call unless cached;
-    // within a turn the persisted prefix is fixed, so build them once (see
+    // The send context's history block is rebuilt per call unless cached;
+    // within a turn the persisted prefix is fixed, so build it once (see
     // `SendContextCache`).
     let mut send_context_cache = crate::agent_loop::context::SendContextCache::default();
 
@@ -439,9 +439,9 @@ pub async fn run(
         // accumulate current-turn messages and is what we persist at the
         // end of the loop — the strategy only changes what the LLM sees.
         //
-        // `send_regions` is the parallel Vec<u8> of per-message region
-        // labels (1=compacted history / Full-mode, 2=verbatim, 3=current
-        // turn) — used only by the wire-payload debug dump.
+        // `send_regions` is the parallel Vec<u8> of per-message labels
+        // (1=text-only history / Full-mode, 2=current turn) — used only
+        // by the wire-payload debug dump.
         let build_started = Instant::now();
         let (send_context, send_regions) = crate::agent_loop::context::build_send_context_cached(
             provider,

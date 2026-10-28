@@ -2333,11 +2333,10 @@ JYC uses the following subset of the agent service API:
    * `sliding_window` — anchored: `agent-session.json` persists
      `context_offset`, the journal byte offset where the window's oldest
      retained turn begins, and each load reads the journal forward from
-     there. The wire payload is region ① (older turns as text-only
-     pairs — append-only, never trimmed), then region ② (the last
-     `note_window` turns verbatim, structured tool calls intact — empty
-     by default, `note_window = 0`), then
-     the current turn verbatim (`raw_context[prior_len..]`). The window
+     there. The wire payload is the history block — the prior turns as
+     text-only pairs, append-only, never trimmed — followed by the
+     current turn verbatim (`raw_context[prior_len..]`, structured tool
+     calls and results intact). The window
      grows by append until it holds more than `max_window = window +
      round(extend_rate × window)` turns — or has reached that bound and
      exceeds `max_history_tokens`' weight, the budget being a second
@@ -2346,9 +2345,8 @@ JYC uses the following subset of the agent service API:
      remain, whole turns at a time.
      Slides are the only way history shrinks — a per-turn trim of the
      head is what destroys the cross-turn prefix cache. The prefix is
-     therefore append-only up to region ①'s end, which by default is the
-     whole history; region ② re-encodes as its tail advances only when
-     `note_window` is raised above `0`. A cold start
+     therefore append-only up to the end of the history block; only
+     the current turn is re-encoded from one turn to the next. A cold start
      (fresh topic, reset, no anchor, or an anchor no longer on a turn
      boundary) reads the journal once from its head and drops the bad
      anchor; the next slide persists a fresh one.
@@ -2369,8 +2367,8 @@ JYC uses the following subset of the agent service API:
    own formatter, so Anthropic (`content: [...]`) and OpenAI-compat
    (`content: "..."`) wire formats both stay valid.
 
-   Full mechanism reference (turn pairing, history notes, token safety
-   nets, configuration): [docs/architecture/context.md](docs/architecture/context.md).
+   Full mechanism reference (turn pairing, what a request looks like,
+   token safety nets, configuration): [docs/architecture/context.md](docs/architecture/context.md).
 
    **`max_history_tokens` (2026-10-18; corrected 2026-10-28).** `window`
    counts turns, so `window = 10` costs 2k tokens on a quiet topic and
@@ -2384,8 +2382,8 @@ JYC uses the following subset of the agent service API:
    estimated weight exceeds the budget, it slides back to `window` turns —
    whole turns, anchor forward, exactly what the turn bound does. Below
    `max_window` it never fires, because a window whose `window` turns
-   alone exceed the budget cannot get under it. Region ③ is excluded: the
-   turn in flight has `turn_tool_result_cap`. The estimate is a
+   alone exceed the budget cannot get under it. The current turn is
+   excluded: the turn in flight has `turn_tool_result_cap`. The estimate is a
    heuristic, not a tokenizer — CJK characters ×1, other bytes ÷4, plus a
    small per-message constant — because a tokenizer dependency would buy
    precision this knob does not need. Unset by default.
@@ -2507,17 +2505,14 @@ tokens ↓
 │  · Skills 清单 + AGENTS.md(项目指令)             │
 │  · Reply instructions / History format / VCS     │
 ├─ messages ──────────────────────────────────────┤
-│  region ① 旧的轮次 (text-only pairs)             │
+│  历史 旧轮次 (text-only pairs)                   │
 │  └ user/assistant 文本原样, tool call/result 丢弃 │ ← 只追加: 前缀字节不变
 │                                                   │    ★不做任何裁剪★
-│                                                   │
-│  region ② verbatim 尾部   note_window 轮 (默认 0) │
-│  └ 全结构保留 (tool_use / tool_result 原样)       │ ← 默认空; 设了则每轮前进一轮、重编码 M 轮
 │                                                   │
 │  ⟵ 窗口超 max_window 轮, 或已到 max_window 且超   │
 │     max_history_tokens 时, 前移锚点、丢整轮        │ ← 每 (max_window-window) 轮一次
 │                                                   │
-│  region ③ 当前轮            0 → 增长             │
+│  当前轮            0 → 增长                      │
 │  ├ user: <runtime-state> 参考块 ~300B ★易变★     │ ★新位置★
 │  │        + 入站消息(含 <mode> 块) + 附件          │
 │  ├ assistant: tool_call                          │ ◇断点3 (n-3)
@@ -2532,7 +2527,7 @@ tokens ↓
 `◇` = Anthropic `cache_control` breakpoint; `★` = 本次改动的位置。
 ¹ 稳态是指"不随运行时变动"，access boundary 的 grant 行除外——它对应
   工具层强制的 roots，spawn/close 与 `/grant` 会移动它(见上文)。
-参考块虽易变，但落在 region ③ 最前——这个位置反正每轮都是新的，
+参考块虽易变，但落在当前轮最前——这个位置反正每轮都是新的，
 所以它的易变性对缓存的损失为零，这正是选这个注入点的原因。
 
 **Cross-Turn Cache Reuse (prefix-caching providers):**
@@ -2556,7 +2551,7 @@ turn N+1 的第一个 call:                    turn N+1 的第一个 call:
 
 对应 Anthropic：改动前断点 2 随任一易变项失效，A+B 两个 span 同时
 作废；改动后 span A+B 跨轮稳定，span C/D 照旧在轮内逐 call 点亮。
-改动**没有**减少 region ① 的体量(本话题实测最大的一块)——那是 token
+改动**没有**减少历史块的体量(本话题实测最大的一块)——那是 token
 预算窗口的课题。
 
 **Context Limits:**

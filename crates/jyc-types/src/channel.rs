@@ -788,9 +788,10 @@ pub enum ContextStrategy {
 /// turns (text-only, region ①) only ever grow, so the provider's cached
 /// prefix extends from one turn to the next; the most recent
 /// [`Self::note_window`] turns (verbatim, region ②) advance by one turn
-/// each turn and are therefore re-encoded. Only `note_window = Some(0)`
-/// (no verbatim tail) or unset (whole history verbatim) makes the whole
-/// payload append-only.
+/// each turn and are therefore re-encoded. `note_window = Some(0)` — the
+/// default — makes region ② empty, so the whole payload is append-only;
+/// unset sends the whole history verbatim, and then nothing is ever folded
+/// either.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ContextStrategyConfig {
     /// Context strategy mode. Default: `sliding_window`.
@@ -813,15 +814,18 @@ pub struct ContextStrategyConfig {
     /// their tool calls and results. Older turns are sent as text-only
     /// user/assistant text pairs: no history notes, and their tool calls,
     /// arguments and results are gone from the payload (the journal keeps
-    /// them; `context_browse` still reads them). `Some(3)` by default
-    /// (sliding_window mode). Only meaningful when
-    /// `mode = "sliding_window"`.
+    /// them; `context_browse` still reads them). **`Some(0)` by default**
+    /// (sliding_window mode): history is text-only, which is both the
+    /// smallest payload and the only setting whose prefix never moves.
+    /// Only meaningful when `mode = "sliding_window"`.
     ///
     /// Each turn the verbatim tail advances by one turn (a turn moves from
     /// the tail into the text-only block), so the tail is re-encoded every
-    /// turn while the text-only block only grows by append. `Some(0)` sends
-    /// no tool results in history at all — the cheapest tail, and the
-    /// strictest append-only prefix.
+    /// turn while the text-only block only grows by append — that re-encode
+    /// is the price of keeping structured tool calls in the recent window.
+    /// Raise it above `0` when a thinking model starts writing its process
+    /// as content (text-only history taught MiniMax/DeepSeek to do that),
+    /// and accept the re-encoding in exchange.
     ///
     /// Omitted from serialized override files when unset so existing
     /// readers stay compatible.
@@ -918,7 +922,9 @@ fn default_context_strategy() -> ContextStrategy {
 }
 
 fn default_note_window() -> Option<usize> {
-    Some(3)
+    // Text-only history: the verbatim tail is opt-in, because every turn it
+    // holds is re-encoded the moment it advances.
+    Some(0)
 }
 
 /// Per-pattern filesystem access whitelist.
@@ -1136,7 +1142,7 @@ topic_path = "~/projects/jyc"
         assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
         assert_eq!(cfg.window, 10);
         assert_eq!(cfg.extend_rate, 0.5);
-        assert_eq!(cfg.note_window, Some(3));
+        assert_eq!(cfg.note_window, Some(0));
         // window 10 + round(0.5 × 10) = 15 turns before a slide.
         assert_eq!(cfg.max_window(), 15);
     }
@@ -1196,14 +1202,15 @@ topic_path = "~/projects/jyc"
         // Regression guard for the partial-config bug: when a user writes
         // just `mode = "sliding_window"` in config.toml, the unset
         // `note_window` / `extend_rate` fields must pick up the struct
-        // defaults (`Some(3)` / `0.5`), not `None` / `0.0`. Without the
-        // `default = "..."` serde attributes, `Option::default()` would
-        // yield `None` and silently disable the verbatim tail.
+        // defaults (`Some(0)` / `0.5`), not `None` / `0.0`. `None` means
+        // "whole history verbatim" — the opposite of the default — so
+        // without the `default = "..."` serde attributes a partial config
+        // would silently flip the payload shape.
         let cfg: ContextStrategyConfig = toml::from_str(r#"mode = "sliding_window""#).unwrap();
         assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
         assert_eq!(cfg.window, 10);
         assert_eq!(cfg.extend_rate, 0.5);
-        assert_eq!(cfg.note_window, Some(3));
+        assert_eq!(cfg.note_window, Some(0));
     }
 
     #[test]

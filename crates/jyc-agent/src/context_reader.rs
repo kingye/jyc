@@ -209,11 +209,12 @@ impl ContextReader {
         // `clean_end` owns that repair; the reader drops it.
         PriorSlice {
             messages,
-            // An anchored read starts mid-journal: the head it does not
-            // cover is exactly what `reached_head == false` must mean. The
-            // corruption guard in `finish_load` deletes the journal when a
-            // head-covering slice holds no assistant message, and a window
-            // that starts at an anchor is not entitled to that verdict.
+            // A read from a non-zero offset starts mid-journal: the head it
+            // does not cover is exactly what `reached_head == false` must
+            // mean, which is `offset != 0`. The corruption guard in
+            // `finish_load` deletes the journal when a head-covering slice
+            // holds no assistant message, and a window that starts at an
+            // anchor is not entitled to that verdict.
             reached_head: offset == 0,
             offsets,
         }
@@ -963,6 +964,10 @@ mod tests {
         assert_eq!(slice.messages[0]["content"], "u3");
         assert_eq!(slice.messages[1]["content"], "a3");
         assert_eq!(slice.offsets[0], line_start);
+        assert!(
+            !slice.reached_head,
+            "a read from a non-zero offset does not cover the journal's head"
+        );
     }
 
     #[tokio::test]
@@ -972,7 +977,10 @@ mod tests {
         let reader = reader_for(&tmp, &body).await;
         let slice = reader.read_from(body.len() as u64 + 100).await;
         assert!(slice.messages.is_empty());
-        assert!(slice.reached_head);
+        assert!(
+            !slice.reached_head,
+            "an offset past the end never reached the head — only offset 0 did"
+        );
     }
 
     #[tokio::test]

@@ -153,8 +153,11 @@ pub(crate) fn build_send_context_cached<'a>(
             if cache.boundary != Some(boundary) {
                 // The prior is the anchored window the loader read: its
                 // head only moves when the loader slides the anchor, so
-                // these regions stay byte-identical between slides and the
-                // wire prefix stays cacheable.
+                // region ① (text-only) only ever grows by append — the
+                // provider's cached prefix reaches as far as it does. The
+                // verbatim tail is empty by default (`note_window = 0`);
+                // when it is not, it advances one turn per turn and those
+                // bytes are re-encoded.
                 let (region1, region2) =
                     build_history_regions(provider, &raw_context[..boundary], strategy);
                 cache.region1 = region1;
@@ -202,21 +205,21 @@ pub(crate) fn build_send_context_cached<'a>(
 ///
 /// Nothing here trims: the prior is already the anchored window the loader
 /// bounded, and any head-trim here would rewrite the wire prefix on every
-/// turn — the bug this shape exists to avoid. Region ① only grows, region
-/// ② advances one turn per turn (see `note_window`).
+/// turn — the bug this shape exists to avoid. Region ① only grows, so the
+/// payload is append-only end to end while region ② is empty, which is the
+/// default (`note_window = 0`).
 fn build_history_regions(
     provider: &dyn Provider,
     prior: &[serde_json::Value],
     strategy: &ContextStrategyConfig,
 ) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
-    // The most recent `note_window` prior turns are sent VERBATIM
-    // (structured tool_calls + results) instead of being folded into
-    // user-role text notes. Text notes taught thinking models
-    // (MiniMax, DeepSeek) to write their process — tool calls and
-    // action announcements — as content instead of using the
-    // structured channel, which leaked "thinking" into delivered
-    // replies. Keeping the structured wire format in the recent
-    // window restores the format the model should mimic.
+    // The default (`note_window = 0`) sends no verbatim tail at all: every
+    // prior turn is folded into text-only pairs below, so the history block
+    // is a pure append. Raising it keeps the most recent turns as
+    // structured wire messages (tool_calls + results intact) — text notes
+    // taught thinking models (MiniMax, DeepSeek) to write their process as
+    // content instead of using the structured channel — at the cost of
+    // re-encoding that tail every turn.
     let note_window = strategy.note_window.unwrap_or(usize::MAX);
     let verbatim_start = crate::session::verbatim_start_index(prior, note_window);
     let (compact_prior, verbatim_prior) = prior.split_at(verbatim_start);
@@ -796,21 +799,17 @@ mod render_raw_context_tests {
     }
 
     #[test]
-    fn region1_appends_and_region2_rotates_across_turns() {
-        // The property the strategy exists for. Region ① is a pure append,
-        // so the prefix the provider cached at turn k is still there at
-        // turn k+1. Region ② (the last `note_window` turns) re-encodes as
-        // it advances — the price of keeping structured tool calls in the
-        // recent window, and the reason `note_window = 0` / unset are the
-        // only settings with a fully append-only payload.
+    fn history_stays_a_byte_stable_prefix_across_turns() {
+        // The property the strategy exists for, under the default
+        // configuration: history is text-only (`note_window = 0`), so every
+        // turn's history block is a prefix of the next turn's — the
+        // provider's cached prefix reaches the whole of it, and only the
+        // turn that just ended is re-encoded (as it graduates into the
+        // text-only block) together with the current turn.
         let prov = prov();
         let cfg = ContextStrategyConfig {
-            mode: ContextStrategy::SlidingWindow,
-            window: 4,
-            extend_rate: 0.5,
-            note_window: Some(2),
-            turn_tool_result_cap: None,
-            max_history_tokens: None,
+            note_window: Some(0),
+            ..ContextStrategyConfig::default()
         };
         let turn = |i: usize| {
             [
@@ -830,26 +829,25 @@ mod render_raw_context_tests {
             (sent.into_owned(), regions)
         };
 
-        let (at_5, regions_5) = payload(5); // prior 1..4 → ① = 1..2, ② = 3..4
-        let (at_6, regions_6) = payload(6); // prior 1..5 → ① = 1..3, ② = 4..5
+        let (at_5, regions_5) = payload(5); // prior 1..4 → history = 1..4
+        let (at_6, regions_6) = payload(6); // prior 1..5 → history = 1..5
         let region1_5 = regions_5.iter().take_while(|&&r| r == 1).count();
         let region1_6 = regions_6.iter().take_while(|&&r| r == 1).count();
 
-        assert!(region1_5 > 0, "the marker and two turns");
-        assert_eq!(
-            region1_6,
-            region1_5 + 2,
-            "region ① grew by exactly one turn"
+        assert!(
+            !regions_5.contains(&2) && !regions_6.contains(&2),
+            "the default keeps no verbatim tail"
         );
+        assert!(region1_5 > 0, "the marker and four turns");
+        assert_eq!(region1_6, region1_5 + 2, "history grew by exactly one turn");
         assert_eq!(
             at_6[..region1_5],
             at_5[..region1_5],
-            "region ① is a byte-stable prefix from one turn to the next"
+            "the whole history block is a byte-stable prefix from one turn to the next"
         );
-        assert_ne!(
-            at_6[region1_5], at_5[region1_5],
-            "region ② rotates: the common prefix ends where ① ends"
-        );
+        // Everything past the history block is the current turn.
+        assert_eq!(at_5[region1_5]["content"], "u5");
+        assert_eq!(at_6[region1_6]["content"], "u6");
     }
 
     #[test]

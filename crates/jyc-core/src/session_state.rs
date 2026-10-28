@@ -778,7 +778,7 @@ pub async fn read_context_strategy_override(
 /// wrote it or a subagent type expanded into it) > matched pattern > first
 /// pattern > global `[ai].context_strategy` >
 /// `ContextStrategyConfig::default()` (sliding_window / window=10 /
-/// note_window=3 / tool_result_cap=2048).
+/// note_window=0 / extend_rate=0.5).
 ///
 /// The topic layer is a *config* layer, not an override: callers must consult
 /// the runtime `.jyc/context-strategy.json` (the user's `/context`) *before*
@@ -1709,12 +1709,12 @@ mode = "agent"
     }
 
     #[test]
-    fn resolve_context_strategy_default_is_sliding_window_10_3() {
+    fn resolve_context_strategy_default_is_sliding_window_10_0() {
         let app = config_with_strategies(vec![], None);
         let resolved = resolve_context_strategy(&app, "c", Some("a"), None);
         assert_eq!(resolved.mode, ContextStrategy::SlidingWindow);
         assert_eq!(resolved.window, 10);
-        assert_eq!(resolved.note_window, Some(3));
+        assert_eq!(resolved.note_window, Some(0));
     }
 
     /// The topic's own strategy — what a subagent type hands its child — is a
@@ -1768,8 +1768,8 @@ mode = "agent"
         assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
         assert_eq!(cfg.window, 3);
         // Old override files without note_window still parse, picking up
-        // the struct default of `Some(3)`.
-        assert_eq!(cfg.note_window, Some(3));
+        // the struct default of `Some(0)` (text-only history).
+        assert_eq!(cfg.note_window, Some(0));
     }
 
     #[tokio::test]

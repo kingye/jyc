@@ -21,10 +21,11 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///     TURNCAP is the optional per-tool-result byte cap on the current
 ///     turn; an oversized result keeps its head and tail with
 ///     the middle replaced by a paging marker. 0 means off; a non-zero
-///     value must be `MIN_EDGE_KEEPING_CAP`..
-///     `MAX_TURN_TOOL_RESULT_CAP` (below the floor the trim cannot keep
-///     both ends), and a configured value below the floor is lifted to it
-///     rather than rejected. Unset by default.
+///     value must be between `MIN_EDGE_KEEPING_CAP` and
+///     `MAX_TURN_TOOL_RESULT_CAP` bytes (below the floor the trim cannot
+///     keep both ends of an ASCII result). A configured value below the
+///     floor is lifted to it rather than rejected; a command-line value
+///     below it is refused. Unset by default.
 ///     MAXHIST is the optional token budget for the windowed history: when
 ///     the window has reached its turn bound and estimates over it, the window
 ///     slides back to N turns — the same slide the turn bound performs.

@@ -352,7 +352,8 @@ fn cap_tool_result_content_with(
 }
 
 /// The current-turn cap actually applied: `None` and `Some(0)` both mean
-/// off, anything else is lifted to [`MIN_EDGE_KEEPING_CAP`].
+/// off, anything else is lifted to
+/// [`jyc_types::channel::MIN_EDGE_KEEPING_CAP`].
 ///
 /// The rule itself lives in [`jyc_types::channel::effective_turn_cap`], shared
 /// with the `/context` echo — the "0 is the off sentinel, non-zero is lifted"

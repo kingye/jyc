@@ -1130,7 +1130,8 @@ pub(crate) use jyc_types::channel::MIN_EDGE_KEEPING_CAP;
 /// usually read for (the error at the end of a command's output, the
 /// totals of a grep). Falls back to [`truncate_text`] when `max` is too
 /// small to hold the marker plus both ends — see
-/// [`MIN_EDGE_KEEPING_CAP`] for the smallest cap that really keeps both.
+/// [`jyc_types::channel::MIN_EDGE_KEEPING_CAP`] for the smallest cap that
+/// really keeps both.
 pub(crate) fn truncate_text_keeping_edges(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
@@ -1165,7 +1166,7 @@ fn truncate_json_value(value: &serde_json::Value, max: usize) -> String {
     truncate_text(&value.to_string(), max)
 }
 
-/// Wire-only marker inserted at the start of the compacted history region.
+/// Wire-only marker inserted at the start of the history block.
 /// It is **not** persisted to `raw_context`, so `extract_pairs` must never
 /// recognize it as a real user message.
 pub(crate) const HISTORY_MARKER_TEXT: &str =
@@ -1231,9 +1232,13 @@ pub(crate) fn render_turn_tool_calls_bounded(pair: &TurnPair, limit: usize) -> O
             return Some(format!("{body}{suffix}"));
         }
         if keep == 0 {
-            // Not even the bare marker fits the budget. Cut it: exceeding
-            // the caller's bound would defeat the point of passing one.
-            return Some(truncate_text(suffix.trim_start(), limit));
+            // Not even one call plus the marker fits the budget. Hard-cut
+            // the marker at a char boundary *without* a truncation marker:
+            // `truncate_text` appends one of its own, which would push the
+            // result back over the caller's bound.
+            let marker_only = suffix.trim_start();
+            let end = marker_only.floor_char_boundary(limit);
+            return Some(marker_only[..end].to_string());
         }
         keep -= 1;
     }
@@ -1666,8 +1671,9 @@ mod tests {
     }
 
     /// A turn with more calls than [`TOOL_CALLS_PER_TURN_MAX`] keeps the
-    /// first N verbatim and reports the rest as a count — the only bound on
-    /// the transcript view now that notes are gone.
+    /// first N verbatim and reports the rest as a count — the count bound on
+    /// the transcript view (the byte bound lives in
+    /// `render_turn_tool_calls_bounded`).
     #[test]
     fn caps_rendered_tool_calls_per_turn() {
         let calls: Vec<serde_json::Value> = (0..25)
@@ -1772,6 +1778,33 @@ mod tests {
                 .all(|c| c.ends_with(')') && c.starts_with("bash(")),
             "a kept call must be whole: {body}"
         );
+    }
+
+    /// When not even one call plus the marker fits the budget, the marker
+    /// alone is returned — hard-cut, with no second truncation marker
+    /// pushing it back over the bound and no leading space left where the
+    /// (empty) body would have been.
+    #[test]
+    fn bounded_rendering_degrades_to_the_marker_alone() {
+        let long = "x".repeat(300);
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "running", "tool_calls": [
+                {"id": "t0", "function": {
+                    "name": "bash",
+                    "arguments": format!("{{\"command\":\"{long}\"}}"),
+                }}
+            ]}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        let full = super::render_turn_tool_calls(&pairs[0]).unwrap();
+        assert!(full.len() > 200, "fixture must overflow: {}", full.len());
+
+        let bounded = super::render_turn_tool_calls_bounded(&pairs[0], 200).unwrap();
+        assert_eq!(bounded, "…(1 more call)", "marker alone, no empty body");
+        // A budget smaller than the marker itself still holds.
+        let tight = super::render_turn_tool_calls_bounded(&pairs[0], 8).unwrap();
+        assert!(tight.len() <= 8, "budget exceeded: {tight}");
     }
 
     /// The 130-byte floor keeps both ends for ASCII-bounded content only:

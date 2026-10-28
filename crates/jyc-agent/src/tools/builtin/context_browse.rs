@@ -23,11 +23,16 @@ use crate::types::PriorDepth;
 const MAX_PAGE: usize = 50;
 
 /// Byte bound on one turn's rendered `TOOLS:` line. [`MAX_PAGE`] bounds the
-/// page by *count*, but each turn can carry [`crate::session::TOOL_CALLS_PER_TURN_MAX`]
+/// page by *count*, but each turn can carry up to `TOOL_CALLS_PER_TURN_MAX`
 /// calls of up to `TOOL_ARG_MAX` bytes each — a page of call-heavy turns
 /// would otherwise be hundreds of KB, and this text is a tool result that
 /// rides every remaining call of the current turn.
 const TOOLS_LINE_MAX: usize = 4000;
+
+/// Byte bound on one message's text in a rendered pair. [`MAX_PAGE`] bounds
+/// the page by pair count, so fifty long assistant replies would otherwise
+/// still make a megabyte-sized tool result.
+const MESSAGE_TEXT_MAX: usize = 2000;
 
 /// Page through the conversation transcript.
 pub struct ContextBrowseTool;
@@ -124,14 +129,11 @@ impl Tool for ContextBrowseTool {
 
 /// One pair as the tool renders it.
 fn format_pair(n: usize, pair: &TurnPair) -> String {
-    let mut out = format!(
-        "\n[{n}] USER: {}\n",
-        crate::session::extract_message_text(&pair.user),
-    );
+    let mut out = format!("\n[{n}] USER: {}\n", bounded_message_text(&pair.user),);
     if let Some(assistant) = &pair.assistant {
         out.push_str(&format!(
             "[{n}] ASSISTANT: {}\n",
-            crate::session::extract_message_text(assistant),
+            bounded_message_text(assistant),
         ));
     }
     if let Some(calls) = crate::session::render_turn_tool_calls_bounded(pair, TOOLS_LINE_MAX) {
@@ -143,6 +145,15 @@ fn format_pair(n: usize, pair: &TurnPair) -> String {
         out.push_str(&format!("[{n}] TOOLS: {calls}\n"));
     }
     out
+}
+
+/// A message's text, cut to [`MESSAGE_TEXT_MAX`] bytes with a marker when it
+/// is longer.
+fn bounded_message_text(message: &serde_json::Value) -> String {
+    crate::session::truncate_text(
+        &crate::session::extract_message_text(message),
+        MESSAGE_TEXT_MAX,
+    )
 }
 
 /// The journal's tail pairs and the journal's total pair count.
@@ -344,6 +355,34 @@ mod tests {
             out.content.contains(r#"[1] TOOLS: bash(command="ls")"#),
             "{}",
             out.content
+        );
+    }
+
+    /// A page is bounded by pair count alone, so each message's text is
+    /// capped too: fifty long replies must not make a megabyte result.
+    #[tokio::test]
+    async fn long_message_text_is_bounded() {
+        let long = "x".repeat(MESSAGE_TEXT_MAX * 2);
+        let raw = vec![
+            json!({"role": "user", "content": long.clone()}),
+            json!({"role": "assistant", "content": long}),
+        ];
+        let dir = tempfile::tempdir().expect("create working dir");
+        let tool = ContextBrowseTool;
+        let out = tool
+            .execute(json!({}), &tool_ctx(dir.path(), raw))
+            .await
+            .unwrap();
+        // Two messages, each capped, plus the headers and the marker.
+        assert!(
+            out.content.len() < MESSAGE_TEXT_MAX * 2 + 500,
+            "page not bounded: {}",
+            out.content.len()
+        );
+        assert!(
+            out.content.contains("truncated"),
+            "a cut message must say so: {}",
+            &out.content[..200.min(out.content.len())]
         );
     }
 

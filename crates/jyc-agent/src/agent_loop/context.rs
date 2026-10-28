@@ -35,7 +35,7 @@ fn format_cleaned_message(
 /// Cold build — [`build_send_context_cached`] with a throwaway cache.
 ///
 /// Test-only: the loop passes its own [`SendContextCache`], so a turn's calls
-/// reuse the history regions instead of rebuilding them.
+/// reuse the history block instead of rebuilding it.
 #[cfg(test)]
 pub(crate) fn build_send_context_with_regions<'a>(
     provider: &dyn Provider,
@@ -54,16 +54,16 @@ pub(crate) fn build_send_context_with_regions<'a>(
 
 /// Cross-iteration memo for the sliding-window history block.
 ///
-/// The regions depend only on the persisted prefix (`raw_context[..prior_len]`)
+/// The block depends only on the persisted prefix (`raw_context[..prior_len]`)
 /// and the strategy, yet the loop rebuilt them for every LLM call — a scan of
 /// the whole history that deep-cloned every user/assistant message
 /// (`extract_pairs`) only to keep the tail. Within a turn the prefix is
 /// fixed: live injections append past `prior_len`, and the only shrink (the
 /// cancellation truncation) ends the turn. The first call of a turn builds
-/// the regions; the rest reuse them.
+/// the block; the rest reuse it.
 #[derive(Default)]
 pub(crate) struct SendContextCache {
-    /// The split point the cached regions were built from (`prior_len`
+    /// The split point the cached block was built from (`prior_len`
     /// clamped to the context length); `None` = cold.
     ///
     /// A length is a sound key only because the cache belongs to one
@@ -73,7 +73,7 @@ pub(crate) struct SendContextCache {
     /// cache that outlived a turn would need a content key.
     boundary: Option<usize>,
     history: Vec<serde_json::Value>,
-    /// Whether the last build rebuilt the regions (`Some(true)`), reused them
+    /// Whether the last build rebuilt the block (`Some(true)`), reused it
     /// (`Some(false)`), or built nothing at all (`None`, `Full` mode — the log
     /// must not read that as "reused").
     rebuilt: Option<bool>,
@@ -81,7 +81,7 @@ pub(crate) struct SendContextCache {
 
 impl SendContextCache {
     /// Whether the last [`build_send_context_cached`] rebuilt the history
-    /// regions, or `None` when it built nothing (`Full` mode).
+    /// block, or `None` when it built nothing (`Full` mode).
     pub(crate) fn history_rebuilt(&self) -> Option<bool> {
         self.rebuilt
     }
@@ -172,7 +172,14 @@ pub(crate) fn build_send_context_cached<'a>(
             // is read for usually sits at the ends, and the marker tells
             // the model how to page the gap. Both sentinel and default
             // mean off; see the doc above.
-            let turn_cap = strategy.turn_tool_result_cap.unwrap_or(0);
+            // A configured cap below the edge-keeping floor would degrade
+            // the trim to a head-only cut and gut every result, so lift it
+            // here — the value is trusted at this point, not only at the
+            // `/context` command. `0` keeps meaning off.
+            let turn_cap = match strategy.turn_tool_result_cap {
+                Some(c) if c > 0 => c.max(crate::session::MIN_EDGE_KEEPING_CAP),
+                _ => 0,
+            };
             for msg in current {
                 out.push(cap_tool_result_content_with(
                     msg,

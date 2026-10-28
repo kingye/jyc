@@ -282,8 +282,10 @@ The pairing unit is the **turn**, not the single message:
   alike. `reasoning_content` and `tool_calls` are stripped from the
   assistant entry, so the history block carries no call structure.
 - **The turn's tool calls are collected separately** (`TurnPair::tool_calls`,
-  one `name(args)` string per call) for the transcript view; they never
-  enter the assistant's own text and never reach the wire.
+  one `name(args)` string per call — at most 20 per turn, the rest counted
+  in `TurnPair::omitted_tool_calls` and rendered as `…(N more calls)`) for
+  the transcript view; they never enter the assistant's own text and never
+  reach the wire.
 - **Anthropic `tool_result` user-role wrappers** carry no text, so they
   don't open turns.
 - Assistant messages seen before any user message are dropped; a trailing
@@ -536,7 +538,7 @@ bounds how much history survives before the next slide.
 |---------|--------|
 | `/context` | Show current strategy and its source (`override` / `default`) |
 | `/context full` | Send the full context |
-| `/context sliding [N] [EXT] [TURNCAP] [MAXHIST]` | Sliding window, N turns (default 10, max 200); EXT = extend rate (0..10, default 0.5); TURNCAP = per-result byte cap on the current turn (0..1 MiB, unset by default); MAXHIST = weight trigger for a slide (0..4M, unset by default). An absent slot falls back to the configured value; `0` switches a cap off |
+| `/context sliding [N] [EXT] [TURNCAP] [MAXHIST]` | Sliding window, N turns (default 10, max 200); EXT = extend rate (0..10, default 0.5); TURNCAP = per-result byte cap on the current turn (`0`, or 130 B..1 MiB; unset by default); MAXHIST = weight trigger for a slide (0..4M, unset by default). A fifth positional (a command written before `note_window` was removed) is refused; an absent slot falls back to the configured value; `0` switches a cap off |
 | `/context reset` | Remove the runtime override, revert to configured default |
 
 ## Code map
@@ -564,8 +566,8 @@ Key changes, newest first (see CHANGELOG.md for full entries):
 - **`note_window` removed** — the wire payload has two parts: text-only
   history and the verbatim current turn. History notes are gone from the
   wire, the config, the `/context` command and the system prompt.
-  `context_browse` still renders every turn's tool calls (`[n] TOOLS:`),
-  built from the journal instead of from a note.
+  `context_browse` still renders each turn's tool calls (`[n] TOOLS:`, at
+  most 20 per turn), built from the journal instead of from a note.
 - **system prompt stability** — the subagent roster and the channel/topic
   roster left the system prompt for a `<runtime-state>` block on the
   turn's user message, so topic churn no longer invalidates the cached

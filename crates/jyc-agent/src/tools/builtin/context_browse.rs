@@ -127,8 +127,8 @@ fn format_pair(n: usize, pair: &TurnPair) -> String {
             crate::session::extract_message_text(assistant),
         ));
     }
-    if !pair.tool_calls.is_empty() {
-        out.push_str(&format!("[{n}] TOOLS: {}\n", pair.tool_calls.join(", ")));
+    if let Some(calls) = crate::session::render_turn_tool_calls(pair) {
+        out.push_str(&format!("[{n}] TOOLS: {calls}\n"));
     }
     out
 }

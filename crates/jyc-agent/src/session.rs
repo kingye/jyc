@@ -976,9 +976,9 @@ pub(crate) fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> S
         if let Some(assistant) = &pair.assistant {
             out.push_str(&extract_message_text(assistant));
         }
-        if !pair.tool_calls.is_empty() {
+        if let Some(calls) = render_turn_tool_calls(&pair) {
             out.push('\n');
-            out.push_str(&pair.tool_calls.join(", "));
+            out.push_str(&calls);
         }
         out.push_str("\n\n");
     }
@@ -1014,9 +1014,21 @@ const TOOL_ARG_MAX: usize = 200;
 
 /// Max tool calls rendered for one turn in the transcript view
 /// ([`crate::tools::builtin::context_browse`]). A long turn can issue
-/// dozens of calls; the rest collapse into an explicit `…(K more calls)`
-/// marker so one page of the transcript cannot balloon into megabytes.
+/// dozens of calls; the rest are counted in [`TurnPair::omitted_tool_calls`]
+/// and render as an explicit `…(K more calls)` marker, so one page of the
+/// transcript cannot balloon into megabytes.
 const TOOL_CALLS_PER_TURN_MAX: usize = 20;
+
+/// Leading text of the history-note message that builds of the past wrote
+/// into `raw_context`.
+///
+/// The note generator is gone (it produced a format the model mimicked),
+/// but the messages it produced are *input data* that may still sit in a
+/// journal: `summarize_context_heuristic` asked for notes on every pair and
+/// wrote the result back with `replace_raw_context` until 2026-10-20, and
+/// `/reset` after a failed summary ran exactly that path. So
+/// [`opens_turn`] still refuses to treat one as a turn opener.
+const HISTORY_NOTE_PREFIX: &str = "[History note]";
 
 /// Collect bare tool calls from a raw wire-format assistant message as
 /// `(name, args)` pairs.
@@ -1100,6 +1112,15 @@ pub(crate) fn truncate_text(s: &str, max: usize) -> String {
     }
 }
 
+/// The smallest cap for which [`truncate_text_keeping_edges`] really keeps
+/// both ends: below it the marker reserve (128 bytes) leaves no content
+/// budget, so the function degrades to a plain head-only cut.
+///
+/// The `/context` command refuses a non-zero cap below this, and the wire
+/// builder lifts a configured one up to it, so a `turn_tool_result_cap = 3`
+/// in a config file cannot gut a turn either.
+pub(crate) const MIN_EDGE_KEEPING_CAP: usize = 130;
+
 /// Truncate `s` to at most `max` bytes keeping both ends: the head gets
 /// two thirds of the content budget, the tail one third, and the dropped
 /// middle is replaced by a marker saying how much is missing and how to
@@ -1110,7 +1131,8 @@ pub(crate) fn truncate_text(s: &str, max: usize) -> String {
 /// Tail-keeping is the point: a head-only cut hides what a tool result is
 /// usually read for (the error at the end of a command's output, the
 /// totals of a grep). Falls back to [`truncate_text`] when `max` is too
-/// small to hold the marker plus both ends.
+/// small to hold the marker plus both ends — see
+/// [`MIN_EDGE_KEEPING_CAP`] for the smallest cap that really keeps both.
 pub(crate) fn truncate_text_keeping_edges(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
@@ -1162,9 +1184,34 @@ pub(crate) struct TurnPair {
     /// text-less (tool-call-only) turns.
     pub assistant: Option<serde_json::Value>,
     /// The turn's tool calls, one `name(args)` string per call in
-    /// chronological order. Empty when the turn made none (or only the
-    /// legacy `jyc_reply_message` calls).
+    /// chronological order, capped at [`TOOL_CALLS_PER_TURN_MAX`]. Empty
+    /// when the turn made none (or only the legacy `jyc_reply_message`
+    /// calls). Never holds a marker: the overflow count lives in
+    /// [`Self::omitted_tool_calls`] and renderers add it back, so every
+    /// entry here really is a call.
     pub tool_calls: Vec<String>,
+    /// Calls beyond [`TOOL_CALLS_PER_TURN_MAX`], absent from
+    /// [`Self::tool_calls`]. Renderers append `…(N more calls)`.
+    pub omitted_tool_calls: usize,
+}
+
+/// The turn's rendered tool-call list for the transcript view: calls joined
+/// with `, ` plus the overflow marker when [`flush_turn`] dropped any.
+/// `None` when the turn made no calls.
+pub(crate) fn render_turn_tool_calls(pair: &TurnPair) -> Option<String> {
+    if pair.tool_calls.is_empty() {
+        return None;
+    }
+    let mut out = pair.tool_calls.join(", ");
+    if pair.omitted_tool_calls > 0 {
+        let calls = if pair.omitted_tool_calls == 1 {
+            "call"
+        } else {
+            "calls"
+        };
+        out.push_str(&format!(" …({} more {calls})", pair.omitted_tool_calls));
+    }
+    Some(out)
 }
 
 /// Flush the accumulated turn into `pairs`: merge every assistant message
@@ -1213,11 +1260,8 @@ fn flush_turn(
             texts.push(text);
         }
     }
-    if tool_calls.len() > TOOL_CALLS_PER_TURN_MAX {
-        let dropped = tool_calls.len() - TOOL_CALLS_PER_TURN_MAX;
-        tool_calls.truncate(TOOL_CALLS_PER_TURN_MAX);
-        tool_calls.push(format!("…({dropped} more calls)"));
-    }
+    let omitted_tool_calls = tool_calls.len().saturating_sub(TOOL_CALLS_PER_TURN_MAX);
+    tool_calls.truncate(TOOL_CALLS_PER_TURN_MAX);
     // Drop only when the assistant truly had nothing — no text AND no tool
     // calls (`keeps_turn_alive`, the rule the tail scan shares). The call
     // list can be empty while the turn still counts: a step whose every
@@ -1239,18 +1283,27 @@ fn flush_turn(
         user: user_msg,
         assistant,
         tool_calls,
+        omitted_tool_calls,
     });
 }
 
 /// Whether a message opens a turn: it is a user message with non-empty
-/// text.
+/// text that is not a legacy `[History note]` line.
 ///
 /// The one definition shared by pair extraction, the tail scan and the
 /// reader's slice start — a turn boundary that means different things in
 /// different places loses or duplicates turns.
+///
+/// The prefix test is an *input-data* guard, not the note machinery: a
+/// journal written by a compressing `/reset` before 2026-10-20 can hold a
+/// persisted note (see [`HISTORY_NOTE_PREFIX`]). Letting one open a turn
+/// would replay machine text the user never wrote back into the history.
 pub(crate) fn opens_turn(msg: &serde_json::Value) -> bool {
-    msg.get("role").and_then(|r| r.as_str()) == Some("user")
-        && !extract_message_text(msg).is_empty()
+    if msg.get("role").and_then(|r| r.as_str()) != Some("user") {
+        return false;
+    }
+    let text = extract_message_text(msg);
+    !text.is_empty() && !text.starts_with(HISTORY_NOTE_PREFIX)
 }
 
 /// Whether one assistant message keeps its turn alive: it carries text or a
@@ -1561,7 +1614,9 @@ mod tests {
     #[test]
     fn truncate_text_keeping_edges_falls_back_when_cap_tiny() {
         let s = "z".repeat(500) + "TAIL";
-        for max in [1usize, 8, 40, 120] {
+        // 128 leaves no budget after the marker reserve and 129 leaves no
+        // head, so both degrade — that is why the command's floor is 130.
+        for max in [1usize, 8, 40, 120, 128, 129] {
             let out = truncate_text_keeping_edges(&s, max);
             assert_eq!(
                 out,
@@ -1573,6 +1628,87 @@ mod tests {
                 "a head-only cut cannot have kept the tail"
             );
         }
+        // 130 is the smallest cap that really keeps both ends: the whole
+        // 2-byte content budget goes to a 1-byte head and a 1-byte tail.
+        let out = truncate_text_keeping_edges(&s, 130);
+        assert!(out.starts_with('z'), "130 must keep the head: {out}");
+        assert!(out.ends_with('L'), "130 must keep the tail: {out}");
+        assert!(
+            out.contains("bytes dropped from the middle"),
+            "130 must still fit the marker: {out}"
+        );
+        assert!(out.len() <= 130, "130 must bound the result: {}", out.len());
+    }
+
+    /// A turn with more calls than [`TOOL_CALLS_PER_TURN_MAX`] keeps the
+    /// first N verbatim and reports the rest as a count — the only bound on
+    /// the transcript view now that notes are gone.
+    #[test]
+    fn caps_rendered_tool_calls_per_turn() {
+        let calls: Vec<serde_json::Value> = (0..25)
+            .map(|i| {
+                json!({
+                    "id": format!("t{i}"),
+                    "function": {"name": "bash", "arguments": format!(r#"{{"command":"c{i}"}}"#)}
+                })
+            })
+            .collect();
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "running", "tool_calls": calls}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].tool_calls.len(), super::TOOL_CALLS_PER_TURN_MAX);
+        assert_eq!(pairs[0].omitted_tool_calls, 5);
+        // The marker is NOT a call: every entry is a real `name(args)`.
+        assert!(
+            pairs[0]
+                .tool_calls
+                .iter()
+                .all(|c| c.starts_with("bash(") && !c.contains("more"))
+        );
+        let rendered = super::render_turn_tool_calls(&pairs[0]).unwrap();
+        assert!(
+            rendered.ends_with("…(5 more calls)"),
+            "rendered: {rendered}"
+        );
+        assert!(rendered.starts_with(r#"bash(command="c0")"#));
+    }
+
+    /// One dropped call reads "call", not "calls".
+    #[test]
+    fn singular_overflow_marker() {
+        let calls: Vec<serde_json::Value> = (0..21)
+            .map(
+                |i| json!({"id": format!("t{i}"), "function": {"name": "bash", "arguments": "{}"}}),
+            )
+            .collect();
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "running", "tool_calls": calls}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        assert_eq!(pairs[0].omitted_tool_calls, 1);
+        let rendered = super::render_turn_tool_calls(&pairs[0]).unwrap();
+        assert!(rendered.ends_with("…(1 more call)"), "rendered: {rendered}");
+    }
+
+    /// A `[History note]` message persisted by a build that still wrote
+    /// notes must not open a turn — it is machine text the user never wrote,
+    /// and replaying it teaches the model to imitate it.
+    #[test]
+    fn legacy_history_note_does_not_open_a_turn() {
+        let note = json!({
+            "role": "user",
+            "content": "[History note] assistant tool calls: bash(command=\"ls\") → ok",
+        });
+        assert!(!super::opens_turn(&note));
+        let ctx = vec![note.clone(), json!({"role": "user", "content": "u1"})];
+        let pairs = super::extract_pairs(&ctx);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].user["content"], "u1");
+        assert_eq!(super::count_turn_openers(&ctx), 1);
     }
 
     /// Anthropic-shaped context (array content): assistant text pairs

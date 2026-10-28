@@ -20,11 +20,18 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///     0 makes N a hard window that slides every turn).
 ///     TURNCAP is the optional per-tool-result byte cap on the current
 ///     turn; an oversized result keeps its head and tail with
-///     the middle replaced by a paging marker. Unset by default. MAXHIST
+///     the middle replaced by a paging marker. 0 means off; a non-zero
+///     value must be 130..1 MiB (below 130 the trim cannot keep both
+///     ends). Unset by default. MAXHIST
 ///     is the optional token budget for the windowed history: when the
 ///     window has reached its turn bound and estimates over it, the window
 ///     slides back to N turns — the same slide the turn bound performs.
 ///     Unset by default.
+///
+///     The slots moved when `note_window` was removed (it was the old 4th
+///     slot, between EXT and TURNCAP): an extra positional — a five-argument
+///     command copied from an older build — is refused rather than
+///     silently reinterpreted.
 ///
 ///     Per-slot semantics: an absent slot falls back to the *configured*
 ///     value (the config.toml chain) — not to whatever an earlier
@@ -56,7 +63,14 @@ const MAX_TURN_TOOL_RESULT_CAP: usize = 1024 * 1024;
 /// head-only, so the cap would gut the turn instead of trimming it — and a
 /// value like `3` is almost always a slot-shifted leftover command. 0 stays
 /// the explicit "off" sentinel.
-const MIN_TURN_TOOL_RESULT_CAP: usize = 128;
+///
+/// 130, not 128: `truncate_text_keeping_edges` reserves 128 bytes for its
+/// drop marker, so at 128 the content budget is zero and at 129 the head
+/// rounds down to zero — both fall back to the plain head-only cut. This
+/// mirrors `MIN_EDGE_KEEPING_CAP` in `jyc_agent::session`, which lifts a
+/// configured value to the same floor (a config file bypasses this
+/// command).
+const MIN_TURN_TOOL_RESULT_CAP: usize = 130;
 /// Upper bound for the history token budget accepted from the user via
 /// `/context sliding N EXT TURNCAP MAXHIST`. Past 4M tokens a history
 /// window is not what is costing money — the per-result caps are the lever

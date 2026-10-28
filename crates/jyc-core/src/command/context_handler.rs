@@ -757,7 +757,9 @@ mod tests {
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(v["window"], 10);
-        assert_eq!(v["note_window"], 0);
+        // M was passed explicitly (slot 3 = "3"), so it persists as 3 — the
+        // configured default (0) only applies to an omitted slot.
+        assert_eq!(v["note_window"], 3);
         assert_eq!(v["extend_rate"], 0.5);
         assert_eq!(v["turn_tool_result_cap"], 32768);
     }

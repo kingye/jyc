@@ -140,12 +140,12 @@ Anchored, not per-turn sliding. The session state
 retained turn begins — and each load reads the journal **forward** from
 there:
 
-1. **History, text-only (region ①)** — every prior turn in the window
+1. **History, text-only** — every prior turn in the window
    as a user/assistant text pair, reformatted in the active provider's
    wire format. Their tool calls, arguments and results are dropped from
    the payload (the journal keeps them; `context_browse` reads them back).
    This block only ever **grows**: nothing trims its head.
-2. **Current turn, verbatim (region ②)** — `raw_context[prior_len..]`,
+2. **Current turn, verbatim** — `raw_context[prior_len..]`,
    untouched, tool calls and results included, so the loop's
    `tool_use` ↔ `tool_result` pairing stays legal mid-flight.
 
@@ -166,14 +166,14 @@ would repeat the cold start and its warning every turn). The first slide
 persists a new one, and every load after that is bounded by the window.
 
 The anchor is the whole point: providers cache by **prefix**, so the
-payload should grow only at its tail between slides. Region ① does
+payload should grow only at its tail between slides. The history does
 exactly that, so the history block is append-only — the cached prefix
 reaches all of it, and only the turn that just ended plus the current
 turn are re-encoded. Nothing trims the window's head in between — an
 earlier design trimmed the history to a token budget on *every* turn, and
 since that trim could never actually reduce the total below the budget,
 the head advanced on every turn and the cross-turn prefix broke on every
-first call (production wire dumps showed the history region collapsing to
+first call (production wire dumps showed the history block collapsing to
 a bare marker, cache hit ~0). One dropping mechanism, driven off turn
 count, with hysteresis — not a per-turn fitter.
 
@@ -195,7 +195,7 @@ POST /v1/messages
                  -- only added when the history block is non-empty
 
  1  user        t1: what the user said
- 2  assistant   t1: the reply text                         |  region ①
+ 2  assistant   t1: the reply text                         |  history block
  3  user        t2: what the user said                     |
  4  assistant   t2: the reply text                         |  t1-t6 fold to text:
  5  user        t3: what the user said                     |  their tool_calls,
@@ -208,7 +208,7 @@ POST /v1/messages
 12  assistant   t6: the reply text                         |
 
 13  user        "turn 7"
-14  assistant   "..." + tool_calls[bash(...)]              -- region ②
+14  assistant   "..." + tool_calls[bash(...)]              -- current turn
 15  tool        the full tool result                       -- current turn,
 16  assistant   "..."                                      -- uncapped by default
 ```
@@ -225,12 +225,12 @@ for:
 
 ```mermaid
 flowchart TB
-    subgraph R1["① History — text-only pairs"]
+    subgraph R1["History — text-only pairs"]
         R1U["user: 'u1'"]
         R1A["assistant: 'a1'<br/><i>pure text, no tools</i>"]
         R1N["tool calls · results dropped"]
     end
-    subgraph R2["② Current turn — verbatim"]
+    subgraph R2["Current turn — verbatim"]
         R2U["user: 'u2'"]
         R2ATU["assistant: tool_use / tool_calls blocks<br/><i>as recorded</i>"]
         R2TR["tool/user: tool_result / tool messages<br/><i>as recorded</i>"]
@@ -244,10 +244,10 @@ flowchart TB
 ```mermaid
 flowchart LR
     subgraph P5["payload at turn 5"]
-        A5["① marker + turns 1-4"] --> B5["② turn 5"]
+        A5["marker + turns 1-4"] --> B5["turn 5"]
     end
     subgraph P6["payload at turn 6"]
-        A6["① marker + turns 1-5"] --> B6["② turn 6"]
+        A6["marker + turns 1-5"] --> B6["turn 6"]
     end
     A5 -. "byte-identical prefix" .-> A6
     style A5 fill:#fce4ec,stroke:#c2185b
@@ -256,7 +256,7 @@ flowchart LR
     style B6 fill:#e8f5e9,stroke:#2e7d32
 ```
 
-Region ① is built **once per turn**, not once per LLM call: it depends
+The history block is built **once per turn**, not once per LLM call: it depends
 only on `raw_context[..prior_len]`, which is fixed while a turn runs
 (injections append after it; the one shrink — a cancellation truncation —
 ends the turn). `SendContextCache` (keyed on that split point) holds it
@@ -344,7 +344,7 @@ Each line of `wire-payload.jsonl` is one JSON object:
 ```
 
 `regions` is a parallel `Vec<u8>` to `wire_payload`: `1` = text-only
-history, `2` = current turn. `1` for `Full` mode means "single region, no
+history, `2` = current turn. `1` for `Full` mode means "one block, no
 windowing". Use it to partition the payload when reconstructing what each
 LLM call looked like.
 
@@ -359,7 +359,7 @@ write errors are logged at `warn` and never propagated (a broken dump
 must not break the agent loop).
 
 For an in-process, human-readable view of a single wire payload (with
-ASCII boxes per region), call `dump_send_context` from a test or via
+a box around each part), call `dump_send_context` from a test or via
 the `crates/jyc-agent/src/agent_loop/context.rs` API. It uses the same
 `build_send_context_with_regions` (a cold build: it delegates to
 `build_send_context_cached` with a throwaway cache) so the labels are
@@ -428,7 +428,7 @@ All counts are **turns**, not messages or tokens:
 
 ## `turn_tool_result_cap` — bounding the current turn
 
-The current turn (region ②) is uncapped by default: the model is
+The current turn is uncapped by default: the model is
 mid-reasoning over those
 tool results, and silently trimming what it is still working through is
 the more damaging failure. The cost is that one verbose result — a
@@ -465,7 +465,7 @@ positional; `0` switches it off, omitting it keeps the configured
 value, ceiling 1 MiB), or from config as
 `context_strategy = { …, turn_tool_result_cap = 32768 }`.
 
-**History has no tool results to cap.** Region ① is text-only, so the
+**History has no tool results to cap.** The history block is text-only, so the
 cap has nothing else to apply to: prior turns were folded without their
 results in the first place.
 
@@ -559,7 +559,7 @@ much history survives before the next slide.
 
 Key changes, newest first (see CHANGELOG.md for full entries):
 
-- **`note_window` removed** — the wire payload has two regions: text-only
+- **`note_window` removed** — the wire payload has two parts: text-only
   history and the verbatim current turn. History notes are gone from the
   wire, the config, the `/context` command and the system prompt.
   `context_browse` still renders every turn's tool calls (`[n] TOOLS:`),

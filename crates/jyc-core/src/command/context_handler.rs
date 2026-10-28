@@ -20,13 +20,14 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///     0 makes N a hard window that slides every turn). M is the optional
 ///     note window: the most recent M windowed turns are sent verbatim,
 ///     with their tool calls and results, and older turns as text-only
-///     pairs (default: 3; 0 = no tool results in history at all).
+///     pairs (default: 0 = text-only history, no tool results in it).
 ///     TURNCAP is the optional per-tool-result byte cap on the current
 ///     turn (region ③); an oversized result keeps its head and tail with
 ///     the middle replaced by a paging marker. Unset by default. MAXHIST
-///     is the optional token budget for the windowed history: when it
-///     estimates over it, the window slides back to N turns — the same
-///     slide a window over its turn bound performs. Unset by default.
+///     is the optional token budget for the windowed history: when the
+///     window has reached its turn bound and estimates over it, the window
+///     slides back to N turns — the same slide the turn bound performs.
+///     Unset by default.
 ///
 ///     Per-slot semantics: an absent slot falls back to the *configured*
 ///     value (the config.toml chain) — not to whatever an earlier
@@ -537,9 +538,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sliding_without_note_window_uses_default_5() {
+    async fn test_sliding_without_note_window_uses_configured_default() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_sliding_without_note_window_uses_default_5";
+        let topic = "test_sliding_without_note_window_uses_configured_default";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
         let mut ctx = test_context(topic, tmp.path());
@@ -550,11 +551,11 @@ mod tests {
             .await
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
-        // No explicit note_window arg → falls back to the configured
-        // default (`Some(3)`, per #656). The field is now always
-        // present in the override file unless the user explicitly
-        // sets it to null.
-        assert_eq!(v["note_window"], 3);
+        // No explicit note_window arg -> falls back to the configured
+        // default (`Some(0)`, text-only history). The field is now always
+        // present in the override file unless the user explicitly sets it
+        // to null.
+        assert_eq!(v["note_window"], 0);
     }
 
     #[tokio::test]
@@ -756,7 +757,7 @@ mod tests {
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(v["window"], 10);
-        assert_eq!(v["note_window"], 3);
+        assert_eq!(v["note_window"], 0);
         assert_eq!(v["extend_rate"], 0.5);
         assert_eq!(v["turn_tool_result_cap"], 32768);
     }
@@ -978,7 +979,7 @@ mod tests {
     #[tokio::test]
     async fn test_sliding_omitted_slots_use_configured_defaults() {
         // No EXT/M slot -> falls back to the configured defaults
-        // (`extend_rate = 0.5`, `note_window = Some(3)`).
+        // (`extend_rate = 0.5`, `note_window = Some(0)`).
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_sliding_omitted_slots_use_configured_defaults";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
@@ -992,7 +993,7 @@ mod tests {
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(v["window"], 10);
-        assert_eq!(v["note_window"], 3);
+        assert_eq!(v["note_window"], 0);
         assert_eq!(v["extend_rate"], 0.5);
     }
 

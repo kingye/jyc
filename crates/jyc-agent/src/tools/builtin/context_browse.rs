@@ -22,6 +22,13 @@ use crate::types::PriorDepth;
 /// question.
 const MAX_PAGE: usize = 50;
 
+/// Byte bound on one turn's rendered `TOOLS:` line. [`MAX_PAGE`] bounds the
+/// page by *count*, but each turn can carry [`crate::session::TOOL_CALLS_PER_TURN_MAX`]
+/// calls of up to `TOOL_ARG_MAX` bytes each — a page of call-heavy turns
+/// would otherwise be hundreds of KB, and this text is a tool result that
+/// rides every remaining call of the current turn.
+const TOOLS_LINE_MAX: usize = 4000;
+
 /// Page through the conversation transcript.
 pub struct ContextBrowseTool;
 
@@ -128,6 +135,20 @@ fn format_pair(n: usize, pair: &TurnPair) -> String {
         ));
     }
     if let Some(calls) = crate::session::render_turn_tool_calls(pair) {
+        // The per-turn call list is bounded by count upstream, but 20 calls
+        // with 200-byte arguments each is still a few KB, and this text is
+        // a tool result that rides the rest of the current turn. Bound the
+        // line in bytes too, so a page of call-heavy turns cannot become
+        // the expensive part of the payload.
+        let calls = if calls.len() > TOOLS_LINE_MAX {
+            format!(
+                "{} … [{} bytes of calls omitted]",
+                &calls[..calls.floor_char_boundary(TOOLS_LINE_MAX)],
+                calls.len() - calls.floor_char_boundary(TOOLS_LINE_MAX),
+            )
+        } else {
+            calls
+        };
         out.push_str(&format!("[{n}] TOOLS: {calls}\n"));
     }
     out

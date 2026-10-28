@@ -458,7 +458,7 @@ the marker **inside** `N` — the caller gets the byte bound it asked for.
 |-------|----------|
 | unset (default) | The current turn sent in full. |
 | `Some(0)` | Explicit "off" sentinel — same as unset. |
-| `Some(N > 0)` | Each current-turn tool result keeps head + tail within `N` bytes total. Below ~128 bytes there is no room for both ends, so it degrades to the plain head-only cut. |
+| `Some(N > 0)` | Each current-turn tool result keeps head + tail within `N` bytes total. A value below 130 cannot hold the drop marker plus both ends, so it is lifted to 130 rather than silently degrading to a head-only cut — the `/context` command refuses such a value instead, since there the user is present to be told. |
 
 Both wire shapes are handled (string `content` in place, or
 per-`tool_result`-block for Anthropic), and the cap is per result block,
@@ -466,8 +466,10 @@ not per turn — a turn with ten tool calls can still exceed `N` in total.
 
 Set it from a command: `/context sliding 10 0.5 32768` (third
 positional; `0` switches it off, omitting it keeps the configured
-value, ceiling 1 MiB), or from config as
-`context_strategy = { …, turn_tool_result_cap = 32768 }`.
+value, accepted range `0` or 130..1 MiB, and a sixth positional is
+refused outright), or from config as
+`context_strategy = { …, turn_tool_result_cap = 32768 }` — where a
+non-zero value below 130 is lifted to 130 rather than rejected.
 
 **History has no tool results to cap.** The history block is text-only, so the
 cap has nothing else to apply to: prior turns were folded without their

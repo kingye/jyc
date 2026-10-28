@@ -773,6 +773,25 @@ pub enum ContextStrategy {
     SlidingWindow,
 }
 
+/// Smallest non-zero [`ContextStrategyConfig::turn_tool_result_cap`] that
+/// still keeps both ends of a trimmed result.
+///
+/// The trim's drop marker reserves 128 bytes of the cap, so anything at or
+/// below that leaves no room for content: at 128 the budget is zero, at 129
+/// the head rounds down to zero on the char boundary. Both would fall back
+/// to a plain head-only cut, which hides the end of a result — the part a
+/// result is usually read for. 130 is therefore the floor, and it is the
+/// single source for both ends of the rule: the `/context` command refuses
+/// a non-zero value below it, and the wire builder lifts a configured one
+/// up to it.
+///
+/// The bound is on the cap, not on every content: a result whose first
+/// character is multi-byte still rounds its head down to zero at 130, so
+/// the floor guarantees both ends for ASCII-leading content. That is the
+/// practical case (commands, paths, error lines) and the fallback is still
+/// a correct trim, just head-only.
+pub const MIN_EDGE_KEEPING_CAP: usize = 130;
+
 /// Configuration for the context strategy.
 ///
 /// `mode` selects which strategy to apply. In `sliding_window` the
@@ -814,12 +833,14 @@ pub struct ContextStrategyConfig {
     /// oversized result to at most `Some(cap)` bytes — marker included —
     /// keeping its head and tail with the middle replaced by a paging
     /// marker, since what a result is usually read for (the command that
-    /// ran, the error, the summary line) sits at the ends. Below ~128
-    /// bytes there is no room for both ends, so the head-only cut takes
-    /// over and its own marker sits on top of `cap`. `Some(0)` disables
-    /// capping, same as `None`. Only meaningful when `mode = "sliding_window"`. Omitted
-    /// from serialized override files when unset so existing readers stay
-    /// compatible.
+    /// ran, the error, the summary line) sits at the ends. A non-zero
+    /// value below [`MIN_EDGE_KEEPING_CAP`] cannot hold the paging marker
+    /// plus both ends, so it is lifted to that floor instead of silently
+    /// degrading to a head-only cut (the `/context` command refuses such a
+    /// value outright, since there the user is right there to be told).
+    /// `Some(0)` disables capping, same as `None`. Only meaningful when
+    /// `mode = "sliding_window"`. Omitted from serialized override files
+    /// when unset so existing readers stay compatible.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_tool_result_cap: Option<usize>,
     /// Token budget for the windowed history (`sliding_window` mode).

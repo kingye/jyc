@@ -499,7 +499,10 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # the history and the prompt cache stops paying off.
 # turn_tool_result_cap: cap each tool result in the current turn, keeping
 # the head and tail of an oversized result. Unset by default (the current
-# turn is in flight, so trimming it is opt-in).
+# turn is in flight, so trimming it is opt-in). 0 means off. A non-zero
+# value below 130 is lifted to 130: below that the drop marker leaves no
+# room for both ends, so the trim would degrade to a head-only cut and
+# gut the result. `/context` refuses such a value instead of lifting it.
 # max_history_tokens: optional second trigger for a slide. When the window
 # has reached `max_window` turns and its estimated weight exceeds this, it
 # slides back to `window` turns — the same slide a window over `max_window`

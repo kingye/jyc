@@ -64,13 +64,11 @@ const MAX_TURN_TOOL_RESULT_CAP: usize = 1024 * 1024;
 /// value like `3` is almost always a slot-shifted leftover command. 0 stays
 /// the explicit "off" sentinel.
 ///
-/// 130, not 128: `truncate_text_keeping_edges` reserves 128 bytes for its
-/// drop marker, so at 128 the content budget is zero and at 129 the head
-/// rounds down to zero — both fall back to the plain head-only cut. This
-/// mirrors `MIN_EDGE_KEEPING_CAP` in `jyc_agent::session`, which lifts a
-/// configured value to the same floor (a config file bypasses this
-/// command).
-const MIN_TURN_TOOL_RESULT_CAP: usize = 130;
+/// The floor itself is [`jyc_types::channel::MIN_EDGE_KEEPING_CAP`], shared
+/// with the wire builder that lifts a configured value up to the same bound
+/// (a config file bypasses this command, so the rule has to be enforced on
+/// both paths from one definition).
+const MIN_TURN_TOOL_RESULT_CAP: usize = jyc_types::channel::MIN_EDGE_KEEPING_CAP;
 /// Upper bound for the history token budget accepted from the user via
 /// `/context sliding N EXT TURNCAP MAXHIST`. Past 4M tokens a history
 /// window is not what is costing money — the per-result caps are the lever
@@ -411,7 +409,22 @@ fn describe_strategy(cfg: &ContextStrategyConfig) -> String {
                 cfg.max_window()
             ));
             if let Some(c) = cfg.turn_tool_result_cap {
-                s.push_str(&format!(", turn_tool_result_cap={c}"));
+                // Show what is actually applied: a configured value below
+                // the edge-keeping floor is lifted by the wire builder, so
+                // echoing the raw number would mislead about the turn the
+                // model receives.
+                let effective = if c == 0 {
+                    0
+                } else {
+                    c.max(MIN_TURN_TOOL_RESULT_CAP)
+                };
+                if effective == c {
+                    s.push_str(&format!(", turn_tool_result_cap={c}"));
+                } else {
+                    s.push_str(&format!(
+                        ", turn_tool_result_cap={c} (lifted to {effective})"
+                    ));
+                }
             }
             if let Some(t) = cfg.max_history_tokens {
                 s.push_str(&format!(", max_history_tokens={t}"));
@@ -719,7 +732,15 @@ mod tests {
         ctx.args = vec!["sliding".into(), "10".into(), "0.5".into(), "3".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
-        assert!(result.message.contains("must be 0 (off) or between 128"));
+        // Built from the constant: asserting a literal 130 here is what let
+        // the message and the bound drift apart when the floor moved.
+        assert!(
+            result.message.contains(&format!(
+                "must be 0 (off) or between {MIN_TURN_TOOL_RESULT_CAP}"
+            )),
+            "message: {}",
+            result.message
+        );
     }
 
     #[tokio::test]

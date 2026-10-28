@@ -172,14 +172,7 @@ pub(crate) fn build_send_context_cached<'a>(
             // is read for usually sits at the ends, and the marker tells
             // the model how to page the gap. Both sentinel and default
             // mean off; see the doc above.
-            // A configured cap below the edge-keeping floor would degrade
-            // the trim to a head-only cut and gut every result, so lift it
-            // here — the value is trusted at this point, not only at the
-            // `/context` command. `0` keeps meaning off.
-            let turn_cap = match strategy.turn_tool_result_cap {
-                Some(c) if c > 0 => c.max(crate::session::MIN_EDGE_KEEPING_CAP),
-                _ => 0,
-            };
+            let turn_cap = effective_turn_cap(strategy);
             for msg in current {
                 out.push(cap_tool_result_content_with(
                     msg,
@@ -358,9 +351,24 @@ fn cap_tool_result_content_with(
     new_msg
 }
 
+/// The current-turn cap actually applied: `None` and `Some(0)` both mean
+/// off, anything else is lifted to [`MIN_EDGE_KEEPING_CAP`].
+///
+/// A configured value below that floor would degrade the trim to a
+/// head-only cut and gut every result, so the lift happens here — where the
+/// value is finally trusted — not only at the `/context` command. The dump
+/// and the `/context` echo both report this value, so what they show is
+/// what the model receives.
+fn effective_turn_cap(strategy: &ContextStrategyConfig) -> usize {
+    match strategy.turn_tool_result_cap {
+        Some(c) if c > 0 => c.max(crate::session::MIN_EDGE_KEEPING_CAP),
+        _ => 0,
+    }
+}
+
 /// Test-only debug dump — human-readable, region-labeled view of the
 /// wire payload. Used by the test suite to verify the region partition
-/// (`with_regions_labels_*` tests). Production debug dumps go through
+/// (`dump_labels_*` tests). Production debug dumps go through
 /// `session::append_wire_payload_dump` instead, which writes
 /// structured JSONL — see `docs/architecture/context.md` / Debug dump.
 #[cfg(test)]
@@ -372,12 +380,20 @@ fn dump_send_context(
 ) -> String {
     let (sent, regions) =
         build_send_context_with_regions(provider, raw_context, prior_len, strategy);
+    // Report the cap that is actually applied: printing the configured
+    // value would show `turn_cap=3` for a turn really trimmed at the
+    // edge-keeping floor.
+    let cap_note = match strategy.turn_tool_result_cap {
+        Some(c) if c > 0 && c < effective_turn_cap(strategy) => format!(" (lifted from {c})"),
+        _ => String::new(),
+    };
     let mut s = format!(
-        "=== context sent to LLM (strategy={:?} window={} turn_cap={:?} max_hist={:?}) ===\n\
+        "=== context sent to LLM (strategy={:?} window={} turn_cap={}{} max_hist={:?}) ===\n\
          {} msgs, ~{} bytes\n\n",
         strategy.mode,
         strategy.window,
-        strategy.turn_tool_result_cap,
+        effective_turn_cap(strategy),
+        cap_note,
         strategy.max_history_tokens,
         sent.len(),
         serde_json::to_string(sent.as_ref())
@@ -411,17 +427,20 @@ fn append_region_summary(
     is_full: bool,
 ) {
     if is_full {
-        s.push_str("(Full mode — single region, no windowing)\n");
+        s.push_str("(Full mode — the whole context, no windowing)\n");
         for (i, msg) in sent.iter().enumerate() {
             s.push_str(&format!("  [{i}] {}\n", msg_one_line(msg)));
         }
         return;
     }
 
-    // SlidingWindow: walk through msgs, group by region, emit ASCII box per region.
+    // SlidingWindow: walk through msgs, group by part, emit ASCII box per
+    // part. The headers use the same terms as the docs — "history" and
+    // "current turn" — never a numbered shorthand, so a dump can be read
+    // without a legend.
     let region_headers = [
-        (1u8, "① Text-only history (older turns)"),
-        (2u8, "② Current turn (verbatim)"),
+        (1u8, "History — text-only turns, calls/results folded out"),
+        (2u8, "Current turn — verbatim"),
     ];
 
     let mut first = true;
@@ -964,7 +983,7 @@ mod render_raw_context_tests {
     /// `with_regions` and `dump_send_context` — verify region partition is
     /// stable across `Full` and `SlidingWindow` strategies.
     #[test]
-    fn with_regions_labels_full_mode_as_single_region() {
+    fn dump_labels_full_mode_as_one_block() {
         let ctx = vec![
             json!({"role": "user", "content": "u1"}),
             json!({"role": "assistant", "content": "a1"}),
@@ -986,15 +1005,15 @@ mod render_raw_context_tests {
             "missing strategy summary: {dump}"
         );
         assert!(
-            dump.contains("single region"),
-            "Full dump should say single region: {dump}"
+            dump.contains("no windowing"),
+            "Full dump should say the context is whole: {dump}"
         );
         assert!(dump.contains("\"u1\""), "missing msg preview: {dump}");
     }
 
     #[test]
-    fn with_regions_labels_sliding_window_two_regions() {
-        // ① history = marker + (u1, a1) + (u2, a2), ② current = (u3).
+    fn dump_labels_sliding_window_two_parts() {
+        // history = marker + (u1, a1) + (u2, a2); current turn = (u3).
         let prior = vec![
             json!({"role": "user", "content": "u1"}),
             json!({"role": "assistant", "content": "a1"}),
@@ -1021,10 +1040,17 @@ mod render_raw_context_tests {
 
         let dump = dump_send_context(&prov(), &ctx, prior.len(), &cfg);
         assert!(
-            dump.contains("① Text-only history"),
-            "missing region ①: {dump}"
+            dump.contains("History — text-only turns"),
+            "missing the history box: {dump}"
         );
-        assert!(dump.contains("② Current turn"), "missing region ②: {dump}");
+        assert!(
+            dump.contains("Current turn — verbatim"),
+            "missing the current-turn box: {dump}"
+        );
+        assert!(
+            !dump.contains('\u{2460}') && !dump.contains('\u{2461}'),
+            "dump must use plain terms, not the numbered shorthand: {dump}"
+        );
         assert!(
             dump.contains("--- wire payload ---"),
             "missing payload section: {dump}"
@@ -1333,6 +1359,66 @@ mod render_raw_context_tests {
         assert!(
             serde_json::to_string(b.as_ref()).unwrap().contains(&big),
             "turn cap 0 must leave the current turn whole"
+        );
+    }
+
+    /// A configured cap below the edge-keeping floor is lifted, not
+    /// honoured: `turn_tool_result_cap = 3` in a config file or an old
+    /// override cannot gut every current-turn result. The lift is visible
+    /// in the output — the result keeps its tail instead of degrading to a
+    /// head-only cut — and the bound it reports is the floors, not the 3.
+    #[test]
+    fn build_send_context_lifts_a_below_floor_turn_cap() {
+        // Ends in a single distinctive byte: at the floor the tail is one
+        // byte long, which is what makes "it kept both ends" observable.
+        let big = "h".repeat(150) + "TAIL!";
+        let prior = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+        ];
+        let current = vec![
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "tool", "tool_call_id": "1", "content": big}),
+        ];
+        let mut ctx = prior.clone();
+        ctx.extend(current);
+        let prior_len = prior.len();
+
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 5,
+            extend_rate: 0.5,
+            // A slot-shifted leftover command: 3 bytes would leave nothing.
+            turn_tool_result_cap: Some(3),
+            max_history_tokens: None,
+        };
+        let (out, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
+        let wire = serde_json::to_string(out.as_ref()).unwrap();
+
+        assert!(
+            wire.contains("dropped from the middle"),
+            "the lifted cap must still produce the paging marker: {wire}"
+        );
+        let tool_idx = out
+            .iter()
+            .position(|m| m["role"] == "tool")
+            .expect("tool result must be in output");
+        let content = out[tool_idx]["content"].as_str().unwrap();
+        assert!(
+            content.len() <= crate::session::MIN_EDGE_KEEPING_CAP,
+            "the lifted cap bounds the content too: {} bytes",
+            content.len()
+        );
+        // Both ends survive: the head byte and the tail byte. A head-only
+        // cut — what an unlifted 3 would have produced — loses the tail and
+        // uses the other marker.
+        assert!(
+            content.starts_with('h') && content.ends_with('!'),
+            "the lift must keep both ends at the floor: {content:?}"
+        );
+        assert!(
+            !wire.contains("truncated"),
+            "a head-only cut would say 'truncated' instead: {wire}"
         );
     }
 

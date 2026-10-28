@@ -1113,13 +1113,10 @@ pub(crate) fn truncate_text(s: &str, max: usize) -> String {
 }
 
 /// The smallest cap for which [`truncate_text_keeping_edges`] really keeps
-/// both ends: below it the marker reserve (128 bytes) leaves no content
-/// budget, so the function degrades to a plain head-only cut.
-///
-/// The `/context` command refuses a non-zero cap below this, and the wire
-/// builder lifts a configured one up to it, so a `turn_tool_result_cap = 3`
-/// in a config file cannot gut a turn either.
-pub(crate) const MIN_EDGE_KEEPING_CAP: usize = 130;
+/// both ends. The definition lives in `jyc_types` because the `/context`
+/// command enforces the same floor; this alias keeps the call sites in this
+/// crate reading naturally.
+pub(crate) use jyc_types::channel::MIN_EDGE_KEEPING_CAP;
 
 /// Truncate `s` to at most `max` bytes keeping both ends: the head gets
 /// two thirds of the content budget, the tail one third, and the dropped
@@ -1697,6 +1694,12 @@ mod tests {
     /// A `[History note]` message persisted by a build that still wrote
     /// notes must not open a turn — it is machine text the user never wrote,
     /// and replaying it teaches the model to imitate it.
+    ///
+    /// Such a message reaches the journal through
+    /// `summarize_context_heuristic`, which called
+    /// `extract_user_assistant_pairs(.., None)` (notes on every pair) and
+    /// wrote the result back with `replace_raw_context` — so a `/reset`
+    /// under heuristic compression before 2026-10-20 can leave one behind.
     #[test]
     fn legacy_history_note_does_not_open_a_turn() {
         let note = json!({
@@ -1704,11 +1707,34 @@ mod tests {
             "content": "[History note] assistant tool calls: bash(command=\"ls\") → ok",
         });
         assert!(!super::opens_turn(&note));
-        let ctx = vec![note.clone(), json!({"role": "user", "content": "u1"})];
+
+        // A note ahead of a complete turn: the turn pairs as usual, and the
+        // note neither becomes a pair of its own nor rides along as one.
+        let ctx = vec![
+            note.clone(),
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+        ];
         let pairs = super::extract_pairs(&ctx);
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].user["content"], "u1");
+        assert_eq!(pairs[0].assistant.as_ref().unwrap()["content"], "a1");
         assert_eq!(super::count_turn_openers(&ctx), 1);
+
+        // A note between two turns: it must not split the second turn off
+        // from its own user message.
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            note,
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2"}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[1].user["content"], "u2");
+        assert_eq!(pairs[1].assistant.as_ref().unwrap()["content"], "a2");
+        assert_eq!(super::count_turn_openers(&ctx), 2);
     }
 
     /// Anthropic-shaped context (array content): assistant text pairs

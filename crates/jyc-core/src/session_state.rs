@@ -15,27 +15,10 @@ pub const DEFAULT_CONTEXT_WINDOW: u64 = 128000;
 /// and tolerates a torn tail line.
 pub const AGENT_CONTEXT_FILE: &str = "agent-context.jsonl";
 
-/// Best-effort removal of the raw context journal and of the anchored
-/// history summary a previous version wrote beside it. Missing files are
+/// Best-effort removal of the raw context journal. A missing file is
 /// ignored; used by reset paths where absence means "no context".
 pub async fn remove_raw_context_files(state_dir: &Path) {
     tokio::fs::remove_file(state_dir.join(AGENT_CONTEXT_FILE))
-        .await
-        .ok();
-    // `history-summary.json` belongs to the `#1016` anchored-summary
-    // design, which this version no longer reads or writes. Deleting it
-    // keeps a reset from leaving an inert file behind (a leftover is
-    // harmless — nothing reads it — but it is undeletable state).
-    remove_legacy_history_summary(state_dir).await;
-}
-
-/// Where the (now removed) anchored history summary used to live.
-const LEGACY_HISTORY_SUMMARY_FILE: &str = "history-summary.json";
-
-/// Best-effort removal of the legacy anchored history summary. A missing
-/// file is ignored.
-async fn remove_legacy_history_summary(state_dir: &Path) {
-    tokio::fs::remove_file(state_dir.join(LEGACY_HISTORY_SUMMARY_FILE))
         .await
         .ok();
 }

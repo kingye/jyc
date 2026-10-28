@@ -225,7 +225,6 @@ impl ContextReader {
         // `offsets` keeps it aligned with `messages`.
         let repaired = crate::provider::repair_dangling_tool_calls(messages);
         let kept = repaired.len();
-        let mut offsets = offsets;
         offsets.truncate(kept);
         PriorSlice {
             messages: repaired,

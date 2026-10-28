@@ -777,9 +777,7 @@ pub enum ContextStrategy {
 ///
 /// `mode` selects which strategy to apply; `window` is the number of
 /// latest user+assistant turns to keep in `sliding_window` mode.
-// `Eq` is not derived: the `ext_rate` field is an `f64`, which has no total
-// order. Nothing compares strategies by hashing, so `PartialEq` suffices.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContextStrategyConfig {
     /// Context strategy mode. Default: `sliding_window`.
     #[serde(default = "default_context_strategy")]
@@ -848,60 +846,6 @@ pub struct ContextStrategyConfig {
     /// compatible.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_history_tokens: Option<usize>,
-    /// How far the retained history extends beyond `window` turns, as a
-    /// fraction of `window`. With `note_window ≤ window` the retained span
-    /// grows from `window` up to `window + ext_rate × window` turns — the
-    /// compacted turns between the verbatim tail and the drop point form
-    /// an anchored block whose wire prefix stays byte-stable across turns
-    /// (prompt-cache friendly), so only the drop turn misses the cache.
-    /// With `note_window ≥ window` there is no compact region (turns
-    /// older than `note_window` are dropped; only the verbatim tail is
-    /// sent) and the extension is inert. Saturating at [`MAX_BLOCK_PAIRS`] caps the
-    /// extension: once the cap binds, the span tops out at
-    /// `MAX_BLOCK_PAIRS + note_window` turns and the jump period becomes
-    /// `MAX_BLOCK_PAIRS − (window − note_window) + 1` turns. `ext_rate =
-    /// 0` degenerates to the classic sliding window (constant `window`-
-    /// turn span, the head advancing one turn per turn). Values are
-    /// clamped into
-    /// `0.0..=[MAX_EXT_RATE]` (1) with non-finite input falling back to
-    /// [`DEFAULT_EXT_RATE`]; the useful range is `0..=1`, larger values
-    /// only retain more history per turn at token cost and drop more than
-    /// a full window at once. `None` (the default) resolves to
-    /// [`DEFAULT_EXT_RATE`] (0.5). Only meaningful when
-    /// `mode = "sliding_window"`. Omitted from serialized override files
-    /// when unset so existing readers stay compatible.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ext_rate: Option<f64>,
-}
-
-/// Default for [`ContextStrategyConfig::ext_rate`]: the retained span
-/// reaches `1.5 × window` turns before the oldest drop at once.
-pub const DEFAULT_EXT_RATE: f64 = 0.5;
-
-/// Upper bound for [`ContextStrategyConfig::ext_rate`]. Shared by the
-/// config resolver ([`ContextStrategyConfig::ext_rate`]) and the `/context`
-/// parser so both accept the same range. Values above 1 only retain more
-/// history per turn at token cost and drop more than a full window at
-/// once, so the range stops at 1.
-pub const MAX_EXT_RATE: f64 = 1.0;
-
-/// Upper bound on the region-① block capacity (in compact pairs): a large
-/// window × ext_rate composition cannot inflate the per-turn payload and
-/// reader scan back towards a full-journal read. Matches the largest
-/// admissible sliding window.
-pub const MAX_BLOCK_PAIRS: usize = 200;
-
-impl ContextStrategyConfig {
-    /// Resolve `ext_rate` to a usable fraction: the default when unset or
-    /// non-finite, clamped into `0.0..=[MAX_EXT_RATE]` so degenerate config
-    /// values (negative, NaN, huge) cannot produce an absurdly deep
-    /// region ①. `0` is meaningful — it is the classic sliding window.
-    pub fn ext_rate(&self) -> f64 {
-        match self.ext_rate {
-            Some(m) if m.is_finite() => m.clamp(0.0, MAX_EXT_RATE),
-            _ => DEFAULT_EXT_RATE,
-        }
-    }
 }
 
 impl Default for ContextStrategyConfig {
@@ -920,9 +864,6 @@ impl Default for ContextStrategyConfig {
             // users already know, and a token budget silently truncating
             // history is the more surprising default.
             max_history_tokens: None,
-            // History extension uses the default (0.5): half a window of
-            // extra retained history, a prefix-stable block between jumps.
-            ext_rate: None,
         }
     }
 }
@@ -1129,28 +1070,6 @@ topic_path = "~/projects/jyc"
             Some("~/projects/jyc"),
             "topic_path should deserialize correctly"
         );
-    }
-
-    #[test]
-    fn test_ext_rate_resolves_degenerate_values() {
-        // The only guard between a malformed config and an absurd region-①
-        // block: unset and non-finite resolve to the default, finite values
-        // clamp into 0.0..=MAX_EXT_RATE. 0 is meaningful (classic sliding
-        // window), not degenerate.
-        let cfg = |ext_rate: Option<f64>| ContextStrategyConfig {
-            ext_rate,
-            ..ContextStrategyConfig::default()
-        };
-        assert_eq!(cfg(None).ext_rate(), DEFAULT_EXT_RATE);
-        assert_eq!(cfg(Some(f64::NAN)).ext_rate(), DEFAULT_EXT_RATE);
-        assert_eq!(cfg(Some(f64::INFINITY)).ext_rate(), DEFAULT_EXT_RATE);
-        assert_eq!(cfg(Some(f64::NEG_INFINITY)).ext_rate(), DEFAULT_EXT_RATE);
-        assert_eq!(cfg(Some(-1.0)).ext_rate(), 0.0);
-        assert_eq!(cfg(Some(0.0)).ext_rate(), 0.0);
-        assert_eq!(cfg(Some(0.05)).ext_rate(), 0.05);
-        assert_eq!(cfg(Some(MAX_EXT_RATE + 0.1)).ext_rate(), MAX_EXT_RATE);
-        assert_eq!(cfg(Some(2.5)).ext_rate(), MAX_EXT_RATE);
-        assert_eq!(cfg(Some(1.0)).ext_rate(), 1.0);
     }
 
     #[test]

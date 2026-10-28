@@ -30,7 +30,6 @@ pub(super) fn test_config<'a>(
         event_bus: None,
         prior_history: vec![],
         prior_raw_context: vec![],
-        summary_len: 0,
         injection_rx: None,
         max_iterations: Some(5),
         sse_read_timeout: std::time::Duration::from_secs(60),

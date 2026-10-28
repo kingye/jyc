@@ -122,7 +122,7 @@ request is governed by the context strategy — a separate concern from the
 layer architecture itself.
 
 **See [Context](context.md)** for the full treatment: data plane, `full`
-vs `sliding_window`, the ①②③ regions, `note_window`, `tool_result_cap`,
+vs `sliding_window`, the ①②③ regions, `window` / `extend_rate` / `note_window`,
 token safety nets, and override files.
 
 ## Message flow

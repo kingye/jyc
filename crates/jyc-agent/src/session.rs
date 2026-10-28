@@ -471,22 +471,21 @@ async fn load_context_windowed(
         });
 
     let mut reached_head = slice.reached_head;
-    if turns > max_window || over_budget {
-        if let Some((index, offset)) =
+    if (turns > max_window || over_budget)
+        && let Some((index, offset)) =
             window_start(&slice.messages, &slice.offsets, strategy.window)
-        {
-            tracing::info!(
-                turns,
-                max_window,
-                over_budget,
-                dropped_turns = count_turn_openers(&slice.messages[..index]),
-                new_offset = offset,
-                "sliding window: anchored tail outgrew its bound, sliding back to `window` turns"
-            );
-            write_context_offset(topic_name, state_dir, offset).await;
-            slice.messages.drain(..index);
-            reached_head = false;
-        }
+    {
+        tracing::info!(
+            turns,
+            max_window,
+            over_budget,
+            dropped_turns = count_turn_openers(&slice.messages[..index]),
+            new_offset = offset,
+            "sliding window: anchored tail outgrew its bound, sliding back to `window` turns"
+        );
+        write_context_offset(topic_name, state_dir, offset).await;
+        slice.messages.drain(..index);
+        reached_head = false;
     }
 
     finish_load(reader, state_dir, slice.messages, reached_head).await

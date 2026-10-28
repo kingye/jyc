@@ -147,14 +147,15 @@ impl ContextReader {
 
     /// The journal forward from `offset` (a line start), oldest first.
     ///
-    /// Used by the anchored history summary: the summary records the byte
-    /// offset where its verbatim tail begins, and each load reads
-    /// `[offset..EOF)` — the read amount grows between refolds but stays
-    /// bounded by the token budget that triggers them. Returns an empty
-    /// slice when `offset` is at or past the journal's end. Every parsed
-    /// message carries its line-start offset in
-    /// [`PriorSlice::offsets`], so the caller can advance the summary
-    /// past a fold without re-scanning.
+    /// Used by the anchored sliding window: `agent-session.json` records
+    /// `context_offset`, the line start where the window's oldest retained
+    /// turn begins, and each load reads `[offset..EOF)` — so the prior
+    /// grows by append between slides and the read amount stays bounded by
+    /// the turn bound that triggers them. Returns an empty slice when
+    /// `offset` is at or past the journal's end. Every parsed message
+    /// carries its line-start offset in [`PriorSlice::offsets`], so the
+    /// caller can advance the anchor a whole turn at a time without
+    /// re-scanning.
     pub(crate) async fn read_from(&self, offset: u64) -> PriorSlice {
         let Some((file_len, _)) = self.stat().await else {
             return PriorSlice {

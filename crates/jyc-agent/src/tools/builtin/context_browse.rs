@@ -32,7 +32,17 @@ const TOOLS_LINE_MAX: usize = 4000;
 /// Byte bound on one message's text in a rendered pair. [`MAX_PAGE`] bounds
 /// the page by pair count, so fifty long assistant replies would otherwise
 /// still make a megabyte-sized tool result.
+///
+/// This is the *content* budget: [`crate::session::truncate_text`] appends
+/// its own `… [truncated N bytes]` note on top, so a truncated message sits
+/// a couple of dozen bytes above this value.
 const MESSAGE_TEXT_MAX: usize = 2000;
+
+/// Byte bound on the whole page. [`TOOLS_LINE_MAX`] and [`MESSAGE_TEXT_MAX`]
+/// bound one pair (~8 KB worst case), which [`MAX_PAGE`] then multiplies by
+/// fifty; this caps the sum so a maximal page stays in the low tens of KB —
+/// it is a tool result, resent on every remaining call of the turn.
+const PAGE_TEXT_MAX: usize = 32_000;
 
 /// Page through the conversation transcript.
 pub struct ContextBrowseTool;
@@ -111,17 +121,30 @@ impl Tool for ContextBrowseTool {
             total
         );
         let mut n = start;
-        if journal_from < journal_to {
-            for pair in &journal_pairs[journal_from - journal_first..journal_to - journal_first] {
-                n += 1;
-                out.push_str(&format_pair(n, pair));
+        let mut shown = 0usize;
+        let journal_slice =
+            &journal_pairs[journal_from - journal_first..journal_to - journal_first];
+        let current_slice =
+            &current_pairs[current_from - journal_total..current_to - journal_total];
+        for pair in journal_slice.iter().chain(current_slice.iter()) {
+            let rendered = format_pair(n + 1, pair);
+            // Per-pair and per-line bounds cap what one pair can cost; this
+            // caps the page as a whole, so a long page of maximal pairs
+            // cannot turn the tool result into a megabyte that rides every
+            // remaining call of the turn.
+            if shown > 0 && out.len() + rendered.len() > PAGE_TEXT_MAX {
+                break;
             }
+            out.push_str(&rendered);
+            n += 1;
+            shown += 1;
         }
-        if current_from < current_to {
-            for pair in &current_pairs[current_from - journal_total..current_to - journal_total] {
-                n += 1;
-                out.push_str(&format_pair(n, pair));
-            }
+        let omitted = end - start - shown;
+        if omitted > 0 {
+            out.push_str(&format!(
+                "\n…({omitted} more pairs in this range omitted to stay within \
+                 {PAGE_TEXT_MAX} bytes — page with `offset` to read them)\n"
+            ));
         }
         Ok(ToolOutput::success(out))
     }
@@ -383,6 +406,36 @@ mod tests {
             out.content.contains("truncated"),
             "a cut message must say so: {}",
             &out.content[..200.min(out.content.len())]
+        );
+    }
+
+    /// A page of maximal pairs is bounded as a whole, not only pair by
+    /// pair: [`MAX_PAGE`] pairs of capped messages would still sum past a
+    /// hundred KB, and the remainder is dropped with a count instead of
+    /// being sent every call of the turn.
+    #[tokio::test]
+    async fn whole_page_is_bounded() {
+        let long = "x".repeat(MESSAGE_TEXT_MAX * 2);
+        let mut raw = Vec::new();
+        for _ in 0..20 {
+            raw.push(json!({"role": "user", "content": long.clone()}));
+            raw.push(json!({"role": "assistant", "content": long.clone()}));
+        }
+        let dir = tempfile::tempdir().expect("create working dir");
+        let tool = ContextBrowseTool;
+        let out = tool
+            .execute(json!({"limit": 20}), &tool_ctx(dir.path(), raw))
+            .await
+            .unwrap();
+        let text = out.content;
+        assert!(
+            text.len() < PAGE_TEXT_MAX + 2 * MESSAGE_TEXT_MAX,
+            "page not bounded: {}",
+            text.len()
+        );
+        assert!(
+            text.contains("more pairs in this range omitted"),
+            "the dropped tail must be counted: {text}"
         );
     }
 

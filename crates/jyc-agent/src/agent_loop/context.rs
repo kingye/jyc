@@ -172,7 +172,11 @@ pub(crate) fn build_send_context_cached<'a>(
             // is read for usually sits at the ends, and the marker tells
             // the model how to page the gap. Both sentinel and default
             // mean off; see the doc above.
-            let turn_cap = effective_turn_cap(strategy);
+            // The rule (0 = off, non-zero lifted) lives in `jyc_types`,
+            // shared with the `/context` echo; the lift happens here, where
+            // the value is finally trusted, so an old `config.toml` or a
+            // stale override cannot skip it.
+            let turn_cap = jyc_types::channel::effective_turn_cap(strategy.turn_tool_result_cap);
             for msg in current {
                 out.push(cap_tool_result_content_with(
                     msg,
@@ -351,19 +355,6 @@ fn cap_tool_result_content_with(
     new_msg
 }
 
-/// The current-turn cap actually applied: `None` and `Some(0)` both mean
-/// off, anything else is lifted to
-/// [`jyc_types::channel::MIN_EDGE_KEEPING_CAP`].
-///
-/// The rule itself lives in [`jyc_types::channel::effective_turn_cap`], shared
-/// with the `/context` echo — the "0 is the off sentinel, non-zero is lifted"
-/// decision has exactly one owner. The lift happens where the value is
-/// finally trusted, so a cap arriving from `config.toml` or an old override
-/// cannot skip it.
-fn effective_turn_cap(strategy: &ContextStrategyConfig) -> usize {
-    jyc_types::channel::effective_turn_cap(strategy.turn_tool_result_cap)
-}
-
 /// Test-only debug dump — human-readable, region-labeled view of the
 /// wire payload. Used by the test suite to verify the region partition
 /// (`dump_labels_*` tests). Production debug dumps go through
@@ -382,7 +373,9 @@ fn dump_send_context(
     // value would show `turn_cap=3` for a turn really trimmed at the
     // edge-keeping floor.
     let cap_note = match strategy.turn_tool_result_cap {
-        Some(c) if c > 0 && c < effective_turn_cap(strategy) => format!(" (lifted from {c})"),
+        Some(c) if c > 0 && c < jyc_types::channel::effective_turn_cap(Some(c)) => {
+            format!(" (lifted from {c})")
+        }
         _ => String::new(),
     };
     let mut s = format!(
@@ -390,7 +383,7 @@ fn dump_send_context(
          {} msgs, ~{} bytes\n\n",
         strategy.mode,
         strategy.window,
-        effective_turn_cap(strategy),
+        jyc_types::channel::effective_turn_cap(strategy.turn_tool_result_cap),
         cap_note,
         strategy.max_history_tokens,
         sent.len(),
@@ -1055,7 +1048,7 @@ mod render_raw_context_tests {
         );
     }
 
-    /// The cached history regions must be indistinguishable from a cold
+    /// The cached history block must be indistinguishable from a cold
     /// build: same payload and labels on every iteration of a turn (the
     /// current turn grows, the cached prefix does not), and a rebuild once
     /// the prefix itself changes at the next turn.
@@ -1095,7 +1088,7 @@ mod render_raw_context_tests {
         assert_eq!(second.as_ref(), cold2.as_ref());
         assert_eq!(second_regions, cold2_regions);
 
-        // Next turn: the prefix grew, so the cached regions must be rebuilt.
+        // Next turn: the prefix grew, so the cached block must be rebuilt.
         let next_prior_len = ctx.len();
         ctx.push(json!({"role": "user", "content": "u4"}));
         let (third, third_regions) =

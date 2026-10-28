@@ -571,7 +571,9 @@ Key changes, newest first (see CHANGELOG.md for full entries):
   `context_browse` still renders each turn's tool calls (`[n] TOOLS:`, at
   most 20 per turn and at most 4 KB per turn, whole calls dropped with a
   `…(N more calls)` count when either bound bites), built from the journal
-  instead of from a note.
+  instead of from a note. The whole page is bounded too — 2 KB of text per
+  message and 32 KB per page, with the tail flagged as omitted — because
+  that result rides every remaining call of the current turn.
 - **system prompt stability** — the subagent roster and the channel/topic
   roster left the system prompt for a `<runtime-state>` block on the
   turn's user message, so topic churn no longer invalidates the cached

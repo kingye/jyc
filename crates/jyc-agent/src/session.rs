@@ -1209,9 +1209,10 @@ pub(crate) fn render_turn_tool_calls(pair: &TurnPair) -> Option<String> {
 /// When the full list does not fit, whole calls are dropped from the end —
 /// never cut mid-call, which would leave half an argument looking like a
 /// real one — and the overflow marker absorbs the count, so "how many are
-/// hidden" always survives the bound. That is the opposite of trimming the
-/// finished string: a blind byte cut at the end removes exactly the marker
-/// and keeps the unreadable fragment.
+/// hidden" survives any bound that can hold the marker itself (only a
+/// `limit` smaller than the marker's own length cuts into it). That is the
+/// opposite of trimming the finished string: a blind byte cut at the end
+/// removes exactly the marker and keeps the unreadable fragment.
 pub(crate) fn render_turn_tool_calls_bounded(pair: &TurnPair, limit: usize) -> Option<String> {
     if pair.tool_calls.is_empty() {
         return None;
@@ -1228,17 +1229,19 @@ pub(crate) fn render_turn_tool_calls_bounded(pair: &TurnPair, limit: usize) -> O
     loop {
         let body = pair.tool_calls[..keep].join(", ");
         let suffix = marker(pair.omitted_tool_calls + (total - keep));
-        if body.len() + suffix.len() <= limit {
-            return Some(format!("{body}{suffix}"));
-        }
         if keep == 0 {
-            // Not even one call plus the marker fits the budget. Hard-cut
-            // the marker at a char boundary *without* a truncation marker:
+            // Not even one call fits. Return the bare marker — trimmed of
+            // its leading space, which only separates it from a non-empty
+            // list and would otherwise render as an empty `TOOLS:` value.
+            // Hard-cut at a char boundary *without* a truncation marker:
             // `truncate_text` appends one of its own, which would push the
             // result back over the caller's bound.
             let marker_only = suffix.trim_start();
-            let end = marker_only.floor_char_boundary(limit);
-            return Some(marker_only[..end].to_string());
+            let end = limit.min(marker_only.len());
+            return Some(marker_only[..marker_only.floor_char_boundary(end)].to_string());
+        }
+        if body.len() + suffix.len() <= limit {
+            return Some(format!("{body}{suffix}"));
         }
         keep -= 1;
     }

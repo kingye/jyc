@@ -206,7 +206,7 @@ body line.
 | `/template update` | Re-apply template, overwrite existing files |
 | `/context` | Show the context management strategy (`full` / `sliding_window`) |
 | `/context full` | Send the full conversation context to the LLM (default) |
-| `/context sliding [N] [EXT] [M] [TURNCAP] [MAXHIST]` | Send the last N user/assistant turns from prior history plus the current turn verbatim (tool calls/results intact) to the LLM (default N=10); EXT is the extension rate the window may grow by before sliding back (default 0.5); optional M keeps the most recent M windowed turns structured, with older turns as text-only pairs (default 0 = text-only history); TURNCAP caps a single tool result on the current turn; MAXHIST is a token budget for the windowed history. `.jyc/agent-context.jsonl` keeps the full history — see `docs/architecture/context.md` |
+| `/context sliding [N] [EXT] [TURNCAP] [MAXHIST]` | Send the last N user/assistant turns as text-only history plus the current turn verbatim (tool calls/results intact) to the LLM (default N=10); EXT is the extension rate the window may grow by before sliding back (default 0.5); TURNCAP caps a single tool result on the current turn (`0`, or 130 B..1 MiB); MAXHIST is a token budget for the windowed history. `.jyc/agent-context.jsonl` keeps the full history — see `docs/architecture/context.md` |
 | `/context reset` | Remove the runtime override and revert to the configured default |
 | `/skill` | Show this topic's runtime skill toggles (`on`/`off` lists) |
 | `/skill on <name>` | Force-enable a discoverable skill for this topic, even if excluded by config; takes effect from the next message, persists until `/skill reset` |
@@ -803,7 +803,7 @@ This is useful for diagnosing reply delivery failures.
 | Document | Purpose |
 |----------|---------|
 | [DESIGN.md](DESIGN.md) | Architecture, data flow, component design, API reference |
-| [docs/architecture/context.md](docs/architecture/context.md) | Context strategies, sliding window, history notes, token safety nets |
+| [docs/architecture/context.md](docs/architecture/context.md) | Context strategies, sliding window, what the request looks like, token safety nets |
 | [docs/hooks.md](docs/hooks.md) | Lifecycle hooks — config, events, payload, Claude Code compatibility |
 | [CHANGELOG.md](CHANGELOG.md) | Version history |
 | [docker/README.md](docker/README.md) | Docker/Podman deployment |

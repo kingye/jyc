@@ -773,6 +773,50 @@ pub enum ContextStrategy {
     SlidingWindow,
 }
 
+/// Bytes reserved inside a cap for the edge-keeping trim's drop marker.
+///
+/// The marker is 107 bytes with a 20-digit count (a 10 EiB result is not a
+/// real case, but the reserve has to cover the format either way), so 128
+/// leaves a small margin. It sits **inside** the cap, which is why the
+/// content budget is `cap - MARKER_RESERVE`.
+pub const MARKER_RESERVE: usize = 128;
+
+/// Smallest non-zero [`ContextStrategyConfig::turn_tool_result_cap`] that
+/// still keeps both ends of a trimmed result: [`MARKER_RESERVE`] plus a
+/// two-byte content budget (one byte head, one byte tail).
+///
+/// Anything below that leaves no room for content: at 128 the budget is
+/// zero, at 129 the head rounds down to zero on the char boundary. Both
+/// would fall back to a plain head-only cut, which hides the end of a
+/// result — the part a result is usually read for.
+///
+/// This constant is the single source for both ends of the rule: the
+/// `/context` command refuses a non-zero value below it, and the wire
+/// builder lifts a configured one up to it through [`effective_turn_cap`].
+///
+/// The bound is on the cap, not on every content. At 130 the tail is a
+/// single byte, so content whose **last** character is multi-byte rounds
+/// the tail start up to the end of the string; the trim then finds no tail
+/// to keep and falls back rather than pretend it kept one. The floor
+/// therefore guarantees both ends for ASCII-bounded content — the
+/// practical case (commands, paths, error lines). Anything else still gets
+/// a correct trim, just head-only.
+pub const MIN_EDGE_KEEPING_CAP: usize = MARKER_RESERVE + 2;
+
+/// The current-turn result cap actually applied for a configured value.
+///
+/// `None` and `Some(0)` both mean off and come back as `0`; any other value
+/// is lifted to [`MIN_EDGE_KEEPING_CAP`], because a smaller non-zero cap
+/// would degrade the trim to a head-only cut and gut every tool result.
+/// Both the wire builder and the `/context` echo call this, so the echo
+/// shows exactly what the model receives.
+pub fn effective_turn_cap(configured: Option<usize>) -> usize {
+    match configured {
+        Some(c) if c > 0 => c.max(MIN_EDGE_KEEPING_CAP),
+        _ => 0,
+    }
+}
+
 /// Configuration for the context strategy.
 ///
 /// `mode` selects which strategy to apply. In `sliding_window` the
@@ -784,14 +828,10 @@ pub enum ContextStrategy {
 /// head between them (a per-turn trim would rewrite the wire prefix every
 /// turn and destroy the cache hit).
 ///
-/// The payload itself has two blocks with different stability: the older
-/// turns (text-only, region ①) only ever grow, so the provider's cached
-/// prefix extends from one turn to the next; the most recent
-/// [`Self::note_window`] turns (verbatim, region ②) advance by one turn
-/// each turn and are therefore re-encoded. `note_window = Some(0)` — the
-/// default — makes region ② empty, so the whole payload is append-only;
-/// unset sends the whole history verbatim, and then nothing is ever folded
-/// either.
+/// The payload itself is append-only: the windowed turns are sent as
+/// text-only user/assistant pairs that only ever grow, so the provider's
+/// cached prefix extends from one turn to the next, and the current turn
+/// follows verbatim with its tool calls and results.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ContextStrategyConfig {
     /// Context strategy mode. Default: `sliding_window`.
@@ -810,30 +850,6 @@ pub struct ContextStrategyConfig {
     /// Only meaningful when `mode = "sliding_window"`.
     #[serde(default = "default_extend_rate")]
     pub extend_rate: f64,
-    /// Number of the most recent windowed turns sent **verbatim** — with
-    /// their tool calls and results. Older turns are sent as text-only
-    /// user/assistant text pairs: no history notes, and their tool calls,
-    /// arguments and results are gone from the payload (the journal keeps
-    /// them; `context_browse` still reads them). **`Some(0)` by default**
-    /// (sliding_window mode): history is text-only, which is both the
-    /// smallest payload and the only setting whose prefix never moves.
-    /// Only meaningful when `mode = "sliding_window"`.
-    ///
-    /// Each turn the verbatim tail advances by one turn (a turn moves from
-    /// the tail into the text-only block), so the tail is re-encoded every
-    /// turn while the text-only block only grows by append — that re-encode
-    /// is the price of keeping structured tool calls in the recent window.
-    /// Raise it above `0` when a thinking model starts writing its process
-    /// as content (text-only history taught MiniMax/DeepSeek to do that),
-    /// and accept the re-encoding in exchange.
-    ///
-    /// Omitted from serialized override files when unset so existing
-    /// readers stay compatible.
-    #[serde(
-        default = "default_note_window",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub note_window: Option<usize>,
     /// Byte cap on each tool result in the current turn
     /// (`sliding_window` mode). `None` (the default) sends the current
     /// turn uncapped — the model is reasoning over these results
@@ -842,12 +858,14 @@ pub struct ContextStrategyConfig {
     /// oversized result to at most `Some(cap)` bytes — marker included —
     /// keeping its head and tail with the middle replaced by a paging
     /// marker, since what a result is usually read for (the command that
-    /// ran, the error, the summary line) sits at the ends. Below ~128
-    /// bytes there is no room for both ends, so the head-only cut takes
-    /// over and its own marker sits on top of `cap`. `Some(0)` disables
-    /// capping, same as `None`. Only meaningful when `mode = "sliding_window"`. Omitted
-    /// from serialized override files when unset so existing readers stay
-    /// compatible.
+    /// ran, the error, the summary line) sits at the ends. A non-zero
+    /// value below [`MIN_EDGE_KEEPING_CAP`] cannot hold the paging marker
+    /// plus both ends, so it is lifted to that floor instead of silently
+    /// degrading to a head-only cut (the `/context` command refuses such a
+    /// value outright, since there the user is right there to be told).
+    /// `Some(0)` disables capping, same as `None`. Only meaningful when
+    /// `mode = "sliding_window"`. Omitted from serialized override files
+    /// when unset so existing readers stay compatible.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_tool_result_cap: Option<usize>,
     /// Token budget for the windowed history (`sliding_window` mode).
@@ -895,7 +913,6 @@ impl Default for ContextStrategyConfig {
             mode: default_context_strategy(),
             window: default_context_window_size(),
             extend_rate: default_extend_rate(),
-            note_window: default_note_window(),
             // Current turn uncapped by default: the mid-loop reasoning
             // argument for capping does not automatically extend here, and
             // silently trimming results the model is still working through
@@ -919,12 +936,6 @@ fn default_extend_rate() -> f64 {
 
 fn default_context_strategy() -> ContextStrategy {
     ContextStrategy::SlidingWindow
-}
-
-fn default_note_window() -> Option<usize> {
-    // Text-only history: the verbatim tail is opt-in, because every turn it
-    // holds is re-encoded the moment it advances.
-    Some(0)
 }
 
 /// Per-pattern filesystem access whitelist.
@@ -1142,7 +1153,6 @@ topic_path = "~/projects/jyc"
         assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
         assert_eq!(cfg.window, 10);
         assert_eq!(cfg.extend_rate, 0.5);
-        assert_eq!(cfg.note_window, Some(0));
         // window 10 + round(0.5 × 10) = 15 turns before a slide.
         assert_eq!(cfg.max_window(), 15);
     }
@@ -1154,17 +1164,18 @@ topic_path = "~/projects/jyc"
         let toml_str = r#"
             mode = "sliding_window"
             window = 10
-            note_window = 3
         "#;
         let cfg: ContextStrategyConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.extend_rate, 0.5);
     }
 
     #[test]
-    fn test_context_strategy_tool_result_cap_is_inert() {
-        // `tool_result_cap` was removed (#1019): a config still carrying
-        // it must load unchanged, with the key ignored. This is the
-        // migration path for every existing config file.
+    fn test_context_strategy_removed_keys_are_inert() {
+        // `tool_result_cap` was removed (#1019) and `note_window` was
+        // removed along with the history-note machinery: a config still
+        // carrying either key must load unchanged, with the key ignored.
+        // This is the migration path for every existing config file and
+        // persisted `context-strategy.json`.
         let toml_str = r#"
             mode = "sliding_window"
             window = 10
@@ -1173,7 +1184,6 @@ topic_path = "~/projects/jyc"
         "#;
         let cfg: ContextStrategyConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.window, 10);
-        assert_eq!(cfg.note_window, Some(3));
         assert_eq!(cfg.turn_tool_result_cap, None);
     }
 
@@ -1201,16 +1211,14 @@ topic_path = "~/projects/jyc"
     fn test_context_strategy_serde_partial_toml_uses_defaults() {
         // Regression guard for the partial-config bug: when a user writes
         // just `mode = "sliding_window"` in config.toml, the unset
-        // `note_window` / `extend_rate` fields must pick up the struct
-        // defaults (`Some(0)` / `0.5`), not `None` / `0.0`. `None` means
-        // "whole history verbatim" — the opposite of the default — so
-        // without the `default = "..."` serde attributes a partial config
-        // would silently flip the payload shape.
+        // `extend_rate` field must pick up the struct default (`0.5`), not
+        // `0.0` — a zero rate slides on every turn and defeats the prompt
+        // cache, so without the `default = "..."` serde attribute a partial
+        // config would silently change the payload shape.
         let cfg: ContextStrategyConfig = toml::from_str(r#"mode = "sliding_window""#).unwrap();
         assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
         assert_eq!(cfg.window, 10);
         assert_eq!(cfg.extend_rate, 0.5);
-        assert_eq!(cfg.note_window, Some(0));
     }
 
     #[test]
@@ -1252,8 +1260,8 @@ topic_path = "~/projects/jyc"
 
     #[test]
     fn test_context_strategy_turn_tool_result_cap_defaults_to_none() {
-        // Unset by default: region ③ (the current turn) must stay
-        // uncapped unless someone opts in.
+        // Unset by default: the current turn must stay uncapped unless
+        // someone opts in.
         assert_eq!(ContextStrategyConfig::default().turn_tool_result_cap, None);
 
         // A config file written before this field existed must load with

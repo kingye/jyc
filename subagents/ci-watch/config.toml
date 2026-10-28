@@ -72,15 +72,14 @@ the caller is left holding a promise where a report belongs.
 # Small on purpose — a watcher is not a thinker. `window = 1` with
 # `extend_rate = 0` is a hard one-turn window: the prior is the previous
 # turn and it slides on every turn, so a whole watch session costs one turn
-# of history. `note_window = 0` keeps no tool results in that history, and
-# the 512-byte cap bounds the turn being run, which is where the poll output
-# actually rides. (Config layer, not an override: the user's `/context`
+# of history — text-only, so no tool results ride along in it. The 512-byte
+# cap bounds the turn being run, which is where the poll output actually
+# rides. (Config layer, not an override: the user's `/context`
 # still wins.)
 [context_strategy]
 mode = "sliding_window"
 window = 1
 extend_rate = 0.0
-note_window = 0
 turn_tool_result_cap = 512
 
 # Ancillary work runs on the small model: `${ai.small_model}` is a model

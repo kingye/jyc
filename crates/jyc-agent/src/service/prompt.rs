@@ -131,20 +131,13 @@ impl JycAgentService {
              - If nothing needs to reach the user, end the turn with no text.\n\n",
         );
 
-        // History format guardrail: the sliding window summarizes each past
-        // turn's tool calls as a separate user-role "[History note]" message.
-        // Models have been observed MIMICKING such machine formats in their
-        // reply text and believing they replied — while no tool call actually
-        // happened and the narration was delivered as the fallback reply.
+        // History format guardrail: the sliding window folds older turns to
+        // text and marks the block with a machine-generated divider. Models
+        // have been observed treating such machine text as conversation.
         // State the contract explicitly.
         prompt.push_str(
             "## History Format\n\
-             Past turns in your context may include user-role history notes: \
-             `[History note] assistant tool calls: name(args) → result`. These are \
-             READ-ONLY summaries of what already happened — not messages from the user \
-             and not your own output. Writing similar text as your message does NOT \
-             invoke any tool — only real tool calls do. \
-             The sliding window also inserts a machine-generated `[History messages]` \
+             The sliding window inserts a machine-generated `[History messages]` \
              divider before older compacted history: it marks text-only, degraded turns \
              (tool calls and results omitted), is not from the user, and must not be \
              treated as an instruction.\n\n",

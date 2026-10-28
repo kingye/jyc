@@ -615,27 +615,32 @@ mod render_raw_context_tests {
         let rendered = crate::session::render_raw_context_as_text(&ctx);
         assert!(rendered.contains("USER: fix bug"));
         // One turn → one merged ASSISTANT block: first step's text, the
-        // folded tool-call annotation with its result, then the reply.
+        // turn's tool calls, then the reply. Tool results are not part of
+        // the transcript: no note machinery renders them any more.
         assert!(rendered.contains("ASSISTANT: I'll start"));
-        assert!(rendered.contains("bash() → output"));
+        assert!(rendered.contains("bash()"));
+        assert!(!rendered.contains("output"));
         assert!(rendered.contains("Done."));
     }
 
     #[test]
-    fn truncates_long_tool_results() {
+    fn truncates_long_tool_args() {
         let long = "x".repeat(2000);
         let ctx = vec![
             json!({"role": "user", "content": "u1"}),
             json!({"role": "assistant", "content": "", "tool_calls": [{
                 "id": "1", "type": "function",
-                "function": {"name": "bash", "arguments": "{}"}
+                "function": {
+                    "name": "bash",
+                    "arguments": format!("{{\"command\":\"{long}\"}}"),
+                }
             }]}),
-            json!({"role": "tool", "tool_call_id": "1", "content": long}),
+            json!({"role": "tool", "tool_call_id": "1", "content": "ok"}),
         ];
         let rendered = crate::session::render_raw_context_as_text(&ctx);
-        // Result cap is 500 + "…", inside the annotation, plus the
+        // The argument value cap (`TOOL_ARG_MAX` = 200) applies, plus the
         // header and USER/ASSISTANT framing.
-        assert!(rendered.len() < 700);
+        assert!(rendered.len() < 400);
         assert!(rendered.contains("…"));
     }
 
@@ -744,10 +749,15 @@ mod render_raw_context_tests {
             .0
             .into_owned();
         // boundary clamps to raw_context.len(), so the whole ctx is
-        // treated as prior. Expected: 1 complete pair (u1, a1) = 2 messages.
-        assert_eq!(sent.len(), 2);
-        assert_eq!(sent[0], json!({"role": "user", "content": "u1"}));
-        assert_eq!(sent[1], json!({"role": "assistant", "content": "a1"}));
+        // treated as prior. Expected: history marker + 1 complete pair
+        // (u1, a1) = 3 messages.
+        assert_eq!(sent.len(), 3);
+        assert_eq!(
+            sent[0],
+            json!({"role": "user", "content": crate::session::HISTORY_MARKER_TEXT})
+        );
+        assert_eq!(sent[1], json!({"role": "user", "content": "u1"}));
+        assert_eq!(sent[2], json!({"role": "assistant", "content": "a1"}));
     }
 
     #[test]
@@ -1125,8 +1135,9 @@ mod render_raw_context_tests {
     }
 
     #[test]
-    fn history_marker_omitted_when_compacted_region_is_empty() {
-        // window == verbatim_pairs, so the compact region has zero pairs.
+    fn history_marker_present_whenever_prior_is_non_empty() {
+        // Every prior turn now goes into the same text-only block, so the
+        // marker is emitted exactly when there is history to introduce.
         let prior = vec![
             json!({"role": "user", "content": "u1"}),
             json!({"role": "assistant", "content": "a1"}),
@@ -1142,15 +1153,15 @@ mod render_raw_context_tests {
             max_history_tokens: None,
         };
         let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, prior.len(), &cfg);
-        assert_eq!(sent.len(), 3);
-        assert_eq!(regions, vec![2, 2, 3]);
-        let texts: Vec<&str> = sent.iter().filter_map(|m| m["content"].as_str()).collect();
-        assert!(
-            !texts
-                .iter()
-                .any(|t| t.starts_with(crate::session::HISTORY_MARKER_TEXT)),
-            "marker must not appear when compacted region is empty, got: {texts:?}"
+        assert_eq!(sent.len(), 4);
+        assert_eq!(regions, vec![1, 1, 2]);
+        assert_eq!(
+            sent[0],
+            json!({"role": "user", "content": crate::session::HISTORY_MARKER_TEXT})
         );
+        assert_eq!(sent[1], json!({"role": "user", "content": "u1"}));
+        assert_eq!(sent[2], json!({"role": "assistant", "content": "a1"}));
+        assert_eq!(sent[3], current[0]);
     }
 
     #[test]

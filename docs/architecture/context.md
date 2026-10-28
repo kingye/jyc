@@ -569,11 +569,16 @@ Key changes, newest first (see CHANGELOG.md for full entries):
   history and the verbatim current turn. History notes are gone from the
   wire, the config, the `/context` command and the system prompt.
   `context_browse` still renders each turn's tool calls (`[n] TOOLS:`, at
-  most 20 per turn and at most 4 KB per turn, whole calls dropped with a
-  `…(N more calls)` count when either bound bites), built from the journal
-  instead of from a note. The whole page is bounded too — 2 KB of text per
-  message and 32 KB per page, with the tail flagged as omitted — because
-  that result rides every remaining call of the current turn.
+  most 20 per turn and at most 4000 bytes per turn, whole calls dropped with
+  a `…(N more calls)` count when either bound bites), built from the journal
+  instead of from a note. The whole page is bounded too — 2000 bytes of text
+  per message and 32 000 bytes per page — because that result rides every
+  remaining call of the current turn. Every bound drops whole items, never
+  half of one: over the per-turn byte bound the dropped calls are counted,
+  and over the page bound the *oldest* pairs of the requested range are
+  dropped and counted, so the note's "raise `offset`" actually reaches them
+  (`offset` counts from the newest end) and the page still ends at the
+  newest pair.
 - **system prompt stability** — the subagent roster and the channel/topic
   roster left the system prompt for a `<runtime-state>` block on the
   turn's user message, so topic churn no longer invalidates the cached

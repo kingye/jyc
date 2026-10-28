@@ -373,7 +373,10 @@ fn dump_send_context(
     // value would show `turn_cap=3` for a turn really trimmed at the
     // edge-keeping floor.
     let cap_note = match strategy.turn_tool_result_cap {
-        Some(c) if c > 0 && c < jyc_types::channel::effective_turn_cap(Some(c)) => {
+        // `0` is the off sentinel: it maps to itself, so the comparison
+        // alone is enough — a configured value only gets a note when the
+        // applied one is larger.
+        Some(c) if c < jyc_types::channel::effective_turn_cap(Some(c)) => {
             format!(" (lifted from {c})")
         }
         _ => String::new(),

@@ -42,6 +42,10 @@ const MESSAGE_TEXT_MAX: usize = 2000;
 /// bound one pair (~8 KB worst case), which [`MAX_PAGE`] then multiplies by
 /// fifty; this caps the sum so a maximal page stays in the low tens of KB —
 /// it is a tool result, resent on every remaining call of the turn.
+///
+/// Over the bound, whole pairs are dropped from the *old* end of the page
+/// and counted (`…(N older pairs omitted — raise \`offset\` to read them)`),
+/// so a page still ends at the newest pair it was asked for.
 const PAGE_TEXT_MAX: usize = 32_000;
 
 /// Page through the conversation transcript.
@@ -114,35 +118,59 @@ impl Tool for ContextBrowseTool {
         let (journal_from, journal_to) = (start.max(journal_first), end.min(journal_total));
         let (current_from, current_to) = (start.max(journal_total), end);
 
+        // Either half can be empty (a page entirely inside the journal, or
+        // one entirely in the running turn), and `end` can sit below
+        // `journal_total`, so both sides are guarded rather than sliced
+        // unconditionally.
+        let journal_slice: &[TurnPair] = if journal_to > journal_from {
+            &journal_pairs[journal_from - journal_first..journal_to - journal_first]
+        } else {
+            &[]
+        };
+        let current_slice: &[TurnPair] = if current_to > current_from {
+            &current_pairs[current_from - journal_total..current_to - journal_total]
+        } else {
+            &[]
+        };
+
+        // Render the page oldest→newest, then keep the *newest* pairs that
+        // fit. The bound trims the old end on purpose: `offset` counts from
+        // the newest pair, so the knob the note points at actually reaches
+        // what was left out. Trimming the newest pairs would make the
+        // omitted ones unreachable — raising `offset` would re-render the
+        // same already-visible page.
+        let rendered: Vec<String> = journal_slice
+            .iter()
+            .chain(current_slice.iter())
+            .enumerate()
+            .map(|(i, pair)| format_pair(start + 1 + i, pair))
+            .collect();
+        let mut kept = 0usize;
+        let mut bytes = 0usize;
+        for chunk in rendered.iter().rev() {
+            // The newest pair is kept even on its own, so a single oversized
+            // pair cannot produce an empty page.
+            if kept > 0 && bytes + chunk.len() > PAGE_TEXT_MAX {
+                break;
+            }
+            bytes += chunk.len();
+            kept += 1;
+        }
+        let first = rendered.len() - kept;
         let mut out = format!(
             "=== Transcript pairs {}-{} of {} (oldest→newest, offset {offset}) ===\n",
-            start + 1,
+            start + 1 + first,
             end,
             total
         );
-        let mut shown = 0usize;
-        let journal_slice =
-            &journal_pairs[journal_from - journal_first..journal_to - journal_first];
-        let current_slice =
-            &current_pairs[current_from - journal_total..current_to - journal_total];
-        let page = journal_slice.iter().chain(current_slice.iter());
-        for (n, pair) in (start..).zip(page) {
-            let rendered = format_pair(n + 1, pair);
-            // Per-pair and per-line bounds cap what one pair can cost; this
-            // caps the page as a whole, so a long page of maximal pairs
-            // cannot turn the tool result into a megabyte that rides every
-            // remaining call of the turn.
-            if shown > 0 && out.len() + rendered.len() > PAGE_TEXT_MAX {
-                break;
-            }
-            out.push_str(&rendered);
-            shown += 1;
+        for chunk in &rendered[first..] {
+            out.push_str(chunk);
         }
-        let omitted = end - start - shown;
+        let omitted = end - start - kept;
         if omitted > 0 {
             out.push_str(&format!(
-                "\n…({omitted} more pairs in this range omitted to stay within \
-                 {PAGE_TEXT_MAX} bytes — page with `offset` to read them)\n"
+                "\n…({omitted} older pairs omitted to stay within {PAGE_TEXT_MAX} bytes \
+                 — raise `offset` to read them)\n"
             ));
         }
         Ok(ToolOutput::success(out))
@@ -412,6 +440,10 @@ mod tests {
     /// pair: [`MAX_PAGE`] pairs of capped messages would still sum past a
     /// hundred KB, and the remainder is dropped with a count instead of
     /// being sent every call of the turn.
+    ///
+    /// The dropped pairs are the *oldest* of the requested range, so the
+    /// page still ends at the newest pair, and `offset` (which counts from
+    /// the newest end) reaches the omitted ones.
     #[tokio::test]
     async fn whole_page_is_bounded() {
         let long = "x".repeat(MESSAGE_TEXT_MAX * 2);
@@ -427,14 +459,121 @@ mod tests {
             .await
             .unwrap();
         let text = out.content;
+        // One pair is ~4.1 KB; the bound plus the header, the newest pair
+        // kept unconditionally and the omission note.
         assert!(
-            text.len() < PAGE_TEXT_MAX + 2 * MESSAGE_TEXT_MAX,
+            text.len() < PAGE_TEXT_MAX + 4_500,
             "page not bounded: {}",
             text.len()
         );
         assert!(
-            text.contains("more pairs in this range omitted"),
-            "the dropped tail must be counted: {text}"
+            text.contains("older pairs omitted"),
+            "the dropped pairs must be counted: {text}"
+        );
+        assert!(
+            text.contains("raise `offset`"),
+            "the note must name the knob that reaches them: {text}"
+        );
+        // The newest pair survives; the header reports what is actually
+        // rendered, not the requested range.
+        assert!(text.contains("[20] ASSISTANT:"), "newest pair: {text}");
+        assert!(
+            !text.contains("[1] USER:"),
+            "oldest must be the drop: {text}"
+        );
+        let header = text.lines().next().unwrap_or_default();
+        assert!(!header.contains("pairs 1-20"), "header: {header}");
+        assert!(
+            header.ends_with("of 20 (oldest→newest, offset 0) ==="),
+            "{header}"
+        );
+    }
+
+    /// A page whose range crosses the journal/current-turn boundary with a
+    /// non-zero offset: both halves can be empty and `end` can sit below
+    /// the journal total, so both slices need a guard rather than an
+    /// unconditional range.
+    #[tokio::test]
+    async fn offset_into_a_page_entirely_inside_the_journal() {
+        let dir = tempfile::tempdir().expect("create working dir");
+        let state_dir = dir.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        let topic = "context_browse_journal_offset";
+        jyc_types::state_dir::register(topic, &state_dir);
+        let mut body = String::new();
+        for i in 1..=6 {
+            body.push_str(&format!(
+                "{}\n",
+                json!({"role": "user", "content": format!("u{i}")})
+            ));
+            body.push_str(&format!(
+                "{}\n",
+                json!({"role": "assistant", "content": format!("a{i}")})
+            ));
+        }
+        tokio::fs::write(state_dir.join("agent-context.jsonl"), body)
+            .await
+            .unwrap();
+
+        let tool = ContextBrowseTool;
+        let mut ctx = ToolContext::new(dir.path());
+        ctx.current_topic = Some(topic.to_string());
+        // Two complete pairs in the running turn, so total = 8 and the page
+        // [3, 5) lies wholly inside the journal.
+        ctx.raw_context = vec![
+            json!({"role": "user", "content": "u7"}),
+            json!({"role": "assistant", "content": "a7"}),
+            json!({"role": "user", "content": "u8"}),
+            json!({"role": "assistant", "content": "a8"}),
+        ];
+        let out = tool
+            .execute(json!({"offset": 4, "limit": 2}), &ctx)
+            .await
+            .unwrap();
+        let text = out.content;
+        assert!(text.contains("pairs 3-4 of 8"), "header: {text}");
+        assert!(text.contains("[3] USER: u3"), "first: {text}");
+        assert!(text.contains("[4] ASSISTANT: a4"), "last: {text}");
+        assert!(!text.contains("u5"), "newer pair leaked: {text}");
+    }
+
+    /// A call-heavy pair still renders: the per-call argument bound and the
+    /// per-turn call bound are what keep it small, so a page of such turns
+    /// is not the expensive part of the payload. (This is also the shape
+    /// the whole-page bound's keep-at-least-one rule exists for, though
+    /// with the other caps in place one pair cannot reach it.)
+    #[tokio::test]
+    async fn call_heavy_pair_is_bounded_and_rendered() {
+        let calls: Vec<Value> = (0..40)
+            .map(|i| {
+                json!({"id": i.to_string(), "type": "function", "function": {
+                    "name": "bash",
+                    "arguments": json!({"command": "x".repeat(1_900)}).to_string(),
+                }})
+            })
+            .collect();
+        let raw = vec![
+            json!({"role": "user", "content": "u"}),
+            json!({"role": "assistant", "content": "a", "tool_calls": calls}),
+        ];
+        let dir = tempfile::tempdir().expect("create working dir");
+        let tool = ContextBrowseTool;
+        let out = tool
+            .execute(json!({"limit": 1}), &tool_ctx(dir.path(), raw))
+            .await
+            .unwrap();
+        let text = out.content;
+        assert!(
+            text.contains("[1] USER: u"),
+            "page must not be empty: {text}"
+        );
+        // 40 calls cannot fit in 4000 bytes: whole calls are dropped and
+        // the count survives.
+        assert!(text.contains("more calls)"), "tool line: {text}");
+        assert!(
+            text.len() < TOOLS_LINE_MAX + 500,
+            "one pair must stay small: {}",
+            text.len()
         );
     }
 

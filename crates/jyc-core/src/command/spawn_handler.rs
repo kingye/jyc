@@ -1516,8 +1516,8 @@ mod tests {
         // errand at a time. `window = 1` with `extend_rate = 0` is a hard
         // one-turn window — the prior is the previous turn and it slides on
         // every turn — so the task survives into a second turn without the
-        // history growing past a turn. `note_window = 0` keeps no tool results
-        // in that history, and the 512-byte cap bounds the turn being run,
+        // history growing past a turn. That history is text-only — no tool
+        // calls or results — and the 512-byte cap bounds the turn being run,
         // which is where the poll output actually rides, so the poll and the
         // report inside one errand still see each other.
         let strategy = watch
@@ -1528,7 +1528,6 @@ mod tests {
         assert_eq!(strategy.mode, jyc_types::ContextStrategy::SlidingWindow);
         assert_eq!(strategy.window, 1);
         assert_eq!(strategy.extend_rate, 0.0);
-        assert_eq!(strategy.note_window, Some(0));
         assert_eq!(strategy.turn_tool_result_cap, Some(512));
     }
 

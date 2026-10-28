@@ -13,16 +13,13 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 /// Usage:
 ///   /context              Show current strategy
 ///   /context full         Switch to full context (send everything)
-///   /context sliding [N] [EXT] [M] [TURNCAP] [MAXHIST]
+///   /context sliding [N] [EXT] [TURNCAP] [MAXHIST]
 ///     Switch to sliding window (default N = 10 turns). EXT is the
 ///     extension rate: the window grows from N up to
 ///     N + round(EXT × N) turns before it slides back to N (default 0.5;
-///     0 makes N a hard window that slides every turn). M is the optional
-///     note window: the most recent M windowed turns are sent verbatim,
-///     with their tool calls and results, and older turns as text-only
-///     pairs (default: 0 = text-only history, no tool results in it).
+///     0 makes N a hard window that slides every turn).
 ///     TURNCAP is the optional per-tool-result byte cap on the current
-///     turn (region ③); an oversized result keeps its head and tail with
+///     turn; an oversized result keeps its head and tail with
 ///     the middle replaced by a paging marker. Unset by default. MAXHIST
 ///     is the optional token budget for the windowed history: when the
 ///     window has reached its turn bound and estimates over it, the window
@@ -126,12 +123,11 @@ impl CommandHandler for ContextCommandHandler {
                     &override_path,
                     ContextStrategyConfig {
                         mode: ContextStrategy::Full,
-                        // Preserve the configured window/note_window/caps so
+                        // Preserve the configured window/caps so
                         // toggling full → sliding later still has sensible
                         // defaults.
                         window: configured.window,
                         extend_rate: configured.extend_rate,
-                        note_window: configured.note_window,
                         turn_tool_result_cap: configured.turn_tool_result_cap,
                         max_history_tokens: configured.max_history_tokens,
                     },
@@ -205,44 +201,12 @@ impl CommandHandler for ContextCommandHandler {
                     None
                 };
                 let extend_rate = extend_rate.unwrap_or(configured.extend_rate);
-                // Optional note window M (args[3]): only the most recent M
-                // windowed turns are sent verbatim; older ones are text-only.
-                // 0 is valid (text-only window); absent = keep configured
-                // default.
-                let note_window = if let Some(arg) = context.args.get(3) {
-                    match arg.parse::<usize>() {
-                        Ok(m) if m <= MAX_WINDOW => Some(Some(m)),
-                        Ok(_) => {
-                            return Ok(CommandResult {
-                                success: false,
-                                message: format!(
-                                    "/context: note window must be between 0 and {MAX_WINDOW}"
-                                ),
-                                error: None,
-                                append_body: None,
-                            });
-                        }
-                        Err(_) => {
-                            return Ok(CommandResult {
-                                success: false,
-                                message: format!(
-                                    "/context: invalid note window '{arg}', expected a non-negative integer"
-                                ),
-                                error: None,
-                                append_body: None,
-                            });
-                        }
-                    }
-                } else {
-                    None
-                };
-                let note_window = note_window.unwrap_or(configured.note_window);
                 // Optional current-turn tool-result byte cap TURNCAP
-                // (args[4]): bounds the results the model is still
+                // (args[3]): bounds the results the model is still
                 // reasoning over, which are uncapped by default. 0 is the
                 // explicit "off" sentinel; absent = keep the configured
                 // value, which for a topic that never set it is None.
-                let turn_tool_result_cap = if let Some(arg) = context.args.get(4) {
+                let turn_tool_result_cap = if let Some(arg) = context.args.get(3) {
                     match arg.parse::<usize>() {
                         Ok(c) if c <= MAX_TURN_TOOL_RESULT_CAP => Some(Some(c)),
                         Ok(_) => {
@@ -271,13 +235,13 @@ impl CommandHandler for ContextCommandHandler {
                 };
                 let turn_tool_result_cap =
                     turn_tool_result_cap.unwrap_or(configured.turn_tool_result_cap);
-                // Optional history token budget MAXHIST (args[5]): bounds
-                // regions ①+② by weight rather than by turn count, dropping
+                // Optional history token budget MAXHIST (args[4]): bounds
+                // the windowed history by weight rather than by turn count, dropping
                 // the oldest history first. 0 is the explicit "off"
                 // sentinel (same convention as CAP); absent = keep the
                 // configured value, which for a topic that never set one is
                 // None.
-                let max_history_tokens = if let Some(arg) = context.args.get(5) {
+                let max_history_tokens = if let Some(arg) = context.args.get(4) {
                     match arg.parse::<usize>() {
                         Ok(t) if t <= MAX_HISTORY_TOKENS => Some(Some(t)),
                         Ok(_) => {
@@ -310,7 +274,6 @@ impl CommandHandler for ContextCommandHandler {
                     mode: ContextStrategy::SlidingWindow,
                     window,
                     extend_rate,
-                    note_window,
                     turn_tool_result_cap,
                     max_history_tokens,
                 };
@@ -326,7 +289,7 @@ impl CommandHandler for ContextCommandHandler {
             other => Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/context: unknown argument '{other}'. Use: /context sliding [N] [EXT] [M] [TURNCAP] [MAXHIST] | full | reset | dump [on|off]"
+                    "/context: unknown argument '{other}'. Use: /context sliding [N] [EXT] [TURNCAP] [MAXHIST] | full | reset | dump [on|off]"
                 ),
                 error: None,
                 append_body: None,
@@ -402,9 +365,6 @@ fn describe_strategy(cfg: &ContextStrategyConfig) -> String {
         ContextStrategy::Full => "full".to_string(),
         ContextStrategy::SlidingWindow => {
             let mut s = format!("sliding_window (window={}", cfg.window);
-            if let Some(m) = cfg.note_window {
-                s.push_str(&format!(", note_window={m}"));
-            }
             s.push_str(&format!(
                 ", extend_rate={} (max_window={})",
                 cfg.extend_rate,
@@ -485,77 +445,6 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(v["mode"], "sliding_window");
         assert_eq!(v["window"], 7);
-    }
-
-    #[tokio::test]
-    async fn test_sliding_with_note_window() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_sliding_with_note_window";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let handler = ContextCommandHandler;
-        let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec!["sliding".into(), "10".into(), "0.5".into(), "3".into()];
-        let result = handler.execute(ctx).await.unwrap();
-        assert!(result.success);
-        assert!(result.message.contains("window=10"));
-        assert!(result.message.contains("note_window=3"));
-        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
-            .await
-            .unwrap();
-        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(v["window"], 10);
-        assert_eq!(v["note_window"], 3);
-    }
-
-    #[tokio::test]
-    async fn test_sliding_note_window_zero_allowed() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_sliding_note_window_zero_allowed";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let handler = ContextCommandHandler;
-        let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec!["sliding".into(), "10".into(), "0.5".into(), "0".into()];
-        let result = handler.execute(ctx).await.unwrap();
-        assert!(result.success);
-        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
-            .await
-            .unwrap();
-        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(v["note_window"], 0);
-    }
-
-    #[tokio::test]
-    async fn test_sliding_note_window_invalid_arg() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_sliding_note_window_invalid_arg";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let handler = ContextCommandHandler;
-        let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec!["sliding".into(), "10".into(), "0.5".into(), "abc".into()];
-        let result = handler.execute(ctx).await.unwrap();
-        assert!(!result.success);
-        assert!(result.message.contains("invalid note window"));
-    }
-
-    #[tokio::test]
-    async fn test_sliding_without_note_window_uses_configured_default() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_sliding_without_note_window_uses_configured_default";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let handler = ContextCommandHandler;
-        let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec!["sliding".into(), "7".into()];
-        let result = handler.execute(ctx).await.unwrap();
-        assert!(result.success);
-        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
-            .await
-            .unwrap();
-        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
-        // No explicit note_window arg -> falls back to the configured
-        // default (`Some(0)`, text-only history). The field is now always
-        // present in the override file unless the user explicitly sets it
-        // to null.
-        assert_eq!(v["note_window"], 0);
     }
 
     #[tokio::test]
@@ -738,13 +627,7 @@ mod tests {
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
         let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec![
-            "sliding".into(),
-            "10".into(),
-            "0.5".into(),
-            "3".into(),
-            "32768".into(),
-        ];
+        ctx.args = vec!["sliding".into(), "10".into(), "0.5".into(), "32768".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
         assert!(
@@ -757,9 +640,6 @@ mod tests {
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(v["window"], 10);
-        // M was passed explicitly (slot 3 = "3"), so it persists as 3 — the
-        // configured default (0) only applies to an omitted slot.
-        assert_eq!(v["note_window"], 3);
         assert_eq!(v["extend_rate"], 0.5);
         assert_eq!(v["turn_tool_result_cap"], 32768);
     }
@@ -774,13 +654,7 @@ mod tests {
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
         let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec![
-            "sliding".into(),
-            "10".into(),
-            "0.5".into(),
-            "3".into(),
-            "0".into(),
-        ];
+        ctx.args = vec!["sliding".into(), "10".into(), "0.5".into(), "0".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
         let content = tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
@@ -819,7 +693,6 @@ mod tests {
             "[context_strategy]\n\
              mode = \"sliding_window\"\n\
              window = 7\n\
-             note_window = 3\n\
              turn_tool_result_cap = 16384\n",
         )
         .await
@@ -829,13 +702,7 @@ mod tests {
         // First call writes an override whose turn cap differs from the
         // configured one, so the fallback below cannot pass by accident.
         let mut set = test_context(topic, tmp.path());
-        set.args = vec![
-            "sliding".into(),
-            "10".into(),
-            "0.5".into(),
-            "3".into(),
-            "4096".into(),
-        ];
+        set.args = vec!["sliding".into(), "10".into(), "0.5".into(), "4096".into()];
         assert!(handler.execute(set).await.unwrap().success);
 
         let mut again = test_context(topic, tmp.path());
@@ -848,10 +715,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(v["window"], 12, "the given slot still applies");
-        assert_eq!(
-            v["note_window"], 3,
-            "note_window is configured, not overridden"
-        );
         assert_eq!(
             v["turn_tool_result_cap"], 16384,
             "omitted slot falls back to the configured value, not the prior override"
@@ -866,13 +729,7 @@ mod tests {
             jyc_types::state_dir::register(&topic, &tmp.path().join(".jyc"));
             let handler = ContextCommandHandler;
             let mut ctx = test_context(&topic, tmp.path());
-            ctx.args = vec![
-                "sliding".into(),
-                "10".into(),
-                "0.5".into(),
-                "3".into(),
-                bad.into(),
-            ];
+            ctx.args = vec!["sliding".into(), "10".into(), "0.5".into(), bad.into()];
             let result = handler.execute(ctx).await.unwrap();
             assert!(!result.success, "{bad} must be rejected");
             assert!(
@@ -899,7 +756,6 @@ mod tests {
             "sliding".into(),
             "10".into(),
             "0.5".into(),
-            "3".into(),
             (MAX_TURN_TOOL_RESULT_CAP + 1).to_string(),
         ];
         let result = handler.execute(ctx).await.unwrap();
@@ -980,8 +836,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_sliding_omitted_slots_use_configured_defaults() {
-        // No EXT/M slot -> falls back to the configured defaults
-        // (`extend_rate = 0.5`, `note_window = Some(0)`).
+        // No EXT slot -> falls back to the configured defaults
+        // (`extend_rate = 0.5`).
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_sliding_omitted_slots_use_configured_defaults";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
@@ -995,7 +851,6 @@ mod tests {
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(v["window"], 10);
-        assert_eq!(v["note_window"], 0);
         assert_eq!(v["extend_rate"], 0.5);
     }
 
@@ -1040,7 +895,6 @@ mod tests {
             mode: ContextStrategy::SlidingWindow,
             window: 10,
             extend_rate: 1.0,
-            note_window: Some(3),
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1048,7 +902,6 @@ mod tests {
         assert!(s.contains("window=10"));
         assert!(s.contains("extend_rate=1"), "{s}");
         assert!(s.contains("max_window=20"), "{s}");
-        assert!(s.contains("note_window=3"));
     }
 
     #[tokio::test]
@@ -1062,7 +915,6 @@ mod tests {
             "sliding".into(),
             "10".into(),
             "0.5".into(),
-            "3".into(),
             "32768".into(),
             "30000".into(),
         ];
@@ -1093,7 +945,6 @@ mod tests {
             "sliding".into(),
             "10".into(),
             "0.5".into(),
-            "3".into(),
             "32768".into(),
             "0".into(),
         ];
@@ -1143,7 +994,6 @@ mod tests {
             "sliding".into(),
             "10".into(),
             "0.5".into(),
-            "3".into(),
             "32768".into(),
             "1000".into(),
         ];
@@ -1178,7 +1028,6 @@ mod tests {
             "sliding".into(),
             "10".into(),
             "0.5".into(),
-            "3".into(),
             "32768".into(),
             (MAX_HISTORY_TOKENS + 1).to_string(),
         ];
@@ -1207,7 +1056,6 @@ mod tests {
                 "sliding".into(),
                 "10".into(),
                 "0.5".into(),
-                "3".into(),
                 "32768".into(),
                 bad.into(),
             ];
@@ -1262,7 +1110,6 @@ mod tests {
             mode: ContextStrategy::SlidingWindow,
             window: 10,
             extend_rate: 0.5,
-            note_window: Some(3),
             turn_tool_result_cap: None,
             max_history_tokens: Some(30000),
         };

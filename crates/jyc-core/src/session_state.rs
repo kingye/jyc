@@ -778,7 +778,7 @@ pub async fn read_context_strategy_override(
 /// wrote it or a subagent type expanded into it) > matched pattern > first
 /// pattern > global `[ai].context_strategy` >
 /// `ContextStrategyConfig::default()` (sliding_window / window=10 /
-/// note_window=0 / extend_rate=0.5).
+/// extend_rate=0.5).
 ///
 /// The topic layer is a *config* layer, not an override: callers must consult
 /// the runtime `.jyc/context-strategy.json` (the user's `/context`) *before*
@@ -1628,13 +1628,10 @@ mode = "agent"
                 ContextStrategy::Full => "full",
                 ContextStrategy::SlidingWindow => "sliding_window",
             };
-            let mut parts = format!(
+            let parts = format!(
                 "mode = \"{mode}\", window = {}, extend_rate = {}",
                 g.window, g.extend_rate
             );
-            if let Some(n) = g.note_window {
-                parts.push_str(&format!(", note_window = {n}"));
-            }
             toml.push_str(&format!("context_strategy = {{ {parts} }}\n"));
         }
         // Patterns loop — opens [[channels.c.patterns]] which leaves the
@@ -1647,13 +1644,10 @@ mode = "agent"
                     ContextStrategy::Full => "full",
                     ContextStrategy::SlidingWindow => "sliding_window",
                 };
-                let mut parts = format!(
+                let parts = format!(
                     "mode = \"{mode}\", window = {}, extend_rate = {}",
                     c.window, c.extend_rate
                 );
-                if let Some(n) = c.note_window {
-                    parts.push_str(&format!(", note_window = {n}"));
-                }
                 toml.push_str(&format!("context_strategy = {{ {parts} }}\n"));
             }
         }
@@ -1666,7 +1660,6 @@ mode = "agent"
             mode: ContextStrategy::SlidingWindow,
             window: 4,
             extend_rate: 0.5,
-            note_window: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1682,7 +1675,6 @@ mode = "agent"
             mode: ContextStrategy::SlidingWindow,
             window: 6,
             extend_rate: 0.5,
-            note_window: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1698,7 +1690,6 @@ mode = "agent"
             mode: ContextStrategy::SlidingWindow,
             window: 8,
             extend_rate: 0.5,
-            note_window: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1714,7 +1705,6 @@ mode = "agent"
         let resolved = resolve_context_strategy(&app, "c", Some("a"), None);
         assert_eq!(resolved.mode, ContextStrategy::SlidingWindow);
         assert_eq!(resolved.window, 10);
-        assert_eq!(resolved.note_window, Some(0));
     }
 
     /// The topic's own strategy — what a subagent type hands its child — is a
@@ -1726,7 +1716,6 @@ mode = "agent"
             mode: ContextStrategy::SlidingWindow,
             window: 10,
             extend_rate: 0.5,
-            note_window: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1735,7 +1724,6 @@ mode = "agent"
             mode: ContextStrategy::SlidingWindow,
             window: 3,
             extend_rate: 0.5,
-            note_window: Some(0),
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1746,7 +1734,6 @@ mode = "agent"
             resolved.window, 3,
             "the topic's strategy wins over the pattern"
         );
-        assert_eq!(resolved.note_window, Some(0));
     }
 
     #[tokio::test]
@@ -1767,15 +1754,14 @@ mode = "agent"
             .unwrap();
         assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
         assert_eq!(cfg.window, 3);
-        // Old override files without note_window still parse, picking up
-        // the struct default of `Some(0)` (text-only history).
-        assert_eq!(cfg.note_window, Some(0));
     }
 
     #[tokio::test]
-    async fn read_context_strategy_override_with_note_window() {
+    async fn read_context_strategy_override_ignores_removed_keys() {
+        // A persisted override written before `note_window` was removed
+        // must still load: the key is unknown to the struct and ignored.
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "read_context_strategy_override_with_note_window";
+        let topic = "read_context_strategy_override_ignores_removed_keys";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let state_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&state_dir).await.unwrap();
@@ -1789,7 +1775,6 @@ mode = "agent"
             .await
             .unwrap();
         assert_eq!(cfg.window, 5);
-        assert_eq!(cfg.note_window, Some(2));
     }
 
     #[tokio::test]
@@ -1832,7 +1817,6 @@ mode = "agent"
             mode: ContextStrategy::SlidingWindow,
             window: 10,
             extend_rate: 1.0,
-            note_window: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1848,7 +1832,6 @@ mode = "agent"
             mode: ContextStrategy::SlidingWindow,
             window: 10,
             extend_rate: 2.0,
-            note_window: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1856,7 +1839,6 @@ mode = "agent"
             mode: ContextStrategy::SlidingWindow,
             window: 20,
             extend_rate: 0.25,
-            note_window: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1896,7 +1878,7 @@ mode = "agent"
         tokio::fs::create_dir_all(&state_dir).await.unwrap();
         tokio::fs::write(
             state_dir.join(CONTEXT_STRATEGY_FILE),
-            r#"{"mode":"sliding_window","window":10,"note_window":3}"#,
+            r#"{"mode":"sliding_window","window":10}"#,
         )
         .await
         .unwrap();

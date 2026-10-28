@@ -127,11 +127,8 @@ fn format_pair(n: usize, pair: &TurnPair) -> String {
             crate::session::extract_message_text(assistant),
         ));
     }
-    if let Some(note) = &pair.note {
-        out.push_str(&format!(
-            "[{n}] TOOLS: {}\n",
-            crate::session::extract_message_text(note),
-        ));
+    if !pair.tool_calls.is_empty() {
+        out.push_str(&format!("[{n}] TOOLS: {}\n", pair.tool_calls.join(", ")));
     }
     out
 }
@@ -310,8 +307,8 @@ mod tests {
         assert!(out.content.contains("pairs 1-25 of 25"), "{}", out.content);
     }
 
-    /// Bare tool calls an assistant issued are summarized in the pair's
-    /// history note, matching the windowed-view rendering.
+    /// Bare tool calls an assistant issued render on the pair's own TOOLS
+    /// line.
     #[tokio::test]
     async fn renders_tool_call_annotation() {
         let raw = vec![
@@ -332,8 +329,7 @@ mod tests {
             out.content
         );
         assert!(
-            out.content
-                .contains(r#"[1] TOOLS: [History note] assistant tool calls: bash(command="ls")"#),
+            out.content.contains(r#"[1] TOOLS: bash(command="ls")"#),
             "{}",
             out.content
         );

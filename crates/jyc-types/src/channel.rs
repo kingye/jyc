@@ -775,21 +775,45 @@ pub enum ContextStrategy {
 
 /// Configuration for the context strategy.
 ///
-/// `mode` selects which strategy to apply; `window` is the number of
-/// latest user+assistant turns to keep in `sliding_window` mode.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// `mode` selects which strategy to apply. In `sliding_window` the
+/// journal's turns are sent from an anchored window: it grows by pure
+/// append until it reaches [`Self::max_window`], then slides back to
+/// [`Self::window`] turns — so the wire prefix stays byte-stable between
+/// slides, which is what the provider's prompt cache matches on.
+///
+/// Slides are the **only** way history shrinks: nothing trims the window's
+/// head between them (a per-turn trim would rewrite the wire prefix every
+/// turn and destroy the cache hit).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ContextStrategyConfig {
     /// Context strategy mode. Default: `sliding_window`.
     #[serde(default = "default_context_strategy")]
     pub mode: ContextStrategy,
-    /// Number of latest user+assistant turns to keep in `sliding_window`.
+    /// Number of latest turns the window keeps after a slide — its floor.
     /// Default: 10. Only meaningful when `mode = "sliding_window"`.
     #[serde(default = "default_context_window_size")]
     pub window: usize,
-    /// Number of most recent windowed turns that keep their tool-call
-    /// history note; turns older than that are text-only. `Some(3)` by
-    /// default (sliding_window mode). Values above `window` clamp to
-    /// `window`. Only meaningful when `mode = "sliding_window"`.
+    /// How far the window may grow past `window` before it slides:
+    /// `max_window = window + round(extend_rate × window)`. Default: 0.5
+    /// (with `window = 10`, the window grows to 15 turns and then slides
+    /// back to 10). `0.0` makes the window a hard cap — it slides on every
+    /// turn, which re-encodes the history every turn and defeats the
+    /// prompt cache; raise it (or `window`) when the cache matters.
+    /// Only meaningful when `mode = "sliding_window"`.
+    #[serde(default = "default_extend_rate")]
+    pub extend_rate: f64,
+    /// Number of the most recent windowed turns sent **verbatim** — with
+    /// their tool calls and results. Older turns are sent as text-only
+    /// user/assistant pairs whose tool calls appear in a one-line history
+    /// note. `Some(3)` by default (sliding_window mode). Only meaningful
+    /// when `mode = "sliding_window"`.
+    ///
+    /// Each turn the verbatim tail advances by one turn (a turn moves from
+    /// the tail into the text-only block), so the tail is re-encoded every
+    /// turn while the text-only block only grows by append. `Some(0)` sends
+    /// no tool results in history at all — the cheapest tail, and the
+    /// strictest append-only prefix.
+    ///
     /// Omitted from serialized override files when unset so existing
     /// readers stay compatible.
     #[serde(
@@ -797,19 +821,6 @@ pub struct ContextStrategyConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub note_window: Option<usize>,
-    /// Byte cap on each tool result kept in the verbatim region
-    /// (`sliding_window` mode). When a tool result exceeds `cap` bytes,
-    /// its content is truncated and suffixed with a marker noting the
-    /// dropped length. `Some(2048)` by default (sliding_window mode);
-    /// `Some(0)` disables capping — every tool result is sent in full.
-    /// Only meaningful when `mode = "sliding_window"`. Omitted from
-    /// serialized override files when unset so existing readers stay
-    /// compatible.
-    #[serde(
-        default = "default_tool_result_cap",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub tool_result_cap: Option<usize>,
     /// Byte cap on each tool result in the current turn
     /// (`sliding_window` mode). `None` (the default) sends the current
     /// turn uncapped — the model is reasoning over these results
@@ -826,17 +837,17 @@ pub struct ContextStrategyConfig {
     /// compatible.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_tool_result_cap: Option<usize>,
-    /// Token budget for the two history regions — ① compacted text history
-    /// plus ② verbatim prior turns — in `sliding_window` mode.
-    /// `None` (the default) sends the whole windowed history, byte for byte
-    /// what an unconfigured build sends; `Some(0)` means the same.
+    /// Token budget for the windowed history (`sliding_window` mode).
+    /// `None` (the default) bounds the history by turns alone — `window`
+    /// and `extend_rate` decide. `Some(0)` means the same.
     ///
     /// `window` counts turns, so a window of 10 still costs whatever those
     /// 10 turns happen to weigh — a handful of small ones, or a few turns
-    /// carrying megabyte-sized tool results. This budget caps that weight
-    /// directly: when ①+② estimate over budget, the oldest content goes
-    /// first — ① loses its oldest pairs, then ② loses its oldest whole
-    /// turns. Region ③ (the current turn) is never touched; it has
+    /// carrying megabyte-sized tool results. This budget is the second
+    /// trigger for a slide: when the window's estimated weight exceeds it,
+    /// the window slides back to `window` turns, exactly as a window over
+    /// `max_window` turns does. It never trims anything by itself; the
+    /// current turn is never part of the estimate — it has
     /// `turn_tool_result_cap` for that.
     ///
     /// The estimate is heuristic (CJK characters ×1, other bytes ÷4), not a
@@ -848,17 +859,30 @@ pub struct ContextStrategyConfig {
     pub max_history_tokens: Option<usize>,
 }
 
+impl ContextStrategyConfig {
+    /// The turn count the window may reach before it slides back to
+    /// [`Self::window`]: `window + round(extend_rate × window)`.
+    ///
+    /// Always at least `window`, so a negative `extend_rate` cannot make
+    /// the bound smaller than the window it slides back to.
+    pub fn max_window(&self) -> usize {
+        let window = self.window.max(1);
+        let extra = (self.extend_rate * window as f64).round();
+        window + extra.max(0.0) as usize
+    }
+}
+
 impl Default for ContextStrategyConfig {
     fn default() -> Self {
         Self {
             mode: default_context_strategy(),
             window: default_context_window_size(),
+            extend_rate: default_extend_rate(),
             note_window: default_note_window(),
-            tool_result_cap: default_tool_result_cap(),
             // Current turn uncapped by default: the mid-loop reasoning
-            // argument for region ②'s cap does not automatically extend
-            // here, but silently trimming results the model is still
-            // working through is the more damaging default — so it is opt-in.
+            // argument for capping does not automatically extend here, and
+            // silently trimming results the model is still working through
+            // is the more damaging default — so it is opt-in.
             turn_tool_result_cap: None,
             // History weight is unbounded by default: `window` is the lever
             // users already know, and a token budget silently truncating
@@ -872,16 +896,16 @@ fn default_context_window_size() -> usize {
     10
 }
 
+fn default_extend_rate() -> f64 {
+    0.5
+}
+
 fn default_context_strategy() -> ContextStrategy {
     ContextStrategy::SlidingWindow
 }
 
 fn default_note_window() -> Option<usize> {
     Some(3)
-}
-
-fn default_tool_result_cap() -> Option<usize> {
-    Some(2048)
 }
 
 /// Per-pattern filesystem access whitelist.
@@ -1098,38 +1122,58 @@ topic_path = "~/projects/jyc"
         let cfg = ContextStrategyConfig::default();
         assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
         assert_eq!(cfg.window, 10);
+        assert_eq!(cfg.extend_rate, 0.5);
         assert_eq!(cfg.note_window, Some(3));
-        assert_eq!(cfg.tool_result_cap, Some(2048));
+        // window 10 + round(0.5 × 10) = 15 turns before a slide.
+        assert_eq!(cfg.max_window(), 15);
     }
 
     #[test]
-    fn test_context_strategy_tool_result_cap_missing_field_uses_default() {
-        // Legacy JSON without the field still deserializes successfully
-        // and picks up the struct default of `Some(2048)`. To explicitly
-        // disable capping, write `null` in JSON (see the roundtrip test
-        // below for `Some(0)` as the "off" sentinel).
+    fn test_context_strategy_extend_rate_missing_field_uses_default() {
+        // A config file written before `extend_rate` existed must load
+        // with the default rather than failing.
         let toml_str = r#"
             mode = "sliding_window"
             window = 10
             note_window = 3
         "#;
         let cfg: ContextStrategyConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(cfg.tool_result_cap, Some(2048));
+        assert_eq!(cfg.extend_rate, 0.5);
+    }
+
+    #[test]
+    fn test_context_strategy_max_window_from_extend_rate() {
+        // `max_window = window + round(extend_rate × window)`, floored at
+        // `window` so a slide always has somewhere to land.
+        let at = |window: usize, extend_rate: f64| {
+            ContextStrategyConfig {
+                window,
+                extend_rate,
+                ..ContextStrategyConfig::default()
+            }
+            .max_window()
+        };
+        assert_eq!(at(10, 0.5), 15);
+        assert_eq!(at(10, 0.0), 10); // hard window: slides every turn
+        assert_eq!(at(10, 1.0), 20);
+        assert_eq!(at(4, 0.5), 6);
+        assert_eq!(at(0, 0.5), 2); // window is floored at 1 first
+        assert_eq!(at(10, -1.0), 10); // never below `window`
     }
 
     #[test]
     fn test_context_strategy_serde_partial_toml_uses_defaults() {
         // Regression guard for the partial-config bug: when a user writes
         // just `mode = "sliding_window"` in config.toml, the unset
-        // `note_window` and `tool_result_cap` fields must pick up the
-        // struct defaults (`Some(3)` / `Some(2048)`), not `None`. Without
-        // the `default = "..."` serde attributes, `Option::default()`
-        // would yield `None` and silently disable capping/truncation.
+        // `note_window` / `extend_rate` fields must pick up the struct
+        // defaults (`Some(3)` / `0.5`), not `None` / `0.0`. Without the
+        // `default = "..."` serde attributes, `Option::default()` would
+        // yield `None` and silently disable the verbatim tail.
         let cfg: ContextStrategyConfig = toml::from_str(r#"mode = "sliding_window""#).unwrap();
         assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
         assert_eq!(cfg.window, 10);
+        assert_eq!(cfg.extend_rate, 0.5);
         assert_eq!(cfg.note_window, Some(3));
-        assert_eq!(cfg.tool_result_cap, Some(2048));
     }
 
     #[test]
@@ -1145,16 +1189,16 @@ topic_path = "~/projects/jyc"
     }
 
     #[test]
-    fn test_context_strategy_tool_result_cap_roundtrip() {
+    fn test_context_strategy_extend_rate_roundtrip() {
         // TOML round-trip.
         let cfg = ContextStrategyConfig {
-            tool_result_cap: Some(4096),
+            extend_rate: 1.0,
             ..ContextStrategyConfig::default()
         };
         let serialized = toml::to_string(&cfg).unwrap();
         assert!(
-            serialized.contains("tool_result_cap = 4096"),
-            "tool_result_cap should serialize in TOML, got: {serialized}"
+            serialized.contains("extend_rate = 1.0"),
+            "extend_rate should serialize in TOML, got: {serialized}"
         );
         let deserialized: ContextStrategyConfig = toml::from_str(&serialized).unwrap();
         assert_eq!(deserialized, cfg);
@@ -1162,24 +1206,11 @@ topic_path = "~/projects/jyc"
         // JSON round-trip — the field must round-trip with snake_case.
         let json = serde_json::to_string(&cfg).unwrap();
         assert!(
-            json.contains("\"tool_result_cap\":4096"),
-            "tool_result_cap should serialize in JSON as snake_case, got: {json}"
+            json.contains("\"extend_rate\":1.0"),
+            "extend_rate should serialize in JSON as snake_case, got: {json}"
         );
         let cfg2: ContextStrategyConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(cfg2, cfg);
-    }
-
-    #[test]
-    fn test_context_strategy_tool_result_cap_zero_is_some_none_distinct() {
-        // Some(0) is the explicit "off" sentinel and must survive a round-trip.
-        let cfg = ContextStrategyConfig {
-            tool_result_cap: Some(0),
-            ..ContextStrategyConfig::default()
-        };
-        let json = serde_json::to_string(&cfg).unwrap();
-        let cfg2: ContextStrategyConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(cfg2.tool_result_cap, Some(0));
-        assert_ne!(cfg2.tool_result_cap, None);
     }
 
     #[test]

@@ -592,7 +592,7 @@ impl AgentService for JycAgentService {
 
         // Load session and prior raw context. The strategy says how much
         // of the journal it reads — the reader parses only that much.
-        let (prior_history, prior_raw_context, summary_len) =
+        let (prior_history, prior_raw_context) =
             session::load_context(topic_name, topic_path, &context_strategy).await;
 
         tracing::debug!(
@@ -622,7 +622,6 @@ impl AgentService for JycAgentService {
             event_bus: event_bus.as_ref(),
             prior_history,
             prior_raw_context,
-            summary_len,
             // The queue the worker hands live messages to: the loop folds
             // them into the running turn (see `live_injection`).
             injection_rx: Some(&mut *pending_rx),

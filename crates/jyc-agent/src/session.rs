@@ -193,6 +193,46 @@ pub struct SessionState {
     /// (see `jyc_core::billing_log_store`), which no reset touches.
     #[serde(default)]
     pub session_cost: f64,
+    /// Sliding-window block anchor for region ①: FNV-1a hashes of the
+    /// block-head pair's user/assistant text. Persists across turns so the
+    /// compact-history block only advances its head when it exceeds
+    /// block capacity (`window − note_window + round(window × ext_rate)`)
+    /// pairs; `None`, or a hash no longer present in the
+    /// delivered slice, rebuilds the block from the last `capacity` pairs.
+    /// Lives here because the session file's existence is what makes the
+    /// journal prefix count at all (`load_context` treats a missing session
+    /// file as a fresh start), so `/reset` and `/new` wipe the anchor
+    /// together with everything else. `serde(default)` (plus
+    /// `skip_serializing_if`) so session files written before the field
+    /// existed deserialize as `None` and untouched files stay unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_block_anchor: Option<[u64; 2]>,
+    /// Pair count the block held when the anchor was written (`keep`).
+    /// Disambiguates duplicate-text pairs that hash identically: the next
+    /// build expects the head near `pair_count − keep − 1` (the extra `− 1`
+    /// is the pair that aged into the compact region since the write) and
+    /// picks the matching pair closest to that position. `None` (session
+    /// files from before the field existed) resolves a hash match nearest
+    /// the tail instead — a conservative fallback, not a wrong-block risk.
+    /// Stale within a block (the persist guard compares the hash only, so
+    /// the value on disk is from the last jump); the closest-match
+    /// resolution tolerates that.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_block_anchor_keep: Option<u64>,
+}
+
+/// Region-① block anchor as persisted in the session file: identifies the
+/// block-head pair (FNV-1a text hashes) and records how many compact pairs
+/// the block held when the anchor was written, so a duplicate-text pair
+/// resolves to the right occurrence instead of the oldest hash match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockAnchor {
+    /// FNV-1a hashes of the head pair's user/assistant text.
+    pub hash: [u64; 2],
+    /// Pairs from the head pair to the compact-region tail at write time.
+    /// `0` means unknown (legacy anchor): match resolution falls back to
+    /// the matching pair nearest the tail.
+    pub keep: u64,
 }
 
 // ─── Conversation Persistence ────────────────────────────────────────
@@ -611,6 +651,45 @@ pub async fn session_token_totals(topic_name: &str, topic_path: &Path) -> TokenT
         cache_creation: state.total_cache_creation_tokens,
         reasoning: state.total_reasoning_tokens,
     }
+}
+
+/// Load the persisted region-① block anchor for this topic. `None` when
+/// the session file is missing (fresh topic) or predates the field — both
+/// make the next context build fall back to a cold block anchored at the
+/// tail `window` pairs.
+pub async fn session_block_anchor(topic_name: &str, topic_path: &Path) -> Option<BlockAnchor> {
+    let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
+    let state = load_session_state(&session_path).await;
+    state.history_block_anchor.map(|hash| BlockAnchor {
+        hash,
+        keep: state.history_block_anchor_keep.unwrap_or(0),
+    })
+}
+
+/// Persist the region-① block anchor when it changed. Called from the
+/// agent loop after a context rebuild (the first build of a turn, and only
+/// on turns where the block jumped or was rebuilt cold; a cancellation
+/// truncation can trigger one extra rebuild+persist in the same turn —
+/// harmless, the equality guard makes the second write a no-op).
+///
+/// The guard compares the hash only, so within a block — where the head
+/// stays put — the no-jump turn costs nothing. The `keep` on disk is then
+/// from the last jump: fresh for the turn right after it, staler the
+/// longer the block runs, and resolution tolerates that (it picks the
+/// matching pair nearest the expected head).
+pub async fn persist_block_anchor(
+    topic_name: &str,
+    topic_path: &Path,
+    anchor: Option<BlockAnchor>,
+) {
+    let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
+    let mut state = load_session_state(&session_path).await;
+    if state.history_block_anchor == anchor.map(|a| a.hash) {
+        return;
+    }
+    state.history_block_anchor = anchor.map(|a| a.hash);
+    state.history_block_anchor_keep = anchor.map(|a| a.keep);
+    save_session_state(topic_name, &session_path, &state).await;
 }
 
 /// Persist the latest input/output token counts to disk. Called from the
@@ -2329,6 +2408,7 @@ mod tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ext_rate: None,
         };
         let wire = vec![serde_json::json!({"role":"user","content":"hi"})];
         let regions = vec![3u8];
@@ -2386,6 +2466,7 @@ mod tests {
             tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ext_rate: None,
         };
         let empty_wire: Vec<serde_json::Value> = vec![];
         let empty_regions: Vec<u8> = vec![];
@@ -2412,5 +2493,49 @@ mod tests {
         assert_eq!(entry["wire_payload"], serde_json::json!([]));
         assert_eq!(entry["regions"], serde_json::json!([]));
         assert_eq!(entry["iter"], 0);
+    }
+
+    #[tokio::test]
+    async fn block_anchor_roundtrips_through_session_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        jyc_types::state_dir::register("anchor-roundtrip", &tmp.path().join(".jyc"));
+        let anchor = Some(super::BlockAnchor {
+            hash: [0x1234_u64, 0x5678],
+            keep: 7,
+        });
+        super::persist_block_anchor("anchor-roundtrip", tmp.path(), anchor).await;
+        assert_eq!(
+            super::session_block_anchor("anchor-roundtrip", tmp.path()).await,
+            anchor
+        );
+        // Rewriting the same value must be a no-op, leaving the rest of
+        // the session state intact.
+        super::persist_block_anchor("anchor-roundtrip", tmp.path(), anchor).await;
+        assert_eq!(
+            super::session_block_anchor("anchor-roundtrip", tmp.path()).await,
+            anchor
+        );
+    }
+
+    #[tokio::test]
+    async fn block_anchor_defaults_to_none_in_legacy_session_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        jyc_types::state_dir::register("anchor-legacy", &tmp.path().join(".jyc"));
+        tokio::fs::create_dir_all(tmp.path().join(".jyc"))
+            .await
+            .unwrap();
+        // A session file written before the field existed: the anchor
+        // reads back as None (cold block on the next build), and no other
+        // field is required for the read.
+        tokio::fs::write(
+            tmp.path().join(".jyc").join("agent-session.json"),
+            r#"{"created_at":"","context_input_tokens":0,"context_output_tokens":0}"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            super::session_block_anchor("anchor-legacy", tmp.path()).await,
+            None
+        );
     }
 }

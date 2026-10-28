@@ -1,8 +1,8 @@
 # Context Management
 
 How JYC decides what the LLM sees on each request: context strategies,
-turn pairing, tool-call annotations, and the token-level safety nets that
-prevent context overflow.
+turn pairing, the shape of the resulting wire payload, and the token-level
+safety nets that prevent context overflow.
 
 ## Overview
 
@@ -143,7 +143,8 @@ there:
 1. **History, text-only** — every prior turn in the window
    as a user/assistant text pair, reformatted in the active provider's
    wire format. Their tool calls, arguments and results are dropped from
-   the payload (the journal keeps them; `context_browse` reads them back).
+   the payload (the journal keeps them; `context_browse` reads the turns
+   and their calls back, without results).
    This block only ever **grows**: nothing trims its head.
 2. **Current turn, verbatim** — `raw_context[prior_len..]`,
    untouched, tool calls and results included, so the loop's
@@ -221,7 +222,8 @@ for:
   nothing before it is rewritten, so the provider's cache carries.
 - **Only the current turn is structured.** A prior turn's tool calls are
   never replayed, so an old result cannot look like something the model
-  is still working on — and `context_browse` is where they are read.
+  is still working on — and `context_browse` is where the turns and their
+  calls are read back.
 
 ```mermaid
 flowchart TB
@@ -515,8 +517,8 @@ ceiling 4M tokens). Unset by default: the window is bounded by turns
 alone.
 
 **Interplay:** the budget is independent of the cap — a generous
-budget changes nothing about which turns are verbatim, it only bounds how
-much history survives before the next slide.
+budget changes nothing about the shape of the history block, it only
+bounds how much history survives before the next slide.
 
 **Resolution chain** (highest wins):
 

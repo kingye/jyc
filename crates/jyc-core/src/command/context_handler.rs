@@ -51,8 +51,14 @@ const MAX_EXTEND_RATE: f64 = 10.0;
 /// Upper bound for the current-turn cap. Past 1 MiB the result is not the
 /// problem, so the command refuses larger values.
 const MAX_TURN_TOOL_RESULT_CAP: usize = 1024 * 1024;
+/// Lower bound for a *non-zero* current-turn cap. Below this,
+/// `truncate_text_keeping_edges` cannot keep both ends and degrades to
+/// head-only, so the cap would gut the turn instead of trimming it — and a
+/// value like `3` is almost always a slot-shifted leftover command. 0 stays
+/// the explicit "off" sentinel.
+const MIN_TURN_TOOL_RESULT_CAP: usize = 128;
 /// Upper bound for the history token budget accepted from the user via
-/// `/context sliding N EXT M TURNCAP MAXHIST`. Past 4M tokens a history
+/// `/context sliding N EXT TURNCAP MAXHIST`. Past 4M tokens a history
 /// window is not what is costing money — the per-result caps are the lever
 /// there — so a larger value would only disguise a misconfiguration.
 const MAX_HISTORY_TOKENS: usize = 4_000_000;
@@ -141,6 +147,20 @@ impl CommandHandler for ContextCommandHandler {
                 })
             }
             "sliding" | "sliding_window" => {
+                // The slots moved when `note_window` was removed (the old
+                // 4th slot). A command copied from an older build can
+                // therefore carry one trailing argument too many; refuse it
+                // rather than silently dropping it.
+                if let Some(extra) = context.args.get(5) {
+                    return Ok(CommandResult {
+                        success: false,
+                        message: format!(
+                            "/context: unexpected argument '{extra}' (usage: /context sliding [N] [EXT] [TURNCAP] [MAXHIST])"
+                        ),
+                        error: None,
+                        append_body: None,
+                    });
+                }
                 let window = if let Some(arg) = context.args.get(1) {
                     match arg.parse::<usize>() {
                         Ok(n) if n > 0 && n <= MAX_WINDOW => Some(n),
@@ -208,12 +228,18 @@ impl CommandHandler for ContextCommandHandler {
                 // value, which for a topic that never set it is None.
                 let turn_tool_result_cap = if let Some(arg) = context.args.get(3) {
                     match arg.parse::<usize>() {
-                        Ok(c) if c <= MAX_TURN_TOOL_RESULT_CAP => Some(Some(c)),
+                        Ok(c)
+                            if c == 0
+                                || (MIN_TURN_TOOL_RESULT_CAP..=MAX_TURN_TOOL_RESULT_CAP)
+                                    .contains(&c) =>
+                        {
+                            Some(Some(c))
+                        }
                         Ok(_) => {
                             return Ok(CommandResult {
                                 success: false,
                                 message: format!(
-                                    "/context: turn_tool_result_cap must be between 0 and {MAX_TURN_TOOL_RESULT_CAP} bytes"
+                                    "/context: turn_tool_result_cap must be 0 (off) or between {MIN_TURN_TOOL_RESULT_CAP} and {MAX_TURN_TOOL_RESULT_CAP} bytes"
                                 ),
                                 error: None,
                                 append_body: None,
@@ -645,8 +671,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_sliding_rejects_extra_positional() {
+        // The slots moved when `note_window` was removed; a command copied
+        // from an older build carries one argument too many.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_rejects_extra_positional";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec![
+            "sliding".into(),
+            "10".into(),
+            "0.5".into(),
+            "8192".into(),
+            "60000".into(),
+            "3".into(),
+        ];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(!result.success);
+        assert!(result.message.contains("unexpected argument '3'"));
+        assert!(!tmp.path().join(".jyc/context-strategy.json").exists());
+    }
+
+    #[tokio::test]
+    async fn test_sliding_turn_cap_below_minimum_rejected() {
+        // `sliding 10 0.5 3` is a slot-shifted leftover; a 3-byte cap would
+        // gut every current-turn tool result, so it is refused.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_turn_cap_below_minimum";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec!["sliding".into(), "10".into(), "0.5".into(), "3".into()];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(!result.success);
+        assert!(result.message.contains("must be 0 (off) or between 128"));
+    }
+
+    #[tokio::test]
     async fn test_sliding_turn_cap_zero_is_explicit_off() {
-        // `/context sliding 10 5 2048 0` — the user's way of switching
+        // `/context sliding 10 0.5 0` — the user's way of switching
         // current-turn truncation off. Must persist as 0, and re-reading
         // must keep it at 0 rather than snapping back to the default.
         let tmp = tempfile::tempdir().unwrap();

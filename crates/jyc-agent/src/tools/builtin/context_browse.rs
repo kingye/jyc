@@ -310,7 +310,7 @@ mod tests {
     /// Bare tool calls an assistant issued render on the pair's own TOOLS
     /// line.
     #[tokio::test]
-    async fn renders_tool_call_annotation() {
+    async fn renders_tool_calls() {
         let raw = vec![
             json!({"role": "user", "content": "u"}),
             json!({"role": "assistant", "content": "running", "tool_calls": [

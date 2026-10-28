@@ -101,8 +101,9 @@ impl SendContextCache {
 ///      tool calls / results stay coherent mid-loop.
 ///
 /// Also returns a per-message region label (parallel to the wire payload)
-/// so callers that need to distinguish regions — the wire-payload debug
-/// dump and tests — can do so without re-running the strategy logic.
+/// so callers that need to distinguish the two parts — the wire-payload
+/// debug dump and tests — can do so without re-running the strategy
+/// logic.
 ///
 /// Region labels:
 /// - `1` = text-only history (`SlidingWindow`) or the whole context (`Full`
@@ -121,8 +122,8 @@ impl SendContextCache {
 /// keeps head and tail instead of the head alone. `Some(0)` or `None`
 /// disables capping.
 ///
-/// `cache` lets a turn's calls reuse the history regions instead of
-/// rebuilding them per call (see [`SendContextCache`]).
+/// `cache` lets a turn's calls reuse the history block instead of
+/// rebuilding it per call (see [`SendContextCache`]).
 pub(crate) fn build_send_context_cached<'a>(
     provider: &dyn Provider,
     raw_context: &'a [serde_json::Value],
@@ -194,9 +195,9 @@ pub(crate) fn build_send_context_cached<'a>(
 /// payload is append-only from one turn to the next.
 ///
 /// The turns are folded to text: their tool calls, arguments and results do
-/// not reach the wire (the journal keeps them; `context_browse` still reads
-/// them). Only the current turn carries structured tool calls, and it is
-/// sent verbatim by the caller.
+/// not reach the wire (the journal keeps them; `context_browse` reads the
+/// turns and their calls back, without results). Only the current turn
+/// carries structured tool calls, and it is sent verbatim by the caller.
 fn build_history_region(
     provider: &dyn Provider,
     prior: &[serde_json::Value],
@@ -1086,8 +1087,8 @@ mod render_raw_context_tests {
             json!({"role": "user", "content": "u2"}),
             json!({"role": "assistant", "content": "a2"}),
         ];
-        // `window: 1` leaves one pair in the compacted region ①, so the
-        // sentinel proves reuse of a populated region, not of an empty one.
+        // `window` does not trim the history block, so both pairs stay and
+        // the sentinel proves reuse of a populated block, not an empty one.
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 1,
@@ -1154,7 +1155,7 @@ mod render_raw_context_tests {
         };
         let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, prior.len(), &cfg);
         assert_eq!(sent.len(), 4);
-        assert_eq!(regions, vec![1, 1, 2]);
+        assert_eq!(regions, vec![1, 1, 1, 2]);
         assert_eq!(
             sent[0],
             json!({"role": "user", "content": crate::session::HISTORY_MARKER_TEXT})

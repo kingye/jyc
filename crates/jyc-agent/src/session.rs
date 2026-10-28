@@ -365,8 +365,7 @@ pub async fn append_wire_payload_dump(
 /// ever grows between slides — the loader never trims its head. The wire
 /// payload that follows from this is append-only: the text-only history
 /// grows by append and only the current turn is re-sent (see
-/// `build_send_context`). The
-/// window slides (anchor moves forward, whole turns dropped) when it holds
+/// `build_send_context_cached`). The window slides (anchor moves forward, whole turns dropped) when it holds
 /// more than [`ContextStrategyConfig::max_window`] turns, or when it has
 /// reached that bound and its estimated weight exceeds
 /// `max_history_tokens`; the slide returns it to `window` turns.
@@ -1013,25 +1012,27 @@ pub(crate) fn extract_message_text(msg: &serde_json::Value) -> String {
 /// the tail matters.
 const TOOL_ARG_MAX: usize = 200;
 
+/// Max tool calls rendered for one turn in the transcript view
+/// ([`crate::tools::builtin::context_browse`]). A long turn can issue
+/// dozens of calls; the rest collapse into an explicit `…(K more calls)`
+/// marker so one page of the transcript cannot balloon into megabytes.
+const TOOL_CALLS_PER_TURN_MAX: usize = 20;
+
 /// Collect bare tool calls from a raw wire-format assistant message as
-/// `(id, name, args)` triples.
+/// `(name, args)` pairs.
 ///
 /// Handles both OpenAI (`tool_calls: [{id, function: {name, arguments}}]`,
 /// arguments a JSON string) and Anthropic (`content: [{type: "tool_use",
 /// id, name, input}]`) shapes. `args` is the parsed JSON arguments (the
 /// raw string kept as a JSON string when it does not parse, e.g. broken or
-/// empty OpenAI `arguments`). The `id` links a call to its result.
-fn collect_tool_calls(msg: &serde_json::Value) -> Vec<(String, String, serde_json::Value)> {
+/// empty OpenAI `arguments`). The wire `id` is not kept: nothing links a
+/// call to its result any more (results do not reach the history).
+fn collect_tool_calls(msg: &serde_json::Value) -> Vec<(String, serde_json::Value)> {
     let mut calls = Vec::new();
 
     // OpenAI-compat: `tool_calls` array with string `function.arguments`.
     if let Some(tool_calls) = msg.get("tool_calls").and_then(|t| t.as_array()) {
         for tc in tool_calls {
-            let id = tc
-                .get("id")
-                .and_then(|i| i.as_str())
-                .unwrap_or("")
-                .to_string();
             let name = tc
                 .pointer("/function/name")
                 .and_then(|n| n.as_str())
@@ -1043,7 +1044,7 @@ fn collect_tool_calls(msg: &serde_json::Value) -> Vec<(String, String, serde_jso
                 .unwrap_or("");
             let args = serde_json::from_str(raw)
                 .unwrap_or_else(|_| serde_json::Value::String(raw.to_string()));
-            calls.push((id, name, args));
+            calls.push((name, args));
         }
     }
 
@@ -1051,11 +1052,6 @@ fn collect_tool_calls(msg: &serde_json::Value) -> Vec<(String, String, serde_jso
     if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
         for block in blocks {
             if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                let id = block
-                    .get("id")
-                    .and_then(|i| i.as_str())
-                    .unwrap_or("")
-                    .to_string();
                 let name = block
                     .get("name")
                     .and_then(|n| n.as_str())
@@ -1065,7 +1061,7 @@ fn collect_tool_calls(msg: &serde_json::Value) -> Vec<(String, String, serde_jso
                     .get("input")
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
-                calls.push((id, name, args));
+                calls.push((name, args));
             }
         }
     }
@@ -1205,7 +1201,7 @@ fn flush_turn(
         let text = extract_message_text(msg);
         let calls = collect_tool_calls(msg);
         has_payload |= keeps_turn_alive(&text, !calls.is_empty());
-        for (_, name, args) in &calls {
+        for (name, args) in &calls {
             // Legacy `jyc_reply_message` calls (from transcripts persisted
             // before replies became plain final text) are not tool use:
             // their `message` is the text the user already saw.
@@ -1216,6 +1212,11 @@ fn flush_turn(
         if !text.is_empty() {
             texts.push(text);
         }
+    }
+    if tool_calls.len() > TOOL_CALLS_PER_TURN_MAX {
+        let dropped = tool_calls.len() - TOOL_CALLS_PER_TURN_MAX;
+        tool_calls.truncate(TOOL_CALLS_PER_TURN_MAX);
+        tool_calls.push(format!("…({dropped} more calls)"));
     }
     // Drop only when the assistant truly had nothing — no text AND no tool
     // calls (`keeps_turn_alive`, the rule the tail scan shares). The call
@@ -1241,20 +1242,15 @@ fn flush_turn(
     });
 }
 
-/// Whether a message's text opens a turn: it is non-empty.
+/// Whether a message opens a turn: it is a user message with non-empty
+/// text.
 ///
 /// The one definition shared by pair extraction, the tail scan and the
 /// reader's slice start — a turn boundary that means different things in
-/// different places loses or duplicates turns. It takes the text so callers
-/// that already extracted it do not extract it twice.
-fn opens_turn_text(text: &str) -> bool {
-    !text.is_empty()
-}
-
-/// [`opens_turn_text`] for a whole message.
+/// different places loses or duplicates turns.
 pub(crate) fn opens_turn(msg: &serde_json::Value) -> bool {
     msg.get("role").and_then(|r| r.as_str()) == Some("user")
-        && opens_turn_text(&extract_message_text(msg))
+        && !extract_message_text(msg).is_empty()
 }
 
 /// Whether one assistant message keeps its turn alive: it carries text or a
@@ -1361,7 +1357,7 @@ pub(crate) fn pairs_tail_start(
 /// How many turn openers the slice holds.
 ///
 /// An opener is a text-bearing user message — the same boundary
-/// [`extract_pairs`] and [`verbatim_start_index`] use. A turn opener
+/// [`extract_pairs`] and [`turn_openers_start`] use. A turn opener
 /// without a reply (an unanswered user message) is an opener without a
 /// pair, so the two counts differ.
 pub(crate) fn count_turn_openers(raw_context: &[serde_json::Value]) -> usize {
@@ -1989,7 +1985,7 @@ mod tests {
             max_history_tokens: None,
         };
         let wire = vec![serde_json::json!({"role":"user","content":"hi"})];
-        let regions = vec![3u8];
+        let regions = vec![2u8];
 
         // Write WIRE_PAYLOAD_DUMP_MAX_LINES + 5 entries.
         let total = jyc_core::session_state::WIRE_PAYLOAD_DUMP_MAX_LINES + 5;

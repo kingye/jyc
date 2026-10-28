@@ -1513,25 +1513,23 @@ mod tests {
             "the rule rests on a turn ending, and nothing resuming it"
         );
         // Small on purpose: a watcher is not a thinker, and it is handed one
-        // errand at a time. `window = 0` keeps no prior turn's pairs — the
-        // summary fallback still anchors on the last text-bearing user
-        // message, so the task survives into a second turn — and `note_window
-        // = 0` keeps no tool-call history. The 512-byte tool-result cap then
-        // has nothing to bound: it caps kept history, not the turn being run,
-        // and that one is never truncated (`turn_tool_result_cap` is unset),
-        // so the poll and the report inside one errand still see each other.
+        // errand at a time. `window = 1` with `extend_rate = 0` is a hard
+        // one-turn window — the prior is the previous turn and it slides on
+        // every turn — so the task survives into a second turn without the
+        // history growing past a turn. `note_window = 0` keeps no tool results
+        // in that history, and the 512-byte cap bounds the turn being run,
+        // which is where the poll output actually rides, so the poll and the
+        // report inside one errand still see each other.
         let strategy = watch
             .config
             .context_strategy
             .as_ref()
             .expect("the watcher carries its own context strategy");
         assert_eq!(strategy.mode, jyc_types::ContextStrategy::SlidingWindow);
-        assert_eq!(strategy.window, 0);
+        assert_eq!(strategy.window, 1);
+        assert_eq!(strategy.extend_rate, 0.0);
         assert_eq!(strategy.note_window, Some(0));
-        assert_eq!(strategy.tool_result_cap, Some(512));
-        // The comment above rests on this: the turn in flight is uncapped
-        // only for as long as no turn cap is set.
-        assert_eq!(strategy.turn_tool_result_cap, None);
+        assert_eq!(strategy.turn_tool_result_cap, Some(512));
     }
 
     /// The role this repository ships — `subagents/review/config.toml`, the type

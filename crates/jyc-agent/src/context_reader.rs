@@ -63,9 +63,9 @@ pub(crate) struct PriorSlice {
     /// journal, nothing older was left to read.
     pub reached_head: bool,
     /// Absolute journal byte offset of each message's line start, aligned
-    /// with `messages`. Only [`ContextReader::read_from`] fills this —
-    /// the anchored summary needs it to record where its verbatim tail
-    /// begins. Empty when the offsets were not tracked.
+    /// with `messages`. Only [`ContextReader::read_from`] fills this: the
+    /// sliding window needs it to move its anchor a whole turn at a time.
+    /// Empty when the offsets were not tracked.
     pub offsets: Vec<u64>,
 }
 
@@ -147,14 +147,15 @@ impl ContextReader {
 
     /// The journal forward from `offset` (a line start), oldest first.
     ///
-    /// Used by the anchored history summary: the summary records the byte
-    /// offset where its verbatim tail begins, and each load reads
-    /// `[offset..EOF)` — the read amount grows between refolds but stays
-    /// bounded by the token budget that triggers them. Returns an empty
-    /// slice when `offset` is at or past the journal's end. Every parsed
-    /// message carries its line-start offset in
-    /// [`PriorSlice::offsets`], so the caller can advance the summary
-    /// past a fold without re-scanning.
+    /// Used by the anchored sliding window: `agent-session.json` records
+    /// `context_offset`, the line start where the window's oldest retained
+    /// turn begins, and each load reads `[offset..EOF)` — so the prior
+    /// grows by append between slides and the read amount stays bounded by
+    /// the turn bound that triggers them. Returns an empty slice when
+    /// `offset` is at or past the journal's end. Every parsed message
+    /// carries its line-start offset in [`PriorSlice::offsets`], so the
+    /// caller can advance the anchor a whole turn at a time without
+    /// re-scanning.
     pub(crate) async fn read_from(&self, offset: u64) -> PriorSlice {
         let Some((file_len, _)) = self.stat().await else {
             return PriorSlice {
@@ -168,7 +169,7 @@ impl ContextReader {
         if offset >= file_len {
             return PriorSlice {
                 messages,
-                reached_head: true,
+                reached_head: offset == 0,
                 offsets,
             };
         }
@@ -208,7 +209,13 @@ impl ContextReader {
         // `clean_end` owns that repair; the reader drops it.
         PriorSlice {
             messages,
-            reached_head: true,
+            // A read from a non-zero offset starts mid-journal: the head it
+            // does not cover is exactly what `reached_head == false` must
+            // mean, which is `offset != 0`. The corruption guard in
+            // `finish_load` deletes the journal when a head-covering slice
+            // holds no assistant message, and a window that starts at an
+            // anchor is not entitled to that verdict.
+            reached_head: offset == 0,
             offsets,
         }
     }
@@ -957,6 +964,10 @@ mod tests {
         assert_eq!(slice.messages[0]["content"], "u3");
         assert_eq!(slice.messages[1]["content"], "a3");
         assert_eq!(slice.offsets[0], line_start);
+        assert!(
+            !slice.reached_head,
+            "a read from a non-zero offset does not cover the journal's head"
+        );
     }
 
     #[tokio::test]
@@ -966,7 +977,10 @@ mod tests {
         let reader = reader_for(&tmp, &body).await;
         let slice = reader.read_from(body.len() as u64 + 100).await;
         assert!(slice.messages.is_empty());
-        assert!(slice.reached_head);
+        assert!(
+            !slice.reached_head,
+            "an offset past the end never reached the head — only offset 0 did"
+        );
     }
 
     #[tokio::test]

@@ -15,63 +15,10 @@ pub const DEFAULT_CONTEXT_WINDOW: u64 = 128000;
 /// and tolerates a torn tail line.
 pub const AGENT_CONTEXT_FILE: &str = "agent-context.jsonl";
 
-/// Best-effort removal of the raw context journal and its anchored
-/// history summary. Missing files are ignored; used by reset paths
-/// where absence means "no context".
+/// Best-effort removal of the raw context journal. A missing file is
+/// ignored; used by reset paths where absence means "no context".
 pub async fn remove_raw_context_files(state_dir: &Path) {
     tokio::fs::remove_file(state_dir.join(AGENT_CONTEXT_FILE))
-        .await
-        .ok();
-    remove_history_summary(state_dir).await;
-}
-
-/// The anchored history summary: the compacted text notes of everything
-/// before `offset` in the raw context journal, plus the journal byte
-/// offset where the verbatim tail starts. Persisted per topic so the
-/// sliding-window strategy keeps a byte-stable prefix across turns —
-/// the notes only append at the tail, and the offset only moves forward
-/// when the token budget forces a refold.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct HistorySummary {
-    /// Byte offset into `agent-context.jsonl` where the verbatim tail
-    /// begins. Everything before it is represented by `notes`.
-    pub offset: u64,
-    /// Compacted user/assistant text notes, oldest first — the raw
-    /// extraction output, formatted provider-side at build time.
-    pub notes: Vec<serde_json::Value>,
-}
-
-/// Where the per-topic history summary lives inside the state dir.
-pub const HISTORY_SUMMARY_FILE: &str = "history-summary.json";
-
-/// Read the anchored history summary. A missing or unparsable file
-/// means "no summary" — the caller falls back to the cold path.
-pub async fn read_history_summary(state_dir: &Path) -> Option<HistorySummary> {
-    let path = state_dir.join(HISTORY_SUMMARY_FILE);
-    let bytes = tokio::fs::read(&path).await.ok()?;
-    let summary = serde_json::from_slice::<HistorySummary>(&bytes)
-        .map_err(|e| {
-            tracing::warn!(path = %path.display(), error = %e, "history summary unreadable, ignoring");
-            e
-        })
-        .ok()?;
-    Some(summary)
-}
-
-/// Persist the anchored history summary, replacing any previous one.
-pub async fn write_history_summary(state_dir: &Path, summary: &HistorySummary) {
-    let path = state_dir.join(HISTORY_SUMMARY_FILE);
-    let bytes = serde_json::to_vec(summary).unwrap_or_default();
-    if let Err(e) = tokio::fs::write(&path, bytes).await {
-        tracing::warn!(path = %path.display(), error = %e, "failed to persist history summary");
-    }
-}
-
-/// Best-effort removal of the history summary. A missing file is
-/// ignored; used by reset paths and cold-restart fallbacks where the
-/// summary no longer matches the journal.
-pub async fn remove_history_summary(state_dir: &Path) {
-    tokio::fs::remove_file(state_dir.join(HISTORY_SUMMARY_FILE))
         .await
         .ok();
 }
@@ -831,7 +778,7 @@ pub async fn read_context_strategy_override(
 /// wrote it or a subagent type expanded into it) > matched pattern > first
 /// pattern > global `[ai].context_strategy` >
 /// `ContextStrategyConfig::default()` (sliding_window / window=10 /
-/// note_window=3 / tool_result_cap=2048).
+/// note_window=0 / extend_rate=0.5).
 ///
 /// The topic layer is a *config* layer, not an override: callers must consult
 /// the runtime `.jyc/context-strategy.json` (the user's `/context`) *before*
@@ -1681,12 +1628,12 @@ mode = "agent"
                 ContextStrategy::Full => "full",
                 ContextStrategy::SlidingWindow => "sliding_window",
             };
-            let mut parts = format!("mode = \"{mode}\", window = {}", g.window);
+            let mut parts = format!(
+                "mode = \"{mode}\", window = {}, extend_rate = {}",
+                g.window, g.extend_rate
+            );
             if let Some(n) = g.note_window {
                 parts.push_str(&format!(", note_window = {n}"));
-            }
-            if let Some(cap) = g.tool_result_cap {
-                parts.push_str(&format!(", tool_result_cap = {cap}"));
             }
             toml.push_str(&format!("context_strategy = {{ {parts} }}\n"));
         }
@@ -1700,12 +1647,12 @@ mode = "agent"
                     ContextStrategy::Full => "full",
                     ContextStrategy::SlidingWindow => "sliding_window",
                 };
-                let mut parts = format!("mode = \"{mode}\", window = {}", c.window);
+                let mut parts = format!(
+                    "mode = \"{mode}\", window = {}, extend_rate = {}",
+                    c.window, c.extend_rate
+                );
                 if let Some(n) = c.note_window {
                     parts.push_str(&format!(", note_window = {n}"));
-                }
-                if let Some(cap) = c.tool_result_cap {
-                    parts.push_str(&format!(", tool_result_cap = {cap}"));
                 }
                 toml.push_str(&format!("context_strategy = {{ {parts} }}\n"));
             }
@@ -1718,8 +1665,8 @@ mode = "agent"
         let slide = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 4,
+            extend_rate: 0.5,
             note_window: None,
-            tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1734,8 +1681,8 @@ mode = "agent"
         let slide = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 6,
+            extend_rate: 0.5,
             note_window: None,
-            tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1750,8 +1697,8 @@ mode = "agent"
         let slide = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 8,
+            extend_rate: 0.5,
             note_window: None,
-            tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1762,13 +1709,12 @@ mode = "agent"
     }
 
     #[test]
-    fn resolve_context_strategy_default_is_sliding_window_10_3_2048() {
+    fn resolve_context_strategy_default_is_sliding_window_10_0() {
         let app = config_with_strategies(vec![], None);
         let resolved = resolve_context_strategy(&app, "c", Some("a"), None);
         assert_eq!(resolved.mode, ContextStrategy::SlidingWindow);
         assert_eq!(resolved.window, 10);
-        assert_eq!(resolved.note_window, Some(3));
-        assert_eq!(resolved.tool_result_cap, Some(2048));
+        assert_eq!(resolved.note_window, Some(0));
     }
 
     /// The topic's own strategy — what a subagent type hands its child — is a
@@ -1779,8 +1725,8 @@ mode = "agent"
         let pattern = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 10,
+            extend_rate: 0.5,
             note_window: None,
-            tool_result_cap: Some(2048),
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1788,8 +1734,8 @@ mode = "agent"
         let topic_strategy = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 3,
+            extend_rate: 0.5,
             note_window: Some(0),
-            tool_result_cap: Some(512),
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1801,7 +1747,6 @@ mode = "agent"
             "the topic's strategy wins over the pattern"
         );
         assert_eq!(resolved.note_window, Some(0));
-        assert_eq!(resolved.tool_result_cap, Some(512));
     }
 
     #[tokio::test]
@@ -1823,8 +1768,8 @@ mode = "agent"
         assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
         assert_eq!(cfg.window, 3);
         // Old override files without note_window still parse, picking up
-        // the struct default of `Some(3)`.
-        assert_eq!(cfg.note_window, Some(3));
+        // the struct default of `Some(0)` (text-only history).
+        assert_eq!(cfg.note_window, Some(0));
     }
 
     #[tokio::test]
@@ -1879,72 +1824,73 @@ mode = "agent"
         );
     }
 
-    // ── tool_result_cap resolution ─────────────────────────────────────
+    // ── extend_rate resolution ────────────────────────────────────────
 
     #[test]
-    fn resolve_context_strategy_tool_result_cap_from_global() {
+    fn resolve_context_strategy_extend_rate_from_global() {
         let slide = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 10,
+            extend_rate: 1.0,
             note_window: None,
-            tool_result_cap: Some(8192),
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
         let app = config_with_strategies(vec![], Some(slide));
         let resolved = resolve_context_strategy(&app, "c", Some("a"), None);
-        assert_eq!(resolved.tool_result_cap, Some(8192));
+        assert_eq!(resolved.extend_rate, 1.0);
+        assert_eq!(resolved.max_window(), 20);
     }
 
     #[test]
-    fn resolve_context_strategy_tool_result_cap_pattern_wins_over_global() {
+    fn resolve_context_strategy_extend_rate_pattern_wins_over_global() {
         let pattern = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 10,
+            extend_rate: 2.0,
             note_window: None,
-            tool_result_cap: Some(2048),
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
         let global = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 20,
+            extend_rate: 0.25,
             note_window: None,
-            tool_result_cap: Some(8192),
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
         let app = config_with_strategies(vec![("a", Some(pattern))], Some(global));
         let resolved = resolve_context_strategy(&app, "c", Some("a"), None);
         assert_eq!(resolved.window, 10, "pattern window wins");
-        assert_eq!(resolved.tool_result_cap, Some(2048), "pattern cap wins");
+        assert_eq!(resolved.extend_rate, 2.0, "pattern extend_rate wins");
     }
 
     #[tokio::test]
-    async fn read_context_strategy_override_with_tool_result_cap() {
+    async fn read_context_strategy_override_with_extend_rate() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "resolve_context_strategy_tool_result_cap_from_global";
+        let topic = "read_context_strategy_override_with_extend_rate";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let state_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&state_dir).await.unwrap();
         tokio::fs::write(
             state_dir.join(CONTEXT_STRATEGY_FILE),
-            r#"{"mode":"sliding_window","window":10,"tool_result_cap":5000}"#,
+            r#"{"mode":"sliding_window","window":10,"extend_rate":1.5}"#,
         )
         .await
         .unwrap();
         let cfg = read_context_strategy_override(topic, tmp.path())
             .await
             .unwrap();
-        assert_eq!(cfg.tool_result_cap, Some(5000));
+        assert_eq!(cfg.extend_rate, 1.5);
     }
 
     #[tokio::test]
-    async fn read_context_strategy_override_tool_result_cap_missing_uses_default() {
-        // Legacy override file without the field still parses, picking up
-        // the struct default of `Some(2048)`.
+    async fn read_context_strategy_override_extend_rate_missing_uses_default() {
+        // A legacy override file without the field still parses, picking up
+        // the struct default of `0.5`.
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "read_context_strategy_override_tool_result_cap_missing_uses_default";
+        let topic = "read_context_strategy_override_extend_rate_missing_uses_default";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let state_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&state_dir).await.unwrap();
@@ -1957,7 +1903,7 @@ mode = "agent"
         let cfg = read_context_strategy_override(topic, tmp.path())
             .await
             .unwrap();
-        assert_eq!(cfg.tool_result_cap, Some(2048));
+        assert_eq!(cfg.extend_rate, 0.5);
     }
 
     // ── task list ─────────────────────────────────────────────────────

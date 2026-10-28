@@ -7,32 +7,7 @@ use std::borrow::Cow;
 use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
 
 use crate::provider::Provider;
-use crate::types::{ContentBlock, PriorDepth};
-
-/// How much of the prior context the strategy needs to build its payload.
-///
-/// The sliding window reads the last `window` pair-producing turns and the
-/// last `note_window` turn openers — an unanswered user message is an
-/// opener without a pair, and the verbatim region counts openers.
-/// `full` mode and an unset `note_window` send the whole prior, so no
-/// bounded slice can replace it.
-///
-/// The reader is told this before it reads: it parses only that much of
-/// the journal, which is what keeps a long history cheap.
-pub(crate) fn prior_depth(strategy: &ContextStrategyConfig) -> PriorDepth {
-    match strategy.mode {
-        ContextStrategy::Full => PriorDepth::All,
-        ContextStrategy::SlidingWindow => match strategy.note_window {
-            Some(openers) => PriorDepth::Window {
-                pairs: strategy.window,
-                openers,
-            },
-            // Without a note window the whole prior is verbatim — the
-            // window does not bound it.
-            None => PriorDepth::All,
-        },
-    }
-}
+use crate::types::ContentBlock;
 
 /// Reformat a cleaned message (string content from `extract_user_assistant_pairs`)
 /// into the active provider's wire format via the Provider trait. This is
@@ -72,7 +47,6 @@ pub(crate) fn build_send_context_with_regions<'a>(
         provider,
         raw_context,
         prior_len,
-        0,
         strategy,
         &mut SendContextCache::default(),
     )
@@ -121,9 +95,9 @@ impl SendContextCache {
 ///
 /// * `Full` — borrow the full context (no copy).
 /// * `SlidingWindow` — three parts, in order:
-///   1. The last `window - recent` user+assistant text pairs from the
-///      older prior, reformatted in provider wire format (string content →
-///      provider-correct content shape).
+///   1. The older prior turns as user+assistant text pairs, reformatted in
+///      provider wire format (string content → provider-correct content
+///      shape). This block only ever grows: nothing trims its head.
 ///   2. The most recent `note_window` prior turns **verbatim** (structured
 ///      `tool_calls` + tool results intact, like the current turn), so the
 ///      model keeps seeing tool calls in the wire format it is supposed to
@@ -136,25 +110,22 @@ impl SendContextCache {
 /// dump and tests — can do so without re-running the strategy logic.
 ///
 /// Region labels:
-/// - `1` = first region — compacted history (`SlidingWindow`) or the
+/// - `1` = first region — text-only history (`SlidingWindow`) or the
 ///   whole context (`Full` mode, no region split).
 /// - `2` = second region — verbatim prior turns (`SlidingWindow` only).
 /// - `3` = third region — current turn verbatim (`SlidingWindow` only).
 ///
-/// When `strategy.tool_result_cap` is `Some(cap > 0)`, every tool result
-/// in region ② is truncated to at most `cap` bytes with the standard
-/// `… [truncated N bytes]` marker. Region ③ (the current turn) is
-/// uncapped by default — the model is reasoning over those tool results
-/// mid-loop, so they must stay complete — and bounded by the separate,
-/// opt-in `strategy.turn_tool_result_cap`, which keeps head and tail
-/// instead of the head alone. `Some(0)` or `None` disables capping
-/// everywhere.
+/// How much history the prior holds is the loader's decision, not this
+/// function's: `window` / `extend_rate` / `max_history_tokens` slide the
+/// anchored window there, so the regions only change when the loader
+/// slides. Region ② advances one turn per turn (`note_window`) while
+/// region ① grows by append; that is the only per-turn rewrite.
 ///
-/// `strategy.max_history_tokens` is the second lever, orthogonal to
-/// `window`: it caps what regions ① and ② weigh together, not how many
-/// turns they hold. When the estimate is over budget the oldest history
-/// goes first (see [`fit_history_to_budget`]). Region ③ is never part of
-/// it. `Some(0)` or `None` sends the windowed history untouched.
+/// Region ③ (the current turn) is uncapped by default — the model is
+/// reasoning over those tool results mid-loop, so they must stay complete
+/// — and bounded by the opt-in `strategy.turn_tool_result_cap`, which
+/// keeps head and tail instead of the head alone. `Some(0)` or `None`
+/// disables capping.
 ///
 /// `cache` lets a turn's calls reuse the history regions instead of
 /// rebuilding them per call (see [`SendContextCache`]).
@@ -162,7 +133,6 @@ pub(crate) fn build_send_context_cached<'a>(
     provider: &dyn Provider,
     raw_context: &'a [serde_json::Value],
     prior_len: usize,
-    summary_len: usize,
     strategy: &ContextStrategyConfig,
     cache: &mut SendContextCache,
 ) -> (Cow<'a, [serde_json::Value]>, Vec<u8>) {
@@ -181,19 +151,15 @@ pub(crate) fn build_send_context_cached<'a>(
             let current = &raw_context[boundary..];
 
             if cache.boundary != Some(boundary) {
-                let (region1, region2) = if summary_len > 0 {
-                    // Anchored load: the leading `summary_len` messages
-                    // are the persisted summary's compacted notes —
-                    // already the region ① extraction output, frozen
-                    // since the fold. The rest of the prior is the
-                    // verbatim tail, which grows by pure append between
-                    // refolds, so these regions only change when the
-                    // loader persisted a new summary.
-                    let summary_end = summary_len.min(boundary);
-                    build_summary_regions(provider, &raw_context[..boundary], summary_end, strategy)
-                } else {
-                    build_history_regions(provider, &raw_context[..boundary], strategy)
-                };
+                // The prior is the anchored window the loader read: its
+                // head only moves when the loader slides the anchor, so
+                // region ① (text-only) only ever grows by append — the
+                // provider's cached prefix reaches as far as it does. The
+                // verbatim tail is empty by default (`note_window = 0`);
+                // when it is not, it advances one turn per turn and those
+                // bytes are re-encoded.
+                let (region1, region2) =
+                    build_history_regions(provider, &raw_context[..boundary], strategy);
                 cache.region1 = region1;
                 cache.region2 = region2;
                 cache.boundary = Some(boundary);
@@ -234,41 +200,41 @@ pub(crate) fn build_send_context_cached<'a>(
     }
 }
 
-/// Build regions ① (compacted older pairs) and ② (recent turns verbatim) from
-/// the persisted prefix, fitted to `max_history_tokens`.
+/// Build regions ① (older turns as text-only pairs) and ② (recent turns
+/// verbatim) from the prior window.
+///
+/// Nothing here trims: the prior is already the anchored window the loader
+/// bounded, and any head-trim here would rewrite the wire prefix on every
+/// turn — the bug this shape exists to avoid. Region ① only grows, so the
+/// payload is append-only end to end while region ② is empty, which is the
+/// default (`note_window = 0`).
 fn build_history_regions(
     provider: &dyn Provider,
     prior: &[serde_json::Value],
     strategy: &ContextStrategyConfig,
 ) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
-    // `tool_result_cap`: Some(0) and None both mean "off" — let the
-    // helper short-circuit on cap == 0.
-    let cap = strategy.tool_result_cap.unwrap_or(0);
-
-    // The most recent `note_window` prior turns are sent VERBATIM
-    // (structured tool_calls + results) instead of being folded into
-    // user-role text notes. Text notes taught thinking models
-    // (MiniMax, DeepSeek) to write their process — tool calls and
-    // action announcements — as content instead of using the
-    // structured channel, which leaked "thinking" into delivered
-    // replies. Keeping the structured wire format in the recent
-    // window restores the format the model should mimic.
+    // The default (`note_window = 0`) sends no verbatim tail at all: every
+    // prior turn is folded into text-only pairs below, so the history block
+    // is a pure append. Raising it keeps the most recent turns as
+    // structured wire messages (tool_calls + results intact) — text notes
+    // taught thinking models (MiniMax, DeepSeek) to write their process as
+    // content instead of using the structured channel — at the cost of
+    // re-encoding that tail every turn. An explicit `note_window = null` is
+    // the third case: the whole prior verbatim, nothing folded.
     let note_window = strategy.note_window.unwrap_or(usize::MAX);
     let verbatim_start = crate::session::verbatim_start_index(prior, note_window);
     let (compact_prior, verbatim_prior) = prior.split_at(verbatim_start);
 
-    // Older pairs compact to text-only user/assistant. No history
-    // notes here — the recent pairs are already verbatim, so notes
-    // would be redundant (and are the leak trigger).
-    let verbatim_pairs = crate::session::extract_pairs(verbatim_prior).len();
-    let compact_keep = strategy.window.saturating_sub(verbatim_pairs);
+    // Older turns compact to text-only user/assistant pairs. No history
+    // notes here — the recent turns are already verbatim, so notes
+    // would be redundant (and are the leak trigger). No keep-limit
+    // either: the window bound is the loader's job, and dropping pairs
+    // here would cut the head the cache matches on.
     let compacted =
-        crate::session::extract_user_assistant_pairs(compact_prior, compact_keep, Some(0));
+        crate::session::extract_user_assistant_pairs(compact_prior, usize::MAX, Some(0));
 
-    // Built region by region so `max_history_tokens` can weigh and
-    // trim them as blocks before anything reaches the payload.
-    // Region ① leads with the history marker and keeps it: it
-    // explains the text-only block the compacted pairs form.
+    // Region ① leads with the history marker and keeps it: it explains the
+    // text-only block the compacted pairs form.
     let mut region1: Vec<serde_json::Value> = Vec::new();
     if !compacted.is_empty() {
         region1.push(provider.format_user_message(&[ContentBlock::Text {
@@ -284,66 +250,16 @@ fn build_history_regions(
         }
     }
 
-    // Region ② — recent turns verbatim, minus round-tripped
-    // history notes (metadata, not conversation; re-sending them as
-    // user text is the pattern that triggered the leak). Apply the
-    // tool-result byte cap to each message (non-tool messages are
-    // pass-through, so the cap is cheap).
+    // Region ② — recent turns verbatim, minus round-tripped history notes
+    // (metadata, not conversation; re-sending them as user text is the
+    // pattern that triggered the leak).
     let mut region2: Vec<serde_json::Value> = Vec::new();
     for msg in verbatim_prior {
         if crate::session::is_history_note(msg) {
             continue;
         }
-        region2.push(cap_tool_result_content(msg, cap));
+        region2.push(msg.clone());
     }
-
-    fit_history_to_budget(&mut region1, &mut region2, strategy.max_history_tokens);
-
-    (region1, region2)
-}
-
-/// Build regions ①+② for an anchored load: the first `summary_end`
-/// messages of `prior` are the persisted summary's compacted notes
-/// (already [`extract_user_assistant_pairs`] output — no second
-/// extraction, which would re-walk the journal half the regions came
-/// from). They format to the same wire bytes on every build until the
-/// loader persists a new summary, so the region-① prefix stays
-/// cacheable across turns. Everything after them is the verbatim tail.
-///
-/// The budget fit still applies: it is the floor for a tail whose last
-/// `note_window` turns alone exceed `max_history_tokens`.
-fn build_summary_regions(
-    provider: &dyn Provider,
-    prior: &[serde_json::Value],
-    summary_end: usize,
-    strategy: &ContextStrategyConfig,
-) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
-    let cap = strategy.tool_result_cap.unwrap_or(0);
-
-    let mut region1: Vec<serde_json::Value> = Vec::new();
-    region1.push(provider.format_user_message(&[ContentBlock::Text {
-        text: crate::session::HISTORY_MARKER_TEXT.into(),
-    }]));
-    for msg in &prior[..summary_end] {
-        // Defensive: skip messages with no extractable text so the
-        // wire payload never contains empty text blocks (which
-        // Anthropic rejects, especially under cache_control).
-        if let Some(formatted) = format_cleaned_message(provider, msg) {
-            region1.push(formatted);
-        }
-    }
-
-    // Region ② — the verbatim tail: same handling as the classic build —
-    // minus round-tripped history notes, tool-result cap applied.
-    let mut region2: Vec<serde_json::Value> = Vec::new();
-    for msg in &prior[summary_end..] {
-        if crate::session::is_history_note(msg) {
-            continue;
-        }
-        region2.push(cap_tool_result_content(msg, cap));
-    }
-
-    fit_history_to_budget(&mut region1, &mut region2, strategy.max_history_tokens);
 
     (region1, region2)
 }
@@ -351,71 +267,6 @@ fn build_summary_regions(
 /// Per-message constant added to every wire message's estimate — the role,
 /// block types and separators providers wrap a message in.
 const PER_MESSAGE_TOKENS: usize = 4;
-
-/// Enforce `max_history_tokens` across the two history regions.
-///
-/// Oldest content goes first: region ① sheds its oldest messages (the
-/// leading history marker survives — it is what explains the block), then
-/// region ② sheds its oldest **whole** turns. Whole turns are the unit
-/// because a partial cut would leave a tool result whose `tool_use` is gone,
-/// which providers reject.
-///
-/// `None` and `Some(0)` mean off: the caller then sends exactly what an
-/// unconfigured build sends. A budget below the marker alone still sends the
-/// marker — it is the floor this function trims to.
-fn fit_history_to_budget(
-    region1: &mut Vec<serde_json::Value>,
-    region2: &mut Vec<serde_json::Value>,
-    max_history_tokens: Option<usize>,
-) {
-    let Some(budget) = max_history_tokens.filter(|&b| b > 0) else {
-        return;
-    };
-
-    // Sizes are estimated once and carried alongside, so trimming subtracts
-    // what it drops instead of re-estimating what stays on every step.
-    let mut sizes1: Vec<usize> = region1.iter().map(est_message_tokens).collect();
-    let mut sizes2: Vec<usize> = region2.iter().map(est_message_tokens).collect();
-    let mut total: usize = sizes1.iter().sum::<usize>() + sizes2.iter().sum::<usize>();
-
-    // Region ① — oldest first, the marker at index 0 protected.
-    while total > budget && region1.len() > 1 {
-        region1.remove(1);
-        total -= sizes1.remove(1);
-    }
-    // Region ② — oldest whole turn first.
-    while total > budget {
-        let Some(turn) = oldest_turn_len(region2) else {
-            break;
-        };
-        for _ in 0..turn {
-            total -= sizes2.remove(0);
-        }
-        region2.drain(..turn);
-    }
-}
-
-/// Number of leading region ② messages forming its oldest droppable unit:
-/// one turn, or — when the region opens with tool results whose `tool_use`
-/// fell outside the verbatim window — those orphans on their own. `None`
-/// when the region is empty. Turns are delimited by the shared
-/// [`crate::session::opens_turn`], the same boundary that split ① from ②.
-fn oldest_turn_len(msgs: &[serde_json::Value]) -> Option<usize> {
-    if msgs.is_empty() {
-        return None;
-    }
-    let Some(opener) = msgs.iter().position(crate::session::opens_turn) else {
-        return Some(msgs.len());
-    };
-    if opener > 0 {
-        return Some(opener);
-    }
-    let end = msgs[1..]
-        .iter()
-        .position(crate::session::opens_turn)
-        .map_or(msgs.len(), |p| p + 1);
-    Some(end)
-}
 
 /// Rough token count of one wire message.
 ///
@@ -472,12 +323,6 @@ fn is_wide_char(ch: char) -> bool {
         | 0xF900..=0xFAFF   // CJK compatibility ideographs
         | 0xFF01..=0xFF60   // full-width ASCII (，：（） live here)
         | 0x20000..=0x2FA1F) // CJK extensions B–F, compatibility supplement
-}
-
-/// Truncate oversized tool-result `content` to `cap` bytes, head-only.
-/// Region ②'s cap; see [`cap_tool_result_content_with`].
-fn cap_tool_result_content(msg: &serde_json::Value, cap: usize) -> serde_json::Value {
-    cap_tool_result_content_with(msg, cap, crate::session::truncate_text)
 }
 
 /// Truncate oversized tool-result `content` to `cap` bytes with the given
@@ -861,8 +706,8 @@ mod render_raw_context_tests {
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::Full,
             window: 10,
+            extend_rate: 0.5,
             note_window: None,
-            tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -892,38 +737,41 @@ mod render_raw_context_tests {
         let mut ctx = prior.clone();
         ctx.extend(current.clone());
 
-        // window=2, note_window=1: the last prior turn (u3, a3) is verbatim,
-        // the older turn (u2 with its tool call) compacts to text-only. No
-        // history note anywhere — notes taught the model to write tool calls
-        // as text (the thinking-leak trigger).
+        // window=2, note_window=1: the last prior turn (u3, a3) is
+        // verbatim, every older turn (u1/a1, and u2 with its tool call)
+        // is text-only. No history note anywhere — notes taught the model
+        // to write tool calls as text (the thinking-leak trigger).
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 2,
+            extend_rate: 0.5,
             note_window: Some(1),
-            tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg).0;
         let sent = sent.into_owned();
 
-        // 1. Compacted history marker, then older pair in pure text (no note,
-        //    tool_calls dropped).
+        // 1. Compacted history marker, then every older turn in pure text
+        //    (no note, tool_calls dropped). Nothing trims region ①: the
+        //    window bound is the loader's, not this function's.
         assert_eq!(
             sent[0],
             json!({"role": "user", "content": crate::session::HISTORY_MARKER_TEXT})
         );
-        assert_eq!(sent[1], json!({"role": "user", "content": "u2"}));
-        assert_eq!(sent[2], json!({"role": "assistant", "content": "a2"}));
+        assert_eq!(sent[1], json!({"role": "user", "content": "u1"}));
+        assert_eq!(sent[2], json!({"role": "assistant", "content": "a1"}));
+        assert_eq!(sent[3], json!({"role": "user", "content": "u2"}));
+        assert_eq!(sent[4], json!({"role": "assistant", "content": "a2"}));
 
         // 2. Recent pair verbatim.
-        assert_eq!(sent[3], json!({"role": "user", "content": "u3"}));
-        assert_eq!(sent[4], json!({"role": "assistant", "content": "a3"}));
+        assert_eq!(sent[5], json!({"role": "user", "content": "u3"}));
+        assert_eq!(sent[6], json!({"role": "assistant", "content": "a3"}));
 
         // 3. Current turn verbatim (tool_calls preserved).
-        assert_eq!(sent[5], current[0]);
-        assert_eq!(sent[6], current[1]);
-        assert_eq!(sent[7], current[2]);
+        assert_eq!(sent[7], current[0]);
+        assert_eq!(sent[8], current[1]);
+        assert_eq!(sent[9], current[2]);
     }
 
     #[test]
@@ -936,8 +784,8 @@ mod render_raw_context_tests {
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 5,
+            extend_rate: 0.5,
             note_window: None,
-            tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -952,6 +800,61 @@ mod render_raw_context_tests {
     }
 
     #[test]
+    fn history_stays_a_byte_stable_prefix_across_turns() {
+        // The property the strategy exists for, under the default
+        // configuration: history is text-only (`note_window = 0`), so every
+        // turn's history block is a prefix of the next turn's — the
+        // provider's cached prefix reaches the whole of it, and only the
+        // turn that just ended is re-encoded (as it graduates into the
+        // text-only block) together with the current turn.
+        let prov = prov();
+        let cfg = ContextStrategyConfig {
+            note_window: Some(0),
+            ..ContextStrategyConfig::default()
+        };
+        let turn = |i: usize| {
+            [
+                json!({"role": "user", "content": format!("u{i}")}),
+                json!({"role": "assistant", "content": format!("a{i}")}),
+            ]
+        };
+        // Turn k's payload: prior = turns 1..k-1, current turn = k.
+        let payload = |k: usize| {
+            let mut ctx = Vec::new();
+            for i in 1..k {
+                ctx.extend(turn(i));
+            }
+            let prior_len = ctx.len();
+            ctx.extend(turn(k));
+            let (sent, regions) = build_send_context_with_regions(&prov, &ctx, prior_len, &cfg);
+            (sent.into_owned(), regions)
+        };
+
+        let (at_5, regions_5) = payload(5); // prior 1..4 → history = 1..4
+        let (at_6, regions_6) = payload(6); // prior 1..5 → history = 1..5
+        let region1_5 = regions_5.iter().take_while(|&&r| r == 1).count();
+        let region1_6 = regions_6.iter().take_while(|&&r| r == 1).count();
+
+        assert!(
+            !regions_5.contains(&2) && !regions_6.contains(&2),
+            "the default keeps no verbatim tail"
+        );
+        assert!(region1_5 > 0, "the marker and four turns");
+        assert_eq!(region1_6, region1_5 + 2, "history grew by exactly one turn");
+        assert_eq!(
+            at_6[..region1_5],
+            at_5[..region1_5],
+            "the whole history block is a byte-stable prefix from one turn to the next"
+        );
+        // Everything past the history block is the current turn, and the
+        // history block's own tail is the turn that just graduated into it.
+        assert_eq!(at_6[region1_5]["content"], "u5");
+        assert_eq!(at_6[region1_5 + 1]["content"], "a5");
+        assert_eq!(at_5[region1_5]["content"], "u5");
+        assert_eq!(at_6[region1_6]["content"], "u6");
+    }
+
+    #[test]
     fn sliding_window_empty_prior_returns_only_current() {
         let ctx = vec![
             json!({"role": "user", "content": "current"}),
@@ -960,8 +863,8 @@ mod render_raw_context_tests {
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 10,
+            extend_rate: 0.5,
             note_window: None,
-            tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1004,8 +907,8 @@ mod render_raw_context_tests {
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 4,
+            extend_rate: 0.5,
             note_window: Some(1),
-            tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1080,8 +983,8 @@ mod render_raw_context_tests {
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 5,
+            extend_rate: 0.5,
             note_window: Some(1),
-            tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1127,8 +1030,8 @@ mod render_raw_context_tests {
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 10,
+            extend_rate: 0.5,
             note_window: Some(5),
-            tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1166,8 +1069,8 @@ mod render_raw_context_tests {
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::Full,
             window: 10,
+            extend_rate: 0.5,
             note_window: None,
-            tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1201,8 +1104,8 @@ mod render_raw_context_tests {
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 2,
+            extend_rate: 0.5,
             note_window: Some(1),
-            tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1242,8 +1145,8 @@ mod render_raw_context_tests {
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 2,
+            extend_rate: 0.5,
             note_window: Some(1),
-            tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1253,7 +1156,7 @@ mod render_raw_context_tests {
 
         let mut cache = SendContextCache::default();
         let (first, first_regions) =
-            build_send_context_cached(&prov(), &ctx, prior_len, 0, &cfg, &mut cache);
+            build_send_context_cached(&prov(), &ctx, prior_len, &cfg, &mut cache);
         let (cold, cold_regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
         assert_eq!(first.as_ref(), cold.as_ref());
         assert_eq!(first_regions, cold_regions);
@@ -1262,7 +1165,7 @@ mod render_raw_context_tests {
         // cached prefix did not — the history regions are reused as-is.
         ctx.push(json!({"role": "assistant", "content": "a3"}));
         let (second, second_regions) =
-            build_send_context_cached(&prov(), &ctx, prior_len, 0, &cfg, &mut cache);
+            build_send_context_cached(&prov(), &ctx, prior_len, &cfg, &mut cache);
         let (cold2, cold2_regions) =
             build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
         assert_eq!(second.as_ref(), cold2.as_ref());
@@ -1272,7 +1175,7 @@ mod render_raw_context_tests {
         let next_prior_len = ctx.len();
         ctx.push(json!({"role": "user", "content": "u4"}));
         let (third, third_regions) =
-            build_send_context_cached(&prov(), &ctx, next_prior_len, 0, &cfg, &mut cache);
+            build_send_context_cached(&prov(), &ctx, next_prior_len, &cfg, &mut cache);
         let (cold3, cold3_regions) =
             build_send_context_with_regions(&prov(), &ctx, next_prior_len, &cfg);
         assert_eq!(third.as_ref(), cold3.as_ref());
@@ -1296,8 +1199,8 @@ mod render_raw_context_tests {
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 1,
+            extend_rate: 0.5,
             note_window: Some(1),
-            tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1306,7 +1209,7 @@ mod render_raw_context_tests {
         ctx.push(json!({"role": "user", "content": "u3"}));
 
         let mut cache = SendContextCache::default();
-        let _ = build_send_context_cached(&prov(), &ctx, prior_len, 0, &cfg, &mut cache);
+        let _ = build_send_context_cached(&prov(), &ctx, prior_len, &cfg, &mut cache);
         assert_eq!(
             cache.history_rebuilt(),
             Some(true),
@@ -1318,7 +1221,7 @@ mod render_raw_context_tests {
         cache
             .region1
             .push(json!({"role": "user", "content": "CACHED-SENTINEL"}));
-        let (warm, _) = build_send_context_cached(&prov(), &ctx, prior_len, 0, &cfg, &mut cache);
+        let (warm, _) = build_send_context_cached(&prov(), &ctx, prior_len, &cfg, &mut cache);
         assert!(
             warm.iter()
                 .any(|m| m.get("content").and_then(|c| c.as_str()) == Some("CACHED-SENTINEL")),
@@ -1330,7 +1233,7 @@ mod render_raw_context_tests {
         ctx.push(json!({"role": "assistant", "content": "a3"}));
         let next_prior_len = ctx.len();
         let (rebuilt, _) =
-            build_send_context_cached(&prov(), &ctx, next_prior_len, 0, &cfg, &mut cache);
+            build_send_context_cached(&prov(), &ctx, next_prior_len, &cfg, &mut cache);
         assert!(
             !rebuilt
                 .iter()
@@ -1353,8 +1256,8 @@ mod render_raw_context_tests {
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 1,
+            extend_rate: 0.5,
             note_window: Some(1),
-            tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1391,8 +1294,8 @@ mod render_raw_context_tests {
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 2,
+            extend_rate: 0.5,
             note_window: Some(1),
-            tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1422,8 +1325,8 @@ mod render_raw_context_tests {
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::Full,
             window: 10,
+            extend_rate: 0.5,
             note_window: None,
-            tool_result_cap: None,
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1434,208 +1337,6 @@ mod render_raw_context_tests {
                 .iter()
                 .any(|t| t.starts_with(crate::session::HISTORY_MARKER_TEXT)),
             "Full mode must not inject the compacted-history marker, got: {texts:?}"
-        );
-    }
-
-    /// `cap_tool_result_content` — unit tests for the byte cap helper.
-    /// Integration via `build_send_context_with_regions` is covered by
-    /// `build_send_context_applies_cap_to_verbatim_region` below.
-    #[test]
-    fn cap_tool_result_truncates_openai_shape() {
-        let big = "x".repeat(2000);
-        let msg = json!({"role": "tool", "tool_call_id": "1", "content": big.clone()});
-        let capped = cap_tool_result_content(&msg, 100);
-        let content = capped["content"].as_str().unwrap();
-        assert!(content.len() < 200, "should be much smaller than 2000");
-        assert!(content.starts_with('x'), "preserves leading content");
-        assert!(content.contains("[truncated"), "appends truncation marker");
-        assert!(content.contains("bytes]"), "marker mentions bytes");
-        // The marker must report the exact number of dropped bytes —
-        // 1900 for a 100-byte cap on a 2000-byte input.
-        assert!(
-            content.contains("[truncated 1900 bytes]"),
-            "marker should report exact dropped bytes, got: {content}"
-        );
-    }
-
-    #[test]
-    fn cap_tool_result_passthrough_when_under_cap() {
-        let msg = json!({"role": "tool", "tool_call_id": "1", "content": "short"});
-        let capped = cap_tool_result_content(&msg, 100);
-        // Identity check (no clone-modify churn) — should be the same content.
-        assert_eq!(capped["content"].as_str().unwrap(), "short");
-        assert!(!capped["content"].as_str().unwrap().contains("truncated"));
-    }
-
-    #[test]
-    fn cap_tool_result_passthrough_for_user_or_assistant() {
-        // Only `role=tool` (OpenAI) and `role=user` with tool_result
-        // blocks (Anthropic) get capped — every other role is a no-op.
-        let msg = json!({"role": "assistant", "content": "x".repeat(2000)});
-        let capped = cap_tool_result_content(&msg, 100);
-        assert_eq!(capped, msg, "assistant should pass through unchanged");
-
-        let msg = json!({"role": "user", "content": "x".repeat(2000)});
-        let capped = cap_tool_result_content(&msg, 100);
-        assert_eq!(
-            capped, msg,
-            "user with string content (no tool_result blocks) should pass through"
-        );
-    }
-
-    #[test]
-    fn cap_tool_result_zero_is_passthrough() {
-        // Some(0) is the explicit-off sentinel.
-        let msg = json!({"role": "tool", "tool_call_id": "1", "content": "x".repeat(2000)});
-        let capped = cap_tool_result_content(&msg, 0);
-        assert_eq!(capped, msg);
-    }
-
-    #[test]
-    fn cap_tool_result_truncates_anthropic_shape() {
-        let big = "x".repeat(2000);
-        let msg = json!({
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "framing text"},
-                {"type": "tool_result", "tool_use_id": "t1", "content": big},
-                // A second tool_result in the same user message — both
-                // should be capped.
-                {"type": "tool_result", "tool_use_id": "t2", "content": "short"},
-                // A non-tool_result block — should pass through.
-                {"type": "image", "source": {"type": "base64", "data": "..."}},
-            ]
-        });
-        let capped = cap_tool_result_content(&msg, 100);
-        let blocks = capped["content"].as_array().unwrap();
-        assert_eq!(blocks.len(), 4, "block count preserved");
-        assert_eq!(blocks[0]["text"], "framing text");
-        assert!(
-            blocks[1]["content"]
-                .as_str()
-                .unwrap()
-                .contains("[truncated")
-        );
-        assert_eq!(blocks[2]["content"].as_str().unwrap(), "short");
-        assert_eq!(
-            blocks[3],
-            json!({"type": "image", "source": {"type": "base64", "data": "..."}})
-        );
-    }
-
-    /// Integration: a real-shaped sliding window with a 50-byte cap must
-    /// reduce the serialized payload size vs. uncapped, and every capped
-    /// tool result must carry the standard marker.
-    #[test]
-    fn build_send_context_applies_cap_to_verbatim_region() {
-        let big = "y".repeat(2000);
-        // Two prior turns, each with a tool call + big result. Both tool
-        // results live in region ② (verbatim prior) and must get capped.
-        // Region ③ (the current turn) is no longer capped — covered by
-        // `build_send_context_does_not_cap_current_turn_even_when_cap_set`.
-        let prior = vec![
-            json!({"role": "user", "content": "u1"}),
-            json!({"role": "assistant", "content": "calling bash", "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
-            json!({"role": "tool", "tool_call_id": "1", "content": big.clone()}),
-            json!({"role": "assistant", "content": "done1"}),
-            json!({"role": "user", "content": "u2"}),
-            json!({"role": "assistant", "content": "calling bash", "tool_calls": [{"id":"2","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
-            json!({"role": "tool", "tool_call_id": "2", "content": big.clone()}),
-            json!({"role": "assistant", "content": "done2"}),
-        ];
-        let current = vec![json!({"role": "user", "content": "u3"})];
-        let mut ctx = prior.clone();
-        ctx.extend(current.clone());
-        let prior_len = prior.len();
-
-        let uncapped_cfg = ContextStrategyConfig {
-            mode: ContextStrategy::SlidingWindow,
-            window: 5,
-            note_window: Some(5),
-            tool_result_cap: None,
-            turn_tool_result_cap: None,
-            max_history_tokens: None,
-        };
-        let (uncapped, _) =
-            build_send_context_with_regions(&prov(), &ctx, prior_len, &uncapped_cfg);
-        let uncapped_bytes = serde_json::to_string(uncapped.as_ref()).unwrap().len();
-
-        let capped_cfg = ContextStrategyConfig {
-            tool_result_cap: Some(50),
-            ..uncapped_cfg.clone()
-        };
-        let (capped, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &capped_cfg);
-        let capped_bytes = serde_json::to_string(capped.as_ref()).unwrap().len();
-
-        assert!(
-            capped_bytes < uncapped_bytes,
-            "capping should reduce payload size: uncapped={uncapped_bytes} capped={capped_bytes}"
-        );
-        // The cap should remove most of the 2000-byte bodies (two of them).
-        assert!(
-            uncapped_bytes - capped_bytes > 3000,
-            "cap should drop at least 3KB across two prior tool results: uncapped={uncapped_bytes} capped={capped_bytes}"
-        );
-
-        // The standard truncation marker must appear in the capped payload.
-        let capped_str = serde_json::to_string(capped.as_ref()).unwrap();
-        assert!(
-            capped_str.contains("[truncated ") && capped_str.contains("bytes]"),
-            "missing truncation marker: {capped_str}"
-        );
-    }
-
-    /// Region ③ (current turn) is never truncated, regardless of
-    /// `tool_result_cap`. The full tool result must appear in the wire
-    /// payload with no truncation marker.
-    #[test]
-    fn build_send_context_does_not_cap_current_turn_even_when_cap_set() {
-        let big = "y".repeat(2000);
-        let prior = vec![
-            json!({"role": "user", "content": "u1"}),
-            json!({"role": "assistant", "content": "a1"}),
-        ];
-        // Current turn contains a tool result mid-loop. The model is
-        // reasoning over this content; truncating it would corrupt
-        // mid-loop state.
-        let current = vec![
-            json!({"role": "user", "content": "u2"}),
-            json!({"role": "assistant", "content": "", "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
-            json!({"role": "tool", "tool_call_id": "1", "content": big.clone()}),
-        ];
-        let mut ctx = prior.clone();
-        ctx.extend(current.clone());
-        let prior_len = prior.len();
-
-        let cfg = ContextStrategyConfig {
-            mode: ContextStrategy::SlidingWindow,
-            window: 5,
-            note_window: Some(5),
-            tool_result_cap: Some(50), // cap is ON
-            turn_tool_result_cap: None,
-            max_history_tokens: None,
-        };
-        let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
-        let wire = serde_json::to_string(out.as_ref()).unwrap();
-
-        // Full 2000-byte content must appear in region 3.
-        assert!(
-            wire.contains(&big),
-            "current-turn tool result was truncated: {wire}"
-        );
-        assert!(
-            !wire.contains("[truncated"),
-            "current-turn tool result has truncation marker: {wire}"
-        );
-
-        // The tool message is labelled region 3 (not 2).
-        let tool_idx = out
-            .iter()
-            .position(|m| m["role"] == "tool")
-            .expect("tool result must be in output");
-        assert_eq!(
-            regions[tool_idx], 3,
-            "tool result should be in region 3 (current turn)"
         );
     }
 
@@ -1661,10 +1362,10 @@ mod render_raw_context_tests {
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 5,
+            extend_rate: 0.5,
             note_window: Some(5),
             // region ② cap is OFF, so anything trimmed below must be the
             // turn cap, not this one.
-            tool_result_cap: None,
             turn_tool_result_cap: Some(600),
             max_history_tokens: None,
         };
@@ -1697,41 +1398,6 @@ mod render_raw_context_tests {
         );
     }
 
-    /// The turn cap must not leak into region ② — a prior-turn result stays
-    /// whole while the turn cap is on and `tool_result_cap` is off.
-    #[test]
-    fn build_send_context_turn_cap_does_not_touch_prior_turn() {
-        let big = "w".repeat(3000);
-        let prior = vec![
-            json!({"role": "user", "content": "u1"}),
-            json!({"role": "assistant", "content": "a1"}),
-            json!({"role": "user", "content": "u2"}),
-            json!({"role": "assistant", "content": "a2", "tool_calls": [{"id":"9","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
-            json!({"role": "tool", "tool_call_id": "9", "content": big.clone()}),
-            json!({"role": "assistant", "content": "a3"}),
-        ];
-        let current = vec![json!({"role": "user", "content": "u3"})];
-        let mut ctx = prior.clone();
-        ctx.extend(current);
-        let prior_len = prior.len();
-
-        let cfg = ContextStrategyConfig {
-            mode: ContextStrategy::SlidingWindow,
-            window: 10,
-            note_window: Some(10),
-            tool_result_cap: None,
-            turn_tool_result_cap: Some(600),
-            max_history_tokens: None,
-        };
-        let (out, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
-        let wire = serde_json::to_string(out.as_ref()).unwrap();
-        assert!(
-            wire.contains(&big),
-            "region ② must stay untouched by the turn cap: {}",
-            &wire[..wire.len().min(200)]
-        );
-    }
-
     /// `Some(0)` is the explicit-off sentinel and must behave exactly like
     /// `None` — the "switch off" path the command writes.
     #[test]
@@ -1749,8 +1415,8 @@ mod render_raw_context_tests {
         let none_cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 5,
+            extend_rate: 0.5,
             note_window: Some(5),
-            tool_result_cap: Some(2048),
             turn_tool_result_cap: None,
             max_history_tokens: None,
         };
@@ -1769,39 +1435,6 @@ mod render_raw_context_tests {
         assert!(
             serde_json::to_string(b.as_ref()).unwrap().contains(&big),
             "turn cap 0 must leave the current turn whole"
-        );
-    }
-
-    #[test]
-    fn build_send_context_cap_zero_is_passthrough() {
-        // Some(0) is the explicit-off sentinel — must match None behavior.
-        let big = "y".repeat(2000);
-        let prior = vec![
-            json!({"role": "user", "content": "u1"}),
-            json!({"role": "assistant", "content": "a1"}),
-            json!({"role": "user", "content": "u2"}),
-            json!({"role": "assistant", "content": "calling", "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
-            json!({"role": "tool", "tool_call_id": "1", "content": big}),
-        ];
-        let prior_len = prior.len();
-        let cfg_none = ContextStrategyConfig {
-            mode: ContextStrategy::SlidingWindow,
-            window: 5,
-            note_window: Some(5),
-            tool_result_cap: None,
-            turn_tool_result_cap: None,
-            max_history_tokens: None,
-        };
-        let cfg_zero = ContextStrategyConfig {
-            tool_result_cap: Some(0),
-            ..cfg_none.clone()
-        };
-        let (a, _) = build_send_context_with_regions(&prov(), &prior, prior_len, &cfg_none);
-        let (b, _) = build_send_context_with_regions(&prov(), &prior, prior_len, &cfg_zero);
-        assert_eq!(
-            serde_json::to_string(a.as_ref()).unwrap(),
-            serde_json::to_string(b.as_ref()).unwrap(),
-            "Some(0) must behave identically to None"
         );
     }
 
@@ -1857,425 +1490,5 @@ mod render_raw_context_tests {
         let msg = json!({"role": "user", "content": [{"type": "text", "text": "abcdefgh"}]});
         // "user" (4 bytes → 1) + "text" (4 bytes → 1) + "abcdefgh" (8 → 2).
         assert_eq!(est_message_tokens(&msg), PER_MESSAGE_TOKENS + 4);
-    }
-
-    fn text_of(msg: &serde_json::Value) -> String {
-        crate::session::extract_message_text(msg)
-    }
-
-    /// Prior context whose oldest turn is distinctive, shaped so that
-    /// `note_window = 1` leaves the last turn verbatim and folds the two
-    /// older pairs into region ①. Current turn is one message.
-    fn three_turn_context() -> (Vec<serde_json::Value>, usize) {
-        let prior = vec![
-            json!({"role": "user", "content": "oldest-user"}),
-            json!({"role": "assistant", "content": "oldest-reply"}),
-            json!({"role": "user", "content": "middle-user"}),
-            json!({"role": "assistant", "content": "middle-reply"}),
-            json!({"role": "user", "content": "recent-user"}),
-            json!({"role": "assistant", "content": "recent-reply"}),
-        ];
-        let current = vec![json!({"role": "user", "content": "current-turn"})];
-        let prior_len = prior.len();
-        let mut ctx = prior;
-        ctx.extend(current);
-        (ctx, prior_len)
-    }
-
-    fn budget_base() -> ContextStrategyConfig {
-        ContextStrategyConfig {
-            mode: ContextStrategy::SlidingWindow,
-            window: 10,
-            note_window: Some(1),
-            tool_result_cap: None,
-            turn_tool_result_cap: None,
-            max_history_tokens: None,
-        }
-    }
-
-    /// `None` and `Some(0)` are the same "off" state — the payload must be
-    /// byte-identical to what an unconfigured build sends.
-    #[test]
-    fn max_history_tokens_none_and_zero_send_identical_payload() {
-        let (ctx, prior_len) = three_turn_context();
-        let base = budget_base();
-        let zero = ContextStrategyConfig {
-            max_history_tokens: Some(0),
-            ..base.clone()
-        };
-        let (a, ra) = build_send_context_with_regions(&prov(), &ctx, prior_len, &base);
-        let (b, rb) = build_send_context_with_regions(&prov(), &ctx, prior_len, &zero);
-        assert_eq!(
-            serde_json::to_string(a.as_ref()).unwrap(),
-            serde_json::to_string(b.as_ref()).unwrap(),
-            "Some(0) must behave identically to None"
-        );
-        assert_eq!(ra, rb);
-    }
-
-    /// A budget nobody reaches is inert: the payload and the region labels
-    /// are exactly what the unconfigured build produces.
-    #[test]
-    fn max_history_tokens_under_budget_leaves_payload_untouched() {
-        let (ctx, prior_len) = three_turn_context();
-        let base = budget_base();
-        let roomy = ContextStrategyConfig {
-            max_history_tokens: Some(1_000_000),
-            ..base.clone()
-        };
-        let (plain, plain_regions) =
-            build_send_context_with_regions(&prov(), &ctx, prior_len, &base);
-        let (budgeted, budgeted_regions) =
-            build_send_context_with_regions(&prov(), &ctx, prior_len, &roomy);
-        assert_eq!(plain.as_ref(), budgeted.as_ref());
-        assert_eq!(plain_regions, budgeted_regions);
-    }
-
-    /// Over budget, the oldest history goes first and nothing newer is
-    /// touched. The budget here is exactly the weight of the payload minus
-    /// the oldest pair, so the expected wire payload can be stated outright
-    /// instead of counted.
-    #[test]
-    fn max_history_tokens_drops_oldest_compacted_pairs_first() {
-        let (ctx, prior_len) = three_turn_context();
-        let base = budget_base();
-        let (uncapped, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &base);
-        let uncapped = uncapped.into_owned();
-
-        let expected: Vec<serde_json::Value> = uncapped
-            .iter()
-            .filter(|m| !text_of(m).contains("oldest"))
-            .cloned()
-            .collect();
-        assert!(
-            uncapped.len() - expected.len() == 2,
-            "fixture must shed exactly the oldest pair, got {uncapped:?}"
-        );
-        let budget: usize = expected.iter().map(est_message_tokens).sum();
-
-        let tight = ContextStrategyConfig {
-            max_history_tokens: Some(budget),
-            ..base.clone()
-        };
-        let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &tight);
-        assert_eq!(out.into_owned(), expected);
-        // Region labels follow their messages: ① marker + two pairs, ② the
-        // verbatim turn, ③ the current turn.
-        assert_eq!(regions, vec![1, 1, 1, 2, 2, 3]);
-    }
-
-    /// Region ② loses whole turns, never halves: a tool result whose
-    /// `tool_use` was trimmed away is rejected by the API, so the cut has
-    /// to land on turn boundaries.
-    #[test]
-    fn max_history_tokens_drops_oldest_whole_turns_from_verbatim_region() {
-        let prior = vec![
-            json!({"role": "user", "content": "turn-1-user"}),
-            json!({"role": "assistant", "content": "", "tool_calls": [{"id": "t1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}]}),
-            json!({"role": "tool", "tool_call_id": "t1", "content": "A".repeat(4000)}),
-            json!({"role": "assistant", "content": "turn-1-final"}),
-            json!({"role": "user", "content": "turn-2-user"}),
-            json!({"role": "assistant", "content": "", "tool_calls": [{"id": "t2", "type": "function", "function": {"name": "bash", "arguments": "{}"}}]}),
-            json!({"role": "tool", "tool_call_id": "t2", "content": "small"}),
-            json!({"role": "assistant", "content": "turn-2-final"}),
-        ];
-        let current = vec![json!({"role": "user", "content": "current-turn"})];
-        let prior_len = prior.len();
-        let mut ctx = prior;
-        ctx.extend(current);
-
-        let base = ContextStrategyConfig {
-            mode: ContextStrategy::SlidingWindow,
-            window: 10,
-            note_window: Some(2),
-            tool_result_cap: None,
-            turn_tool_result_cap: None,
-            max_history_tokens: None,
-        };
-        let (uncapped, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &base);
-        let expected: Vec<serde_json::Value> = uncapped
-            .iter()
-            .filter(|m| {
-                serde_json::to_string(m).unwrap().find("turn-1").is_none()
-                    && serde_json::to_string(m).unwrap().find("t1").is_none()
-            })
-            .cloned()
-            .collect();
-        let budget: usize = expected.iter().map(est_message_tokens).sum();
-
-        let tight = ContextStrategyConfig {
-            max_history_tokens: Some(budget),
-            ..base.clone()
-        };
-        let (out, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &tight);
-        let out = out.into_owned();
-        assert_eq!(out, expected);
-
-        let wire = serde_json::to_string(&out).unwrap();
-        assert!(!wire.contains("turn-1"), "oldest turn survived: {wire}");
-        assert!(wire.contains("turn-2"), "newer turn was cut: {wire}");
-        // Every tool result still has the assistant call that produced it.
-        for msg in &out {
-            if msg["role"] == "tool" {
-                let id = msg["tool_call_id"].as_str().unwrap();
-                assert!(
-                    out.iter().any(|m| {
-                        m["tool_calls"]
-                            .as_array()
-                            .is_some_and(|calls| calls.iter().any(|c| c["id"].as_str() == Some(id)))
-                    }),
-                    "orphan tool result {id} left in payload: {wire}"
-                );
-            }
-        }
-    }
-
-    /// A budget this small still leaves the current turn intact — it is the
-    /// work in progress, and `turn_tool_result_cap` is its lever, not this
-    /// one. The history marker is the floor region ① trims to.
-    #[test]
-    fn max_history_tokens_never_touches_the_current_turn() {
-        let (ctx, prior_len) = three_turn_context();
-        let tiny = ContextStrategyConfig {
-            max_history_tokens: Some(1),
-            ..budget_base()
-        };
-        let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &tiny);
-        let out = out.into_owned();
-        assert_eq!(text_of(&out[0]), crate::session::HISTORY_MARKER_TEXT);
-        assert_eq!(text_of(&out[1]), "current-turn");
-        assert_eq!(regions, vec![1, 3]);
-    }
-
-    /// The two rungs have to compose: region ① runs out (down to the
-    /// marker) and the budget is *still* over, so region ② must then shed
-    /// its oldest turn — while the newest verbatim turn survives. The
-    /// expected payload is stated outright, so the assertion pins the whole
-    /// shape rather than a count.
-    #[test]
-    fn max_history_tokens_falls_through_region_1_into_region_2() {
-        let prior = vec![
-            json!({"role": "user", "content": "compacted-user"}),
-            json!({"role": "assistant", "content": "compacted-reply"}),
-            json!({"role": "user", "content": "turn-2-user"}),
-            json!({"role": "assistant", "content": "", "tool_calls": [{"id": "t1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}]}),
-            json!({"role": "tool", "tool_call_id": "t1", "content": "old result"}),
-            json!({"role": "assistant", "content": "turn-2-final"}),
-            json!({"role": "user", "content": "turn-3-user"}),
-            json!({"role": "assistant", "content": "", "tool_calls": [{"id": "t2", "type": "function", "function": {"name": "bash", "arguments": "{}"}}]}),
-            json!({"role": "tool", "tool_call_id": "t2", "content": "recent result"}),
-            json!({"role": "assistant", "content": "turn-3-final"}),
-        ];
-        let current = vec![json!({"role": "user", "content": "current-turn"})];
-        let prior_len = prior.len();
-        let mut ctx = prior;
-        ctx.extend(current);
-
-        let base = ContextStrategyConfig {
-            mode: ContextStrategy::SlidingWindow,
-            window: 10,
-            note_window: Some(2),
-            tool_result_cap: None,
-            turn_tool_result_cap: None,
-            max_history_tokens: None,
-        };
-        let (uncapped, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &base);
-        let expected: Vec<serde_json::Value> = uncapped
-            .iter()
-            .filter(|m| {
-                let m = serde_json::to_string(m).unwrap();
-                !m.contains("compacted") && !m.contains("t1") && !m.contains("turn-2")
-            })
-            .cloned()
-            .collect();
-        assert_eq!(
-            expected.len(),
-            6,
-            "marker (1) + the newest verbatim turn (user, tool call, tool result, final = 4) + the current turn (1): {expected:?}"
-        );
-        let budget: usize = expected.iter().map(est_message_tokens).sum();
-
-        let tight = ContextStrategyConfig {
-            max_history_tokens: Some(budget),
-            ..base
-        };
-        let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &tight);
-        assert_eq!(out.into_owned(), expected);
-        // marker ①, three messages of the newest turn ②, current turn ③
-        assert_eq!(regions, vec![1, 2, 2, 2, 2, 3]);
-    }
-
-    /// A region ② that opens with tool results whose `tool_use` fell outside
-    /// the verbatim window drops those orphans first — as a group, so the
-    /// turns behind them still go whole.
-    #[test]
-    fn oldest_turn_len_drops_leading_orphans_as_their_own_group() {
-        let msgs = vec![
-            json!({"role": "tool", "tool_call_id": "x", "content": "orphan"}),
-            json!({"role": "tool", "tool_call_id": "y", "content": "orphan"}),
-            json!({"role": "user", "content": "u"}),
-            json!({"role": "assistant", "content": "a"}),
-        ];
-        assert_eq!(oldest_turn_len(&msgs), Some(2));
-        assert_eq!(oldest_turn_len(&[]), None);
-    }
-
-    /// The payload must not change when the prior comes from the
-    /// reader's window instead of the whole journal: the reader exists to
-    /// make a long history cheap to read, not to change what the model
-    /// sees.
-    #[tokio::test]
-    async fn the_window_payload_is_the_same_from_a_reader_slice() {
-        let mut prior: Vec<serde_json::Value> = Vec::new();
-        for i in 1..=12 {
-            prior.push(json!({"role": "user", "content": format!("u{i}")}));
-            if i == 4 {
-                // A tool turn in the middle of the history.
-                prior.push(json!({"role": "assistant", "content": "a4", "tool_calls": [{"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}]}));
-                prior.push(json!({"role": "tool", "tool_call_id": "1", "content": "out"}));
-            } else {
-                prior.push(json!({"role": "assistant", "content": format!("a{i}")}));
-            }
-        }
-        let current = vec![
-            json!({"role": "user", "content": "current"}),
-            json!({"role": "assistant", "content": "reply"}),
-        ];
-
-        let cfg = ContextStrategyConfig {
-            mode: ContextStrategy::SlidingWindow,
-            window: 4,
-            note_window: Some(2),
-            tool_result_cap: None,
-            turn_tool_result_cap: None,
-            max_history_tokens: None,
-        };
-
-        // The journal the reader reads back.
-        let tmp = tempfile::tempdir().unwrap();
-        let state_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&state_dir).await.unwrap();
-        let mut body = String::new();
-        for v in &prior {
-            body.push_str(&serde_json::to_string(v).unwrap());
-            body.push('\n');
-        }
-        tokio::fs::write(
-            state_dir.join(jyc_core::session_state::AGENT_CONTEXT_FILE),
-            body,
-        )
-        .await
-        .unwrap();
-        let reader = crate::context_reader::ContextReader::new("reader-diff", &state_dir);
-        let slice = reader.read_prior(prior_depth(&cfg)).await;
-
-        // The whole journal and the reader's window must produce the same
-        // payload.
-        let mut whole = prior.clone();
-        whole.extend(current.clone());
-        let (whole_payload, whole_regions) =
-            build_send_context_with_regions(&prov(), &whole, prior.len(), &cfg);
-
-        let mut windowed = slice.messages.clone();
-        windowed.extend(current.clone());
-        let (windowed_payload, windowed_regions) =
-            build_send_context_with_regions(&prov(), &windowed, slice.messages.len(), &cfg);
-
-        assert_eq!(
-            whole_payload.into_owned(),
-            windowed_payload.into_owned(),
-            "the window must not change the payload"
-        );
-        assert_eq!(whole_regions, windowed_regions);
-    }
-
-    #[test]
-    fn anchored_summary_regions_keep_the_prior_a_stable_prefix_across_turns() {
-        // The #995 property at build level: with the anchored summary,
-        // adding a turn to the prior changes the payload only by appending
-        // — the previous payload is a strict prefix of the next one, so
-        // the provider cache survives the turn boundary.
-        let cfg = ContextStrategyConfig {
-            mode: ContextStrategy::SlidingWindow,
-            note_window: Some(2),
-            max_history_tokens: None,
-            ..Default::default()
-        };
-        // Two folded pairs (the summary) + two verbatim turns.
-        let notes: Vec<serde_json::Value> = (1..=2)
-            .flat_map(|i| {
-                [
-                    json!({"role": "user", "content": format!("u{i}")}),
-                    json!({"role": "assistant", "content": format!("a{i}")}),
-                ]
-            })
-            .collect();
-        let summary_len = notes.len();
-        let tail: Vec<serde_json::Value> = (3..=4)
-            .flat_map(|i| {
-                [
-                    json!({"role": "user", "content": format!("u{i}")}),
-                    json!({"role": "assistant", "content": format!("a{i}")}),
-                ]
-            })
-            .collect();
-
-        let mut ctx = notes.clone();
-        ctx.extend(tail.clone());
-        let prior_len = ctx.len();
-        let (warm1, regions1) = build_send_context_cached(
-            &prov(),
-            &ctx,
-            prior_len,
-            summary_len,
-            &cfg,
-            &mut SendContextCache::default(),
-        );
-
-        // Region labels: marker + notes are ①, the verbatim tail is ②.
-        let region1_len = 1 + notes.len();
-        assert_eq!(regions1.len(), warm1.len());
-        assert!(
-            regions1[..region1_len].iter().all(|&r| r == 1),
-            "marker + summary notes are region ①"
-        );
-        assert!(
-            regions1[region1_len..].iter().all(|&r| r == 2),
-            "verbatim tail is region ②"
-        );
-        // The marker leads region ①.
-        assert!(
-            warm1[0]
-                .get("content")
-                .and_then(|c| c.as_str())
-                .is_some_and(|t| t.contains("earlier conversation follows")),
-            "region ① leads with the history marker"
-        );
-
-        // Next turn: the prior grows by one turn, the summary does not change.
-        // (A second vector: `warm1` borrows `ctx` through its Cow.)
-        let mut ctx2 = ctx.clone();
-        ctx2.push(json!({"role": "user", "content": "u5"}));
-        ctx2.push(json!({"role": "assistant", "content": "a5"}));
-        let (warm2, _) = build_send_context_cached(
-            &prov(),
-            &ctx2,
-            ctx2.len(),
-            summary_len,
-            &cfg,
-            &mut SendContextCache::default(),
-        );
-
-        assert!(warm2.len() > warm1.len());
-        assert_eq!(
-            warm2[..warm1.len()],
-            warm1[..],
-            "the previous payload is a byte-stable prefix of the next"
-        );
-        assert_eq!(
-            warm2[warm1.len()].get("content"),
-            Some(&json!("u5")),
-            "the new turn appends at the tail"
-        );
     }
 }

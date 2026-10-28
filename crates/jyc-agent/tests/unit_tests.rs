@@ -215,7 +215,7 @@ mod session {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "load_context_returns_empty_when_no_session_file";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let (messages, raw_context, _summary) =
+        let (messages, raw_context) =
             session::load_context(topic, tmp.path(), &full_strategy()).await;
         assert!(messages.is_empty());
         assert!(raw_context.is_empty());
@@ -243,11 +243,11 @@ mod session {
         session::save_raw_context(topic, tmp.path(), context).await;
 
         // Load it back — twice: the second load reads the same journal.
-        let (messages, raw_context, _summary) =
+        let (messages, raw_context) =
             session::load_context(topic, tmp.path(), &full_strategy()).await;
         assert_eq!(raw_context.len(), 2);
         assert_eq!(messages.len(), 2);
-        let (messages2, raw_context2, _summary2) =
+        let (messages2, raw_context2) =
             session::load_context(topic, tmp.path(), &full_strategy()).await;
         assert_eq!(raw_context2.len(), 2);
         assert_eq!(messages2.len(), 2);
@@ -297,7 +297,7 @@ mod session {
         .await
         .unwrap();
 
-        let (messages, raw_context, _summary) =
+        let (messages, raw_context) =
             session::load_context(topic, tmp.path(), &full_strategy()).await;
         assert!(messages.is_empty(), "the array is not read");
         assert!(raw_context.is_empty());
@@ -333,7 +333,7 @@ mod session {
             .await
             .unwrap();
 
-        let (messages, raw_context, _summary) =
+        let (messages, raw_context) =
             session::load_context(topic, tmp.path(), &full_strategy()).await;
         assert_eq!(raw_context.len(), 1, "torn tail dropped");
         assert_eq!(raw_context[0]["content"], "survived");
@@ -400,7 +400,7 @@ mod session {
         let seed = vec![serde_json::json!({"role": "assistant", "content": "one"})];
         write_context_journal(&state_dir, &seed).await;
 
-        let (_, first, _) = session::load_context(topic, tmp.path(), &full_strategy()).await;
+        let (_, first) = session::load_context(topic, tmp.path(), &full_strategy()).await;
         assert_eq!(first.len(), 1);
 
         // An out-of-band append (another writer, a restore) must invalidate
@@ -415,7 +415,7 @@ mod session {
             .await
             .unwrap();
 
-        let (_, second, _) = session::load_context(topic, tmp.path(), &full_strategy()).await;
+        let (_, second) = session::load_context(topic, tmp.path(), &full_strategy()).await;
         assert_eq!(second.len(), 2, "external change must miss the cache");
         assert_eq!(second[1]["content"], "two");
     }
@@ -443,7 +443,7 @@ mod session {
         write_context_journal(&state_dir, &context).await;
 
         // Load — should filter out the invalid message
-        let (messages, raw_context, _summary) =
+        let (messages, raw_context) =
             session::load_context(topic, tmp.path(), &full_strategy()).await;
         assert_eq!(raw_context.len(), 2); // user + valid assistant
         assert_eq!(messages.len(), 2);
@@ -471,7 +471,7 @@ mod session {
         write_context_journal(&state_dir, &context).await;
 
         // Load — should return empty (no valid assistant messages)
-        let (messages, raw_context, _summary) =
+        let (messages, raw_context) =
             session::load_context(topic, tmp.path(), &full_strategy()).await;
         assert!(messages.is_empty());
         assert!(raw_context.is_empty());

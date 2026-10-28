@@ -778,12 +778,19 @@ pub enum ContextStrategy {
 /// `mode` selects which strategy to apply. In `sliding_window` the
 /// journal's turns are sent from an anchored window: it grows by pure
 /// append until it reaches [`Self::max_window`], then slides back to
-/// [`Self::window`] turns — so the wire prefix stays byte-stable between
-/// slides, which is what the provider's prompt cache matches on.
+/// [`Self::window`] turns.
 ///
 /// Slides are the **only** way history shrinks: nothing trims the window's
 /// head between them (a per-turn trim would rewrite the wire prefix every
 /// turn and destroy the cache hit).
+///
+/// The payload itself has two blocks with different stability: the older
+/// turns (text-only, region ①) only ever grow, so the provider's cached
+/// prefix extends from one turn to the next; the most recent
+/// [`Self::note_window`] turns (verbatim, region ②) advance by one turn
+/// each turn and are therefore re-encoded. Only `note_window = Some(0)`
+/// (no verbatim tail) or unset (whole history verbatim) makes the whole
+/// payload append-only.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ContextStrategyConfig {
     /// Context strategy mode. Default: `sliding_window`.
@@ -804,9 +811,11 @@ pub struct ContextStrategyConfig {
     pub extend_rate: f64,
     /// Number of the most recent windowed turns sent **verbatim** — with
     /// their tool calls and results. Older turns are sent as text-only
-    /// user/assistant pairs whose tool calls appear in a one-line history
-    /// note. `Some(3)` by default (sliding_window mode). Only meaningful
-    /// when `mode = "sliding_window"`.
+    /// user/assistant text pairs: no history notes, and their tool calls,
+    /// arguments and results are gone from the payload (the journal keeps
+    /// them; `context_browse` still reads them). `Some(3)` by default
+    /// (sliding_window mode). Only meaningful when
+    /// `mode = "sliding_window"`.
     ///
     /// Each turn the verbatim tail advances by one turn (a turn moves from
     /// the tail into the text-only block), so the tail is re-encoded every
@@ -844,9 +853,13 @@ pub struct ContextStrategyConfig {
     /// `window` counts turns, so a window of 10 still costs whatever those
     /// 10 turns happen to weigh — a handful of small ones, or a few turns
     /// carrying megabyte-sized tool results. This budget is the second
-    /// trigger for a slide: when the window's estimated weight exceeds it,
-    /// the window slides back to `window` turns, exactly as a window over
-    /// `max_window` turns does. It never trims anything by itself; the
+    /// trigger for the same slide: when the window's estimated weight
+    /// exceeds it *and* the window has reached `max_window` turns, it
+    /// slides back to `window` turns. It is deliberately not a per-turn
+    /// trigger: a window whose `window` turns alone exceed the budget can
+    /// never get under it, and sliding every turn to chase it would move
+    /// the anchor on every turn and re-encode the payload — the failure
+    /// this design exists to avoid. It never trims anything by itself; the
     /// current turn is never part of the estimate — it has
     /// `turn_tool_result_cap` for that.
     ///
@@ -1139,6 +1152,23 @@ topic_path = "~/projects/jyc"
         "#;
         let cfg: ContextStrategyConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.extend_rate, 0.5);
+    }
+
+    #[test]
+    fn test_context_strategy_tool_result_cap_is_inert() {
+        // `tool_result_cap` was removed (#1019): a config still carrying
+        // it must load unchanged, with the key ignored. This is the
+        // migration path for every existing config file.
+        let toml_str = r#"
+            mode = "sliding_window"
+            window = 10
+            note_window = 3
+            tool_result_cap = 4096
+        "#;
+        let cfg: ContextStrategyConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.window, 10);
+        assert_eq!(cfg.note_window, Some(3));
+        assert_eq!(cfg.turn_tool_result_cap, None);
     }
 
     #[test]

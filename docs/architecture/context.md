@@ -139,9 +139,10 @@ Anchored, not per-turn sliding. The session state
 retained turn begins — and each load reads the journal **forward** from
 there:
 
-1. **Older turns, text-only (region ①)** — user/assistant pairs
-   reformatted in the active provider's wire format, with the turn's tool
-   calls summarised in a one-line history note. This block only ever
+1. **Older turns, text-only (region ①)** — user/assistant text pairs
+   reformatted in the active provider's wire format. Their tool calls,
+   arguments and results are dropped from the payload (the journal keeps
+   them; `context_browse` reads them back). This block only ever
    **grows**: nothing trims its head.
 2. **Recent turns, verbatim (region ②)** — the most recent `note_window`
    turns (default `3`) with **structured `tool_calls` / `tool_use` and
@@ -162,12 +163,17 @@ on every turn.
 
 A load with no anchor — fresh topic, `/reset`, an upgraded session file,
 or an offset that no longer lands on a turn boundary — cold-starts: the
-journal is read from its head once, slid down to `window` turns, and the
-new anchor persisted. Every load after that is bounded by the window.
+journal is read from its head once and the anchor is **dropped** (a window
+that covers the whole journal needs none; leaving a bad offset in place
+would repeat the cold start and its warning every turn). The first slide
+persists a new one, and every load after that is bounded by the window.
 
 The anchor is the whole point: providers cache by **prefix**, so the
-payload must be a pure append between slides. Nothing trims the window's
-head in between — an earlier design trimmed the history to a token
+payload should grow only at its tail between slides. Region ① does
+exactly that; region ② advances by one turn per turn and is therefore
+re-encoded, so the cached prefix reaches as far as ① (set `note_window`
+to `0` or leave it unset for a fully append-only payload). Nothing trims
+the window's head in between — an earlier design trimmed the history to a token
 budget on *every* turn, and since that trim could never actually reduce
 the total below the budget, the head advanced on every turn and the
 cross-turn prefix broke on every first call (production wire dumps showed
@@ -180,7 +186,7 @@ flowchart TB
     subgraph R1["① Older turns — text-only pairs"]
         R1U["user: 'u1'"]
         R1A["assistant: 'a1'<br/><i>pure text, no tools</i>"]
-        R1N["user: '[History note] assistant tool calls: …'"]
+        R1N["no history notes: tool calls · results dropped"]
     end
     subgraph R2["② Recent turns — verbatim (last note_window turns)"]
         R2U["user: 'u2'"]
@@ -285,7 +291,7 @@ to treat the note as a fresh instruction):
   their reply; the system prompt's "History Format" section states the
   contract explicitly.
 
-Size caps (constants in `session.rs`):
+Size caps (constants in `session.rs`, applied when a note is *stored*):
 
 | Limit | Value | Notes |
 |-------|-------|-------|
@@ -293,34 +299,29 @@ Size caps (constants in `session.rs`):
 | Single tool result | 500 bytes | full result is one `context_browse` away |
 | **Whole note** | **2000 bytes** | overflow folds to `…(N more calls)` |
 
-With the default `window = 10`, all notes together cost at most ~20 KB of
-bytes. The dominant factor in window size is the untruncated
-user/assistant text itself, not the notes.
+These bound the journal, not the payload: the sliding window sends no
+notes at all.
 
 **`note_window` (optional)** sizes the verbatim region ②: when set to
-`M`, the last `min(M, pairs_in_prior)` prior turns keep their structured
-`tool_calls` / `tool_use` and tool results intact; older turns in the
-window compact to text-only. Boundary cases (matching
+`M`, the last `min(M, turns_in_prior)` prior turns keep their structured
+`tool_calls` / `tool_use` and tool results intact; every older turn in the
+window becomes a text-only pair in ①. Boundary cases (matching
 `verbatim_start_index` + `build_send_context_cached`):
 
-- **Unset** — the entire prior becomes verbatim and `window`
-  is effectively ignored. The implementation substitutes
-  `usize::MAX`, so `verbatim_start_index` finds no `M`-th turn and
-  returns 0. To get a `window`-bounded prior, set `note_window`
-  explicitly.
-- **`M = 0`** — pure text window; the entire prior is compacted, last
-  `window` pairs kept as text-only.
-- **`0 < M ≤ window`, prior ≥ `M`** — last `M` prior turns verbatim;
-  older turns compacted to last `window − M` pairs as text-only.
-- **`M > window`, prior ≥ `M`** — verbatim region exceeds `window` and
-  ① shrinks to 0. **There is no clamp** — `compact_keep =
-  window.saturating_sub(verbatim_pairs)` only prevents the compact
-  region from going negative, never the verbatim region from growing.
-  To bound the prior to `window`, set `M ≤ window`.
-- **`0 < M`, prior < `M`** — `recent = pairs_in_prior`; the entire
-  prior becomes verbatim (`compact_prior` is empty because
-  `verbatim_start_index` returns 0) and ① is empty regardless of
-  `window`.
+- **Unset** — the entire prior becomes verbatim and ① is empty. The
+  implementation substitutes `usize::MAX`, so `verbatim_start_index`
+  finds no `M`-th turn and returns 0. This is one of the two
+  fully append-only shapes.
+- **`M = 0`** — the entire prior is text-only and ② is empty; also fully
+  append-only, and the cheapest payload. The model then sees no
+  structured tool calls in history.
+- **`0 < M`, prior ≥ `M`** — last `M` prior turns verbatim, ① holds
+  every older turn. `window` no longer bounds the payload: the loader
+  bounds the window at `max_window` turns, so ① holds at most
+  `max_window − M` turns.
+- **`0 < M`, prior < `M`** — the entire prior is verbatim and ① is
+  empty. Note the per-turn consequence: each turn one more turn enters
+  the tail, so the payload's stable prefix is empty until ① is non-empty.
 
 Rationale: the recent turns are "what just happened / what just failed",
 and showing them in the structured wire format keeps the model anchored to
@@ -332,9 +333,9 @@ their process as content instead, leaking thinking into replies.)
 Trade-off: an older compacted turn loses tool-error visibility — the model
 may re-run a command that failed there; `context_browse` remains the
 fallback for recovering the original calls. History notes stay in the
-stored context — `note_window` only shapes the sliding-window wire
-payload, and round-tripped notes are filtered out before the payload is
-sent.
+stored context (the journal keeps each turn's tool activity), but the
+sliding-window payload emits none of them: ① is text-only and
+round-tripped notes are filtered out before sending.
 
 #### Anthropic compatibility defenses
 

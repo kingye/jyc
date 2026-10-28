@@ -361,18 +361,19 @@ pub async fn append_wire_payload_dump(
 ///
 /// `Full` mode reads the whole journal. `sliding_window` reads an
 /// **anchored window**: the journal forward from the anchor stored in the
-/// session state ([`SessionState::context_offset`]), so between slides the
-/// window grows by pure append and its wire bytes stay a stable prefix —
-/// the property the provider prompt cache matches on. The window slides
-/// (anchor moves forward, whole turns dropped) only when it holds more
-/// than [`ContextStrategyConfig::max_window`] turns, or when its estimated
-/// weight exceeds `max_history_tokens`; the slide returns it to `window`
-/// turns. Nothing else ever shrinks it: a per-turn trim would rewrite the
-/// prefix every turn.
+/// session state ([`SessionState::context_offset`]), so the window only
+/// ever grows between slides — the loader never trims its head. The wire
+/// payload that follows from this is *mostly* append-only: the text-only
+/// region grows by append, while the most recent `note_window` turns are
+/// re-encoded as that tail advances (see `build_send_context_cached`). The
+/// window slides (anchor moves forward, whole turns dropped) when it holds
+/// more than [`ContextStrategyConfig::max_window`] turns, or when it has
+/// reached that bound and its estimated weight exceeds
+/// `max_history_tokens`; the slide returns it to `window` turns.
 ///
 /// A missing or stale anchor cold-starts: the journal is read from its
-/// head once, the window slides down to `window` turns, and the new anchor
-/// is persisted.
+/// head once and the anchor is dropped (a window that covers the whole
+/// journal needs none); the first slide persists a new one.
 ///
 /// If no session file exists (fresh or after reset), returns empty.
 pub async fn load_context(
@@ -432,17 +433,16 @@ async fn load_context_windowed(
         .map(|m| m.len())
         .unwrap_or(0);
 
-    let stored = read_context_offset(state_dir)
-        .await
-        .filter(|&offset| offset > 0 && offset < journal_len);
+    let stored = read_context_offset(state_dir).await;
 
     let mut slice = match stored {
-        Some(offset) => {
+        Some(offset) if offset > 0 && offset < journal_len => {
             let slice = reader.read_from(offset).await;
             // A stale anchor — the journal was replaced or truncated under
             // it — parses garbage. Only a slice that opens on a turn
             // boundary (what the writer guarantees) is trusted; anything
-            // else falls back to a cold start.
+            // else falls back to a cold start and drops the anchor, so the
+            // next turn does not re-read the whole journal and warn again.
             if slice.messages.first().is_some_and(opens_turn) {
                 slice
             } else {
@@ -450,8 +450,22 @@ async fn load_context_windowed(
                     offset,
                     "sliding-window anchor is not a turn boundary; cold-starting"
                 );
+                clear_context_offset(topic_name, state_dir).await;
                 reader.read_from(0).await
             }
+        }
+        Some(offset) => {
+            // Past the journal's end (or 0, which the writer never
+            // persists): the anchor names nothing. A cold start needs no
+            // anchor at all — the window covers the whole journal — and a
+            // new one is written when it next slides.
+            tracing::warn!(
+                offset,
+                journal_len,
+                "sliding-window anchor is outside the journal; cold-starting"
+            );
+            clear_context_offset(topic_name, state_dir).await;
+            reader.read_from(0).await
         }
         None => reader.read_from(0).await,
     };
@@ -469,9 +483,16 @@ async fn load_context_windowed(
                 .sum::<usize>()
                 > budget
         });
+    // The budget is a second trigger for the *same* slide, not a per-turn
+    // trim: it may only fire at the top of the extension cycle, where the
+    // turn bound is about to fire anyway. A window whose `window` turns
+    // alone exceed the budget can never get under it, and chasing it every
+    // turn would move the anchor on every turn — re-encoding the whole
+    // payload, the failure this design exists to avoid.
+    let budget_slide = over_budget && turns >= max_window;
 
     let mut reached_head = slice.reached_head;
-    if (turns > max_window || over_budget)
+    if (turns > max_window || budget_slide)
         && let Some((index, offset)) =
             window_start(&slice.messages, &slice.offsets, strategy.window)
     {
@@ -485,6 +506,7 @@ async fn load_context_windowed(
         );
         write_context_offset(topic_name, state_dir, offset).await;
         slice.messages.drain(..index);
+        slice.offsets.drain(..index);
         reached_head = false;
     }
 
@@ -550,6 +572,19 @@ async fn write_context_offset(topic_name: &str, state_dir: &Path, offset: u64) {
         return;
     }
     state.context_offset = Some(offset);
+    save_session_state(topic_name, &path, &state).await;
+}
+
+/// Drop the persisted sliding-window anchor. Used when the stored offset
+/// cannot be trusted (the journal was replaced, truncated or shortened
+/// under it): leaving it in place would make every later load repeat the
+/// cold start and its warning.
+async fn clear_context_offset(topic_name: &str, state_dir: &Path) {
+    let path = state_dir.join(SESSION_FILE);
+    let mut state = load_session_state(&path).await;
+    if state.context_offset.take().is_none() {
+        return;
+    }
     save_session_state(topic_name, &path, &state).await;
 }
 
@@ -2701,12 +2736,21 @@ mod windowed_load_tests {
         let (_, six) = load_context(topic, tmp.path(), &sliding(4, 0.5)).await;
         assert_eq!(six.len(), 12, "6 turns = max_window, no slide yet");
         assert_eq!(six[0]["content"], "u1");
+        assert!(
+            stored_offset(&state_dir).await.is_none(),
+            "a window that still covers the journal head needs no anchor"
+        );
 
         append_turn(&state_dir, 7).await;
         let (_, seven) = load_context(topic, tmp.path(), &sliding(4, 0.5)).await;
         assert_eq!(seven.len(), 8, "7 > max_window -> slide back to 4 turns");
         assert_eq!(seven[0]["content"], "u4");
         assert_eq!(seven[7]["content"], "a7");
+        let anchor = stored_offset(&state_dir).await.expect("the slide anchors");
+        assert!(
+            offset_is_line_start(&state_dir, anchor).await,
+            "the anchor sits on a turn boundary"
+        );
 
         // And it grows again from there.
         append_turn(&state_dir, 8).await;
@@ -2734,19 +2778,48 @@ mod windowed_load_tests {
     }
 
     #[tokio::test]
-    async fn max_history_tokens_slides_even_below_max_window() {
-        // Turn count is under the bound; the budget is what trips.
+    async fn max_history_tokens_slides_at_the_top_of_the_cycle() {
+        // 6 turns reach `max_window` (4 + round(0.5 × 4)), so the turn
+        // trigger is still quiet (it needs *more* than max_window) and the
+        // budget is what fires.
         let tmp = tempfile::tempdir().unwrap();
         let topic = "windowed-budget-slide";
-        setup(&tmp, topic, &turns_journal(1, 6)).await;
+        let state_dir = setup(&tmp, topic, &turns_journal(1, 6)).await;
 
         let mut strategy = sliding(4, 0.5);
         strategy.max_history_tokens = Some(1); // tiny: always over
         let (_, raw) = load_context(topic, tmp.path(), &strategy).await;
 
         assert_eq!(raw.len(), 8, "budget trip slides to `window` turns");
-        assert_eq!(raw[0]["content"], "u4");
-        assert_eq!(raw[7]["content"], "a7");
+        assert_eq!(raw[0]["content"], "u3", "the last 4 of 6 turns");
+        assert_eq!(raw[7]["content"], "a6");
+        let offset = stored_offset(&state_dir).await.expect("anchor moved");
+        assert!(
+            offset_is_line_start(&state_dir, offset).await,
+            "the anchor sits on a turn boundary"
+        );
+    }
+
+    #[tokio::test]
+    async fn max_history_tokens_does_not_slide_below_max_window() {
+        // The budget is a second trigger for the same slide, not a
+        // per-turn trim: a window below `max_window` stays put even when it
+        // is over budget, because sliding it every turn would re-encode
+        // the payload every turn.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "windowed-budget-no-slide";
+        let state_dir = setup(&tmp, topic, &turns_journal(1, 5)).await;
+
+        let mut strategy = sliding(4, 0.5); // max_window = 6
+        strategy.max_history_tokens = Some(1);
+        let (_, raw) = load_context(topic, tmp.path(), &strategy).await;
+
+        assert_eq!(raw.len(), 10, "5 turns < max_window: nothing dropped");
+        assert_eq!(raw[0]["content"], "u1");
+        assert!(
+            stored_offset(&state_dir).await.is_none(),
+            "no slide, so no anchor"
+        );
     }
 
     #[tokio::test]
@@ -2764,10 +2837,9 @@ mod windowed_load_tests {
         let (_, raw) = load_context(topic, tmp.path(), &sliding(4, 0.5)).await;
         assert_eq!(raw.len(), 12, "cold start keeps all 6 turns");
         assert_eq!(raw[0]["content"], "u1");
-        let offset = stored_offset(&state_dir).await.expect("anchor rewritten");
         assert!(
-            offset_is_line_start(&state_dir, offset).await,
-            "the bad anchor was replaced"
+            stored_offset(&state_dir).await.is_none(),
+            "the bad anchor is dropped, not left to repeat the cold start"
         );
     }
 
@@ -2783,6 +2855,45 @@ mod windowed_load_tests {
 
         let (_, raw) = load_context(topic, tmp.path(), &sliding(4, 0.5)).await;
         assert_eq!(raw.len(), 4, "the journal still loads from its head");
+        assert!(
+            stored_offset(&state_dir).await.is_none(),
+            "an anchor past the end is dropped too"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_anchored_window_without_an_assistant_message_keeps_the_journal() {
+        // The corruption guard deletes the journal only when a
+        // *head-covering* slice holds no assistant message. A slice that
+        // starts at an anchor is not entitled to that verdict: a turn
+        // persisted user-first and interrupted before its reply leaves a
+        // legitimately assistant-free tail.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "windowed-user-only-tail";
+        let mut journal = turns_journal(1, 6);
+        let anchor = journal.len() as u64;
+        journal.push_str(&format!(
+            "{}\n",
+            serde_json::json!({"role": "user", "content": "u7"})
+        ));
+        let state_dir = setup(&tmp, topic, &journal).await;
+
+        let mut state = load_session_state(&state_dir.join(SESSION_FILE)).await;
+        state.context_offset = Some(anchor);
+        save_session_state(topic, &state_dir.join(SESSION_FILE), &state).await;
+
+        let (_, raw) = load_context(topic, tmp.path(), &sliding(4, 0.5)).await;
+
+        assert_eq!(raw.len(), 1, "the window holds the unanswered turn alone");
+        assert!(
+            state_dir.join(AGENT_CONTEXT_FILE).exists(),
+            "an anchored window must not delete the journal"
+        );
+        assert_eq!(
+            stored_offset(&state_dir).await,
+            Some(anchor),
+            "no slide, so the anchor stays put"
+        );
     }
 
     #[test]

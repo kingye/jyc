@@ -480,14 +480,19 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # file written by `/context`.
 # mode: "full" | "sliding_window" (alias "sliding"). Default: "sliding_window".
 #
-# sliding_window sends an *anchored* window of the journal: it grows by
-# pure append — so the wire prefix stays byte-identical between slides,
-# which is what the provider's prompt cache matches on — until it reaches
-# max_window turns, then slides back to `window` turns. Slides are the only
-# way history shrinks.
+# sliding_window sends an *anchored* window of the journal: it only ever
+# grows between slides, until it reaches max_window turns, then slides back
+# to `window` turns. Slides are the only way history shrinks.
+#
+# The payload is append-only up to the end of its text-only block; the
+# newest `note_window` turns (sent verbatim, tool results included) advance
+# by one turn per turn and are re-encoded, so that is where the provider's
+# prefix cache stops matching. Set `note_window = 0` (or leave it out) for a
+# fully append-only payload.
 #
 # window: the number of turns the window keeps after a slide — its floor.
-# Default: 10.
+# Default: 10. 0 is treated as 1 (a window holds at least one turn);
+# `/context sliding 0` is rejected instead of silently floored.
 # extend_rate: the window may grow past `window` up to
 # max_window = window + round(extend_rate * window) before it slides back.
 # Default: 0.5 (window 10 -> grows to 15, then slides to 10). 0 makes
@@ -495,7 +500,8 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # the history and the prompt cache stops paying off.
 # note_window: the most recent M prior turns are sent verbatim, with their
 # tool calls and results; older turns are sent as text-only user/assistant
-# pairs whose tool calls appear in a one-line history note. Default: 3.
+# pairs (no history notes, tool calls and results dropped from the payload).
+# Default: 3.
 # 0 sends no tool results in history at all — the cheapest tail, and the
 # strictest append-only prefix. Each turn the verbatim tail advances by one
 # turn, so the tail (M turns) is re-encoded per turn while the text-only
@@ -503,9 +509,12 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # turn_tool_result_cap: cap each tool result in the current turn, keeping
 # the head and tail of an oversized result. Unset by default (the current
 # turn is in flight, so trimming it is opt-in).
-# max_history_tokens: optional second trigger for a slide. When the
-# window's estimated weight exceeds it, the window slides back to `window`
-# turns — the same slide a window over `max_window` turns performs. It never
+# max_history_tokens: optional second trigger for a slide. When the window
+# has reached `max_window` turns and its estimated weight exceeds this, it
+# slides back to `window` turns — the same slide a window over `max_window`
+# turns performs. It is deliberately not a per-turn trigger: a window whose
+# `window` turns alone exceed the budget cannot get under it, and sliding
+# every turn to chase it would re-encode the payload every turn. It never
 # trims anything by itself, and the current turn is not part of it. window
 # counts turns, so a window of 10 weighs 2k tokens or 200k; this bounds the
 # weight instead. The estimate is heuristic (CJK characters ~1 token, other
@@ -1223,13 +1232,14 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #   # pattern/channel/global `[ai].context_strategy`, below the runtime
 #   # `.jyc/context-strategy.json` that `/context` writes. A subagent type
 #   # carries one the same way — that is how a role starts with a small window
-#   # (see `subagents/ci-watch/config.toml`: window = 3, extend_rate = 0,
-#   # note_window = 1).
+#   # (see `subagents/ci-watch/config.toml`: window = 1, extend_rate = 0.0,
+#   # note_window = 0, turn_tool_result_cap = 512).
 #   # [context_strategy]
 #   # mode = "sliding_window"
 #   # window = 3
 #   # extend_rate = 0        # 0 = hard window: slide on every turn
 #   # note_window = 1        # only the newest turn keeps tool results
+#   # max_history_tokens = 40000  # second slide trigger, at the top of a cycle
 #   # turn_tool_result_cap   # unset = current turn uncapped; 0 = off
 #
 #   # Default: additive. Adds a topic-only MCP without dropping inherited ones.

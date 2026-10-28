@@ -205,8 +205,9 @@ impl CommandHandler for ContextCommandHandler {
                 };
                 let extend_rate = extend_rate.unwrap_or(configured.extend_rate);
                 // Optional note window M (args[3]): only the most recent M
-                // windowed turns carry tool-call history notes. 0 is valid
-                // (text-only window); absent = keep configured default.
+                // windowed turns are sent verbatim; older ones are text-only.
+                // 0 is valid (text-only window); absent = keep configured
+                // default.
                 let note_window = if let Some(arg) = context.args.get(3) {
                     match arg.parse::<usize>() {
                         Ok(m) if m <= MAX_WINDOW => Some(Some(m)),
@@ -492,7 +493,7 @@ mod tests {
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
         let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec!["sliding".into(), "10".into(), "3".into()];
+        ctx.args = vec!["sliding".into(), "10".into(), "0.5".into(), "3".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
         assert!(result.message.contains("window=10"));
@@ -512,7 +513,7 @@ mod tests {
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
         let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec!["sliding".into(), "10".into(), "0".into()];
+        ctx.args = vec!["sliding".into(), "10".into(), "0.5".into(), "0".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
         let content = tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
@@ -529,7 +530,7 @@ mod tests {
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
         let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec!["sliding".into(), "10".into(), "abc".into()];
+        ctx.args = vec!["sliding".into(), "10".into(), "0.5".into(), "abc".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
         assert!(result.message.contains("invalid note window"));
@@ -1088,8 +1089,8 @@ mod tests {
         ctx.args = vec![
             "sliding".into(),
             "10".into(),
+            "0.5".into(),
             "3".into(),
-            "2048".into(),
             "32768".into(),
             "0".into(),
         ];
@@ -1138,8 +1139,8 @@ mod tests {
         set.args = vec![
             "sliding".into(),
             "10".into(),
+            "0.5".into(),
             "3".into(),
-            "2048".into(),
             "32768".into(),
             "1000".into(),
         ];
@@ -1173,8 +1174,8 @@ mod tests {
         ctx.args = vec![
             "sliding".into(),
             "10".into(),
+            "0.5".into(),
             "3".into(),
-            "2048".into(),
             "32768".into(),
             (MAX_HISTORY_TOKENS + 1).to_string(),
         ];
@@ -1202,8 +1203,8 @@ mod tests {
             ctx.args = vec![
                 "sliding".into(),
                 "10".into(),
+                "0.5".into(),
                 "3".into(),
-                "2048".into(),
                 "32768".into(),
                 bad.into(),
             ];

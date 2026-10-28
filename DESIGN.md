@@ -2338,14 +2338,19 @@ JYC uses the following subset of the agent service API:
      `note_window` turns verbatim, structured tool calls intact), then
      the current turn verbatim (`raw_context[prior_len..]`). The window
      grows by append until it holds more than `max_window = window +
-     round(extend_rate × window)` turns, or exceeds
-     `max_history_tokens`' weight, and then **slides**: the anchor moves
-     forward so the last `window` turns remain, whole turns at a time.
+     round(extend_rate × window)` turns — or has reached that bound and
+     exceeds `max_history_tokens`' weight, the budget being a second
+     trigger for the same slide rather than a per-turn one — and then
+     **slides**: the anchor moves forward so the last `window` turns
+     remain, whole turns at a time.
      Slides are the only way history shrinks — a per-turn trim of the
-     head is what destroys the cross-turn prefix cache. A cold start
+     head is what destroys the cross-turn prefix cache. The prefix is
+     therefore append-only up to region ①'s end; region ② re-encodes as
+     its tail advances (`note_window = 0` or unset makes the whole
+     payload append-only). A cold start
      (fresh topic, reset, no anchor, or an anchor no longer on a turn
-     boundary) reads the journal once from its head and slides down to
-     `window` turns.
+     boundary) reads the journal once from its head and drops the bad
+     anchor; the next slide persists a fresh one.
 
    Resolution chain: runtime override file > the topic's own config
    (`[context_strategy]` in `<topic>/.jyc/config.toml` — including one a
@@ -2498,7 +2503,7 @@ tokens ↓
 │  · Reply instructions / History format / VCS     │
 ├─ messages ──────────────────────────────────────┤
 │  region ① 旧的轮次 (text-only pairs)             │
-│  └ user/assistant 文本原样, tool call 折叠成 note │ ← 只追加: 前缀字节不变
+│  └ user/assistant 文本原样, tool call/result 丢弃 │ ← 只追加: 前缀字节不变
 │                                                   │    ★不做任何裁剪★
 │                                                   │
 │  region ② verbatim 尾部      note_window 轮      │

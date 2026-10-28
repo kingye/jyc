@@ -63,9 +63,9 @@ pub(crate) struct PriorSlice {
     /// journal, nothing older was left to read.
     pub reached_head: bool,
     /// Absolute journal byte offset of each message's line start, aligned
-    /// with `messages`. Only [`ContextReader::read_from`] fills this —
-    /// the anchored summary needs it to record where its verbatim tail
-    /// begins. Empty when the offsets were not tracked.
+    /// with `messages`. Only [`ContextReader::read_from`] fills this: the
+    /// sliding window needs it to move its anchor a whole turn at a time.
+    /// Empty when the offsets were not tracked.
     pub offsets: Vec<u64>,
 }
 
@@ -169,7 +169,7 @@ impl ContextReader {
         if offset >= file_len {
             return PriorSlice {
                 messages,
-                reached_head: true,
+                reached_head: offset == 0,
                 offsets,
             };
         }
@@ -209,7 +209,12 @@ impl ContextReader {
         // `clean_end` owns that repair; the reader drops it.
         PriorSlice {
             messages,
-            reached_head: true,
+            // An anchored read starts mid-journal: the head it does not
+            // cover is exactly what `reached_head == false` must mean. The
+            // corruption guard in `finish_load` deletes the journal when a
+            // head-covering slice holds no assistant message, and a window
+            // that starts at an anchor is not entitled to that verdict.
+            reached_head: offset == 0,
             offsets,
         }
     }

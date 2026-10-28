@@ -733,10 +733,10 @@ mod render_raw_context_tests {
         let mut ctx = prior.clone();
         ctx.extend(current.clone());
 
-        // window=2, note_window=1: the last prior turn (u3, a3) is verbatim,
-        // the older turn (u2 with its tool call) compacts to text-only. No
-        // history note anywhere — notes taught the model to write tool calls
-        // as text (the thinking-leak trigger).
+        // window=2, note_window=1: the last prior turn (u3, a3) is
+        // verbatim, every older turn (u1/a1, and u2 with its tool call)
+        // is text-only. No history note anywhere — notes taught the model
+        // to write tool calls as text (the thinking-leak trigger).
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 2,
@@ -748,23 +748,26 @@ mod render_raw_context_tests {
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg).0;
         let sent = sent.into_owned();
 
-        // 1. Compacted history marker, then older pair in pure text (no note,
-        //    tool_calls dropped).
+        // 1. Compacted history marker, then every older turn in pure text
+        //    (no note, tool_calls dropped). Nothing trims region ①: the
+        //    window bound is the loader's, not this function's.
         assert_eq!(
             sent[0],
             json!({"role": "user", "content": crate::session::HISTORY_MARKER_TEXT})
         );
-        assert_eq!(sent[1], json!({"role": "user", "content": "u2"}));
-        assert_eq!(sent[2], json!({"role": "assistant", "content": "a2"}));
+        assert_eq!(sent[1], json!({"role": "user", "content": "u1"}));
+        assert_eq!(sent[2], json!({"role": "assistant", "content": "a1"}));
+        assert_eq!(sent[3], json!({"role": "user", "content": "u2"}));
+        assert_eq!(sent[4], json!({"role": "assistant", "content": "a2"}));
 
         // 2. Recent pair verbatim.
-        assert_eq!(sent[3], json!({"role": "user", "content": "u3"}));
-        assert_eq!(sent[4], json!({"role": "assistant", "content": "a3"}));
+        assert_eq!(sent[5], json!({"role": "user", "content": "u3"}));
+        assert_eq!(sent[6], json!({"role": "assistant", "content": "a3"}));
 
         // 3. Current turn verbatim (tool_calls preserved).
-        assert_eq!(sent[5], current[0]);
-        assert_eq!(sent[6], current[1]);
-        assert_eq!(sent[7], current[2]);
+        assert_eq!(sent[7], current[0]);
+        assert_eq!(sent[8], current[1]);
+        assert_eq!(sent[9], current[2]);
     }
 
     #[test]
@@ -790,6 +793,63 @@ mod render_raw_context_tests {
         assert_eq!(sent.len(), 2);
         assert_eq!(sent[0], json!({"role": "user", "content": "u1"}));
         assert_eq!(sent[1], json!({"role": "assistant", "content": "a1"}));
+    }
+
+    #[test]
+    fn region1_appends_and_region2_rotates_across_turns() {
+        // The property the strategy exists for. Region ① is a pure append,
+        // so the prefix the provider cached at turn k is still there at
+        // turn k+1. Region ② (the last `note_window` turns) re-encodes as
+        // it advances — the price of keeping structured tool calls in the
+        // recent window, and the reason `note_window = 0` / unset are the
+        // only settings with a fully append-only payload.
+        let prov = prov();
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 4,
+            extend_rate: 0.5,
+            note_window: Some(2),
+            turn_tool_result_cap: None,
+            max_history_tokens: None,
+        };
+        let turn = |i: usize| {
+            [
+                json!({"role": "user", "content": format!("u{i}")}),
+                json!({"role": "assistant", "content": format!("a{i}")}),
+            ]
+        };
+        // Turn k's payload: prior = turns 1..k-1, current turn = k.
+        let payload = |k: usize| {
+            let mut ctx = Vec::new();
+            for i in 1..k {
+                ctx.extend(turn(i));
+            }
+            let prior_len = ctx.len();
+            ctx.extend(turn(k));
+            let (sent, regions) = build_send_context_with_regions(&prov, &ctx, prior_len, &cfg);
+            (sent.into_owned(), regions)
+        };
+
+        let (at_5, regions_5) = payload(5); // prior 1..4 → ① = 1..2, ② = 3..4
+        let (at_6, regions_6) = payload(6); // prior 1..5 → ① = 1..3, ② = 4..5
+        let region1_5 = regions_5.iter().take_while(|&&r| r == 1).count();
+        let region1_6 = regions_6.iter().take_while(|&&r| r == 1).count();
+
+        assert!(region1_5 > 0, "the marker and two turns");
+        assert_eq!(
+            region1_6,
+            region1_5 + 2,
+            "region ① grew by exactly one turn"
+        );
+        assert_eq!(
+            at_6[..region1_5],
+            at_5[..region1_5],
+            "region ① is a byte-stable prefix from one turn to the next"
+        );
+        assert_ne!(
+            at_6[region1_5], at_5[region1_5],
+            "region ② rotates: the common prefix ends where ① ends"
+        );
     }
 
     #[test]

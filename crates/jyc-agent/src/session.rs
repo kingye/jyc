@@ -1116,6 +1116,7 @@ pub(crate) fn truncate_text(s: &str, max: usize) -> String {
 /// both ends. The definition lives in `jyc_types` because the `/context`
 /// command enforces the same floor; this alias keeps the call sites in this
 /// crate reading naturally.
+#[cfg(test)]
 pub(crate) use jyc_types::channel::MIN_EDGE_KEEPING_CAP;
 
 /// Truncate `s` to at most `max` bytes keeping both ends: the head gets
@@ -1135,17 +1136,19 @@ pub(crate) fn truncate_text_keeping_edges(s: &str, max: usize) -> String {
         return s.to_string();
     }
     // Reserve room for the marker so the result really fits in `max`.
-    // The marker is 107 bytes with a 20-digit count (a 10 EiB result is
-    // not a real case, but the reserve has to cover the format either
-    // way), so the head+tail split below always leaves room for it.
-    const MARKER_RESERVE: usize = 128;
-    let budget = max.saturating_sub(MARKER_RESERVE);
+    // The reserve lives in `jyc_types` beside the floor that is derived
+    // from it, so the two halves of this arithmetic cannot drift apart.
+    let budget = max.saturating_sub(jyc_types::channel::MARKER_RESERVE);
     if budget == 0 {
         return truncate_text(s, max);
     }
     let head_end = s.floor_char_boundary(budget * 2 / 3);
     let tail_start = s.ceil_char_boundary(s.len() - (budget - head_end));
-    if head_end == 0 || head_end >= tail_start {
+    // `tail_start >= s.len()` means the rounding ate the whole tail (the
+    // last character is multi-byte and the budget only bought one byte).
+    // Falling back beats emitting a marker that claims a kept end it did
+    // not keep.
+    if head_end == 0 || head_end >= tail_start || tail_start >= s.len() {
         return truncate_text(s, max);
     }
     let dropped = tail_start - head_end;
@@ -1195,20 +1198,45 @@ pub(crate) struct TurnPair {
 /// The turn's rendered tool-call list for the transcript view: calls joined
 /// with `, ` plus the overflow marker when [`flush_turn`] dropped any.
 /// `None` when the turn made no calls.
+#[cfg(test)]
 pub(crate) fn render_turn_tool_calls(pair: &TurnPair) -> Option<String> {
+    render_turn_tool_calls_bounded(pair, usize::MAX)
+}
+
+/// [`render_turn_tool_calls`] with a byte budget.
+///
+/// When the full list does not fit, whole calls are dropped from the end —
+/// never cut mid-call, which would leave half an argument looking like a
+/// real one — and the overflow marker absorbs the count, so "how many are
+/// hidden" always survives the bound. That is the opposite of trimming the
+/// finished string: a blind byte cut at the end removes exactly the marker
+/// and keeps the unreadable fragment.
+pub(crate) fn render_turn_tool_calls_bounded(pair: &TurnPair, limit: usize) -> Option<String> {
     if pair.tool_calls.is_empty() {
         return None;
     }
-    let mut out = pair.tool_calls.join(", ");
-    if pair.omitted_tool_calls > 0 {
-        let calls = if pair.omitted_tool_calls == 1 {
-            "call"
-        } else {
-            "calls"
-        };
-        out.push_str(&format!(" …({} more {calls})", pair.omitted_tool_calls));
+    let marker = |dropped: usize| -> String {
+        match dropped {
+            0 => String::new(),
+            1 => " …(1 more call)".to_string(),
+            n => format!(" …({n} more calls)"),
+        }
+    };
+    let total = pair.tool_calls.len();
+    let mut keep = total;
+    loop {
+        let body = pair.tool_calls[..keep].join(", ");
+        let suffix = marker(pair.omitted_tool_calls + (total - keep));
+        if body.len() + suffix.len() <= limit {
+            return Some(format!("{body}{suffix}"));
+        }
+        if keep == 0 {
+            // Not even the bare marker fits the budget. Cut it: exceeding
+            // the caller's bound would defeat the point of passing one.
+            return Some(truncate_text(suffix.trim_start(), limit));
+        }
+        keep -= 1;
     }
-    Some(out)
 }
 
 /// Flush the accumulated turn into `pairs`: merge every assistant message
@@ -1689,6 +1717,77 @@ mod tests {
         assert_eq!(pairs[0].omitted_tool_calls, 1);
         let rendered = super::render_turn_tool_calls(&pairs[0]).unwrap();
         assert!(rendered.ends_with("…(1 more call)"), "rendered: {rendered}");
+    }
+
+    /// The byte budget on the rendered call list drops **whole calls** and
+    /// keeps the overflow marker last.
+    ///
+    /// A blind `&s[..limit]` cut does the opposite: it removes the marker
+    /// (so "how many are hidden" is lost) and leaves a half-rendered
+    /// argument that reads like a real one.
+    #[test]
+    fn bounded_rendering_drops_whole_calls_and_keeps_the_marker() {
+        let calls: Vec<serde_json::Value> = (0..20)
+            .map(|i| {
+                json!({
+                    "id": format!("t{i}"),
+                    "function": {"name": "bash", "arguments": format!("{{\"command\":\"c{i}\"}}")}
+                })
+            })
+            .collect();
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "running", "tool_calls": calls}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        let full = super::render_turn_tool_calls(&pairs[0]).unwrap();
+        assert!(full.len() > 200, "fixture must overflow: {}", full.len());
+
+        let bounded = super::render_turn_tool_calls_bounded(&pairs[0], 200).unwrap();
+        assert!(bounded.len() <= 200, "budget exceeded: {}", bounded.len());
+        assert!(
+            bounded.ends_with("more calls)"),
+            "the overflow marker must survive the bound: {bounded}"
+        );
+        // No half a call: every kept entry ends at a `)` boundary, and the
+        // count in the marker plus the kept calls accounts for all 20.
+        let body = bounded.split(" …(").next().unwrap();
+        let kept = body.split(", ").count();
+        let hidden: usize = bounded
+            .rsplit("…(")
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            kept + hidden,
+            20,
+            "kept {kept} + hidden {hidden}: {bounded}"
+        );
+        assert!(
+            body.split(", ")
+                .all(|c| c.ends_with(')') && c.starts_with("bash(")),
+            "a kept call must be whole: {body}"
+        );
+    }
+
+    /// The 130-byte floor keeps both ends for ASCII-bounded content only:
+    /// when the last character is multi-byte the one-byte tail budget rounds
+    /// past it, and the trim falls back instead of emitting a marker that
+    /// claims a tail it did not keep.
+    #[test]
+    fn edge_keeping_falls_back_when_the_tail_is_multibyte() {
+        let s = format!("{}{}", "z".repeat(400), "尾");
+        let out = truncate_text_keeping_edges(&s, super::MIN_EDGE_KEEPING_CAP);
+        assert_eq!(
+            out,
+            truncate_text(&s, super::MIN_EDGE_KEEPING_CAP),
+            "a one-byte tail budget cannot hold 尾"
+        );
+        assert!(!out.contains("dropped from the middle"));
     }
 
     /// A `[History note]` message persisted by a build that still wrote

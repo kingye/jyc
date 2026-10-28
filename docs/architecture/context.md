@@ -569,7 +569,9 @@ Key changes, newest first (see CHANGELOG.md for full entries):
   history and the verbatim current turn. History notes are gone from the
   wire, the config, the `/context` command and the system prompt.
   `context_browse` still renders each turn's tool calls (`[n] TOOLS:`, at
-  most 20 per turn), built from the journal instead of from a note.
+  most 20 per turn and at most 4 KB per turn, whole calls dropped with a
+  `…(N more calls)` count when either bound bites), built from the journal
+  instead of from a note.
 - **system prompt stability** — the subagent roster and the channel/topic
   roster left the system prompt for a `<runtime-state>` block on the
   turn's user message, so topic churn no longer invalidates the cached

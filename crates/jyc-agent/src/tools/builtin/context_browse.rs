@@ -134,21 +134,12 @@ fn format_pair(n: usize, pair: &TurnPair) -> String {
             crate::session::extract_message_text(assistant),
         ));
     }
-    if let Some(calls) = crate::session::render_turn_tool_calls(pair) {
-        // The per-turn call list is bounded by count upstream, but 20 calls
-        // with 200-byte arguments each is still a few KB, and this text is
-        // a tool result that rides the rest of the current turn. Bound the
-        // line in bytes too, so a page of call-heavy turns cannot become
-        // the expensive part of the payload.
-        let calls = if calls.len() > TOOLS_LINE_MAX {
-            format!(
-                "{} … [{} bytes of calls omitted]",
-                &calls[..calls.floor_char_boundary(TOOLS_LINE_MAX)],
-                calls.len() - calls.floor_char_boundary(TOOLS_LINE_MAX),
-            )
-        } else {
-            calls
-        };
+    if let Some(calls) = crate::session::render_turn_tool_calls_bounded(pair, TOOLS_LINE_MAX) {
+        // The list is bounded twice upstream: at most `TOOL_CALLS_PER_TURN_MAX`
+        // calls per turn, and here by bytes. Both bounds drop whole calls and
+        // keep the overflow marker, so a call-heavy page cannot become the
+        // expensive part of the payload — and the reader can still tell how
+        // many calls it is not seeing.
         out.push_str(&format!("[{n}] TOOLS: {calls}\n"));
     }
     out

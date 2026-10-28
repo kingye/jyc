@@ -773,24 +773,49 @@ pub enum ContextStrategy {
     SlidingWindow,
 }
 
+/// Bytes reserved inside a cap for the edge-keeping trim's drop marker.
+///
+/// The marker is 107 bytes with a 20-digit count (a 10 EiB result is not a
+/// real case, but the reserve has to cover the format either way), so 128
+/// leaves a small margin. It sits **inside** the cap, which is why the
+/// content budget is `cap - MARKER_RESERVE`.
+pub const MARKER_RESERVE: usize = 128;
+
 /// Smallest non-zero [`ContextStrategyConfig::turn_tool_result_cap`] that
-/// still keeps both ends of a trimmed result.
+/// still keeps both ends of a trimmed result: [`MARKER_RESERVE`] plus a
+/// two-byte content budget (one byte head, one byte tail).
 ///
-/// The trim's drop marker reserves 128 bytes of the cap, so anything at or
-/// below that leaves no room for content: at 128 the budget is zero, at 129
-/// the head rounds down to zero on the char boundary. Both would fall back
-/// to a plain head-only cut, which hides the end of a result — the part a
-/// result is usually read for. 130 is therefore the floor, and it is the
-/// single source for both ends of the rule: the `/context` command refuses
-/// a non-zero value below it, and the wire builder lifts a configured one
-/// up to it.
+/// Anything below that leaves no room for content: at 128 the budget is
+/// zero, at 129 the head rounds down to zero on the char boundary. Both
+/// would fall back to a plain head-only cut, which hides the end of a
+/// result — the part a result is usually read for.
 ///
-/// The bound is on the cap, not on every content: a result whose first
-/// character is multi-byte still rounds its head down to zero at 130, so
-/// the floor guarantees both ends for ASCII-leading content. That is the
-/// practical case (commands, paths, error lines) and the fallback is still
+/// This constant is the single source for both ends of the rule: the
+/// `/context` command refuses a non-zero value below it, and the wire
+/// builder lifts a configured one up to it through [`effective_turn_cap`].
+///
+/// The bound is on the cap, not on every content. At 130 the tail is a
+/// single byte, so content whose **last** character is multi-byte rounds
+/// the tail start up to the end of the string; the trim then finds no tail
+/// to keep and falls back rather than pretend it kept one. The floor
+/// therefore guarantees both ends for ASCII-bounded content — the
+/// practical case (commands, paths, error lines). Anything else still gets
 /// a correct trim, just head-only.
-pub const MIN_EDGE_KEEPING_CAP: usize = 130;
+pub const MIN_EDGE_KEEPING_CAP: usize = MARKER_RESERVE + 2;
+
+/// The current-turn result cap actually applied for a configured value.
+///
+/// `None` and `Some(0)` both mean off and come back as `0`; any other value
+/// is lifted to [`MIN_EDGE_KEEPING_CAP`], because a smaller non-zero cap
+/// would degrade the trim to a head-only cut and gut every tool result.
+/// Both the wire builder and the `/context` echo call this, so the echo
+/// shows exactly what the model receives.
+pub fn effective_turn_cap(configured: Option<usize>) -> usize {
+    match configured {
+        Some(c) if c > 0 => c.max(MIN_EDGE_KEEPING_CAP),
+        _ => 0,
+    }
+}
 
 /// Configuration for the context strategy.
 ///

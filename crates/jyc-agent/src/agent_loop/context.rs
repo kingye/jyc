@@ -354,16 +354,13 @@ fn cap_tool_result_content_with(
 /// The current-turn cap actually applied: `None` and `Some(0)` both mean
 /// off, anything else is lifted to [`MIN_EDGE_KEEPING_CAP`].
 ///
-/// A configured value below that floor would degrade the trim to a
-/// head-only cut and gut every result, so the lift happens here — where the
-/// value is finally trusted — not only at the `/context` command. The dump
-/// and the `/context` echo both report this value, so what they show is
-/// what the model receives.
+/// The rule itself lives in [`jyc_types::channel::effective_turn_cap`], shared
+/// with the `/context` echo — the "0 is the off sentinel, non-zero is lifted"
+/// decision has exactly one owner. The lift happens where the value is
+/// finally trusted, so a cap arriving from `config.toml` or an old override
+/// cannot skip it.
 fn effective_turn_cap(strategy: &ContextStrategyConfig) -> usize {
-    match strategy.turn_tool_result_cap {
-        Some(c) if c > 0 => c.max(crate::session::MIN_EDGE_KEEPING_CAP),
-        _ => 0,
-    }
+    jyc_types::channel::effective_turn_cap(strategy.turn_tool_result_cap)
 }
 
 /// Test-only debug dump — human-readable, region-labeled view of the
@@ -1088,7 +1085,7 @@ mod render_raw_context_tests {
         assert_eq!(first_regions, cold_regions);
 
         // Another iteration of the same turn: the current turn grew, the
-        // cached prefix did not — the history regions are reused as-is.
+        // cached prefix did not — the history block is reused as-is.
         ctx.push(json!({"role": "assistant", "content": "a3"}));
         let (second, second_regions) =
             build_send_context_cached(&prov(), &ctx, prior_len, &cfg, &mut cache);
@@ -1419,6 +1416,18 @@ mod render_raw_context_tests {
         assert!(
             !wire.contains("truncated"),
             "a head-only cut would say 'truncated' instead: {wire}"
+        );
+        // The dump reports the applied cap, not the configured one, and says
+        // where it came from — printing `turn_cap=3` would describe a turn
+        // the model never saw.
+        let dump = dump_send_context(&prov(), &ctx, prior_len, &cfg);
+        assert!(
+            dump.contains(&format!(
+                "turn_cap={} (lifted from 3)",
+                crate::session::MIN_EDGE_KEEPING_CAP
+            )),
+            "the dump must report the applied cap: {}",
+            dump.lines().next().unwrap_or("")
         );
     }
 

@@ -21,10 +21,12 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///     TURNCAP is the optional per-tool-result byte cap on the current
 ///     turn; an oversized result keeps its head and tail with
 ///     the middle replaced by a paging marker. 0 means off; a non-zero
-///     value must be 130..1 MiB (below 130 the trim cannot keep both
-///     ends). Unset by default. MAXHIST
-///     is the optional token budget for the windowed history: when the
-///     window has reached its turn bound and estimates over it, the window
+///     value must be `MIN_EDGE_KEEPING_CAP`..
+///     `MAX_TURN_TOOL_RESULT_CAP` (below the floor the trim cannot keep
+///     both ends), and a configured value below the floor is lifted to it
+///     rather than rejected. Unset by default.
+///     MAXHIST is the optional token budget for the windowed history: when
+///     the window has reached its turn bound and estimates over it, the window
 ///     slides back to N turns — the same slide the turn bound performs.
 ///     Unset by default.
 ///
@@ -412,17 +414,14 @@ fn describe_strategy(cfg: &ContextStrategyConfig) -> String {
                 // Show what is actually applied: a configured value below
                 // the edge-keeping floor is lifted by the wire builder, so
                 // echoing the raw number would mislead about the turn the
-                // model receives.
-                let effective = if c == 0 {
-                    0
-                } else {
-                    c.max(MIN_TURN_TOOL_RESULT_CAP)
-                };
+                // model receives. The rule (0 = off, non-zero lifted) comes
+                // from `jyc_types`, the same function the builder calls.
+                let effective = jyc_types::channel::effective_turn_cap(Some(c));
                 if effective == c {
                     s.push_str(&format!(", turn_tool_result_cap={c}"));
                 } else {
                     s.push_str(&format!(
-                        ", turn_tool_result_cap={c} (lifted to {effective})"
+                        ", turn_tool_result_cap={effective} (lifted from {c})"
                     ));
                 }
             }
@@ -1221,5 +1220,44 @@ mod tests {
             ..cfg.clone()
         };
         assert!(!describe_strategy(&unset).contains("max_history_tokens"));
+    }
+
+    /// The echo reports the cap actually applied and names the configured
+    /// value it came from — a config file never passes through the command,
+    /// so its `turn_tool_result_cap = 3` is lifted by the wire builder, and
+    /// echoing `3` would describe a turn the model never receives.
+    #[test]
+    fn describe_strategy_shows_the_lifted_turn_cap() {
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 10,
+            extend_rate: 0.5,
+            turn_tool_result_cap: Some(3),
+            max_history_tokens: None,
+        };
+        assert!(
+            describe_strategy(&cfg).contains(&format!(
+                "turn_tool_result_cap={} (lifted from 3)",
+                jyc_types::channel::MIN_EDGE_KEEPING_CAP
+            )),
+            "{}",
+            describe_strategy(&cfg)
+        );
+
+        // 0 is the off sentinel, not something to lift.
+        let off = ContextStrategyConfig {
+            turn_tool_result_cap: Some(0),
+            ..cfg.clone()
+        };
+        assert!(describe_strategy(&off).contains("turn_tool_result_cap=0"));
+        assert!(!describe_strategy(&off).contains("lifted"));
+
+        // A value at or above the floor is echoed as configured.
+        let big = ContextStrategyConfig {
+            turn_tool_result_cap: Some(32768),
+            ..cfg.clone()
+        };
+        assert!(describe_strategy(&big).contains("turn_tool_result_cap=32768"));
+        assert!(!describe_strategy(&big).contains("lifted"));
     }
 }

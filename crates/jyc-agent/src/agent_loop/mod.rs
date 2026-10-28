@@ -60,6 +60,10 @@ pub struct AgentLoopConfig<'a> {
     pub prior_history: Vec<Message>,
     /// Prior raw context (provider-formatted JSON, for API calls).
     pub prior_raw_context: Vec<serde_json::Value>,
+    /// How many leading `prior_raw_context` messages are the anchored
+    /// history summary (compacted notes) — `0` when the load had no
+    /// summary and the sliding-window build shapes the regions itself.
+    pub summary_len: usize,
     /// Messages that arrived while this turn was running, handed over by
     /// the worker when the pattern's `live_injection` is on.
     ///
@@ -161,6 +165,7 @@ pub async fn run(
         event_bus,
         prior_history,
         prior_raw_context,
+        summary_len,
         mut injection_rx,
         max_iterations,
         sse_read_timeout,
@@ -447,6 +452,7 @@ pub async fn run(
             provider,
             &raw_context,
             prior_len,
+            summary_len,
             &context_strategy,
             &mut send_context_cache,
         );

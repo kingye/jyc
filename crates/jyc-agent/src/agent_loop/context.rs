@@ -219,7 +219,8 @@ fn build_history_regions(
     // structured wire messages (tool_calls + results intact) — text notes
     // taught thinking models (MiniMax, DeepSeek) to write their process as
     // content instead of using the structured channel — at the cost of
-    // re-encoding that tail every turn.
+    // re-encoding that tail every turn. An explicit `note_window = null` is
+    // the third case: the whole prior verbatim, nothing folded.
     let note_window = strategy.note_window.unwrap_or(usize::MAX);
     let verbatim_start = crate::session::verbatim_start_index(prior, note_window);
     let (compact_prior, verbatim_prior) = prior.split_at(verbatim_start);
@@ -845,7 +846,10 @@ mod render_raw_context_tests {
             at_5[..region1_5],
             "the whole history block is a byte-stable prefix from one turn to the next"
         );
-        // Everything past the history block is the current turn.
+        // Everything past the history block is the current turn, and the
+        // history block's own tail is the turn that just graduated into it.
+        assert_eq!(at_6[region1_5]["content"], "u5");
+        assert_eq!(at_6[region1_5 + 1]["content"], "a5");
         assert_eq!(at_5[region1_5]["content"], "u5");
         assert_eq!(at_6[region1_6]["content"], "u6");
     }

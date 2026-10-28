@@ -1590,7 +1590,8 @@ pub(crate) fn count_turn_openers(raw_context: &[serde_json::Value]) -> usize {
 /// Values above `keep_pairs` clamp to `keep_pairs`.
 ///
 /// Shared by the sliding-window wire payload (passes the configured
-/// `note_window`) and the region builders (pass `None`).
+/// `note_window`) and the region builders (pass `Some(0)`, so region ①
+/// carries no notes).
 pub(crate) fn extract_user_assistant_pairs(
     raw_context: &[serde_json::Value],
     keep_pairs: usize,

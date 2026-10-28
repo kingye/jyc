@@ -396,7 +396,7 @@ Each line of `wire-payload.jsonl` is one JSON object:
   "ts": "2026-08-24T12:34:56.789Z",
   "iter": 3,
   "strategy": { "mode": "sliding_window", "window": 10, "note_window": 0 },
-  "regions": [1, 1, 2, 2, 3],
+  "regions": [1, 1, 1, 1, 3],
   "wire_payload": [ ... ]
 }
 ```

@@ -775,23 +775,31 @@ pub enum ContextStrategy {
 
 /// Configuration for the context strategy.
 ///
-/// `mode` selects which strategy to apply; `window` is the number of
-/// latest user+assistant turns to keep in `sliding_window` mode.
+/// `mode` selects which strategy to apply. In `sliding_window` mode the
+/// anchored history summary keeps the wire prefix stable across turns;
+/// `window` bounds the verbatim tail when no token budget is set, and
+/// `note_window` is the floor of turns that stay verbatim at a refold.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContextStrategyConfig {
     /// Context strategy mode. Default: `sliding_window`.
     #[serde(default = "default_context_strategy")]
     pub mode: ContextStrategy,
-    /// Number of latest user+assistant turns to keep in `sliding_window`.
-    /// Default: 10. Only meaningful when `mode = "sliding_window"`.
+    /// In `sliding_window` mode, bounds the verbatim tail's turn count
+    /// when `max_history_tokens` is unset, and bounds the cold-start
+    /// tail read for journals too large to fold in one pass (above
+    /// 32 MiB). Default: 10. Only meaningful when `mode =
+    /// "sliding_window"`.
     #[serde(default = "default_context_window_size")]
     pub window: usize,
-    /// Number of most recent windowed turns that keep their tool-call
-    /// history note; turns older than that are text-only. `Some(3)` by
-    /// default (sliding_window mode). Values above `window` clamp to
-    /// `window`. Only meaningful when `mode = "sliding_window"`.
-    /// Omitted from serialized override files when unset so existing
-    /// readers stay compatible.
+    /// In `sliding_window` mode, the most recent `note_window` prior
+    /// turns stay verbatim (structured tool calls intact); everything
+    /// older is compacted into the persisted history summary, and a
+    /// refold never folds below this floor. `Some(3)` by default.
+    /// `Some(0)` is a text-only window: the whole tail folds into
+    /// summary notes and the verbatim tail stays empty. Values above
+    /// `window` clamp to `window`. Only meaningful when `mode =
+    /// "sliding_window"`. Omitted from serialized override files when
+    /// unset so existing readers stay compatible.
     #[serde(
         default = "default_note_window",
         skip_serializing_if = "Option::is_none"
@@ -826,17 +834,18 @@ pub struct ContextStrategyConfig {
     /// compatible.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_tool_result_cap: Option<usize>,
-    /// Token budget for the two history regions — ① compacted text history
-    /// plus ② verbatim prior turns — in `sliding_window` mode.
-    /// `None` (the default) sends the whole windowed history, byte for byte
-    /// what an unconfigured build sends; `Some(0)` means the same.
+    /// Token budget for the two history regions — ① summary notes plus
+    /// ② verbatim prior turns — in `sliding_window` mode. `None` (the
+    /// default) leaves the turn-count bound to `window`; `Some(0)`
+    /// means the same.
     ///
     /// `window` counts turns, so a window of 10 still costs whatever those
     /// 10 turns happen to weigh — a handful of small ones, or a few turns
     /// carrying megabyte-sized tool results. This budget caps that weight
-    /// directly: when ①+② estimate over budget, the oldest content goes
-    /// first — ① loses its oldest pairs, then ② loses its oldest whole
-    /// turns. Region ③ (the current turn) is never touched; it has
+    /// directly: when ①+② estimate over budget, the oldest tail turns
+    /// refold into appended summary notes (down to the `note_window`
+    /// floor), and only then does the build shed the oldest content.
+    /// Region ③ (the current turn) is never touched; it has
     /// `turn_tool_result_cap` for that.
     ///
     /// The estimate is heuristic (CJK characters ×1, other bytes ÷4), not a

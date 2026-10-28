@@ -1,9 +1,12 @@
 //! Reading prior context back from a topic's `agent-context.jsonl` journal.
 //!
-//! The journal is append-only: one message per line, oldest first. This
-//! reader parses it **backwards**, in blocks, and hands out the tail the
-//! caller asked for. Only the tail is parsed, so a journal that grew to
-//! hundreds of megabytes costs the same per turn as a small one.
+//! The journal is append-only: one message per line, oldest first. The
+//! classic path parses it **backwards**, in blocks, and hands out the tail
+//! the caller asked for — only the tail is parsed, so a journal that grew
+//! to hundreds of megabytes costs the same per turn as a small one. The
+//! anchored history summary ([`ContextReader::read_from`]) instead reads
+//! forward from a persisted byte offset: the amount it parses grows
+//! between refolds, bounded by the token budget that triggers them.
 //!
 //! The reader owns the journal's read side — including the pair count it
 //! keeps in process between turns. The writer
@@ -155,6 +158,12 @@ impl ContextReader {
     /// message carries its line-start offset in
     /// [`PriorSlice::offsets`], so the caller can advance the summary
     /// past a fold without re-scanning.
+    ///
+    /// [`PriorSlice::reached_head`] is true only when `offset` is 0 — the
+    /// read covered the whole journal. A tail that starts mid-journal did
+    /// not reach the head no matter where it ends, which is what the
+    /// corruption guard in `finish_anchored_load` keys on. Dangling tool
+    /// calls are repaired (suffix dropped), as in [`Self::read_prior`].
     pub(crate) async fn read_from(&self, offset: u64) -> PriorSlice {
         let Some((file_len, _)) = self.stat().await else {
             return PriorSlice {
@@ -206,9 +215,21 @@ impl ContextReader {
         }
         // A trailing line without a newline is a torn tail — the writer's
         // `clean_end` owns that repair; the reader drops it.
+        //
+        // Repair dangling tool calls exactly as the backward scan does
+        // (`scan_backwards`): a `tool_use` whose result never landed —
+        // persisted by a mid-tool cancellation — would otherwise sit at
+        // the tail's end, and the wire-level repair drops it *and
+        // everything after it*, the current turn included, on every
+        // subsequent build. The repair drops a suffix, so truncating
+        // `offsets` keeps it aligned with `messages`.
+        let repaired = crate::provider::repair_dangling_tool_calls(messages);
+        let kept = repaired.len();
+        let mut offsets = offsets;
+        offsets.truncate(kept);
         PriorSlice {
-            messages,
-            reached_head: true,
+            messages: repaired,
+            reached_head: offset == 0,
             offsets,
         }
     }
@@ -966,6 +987,51 @@ mod tests {
         let reader = reader_for(&tmp, &body).await;
         let slice = reader.read_from(body.len() as u64 + 100).await;
         assert!(slice.messages.is_empty());
+        assert!(slice.reached_head);
+    }
+
+    #[tokio::test]
+    async fn read_from_mid_journal_does_not_reach_head() {
+        // reached_head means the slice covers the whole journal; a read
+        // that starts mid-journal did not, no matter where it ends. The
+        // anchored corruption guard keys on this.
+        let tmp = tempfile::tempdir().unwrap();
+        let body = journal(3);
+        let reader = reader_for(&tmp, &body).await;
+        let pos = body.find("\"u2\"").unwrap();
+        let line_start = body[..pos].rfind('\n').map(|n| n + 1).unwrap_or(0) as u64;
+        let slice = reader.read_from(line_start).await;
+        assert_eq!(slice.messages.len(), 4, "u2/a2..u3/a3");
+        assert!(
+            !slice.reached_head,
+            "a mid-journal read did not reach the head"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_from_repairs_dangling_tool_use_at_the_tail() {
+        // A tool_use whose result never landed (mid-tool cancellation)
+        // would make the wire-level repair drop it *and everything
+        // after it* — the current turn included — on every build. The
+        // reader repairs it at load, dropping the dangling assistant
+        // and keeping the offsets aligned.
+        let tmp = tempfile::tempdir().unwrap();
+        let body = format!(
+            "{}\n{}\n{}\n",
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "f", "input": {}}]}),
+        );
+        let reader = reader_for(&tmp, &body).await;
+        let slice = reader.read_from(0).await;
+        assert_eq!(slice.messages.len(), 2, "the dangling assistant is dropped");
+        assert_eq!(slice.messages[0]["content"], "u1");
+        assert_eq!(slice.messages[1]["content"], "a1");
+        assert_eq!(
+            slice.offsets.len(),
+            slice.messages.len(),
+            "offsets stay aligned with the repaired messages"
+        );
         assert!(slice.reached_head);
     }
 

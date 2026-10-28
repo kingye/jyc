@@ -403,6 +403,7 @@ pub async fn load_context(
                 window,
                 note_window,
                 strategy.max_history_tokens,
+                strategy.tool_result_cap.unwrap_or(0),
             )
             .await
         }
@@ -469,27 +470,53 @@ const EAGER_FOLD_MAX_JOURNAL_BYTES: u64 = 32 * 1024 * 1024;
 /// notes are byte-stable between refolds, which is what keeps the
 /// cross-turn wire prefix cacheable. A missing summary (fresh topic or
 /// reset) cold-starts: the whole journal folds once down to
-/// `note_window` verbatim turns. When the assembled prior exceeds
-/// `max_history_tokens`, the tail folds the same way — whole turns,
-/// oldest first, into appended notes.
+/// `note_window` verbatim turns. Three triggers refold the tail's oldest
+/// whole turns into appended notes: the token budget, a `window`-turn
+/// bound when no budget is configured, and a verbatim tail that
+/// outgrew the eager-read byte bound.
 async fn load_context_anchored(
     reader: &ContextReader,
     state_dir: &Path,
     window: usize,
     note_window: usize,
     max_history_tokens: Option<usize>,
+    tool_result_cap: usize,
 ) -> (Vec<Message>, Vec<serde_json::Value>, usize) {
-    let journal_len = tokio::fs::metadata(state_dir.join(AGENT_CONTEXT_FILE))
+    let journal_path = state_dir.join(AGENT_CONTEXT_FILE);
+    let journal_len = tokio::fs::metadata(&journal_path)
         .await
         .map(|m| m.len())
         .unwrap_or(0);
 
-    let summary = jyc_core::session_state::read_history_summary(state_dir)
-        .await
-        .filter(|s| s.offset <= journal_len && !s.notes.is_empty());
+    // A summary qualifies only while its offset still points at a line
+    // start inside the journal. Anything else means the journal was
+    // replaced or truncated under it, and its stale notes would graft
+    // the old conversation onto an unrelated journal. A rejected
+    // summary is deleted, not just ignored, so it cannot resurrect
+    // once the fresh journal grows past the stale offset.
+    let mut summary = None;
+    if let Some(s) = jyc_core::session_state::read_history_summary(state_dir).await {
+        if !s.notes.is_empty()
+            && s.offset <= journal_len
+            && offset_is_line_start(&journal_path, s.offset).await
+        {
+            summary = Some(s);
+        } else {
+            tracing::warn!(
+                offset = s.offset,
+                journal_len,
+                notes = s.notes.len(),
+                "history summary does not match the journal, discarding"
+            );
+            jyc_core::session_state::remove_history_summary(state_dir).await;
+        }
+    }
 
-    let (notes, tail) = match summary {
-        Some(s) => (s.notes, reader.read_from(s.offset).await),
+    let (notes, tail, tail_offset) = match summary {
+        Some(s) => {
+            let offset = s.offset;
+            (s.notes, reader.read_from(offset).await, offset)
+        }
         None if journal_len > EAGER_FOLD_MAX_JOURNAL_BYTES => {
             // Journal too large for a one-shot forward read: fall back to
             // the classic windowed tail read. No summary is written, so
@@ -500,30 +527,49 @@ async fn load_context_anchored(
                     openers: note_window,
                 })
                 .await;
-            return finish_anchored_load(reader, state_dir, slice.messages, 0, true).await;
+            return finish_anchored_load(reader, state_dir, slice.messages, 0, slice.reached_head)
+                .await;
         }
-        None => (Vec::new(), reader.read_from(0).await),
+        None => (Vec::new(), reader.read_from(0).await, 0),
     };
 
     // Cold start (no summary): fold everything older than the note
     // window into the summary right away, so the frozen prefix exists
-    // from the first turn instead of waiting for the budget to trip.
+    // from the first turn instead of waiting for a refold trigger.
+    // `note_window == 0` is a text-only window: fold the whole tail,
+    // the offset advances to the journal's end and the verbatim tail
+    // starts empty (each later load reads only what the new turns
+    // appended).
     if notes.is_empty() {
         let cut = verbatim_start_index(&tail.messages, note_window);
-        if cut > 0 && cut < tail.offsets.len() {
+        let fold_all = note_window == 0 && cut == tail.messages.len() && !tail.messages.is_empty();
+        if cut > 0 && (cut < tail.messages.len() || fold_all) {
             let notes = extract_user_assistant_pairs(&tail.messages[..cut], usize::MAX, Some(0));
-            let summary_len = notes.len();
-            let offset = tail.offsets[cut];
-            jyc_core::session_state::write_history_summary(
-                state_dir,
-                &jyc_core::session_state::HistorySummary {
-                    offset,
-                    notes: notes.clone(),
-                },
-            )
-            .await;
-            let raw = [notes, tail.messages[cut..].to_vec()].concat();
-            return finish_anchored_load(reader, state_dir, raw, summary_len, offset == 0).await;
+            if !notes.is_empty() {
+                let summary_len = notes.len();
+                let offset = if fold_all {
+                    journal_len
+                } else {
+                    tail.offsets[cut]
+                };
+                jyc_core::session_state::write_history_summary(
+                    state_dir,
+                    &jyc_core::session_state::HistorySummary {
+                        offset,
+                        notes: notes.clone(),
+                    },
+                )
+                .await;
+                let raw = [notes, tail.messages[cut..].to_vec()].concat();
+                return finish_anchored_load(
+                    reader,
+                    state_dir,
+                    raw,
+                    summary_len,
+                    tail.reached_head,
+                )
+                .await;
+            }
         }
     }
 
@@ -532,48 +578,92 @@ async fn load_context_anchored(
     raw.extend(tail.messages.iter().cloned());
     let summary_len = notes.len();
 
-    // Budget refold: fold the tail's oldest whole turns into appended
-    // notes. Whole turns keep tool_use/result pairing intact; the note
-    // window is the floor of what stays verbatim, matching the classic
-    // build's ② floor.
-    if let Some(budget) = max_history_tokens.filter(|&b| b > 0) {
-        let estimated: usize = raw
-            .iter()
-            .map(crate::agent_loop::context::est_message_tokens)
-            .sum();
-        if estimated > budget {
-            let cut = verbatim_start_index(&tail.messages, note_window);
-            if cut > 0 && cut < tail.offsets.len() {
-                let folded =
-                    extract_user_assistant_pairs(&tail.messages[..cut], usize::MAX, Some(0));
-                let mut new_notes = notes;
-                new_notes.extend(folded);
-                let new_offset = tail.offsets[cut];
-                let kept = tail.messages[cut..].to_vec();
-                let new_len = new_notes.len();
-                tracing::info!(
-                    old_summary = summary_len,
-                    new_summary = new_len,
-                    new_offset,
-                    estimated_tokens = estimated,
-                    budget,
-                    "refolded anchored history summary to fit max_history_tokens"
-                );
-                jyc_core::session_state::write_history_summary(
-                    state_dir,
-                    &jyc_core::session_state::HistorySummary {
-                        offset: new_offset,
-                        notes: new_notes.clone(),
-                    },
-                )
-                .await;
-                let raw = [new_notes, kept].concat();
-                return finish_anchored_load(reader, state_dir, raw, new_len, false).await;
+    // Refold trigger. The token budget estimates the assembled prior
+    // the way region ② will actually weigh it — tool results capped —
+    // so an uncapped heavyweight result cannot trip refolds the wire
+    // never pays for. Without a budget, `window` bounds the verbatim
+    // tail so the default config cannot grow without limit. And a tail
+    // that outgrew the eager-read bound forces a refold regardless of
+    // any budget, so the per-turn forward read stays bounded.
+    let note_cut = verbatim_start_index(&tail.messages, note_window);
+    let mut cut = 0usize;
+    let mut estimated = 0usize;
+    match max_history_tokens.filter(|&b| b > 0) {
+        Some(budget) => {
+            estimated = raw
+                .iter()
+                .map(|m| crate::agent_loop::context::est_capped_message_tokens(m, tool_result_cap))
+                .sum();
+            if estimated > budget {
+                cut = note_cut;
             }
+        }
+        None => cut = verbatim_start_index(&tail.messages, window),
+    }
+    if journal_len.saturating_sub(tail_offset) > EAGER_FOLD_MAX_JOURNAL_BYTES {
+        cut = cut.max(note_cut);
+    }
+
+    // Fold the tail's oldest whole turns into appended notes. Whole
+    // turns keep tool_use/result pairing intact; the note window is
+    // the floor of what stays verbatim, matching the classic build's
+    // ② floor. `note_window == 0` folds everything (see cold start).
+    let fold_all = note_window == 0 && cut == tail.messages.len() && !tail.messages.is_empty();
+    if cut > 0 && (cut < tail.messages.len() || fold_all) {
+        let folded = extract_user_assistant_pairs(&tail.messages[..cut], usize::MAX, Some(0));
+        let mut new_notes = notes;
+        new_notes.extend(folded);
+        // A fold that extracts nothing (a pathological all-tool tail)
+        // must not advance the offset past content we keep verbatim.
+        if new_notes.len() > summary_len {
+            let new_offset = if fold_all {
+                journal_len
+            } else {
+                tail.offsets[cut]
+            };
+            let kept = tail.messages[cut..].to_vec();
+            let new_len = new_notes.len();
+            tracing::info!(
+                old_summary = summary_len,
+                new_summary = new_len,
+                new_offset,
+                estimated_tokens = estimated,
+                budget = ?max_history_tokens,
+                "refolded anchored history summary"
+            );
+            jyc_core::session_state::write_history_summary(
+                state_dir,
+                &jyc_core::session_state::HistorySummary {
+                    offset: new_offset,
+                    notes: new_notes.clone(),
+                },
+            )
+            .await;
+            let raw = [new_notes, kept].concat();
+            return finish_anchored_load(reader, state_dir, raw, new_len, false).await;
         }
     }
 
     finish_anchored_load(reader, state_dir, raw, summary_len, false).await
+}
+
+/// Whether `offset` sits at the start of a journal line (byte 0, or the
+/// byte before it is a newline). The anchored summary's offset must
+/// survive this check — a mid-line offset means the journal changed
+/// under the summary and the notes no longer describe its prefix.
+async fn offset_is_line_start(journal_path: &Path, offset: u64) -> bool {
+    if offset == 0 {
+        return true;
+    }
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    let Ok(mut f) = tokio::fs::File::open(journal_path).await else {
+        return false;
+    };
+    if f.seek(std::io::SeekFrom::Start(offset - 1)).await.is_err() {
+        return false;
+    }
+    let mut byte = [0u8; 1];
+    f.read_exact(&mut byte).await.is_ok() && byte[0] == b'\n'
 }
 
 /// Shared tail of the anchored arm: validate the assembled prior and
@@ -2812,5 +2902,162 @@ mod anchored_load_tests {
                 .is_none(),
             "no summary is written when there is nothing to fold"
         );
+    }
+
+    #[tokio::test]
+    async fn note_window_zero_folds_the_whole_tail() {
+        // note_window = 0 is a text-only window: the whole tail folds
+        // into summary notes and the verbatim tail starts empty.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "anchored-note-window-zero";
+        let state_dir = setup(&tmp, topic, &turns_journal(1, 4)).await;
+
+        let (_, raw, summary_len) = load_context(topic, tmp.path(), &sliding(0, None)).await;
+        assert_eq!(summary_len, 8, "all 4 pairs folded into notes");
+        assert_eq!(raw.len(), 8, "verbatim tail starts empty");
+
+        let summary = jyc_core::session_state::read_history_summary(&state_dir)
+            .await
+            .expect("summary written");
+        let journal = tokio::fs::read(state_dir.join(AGENT_CONTEXT_FILE))
+            .await
+            .unwrap();
+        assert_eq!(
+            summary.offset as usize,
+            journal.len(),
+            "the tail begins at the journal's end"
+        );
+
+        // A new turn appends to the empty tail; the frozen notes stay put.
+        append_turn(&state_dir, 5).await;
+        let (_, raw2, summary_len2) = load_context(topic, tmp.path(), &sliding(0, None)).await;
+        assert_eq!(summary_len2, 8, "no refold back");
+        assert_eq!(raw2.len(), 10, "8 notes + the new turn");
+        assert_eq!(raw2[8]["content"], "u5");
+    }
+
+    #[tokio::test]
+    async fn mid_line_offset_rejects_and_deletes_the_summary() {
+        // An offset that no longer sits at a line start means the
+        // journal changed under the summary; the loader must discard
+        // the summary (not just ignore it) and cold-fold.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "anchored-mid-line-offset";
+        let state_dir = setup(&tmp, topic, &turns_journal(1, 6)).await;
+        let journal = tokio::fs::read(state_dir.join(AGENT_CONTEXT_FILE))
+            .await
+            .unwrap();
+        let pos = journal.windows(4).position(|w| w == b"\"u3\"").unwrap();
+        let line_start = journal[..pos]
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map(|n| n + 1)
+            .unwrap_or(0) as u64;
+        jyc_core::session_state::write_history_summary(
+            &state_dir,
+            &jyc_core::session_state::HistorySummary {
+                offset: line_start + 1,
+                notes: vec![serde_json::json!({"role": "user", "content": "stale"})],
+            },
+        )
+        .await;
+
+        let (_, _, summary_len) = load_context(topic, tmp.path(), &sliding(2, None)).await;
+        assert_eq!(summary_len, 8, "cold fold reran and rewrote the summary");
+        let summary = jyc_core::session_state::read_history_summary(&state_dir)
+            .await
+            .expect("rejected summary was replaced, not left deleted");
+        assert_eq!(summary.notes.len(), 8);
+        assert_eq!(
+            summary.notes[0]["content"], "u1",
+            "the stale notes are gone"
+        );
+        assert!(summary.offset <= journal.len() as u64);
+        assert_ne!(summary.offset, line_start + 1);
+    }
+
+    #[tokio::test]
+    async fn window_bounds_the_tail_when_no_token_budget() {
+        // Without max_history_tokens the default config is not
+        // unbounded: window turns cap the verbatim tail, refolding the
+        // oldest tail turns into appended notes.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "anchored-window-bounds-tail";
+        let state_dir = setup(&tmp, topic, &turns_journal(1, 6)).await;
+        let strategy = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 2,
+            note_window: Some(2),
+            max_history_tokens: None,
+            ..Default::default()
+        };
+
+        // Cold fold: everything older than note_window=2 turns folds.
+        let (_, raw, summary_len) = load_context(topic, tmp.path(), &strategy).await;
+        assert_eq!(summary_len, 8, "4 folded pairs");
+        assert_eq!(raw.len(), 12);
+
+        // Two more turns: the tail regrows to 4 turns, over window=2,
+        // and the window bound refolds its oldest two turns.
+        append_turn(&state_dir, 7).await;
+        append_turn(&state_dir, 8).await;
+        let (_, raw2, summary_len2) = load_context(topic, tmp.path(), &strategy).await;
+        assert_eq!(summary_len2, 12, "the u5/a5..u6/a6 pairs joined the notes");
+        assert_eq!(raw2.len(), 16, "12 notes + 2 verbatim turns");
+        assert_eq!(
+            raw2[12]["content"], "u7",
+            "only the last 2 turns stay verbatim"
+        );
+    }
+
+    #[tokio::test]
+    async fn refold_estimate_weighs_tool_results_capped() {
+        // A 100 KB tool result in the verbatim tail weighs ~25k tokens
+        // uncapped but ~0.6k after tool_result_cap (2048). A budget
+        // between the two must NOT refold: the wire never pays the
+        // uncapped weight.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "anchored-capped-estimate";
+        let heavy = "x".repeat(100_000);
+        let mut journal = turns_journal(1, 3);
+        for line in [
+            serde_json::json!({"role": "user", "content": "u4"}),
+            serde_json::json!({"role": "assistant", "tool_calls": [{"id": "t1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]}),
+            serde_json::json!({"role": "tool", "tool_call_id": "t1", "content": heavy}),
+            serde_json::json!({"role": "assistant", "content": "a4"}),
+        ] {
+            journal.push_str(&line.to_string());
+            journal.push('\n');
+        }
+        let state_dir = setup(&tmp, topic, &journal).await;
+        let strategy = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            note_window: Some(1),
+            max_history_tokens: Some(5000),
+            ..Default::default()
+        };
+
+        // Cold fold: turns 1..3 fold, the heavy turn stays verbatim.
+        let (_, raw, summary_len) = load_context(topic, tmp.path(), &strategy).await;
+        assert_eq!(summary_len, 6, "3 folded pairs");
+        let summary_before = jyc_core::session_state::read_history_summary(&state_dir)
+            .await
+            .unwrap();
+
+        // One more light turn: the tail now holds 2 turns over
+        // note_window=1 — a refold would fold the heavy turn in. The
+        // capped estimate is what keeps it verbatim.
+        append_turn(&state_dir, 5).await;
+        let (_, raw2, summary_len2) = load_context(topic, tmp.path(), &strategy).await;
+        assert_eq!(
+            summary_len2, 6,
+            "no refold: the capped tail is under budget"
+        );
+        assert_eq!(raw2.len(), raw.len() + 2, "one turn appended");
+        let summary_after = jyc_core::session_state::read_history_summary(&state_dir)
+            .await
+            .unwrap();
+        assert_eq!(summary_after.offset, summary_before.offset);
+        assert_eq!(summary_after.notes, summary_before.notes);
     }
 }

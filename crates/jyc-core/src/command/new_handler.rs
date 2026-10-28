@@ -105,6 +105,10 @@ impl CommandHandler for NewCommandHandler {
             tokio::fs::remove_file(&activity_path).await?;
             deleted_session = true;
         }
+        // The anchored history summary pins a byte offset into the journal
+        // just deleted above — keeping it would graft the old conversation
+        // onto the fresh journal once it grows past the stale offset.
+        crate::session_state::remove_history_summary(&state).await;
 
         // Clear exchange-published files and the exchange token, mirroring
         // /reset: /new starts fresh, so previously shared links must die.
@@ -330,6 +334,36 @@ mod tests {
         assert!(result.message.contains("2 chat history files removed"));
         assert!(!tmp.path().join("chat_history_2026-06-25.jsonl").exists());
         assert!(!tmp.path().join("chat_history_2026-06-24.jsonl").exists());
+    }
+
+    #[tokio::test]
+    async fn test_new_deletes_history_summary() {
+        // The summary pins a byte offset into the journal /new deletes;
+        // keeping it would graft the old conversation onto the fresh
+        // journal once it grows past the stale offset.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_new_deletes_history_summary";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(
+            state_dir.join(crate::session_state::HISTORY_SUMMARY_FILE),
+            r#"{"offset":42,"notes":[{"role":"user","content":"stale"}]}"#,
+        )
+        .await
+        .unwrap();
+
+        let handler = NewCommandHandler;
+        let ctx = test_context(topic, tmp.path());
+
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        assert!(
+            !state_dir
+                .join(crate::session_state::HISTORY_SUMMARY_FILE)
+                .exists(),
+            "history-summary.json should be deleted by /new"
+        );
     }
 
     #[tokio::test]

@@ -600,12 +600,22 @@ mod session {
         tokio::fs::write(state_dir.join("agent-context.jsonl"), "[]\n")
             .await
             .unwrap();
+        tokio::fs::write(
+            state_dir.join("history-summary.json"),
+            r#"{"offset":42,"notes":[{"role":"user","content":"stale"}]}"#,
+        )
+        .await
+        .unwrap();
 
         session::reset_session(topic, tmp.path()).await;
 
         assert!(!state_dir.join("agent-session.json").exists());
         // The context is cleared, not summarized.
         assert!(!state_dir.join("agent-context.jsonl").exists());
+        // The anchored history summary dies with the journal it offsets
+        // into — a stale offset would graft the old conversation onto
+        // the reset topic's fresh journal.
+        assert!(!state_dir.join("history-summary.json").exists());
     }
 
     /// `persist_tokens` writes the session file and nothing else: the

@@ -158,13 +158,20 @@ where that tail begins:
    being silently dropped.
 3. **Current turn, verbatim** — `raw_context[prior_len..]`, untouched.
 
-A load with no summary (fresh topic, `/reset`, or a journal that shrank
-below the recorded offset) cold-starts: the whole journal is read once,
+A load with no summary (fresh topic, `/reset`, or a rejected offset —
+past the journal's end, or no longer at a line start, which means the
+journal changed under it) cold-starts: the whole journal is read once,
 folded down to `note_window` verbatim turns, and the summary is
-persisted. Journals above 32 MiB skip the fold and keep the classic
-windowed tail read (`window` bounds that fallback; `window` no longer
-bounds the anchored tail). The summary dies with `/reset` and `/new`, as
-the session file always did.
+persisted. A rejected summary is deleted, not just ignored, so it cannot
+resurrect once the fresh journal grows past the stale offset. Journals
+above 32 MiB skip the fold and keep the classic windowed tail read.
+Three things refold the tail's oldest whole turns into appended notes,
+down to the `note_window` floor: `max_history_tokens` over the
+capped estimate, `window` turns when no token budget is configured, and
+a verbatim tail whose unread span outgrew 32 MiB since the last refold
+(so the forward read stays bounded). `note_window` 0 is a text-only
+window: the whole tail folds and region ② stays empty. The summary dies
+with `/reset` and `/new`, as the session file always did.
 
 ```mermaid
 flowchart TB

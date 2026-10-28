@@ -2250,7 +2250,7 @@ JYC uses the following subset of the agent service API:
 - Sessions are created on first use per topic and persisted in `.jyc/agent-session.json`
 - Sessions are reused across messages, model switches, mode switches, and container restarts
 - Sessions track the context size (`context_input_tokens` + `context_output_tokens`) and the model's context window (`context_window`)
-- Sessions are never deleted automatically — `max_history_tokens` bounds the anchored sliding-window history (uncapped when unset)
+- Sessions are never deleted automatically — the anchored sliding-window history refolds when `max_history_tokens` trips (when unset, `window` bounds the verbatim tail by turns)
 - On session reset: the session state and the raw context are cleared — the next turn starts from an empty context
 
 
@@ -2270,7 +2270,7 @@ JYC uses the following subset of the agent service API:
      - Real-time token counting from SSE `step-finish` events
      - Immediate persistence to `agent-session.json` after each step
      - Token usage displayed in the reply footer and the info pane (e.g., `Tokens: 20.7K/122K`)
-   - **No auto-reset**: the sliding-window strategy refolds history into the persisted summary when the token budget trips (uncapped when `max_history_tokens` is unset); the session is never reset automatically
+   - **No auto-reset**: the sliding-window strategy refolds history into the persisted summary when the token budget trips (when `max_history_tokens` is unset, `window` bounds the verbatim tail by turns); the session is never reset automatically
    - **Standardized units**:
      - Uses 1024 as K unit basis (1K = 1024 tokens)
      - Display format: `{current}K/{max}K` with 0.1K precision
@@ -2338,12 +2338,19 @@ JYC uses the following subset of the agent service API:
      refolds — the stable prefix that keeps the provider cache alive
      across turn boundaries), then region ② (the tail verbatim,
      structured tool calls intact, growing by append), then the current
-     turn verbatim (`raw_context[prior_len..]`). `max_history_tokens`
-     triggers a refold: the oldest tail turns fold into appended notes,
-     down to `note_window` verbatim turns. Cold start (fresh topic,
-     reset, invalid offset) folds the whole journal once; journals above
-     32 MiB fall back to the classic windowed tail read bounded by
-     `window`.
+     turn verbatim (`raw_context[prior_len..]`). Three triggers refold
+     the oldest tail turns into appended notes, down to `note_window`
+     verbatim turns: `max_history_tokens` over the capped estimate,
+     `window` turns when no budget is configured, and a verbatim tail
+     whose unread span outgrew 32 MiB since the last refold. Cold start
+     (fresh topic, reset, invalid offset) folds the whole journal once;
+     cold journals above 32 MiB fall back to the classic windowed tail
+     read bounded by `window`. A summary whose offset no longer points
+     at a journal line start is rejected and deleted — it cannot graft
+     the old conversation onto a replaced journal. `note_window` 0 is a
+     text-only window: the whole tail folds and region ② stays empty.
+     The summary dies with `/reset` and `/new` (via
+     `remove_raw_context_files` / `remove_history_summary`).
 
    Resolution chain: runtime override file > the topic's own config
    (`[context_strategy]` in `<topic>/.jyc/config.toml` — including one a
@@ -3077,6 +3084,7 @@ resolver**), every step keyed by the mode the topic is in:
     ├── .jyc/                               # State dir — never inside the working dir
     │   ├── agent-session.json              # AI session state
     │   ├── agent-context.jsonl             # Raw context journal, one message per line (a pre-journal .json array is not read)
+    │   ├── history-summary.json            # Anchored history summary: compacted notes + journal byte offset of the verbatim tail (sliding_window)
     │   ├── chat_history_2026-03-19.jsonl   # Daily chat log (messages + replies)
     │   ├── model-override                  # /model command override
     │   └── mode-override                   # /plan command override

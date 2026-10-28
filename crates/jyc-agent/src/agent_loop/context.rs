@@ -241,10 +241,6 @@ fn build_history_regions(
     prior: &[serde_json::Value],
     strategy: &ContextStrategyConfig,
 ) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
-    // `tool_result_cap`: Some(0) and None both mean "off" — let the
-    // helper short-circuit on cap == 0.
-    let cap = strategy.tool_result_cap.unwrap_or(0);
-
     // The most recent `note_window` prior turns are sent VERBATIM
     // (structured tool_calls + results) instead of being folded into
     // user-role text notes. Text notes taught thinking models
@@ -265,41 +261,7 @@ fn build_history_regions(
     let compacted =
         crate::session::extract_user_assistant_pairs(compact_prior, compact_keep, Some(0));
 
-    // Built region by region so `max_history_tokens` can weigh and
-    // trim them as blocks before anything reaches the payload.
-    // Region ① leads with the history marker and keeps it: it
-    // explains the text-only block the compacted pairs form.
-    let mut region1: Vec<serde_json::Value> = Vec::new();
-    if !compacted.is_empty() {
-        region1.push(provider.format_user_message(&[ContentBlock::Text {
-            text: crate::session::HISTORY_MARKER_TEXT.into(),
-        }]));
-    }
-    for msg in &compacted {
-        // Defensive: skip messages with no extractable text so the
-        // wire payload never contains empty text blocks (which
-        // Anthropic rejects, especially under cache_control).
-        if let Some(formatted) = format_cleaned_message(provider, msg) {
-            region1.push(formatted);
-        }
-    }
-
-    // Region ② — recent turns verbatim, minus round-tripped
-    // history notes (metadata, not conversation; re-sending them as
-    // user text is the pattern that triggered the leak). Apply the
-    // tool-result byte cap to each message (non-tool messages are
-    // pass-through, so the cap is cheap).
-    let mut region2: Vec<serde_json::Value> = Vec::new();
-    for msg in verbatim_prior {
-        if crate::session::is_history_note(msg) {
-            continue;
-        }
-        region2.push(cap_tool_result_content(msg, cap));
-    }
-
-    fit_history_to_budget(&mut region1, &mut region2, strategy.max_history_tokens);
-
-    (region1, region2)
+    build_regions_from_parts(provider, &compacted, verbatim_prior, strategy)
 }
 
 /// Build regions ①+② for an anchored load: the first `summary_end`
@@ -318,13 +280,42 @@ fn build_summary_regions(
     summary_end: usize,
     strategy: &ContextStrategyConfig,
 ) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    let summary_end = summary_end.min(prior.len());
+    build_regions_from_parts(
+        provider,
+        &prior[..summary_end],
+        &prior[summary_end..],
+        strategy,
+    )
+}
+
+/// Shared region construction for the classic and anchored builds.
+/// `compacted` feeds region ① (already the extraction output — the
+/// classic build extracts here, the anchored build received its notes
+/// from the persisted summary), `verbatim` feeds region ②. Both builds
+/// must emit identical bytes for the same notes, so there is exactly
+/// one copy of the marker/②/fit logic.
+fn build_regions_from_parts(
+    provider: &dyn Provider,
+    compacted: &[serde_json::Value],
+    verbatim: &[serde_json::Value],
+    strategy: &ContextStrategyConfig,
+) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    // `tool_result_cap`: Some(0) and None both mean "off" — let the
+    // helper short-circuit on cap == 0.
     let cap = strategy.tool_result_cap.unwrap_or(0);
 
+    // Built region by region so `max_history_tokens` can weigh and
+    // trim them as blocks before anything reaches the payload.
+    // Region ① leads with the history marker and keeps it: it
+    // explains the text-only block the compacted pairs form.
     let mut region1: Vec<serde_json::Value> = Vec::new();
-    region1.push(provider.format_user_message(&[ContentBlock::Text {
-        text: crate::session::HISTORY_MARKER_TEXT.into(),
-    }]));
-    for msg in &prior[..summary_end] {
+    if !compacted.is_empty() {
+        region1.push(provider.format_user_message(&[ContentBlock::Text {
+            text: crate::session::HISTORY_MARKER_TEXT.into(),
+        }]));
+    }
+    for msg in compacted {
         // Defensive: skip messages with no extractable text so the
         // wire payload never contains empty text blocks (which
         // Anthropic rejects, especially under cache_control).
@@ -333,10 +324,13 @@ fn build_summary_regions(
         }
     }
 
-    // Region ② — the verbatim tail: same handling as the classic build —
-    // minus round-tripped history notes, tool-result cap applied.
+    // Region ② — recent turns verbatim, minus round-tripped
+    // history notes (metadata, not conversation; re-sending them as
+    // user text is the pattern that triggered the leak). Apply the
+    // tool-result byte cap to each message (non-tool messages are
+    // pass-through, so the cap is cheap).
     let mut region2: Vec<serde_json::Value> = Vec::new();
-    for msg in &prior[summary_end..] {
+    for msg in verbatim {
         if crate::session::is_history_note(msg) {
             continue;
         }
@@ -478,6 +472,17 @@ fn is_wide_char(ch: char) -> bool {
 /// Region ②'s cap; see [`cap_tool_result_content_with`].
 fn cap_tool_result_content(msg: &serde_json::Value, cap: usize) -> serde_json::Value {
     cap_tool_result_content_with(msg, cap, crate::session::truncate_text)
+}
+
+/// Token estimate of the message as region ② would actually send it —
+/// tool results capped at `cap` bytes first (`cap == 0` = uncapped).
+/// The anchored loader's refold trigger weighs the tail with this so the
+/// estimate and the wire build cannot disagree about a big tool result.
+pub(crate) fn est_capped_message_tokens(msg: &serde_json::Value, cap: usize) -> usize {
+    if cap == 0 {
+        return est_message_tokens(msg);
+    }
+    est_message_tokens(&cap_tool_result_content(msg, cap))
 }
 
 /// Truncate oversized tool-result `content` to `cap` bytes with the given

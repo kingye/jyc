@@ -2250,7 +2250,7 @@ JYC uses the following subset of the agent service API:
 - Sessions are created on first use per topic and persisted in `.jyc/agent-session.json`
 - Sessions are reused across messages, model switches, mode switches, and container restarts
 - Sessions track the context size (`context_input_tokens` + `context_output_tokens`) and the model's context window (`context_window`)
-- Sessions are never deleted automatically — `max_history_tokens` bounds the anchored sliding-window history (uncapped when unset)
+- Sessions are never deleted automatically — the sliding-window context strategy keeps the context inside the window
 - On session reset: the session state and the raw context are cleared — the next turn starts from an empty context
 
 
@@ -2270,7 +2270,7 @@ JYC uses the following subset of the agent service API:
      - Real-time token counting from SSE `step-finish` events
      - Immediate persistence to `agent-session.json` after each step
      - Token usage displayed in the reply footer and the info pane (e.g., `Tokens: 20.7K/122K`)
-   - **No auto-reset**: the sliding-window strategy refolds history into the persisted summary when the token budget trips (uncapped when `max_history_tokens` is unset); the session is never reset automatically
+   - **No auto-reset**: the sliding-window context strategy shapes every request so the context stays inside the window; the session is never reset automatically
    - **Standardized units**:
      - Uses 1024 as K unit basis (1K = 1024 tokens)
      - Display format: `{current}K/{max}K` with 0.1K precision
@@ -2330,20 +2330,12 @@ JYC uses the following subset of the agent service API:
    (written by `/context full | sliding [N] | reset`).
 
    * `full` (default) — send the entire `agent-context.jsonl`.
-   * `sliding_window` — anchored: a persisted per-topic summary
-     (`history-summary.json`) holds the compacted text notes of
-     everything older than the verbatim tail plus that tail's journal
-     byte offset. Each load reads the journal forward from the offset;
-     the wire payload is region ① (the summary's notes, frozen between
-     refolds — the stable prefix that keeps the provider cache alive
-     across turn boundaries), then region ② (the tail verbatim,
-     structured tool calls intact, growing by append), then the current
-     turn verbatim (`raw_context[prior_len..]`). `max_history_tokens`
-     triggers a refold: the oldest tail turns fold into appended notes,
-     down to `note_window` verbatim turns. Cold start (fresh topic,
-     reset, invalid offset) folds the whole journal once; journals above
-     32 MiB fall back to the classic windowed tail read bounded by
-     `window`.
+   * `sliding_window` — emits two parts in order:
+     1. The last N user+assistant text pairs from the prior context,
+        reformatted in provider wire format via the active
+        `Provider` (`format_user_message` / `build_raw_assistant_message`).
+     2. The current turn verbatim (`raw_context[prior_len..]`) so
+        tool calls / results stay coherent mid-loop.
 
    Resolution chain: runtime override file > the topic's own config
    (`[context_strategy]` in `<topic>/.jyc/config.toml` — including one a

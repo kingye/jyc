@@ -62,11 +62,6 @@ pub(crate) struct PriorSlice {
     /// The scan reached the journal's head: the slice covers the whole
     /// journal, nothing older was left to read.
     pub reached_head: bool,
-    /// Absolute journal byte offset of each message's line start, aligned
-    /// with `messages`. Only [`ContextReader::read_from`] fills this —
-    /// the anchored summary needs it to record where its verbatim tail
-    /// begins. Empty when the offsets were not tracked.
-    pub offsets: Vec<u64>,
 }
 
 /// The journal's parsed tail, plus where the next backward read ends.
@@ -128,7 +123,6 @@ impl ContextReader {
             return PriorSlice {
                 messages: Vec::new(),
                 reached_head: true,
-                offsets: Vec::new(),
             };
         };
 
@@ -141,75 +135,6 @@ impl ContextReader {
         PriorSlice {
             messages: acc.messages[start..].to_vec(),
             reached_head: acc.read_offset == 0,
-            offsets: Vec::new(),
-        }
-    }
-
-    /// The journal forward from `offset` (a line start), oldest first.
-    ///
-    /// Used by the anchored history summary: the summary records the byte
-    /// offset where its verbatim tail begins, and each load reads
-    /// `[offset..EOF)` — the read amount grows between refolds but stays
-    /// bounded by the token budget that triggers them. Returns an empty
-    /// slice when `offset` is at or past the journal's end. Every parsed
-    /// message carries its line-start offset in
-    /// [`PriorSlice::offsets`], so the caller can advance the summary
-    /// past a fold without re-scanning.
-    pub(crate) async fn read_from(&self, offset: u64) -> PriorSlice {
-        let Some((file_len, _)) = self.stat().await else {
-            return PriorSlice {
-                messages: Vec::new(),
-                reached_head: true,
-                offsets: Vec::new(),
-            };
-        };
-        let mut messages = Vec::new();
-        let mut offsets = Vec::new();
-        if offset >= file_len {
-            return PriorSlice {
-                messages,
-                reached_head: true,
-                offsets,
-            };
-        }
-
-        // Read forward in blocks, carrying a partial line across them.
-        // Invalid lines are skipped — a torn mid-file line does not end
-        // the read (unlike the backward scan): the caller asked for a
-        // known position, not for the deepest trustworthy tail.
-        let mut pos = offset;
-        let mut carry: Vec<u8> = Vec::new();
-        let mut carry_start = offset;
-        while pos < file_len {
-            let end = (pos + READ_BLOCK).min(file_len);
-            let Some((_, bytes)) = self.read_block(pos, end).await else {
-                break;
-            };
-            let block_start = pos;
-            pos = end;
-            let mut rest: &[u8] = &bytes;
-            while let Some(i) = rest.iter().position(|&b| b == b'\n') {
-                let line = &rest[..i];
-                let line_start = block_start + (bytes.len() - rest.len()) as u64;
-                rest = &rest[i + 1..];
-                let mut full = std::mem::take(&mut carry);
-                full.extend_from_slice(line);
-                if let Ok(v) = serde_json::from_slice::<Value>(&full)
-                    && crate::provider::is_valid_message(&v)
-                {
-                    offsets.push(carry_start);
-                    messages.push(v);
-                }
-                carry_start = line_start + i as u64 + 1;
-            }
-            carry.extend_from_slice(rest);
-        }
-        // A trailing line without a newline is a torn tail — the writer's
-        // `clean_end` owns that repair; the reader drops it.
-        PriorSlice {
-            messages,
-            reached_head: true,
-            offsets,
         }
     }
 
@@ -919,73 +844,5 @@ mod tests {
         assert_eq!(slice.messages.len(), 2);
         assert_eq!(slice.messages[0]["content"], "u4");
         assert_eq!(slice.messages[1]["content"], "a4");
-    }
-
-    #[tokio::test]
-    async fn read_from_parses_forward_with_line_offsets() {
-        let tmp = tempfile::tempdir().unwrap();
-        let body = journal(3);
-        let reader = reader_for(&tmp, &body).await;
-        let slice = reader.read_from(0).await;
-        assert_eq!(slice.messages.len(), 6);
-        assert_eq!(slice.offsets.len(), 6);
-        assert_eq!(slice.offsets[0], 0);
-        assert!(slice.reached_head);
-        // Each offset points at its message's line start.
-        let bytes = body.as_bytes();
-        for (i, &off) in slice.offsets.iter().enumerate() {
-            let line = body.lines().nth(i).unwrap().as_bytes();
-            assert_eq!(
-                &bytes[off as usize..off as usize + line.len()],
-                line,
-                "offset {off} must start line {i}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn read_from_mid_journal_starts_at_the_offset_line() {
-        let tmp = tempfile::tempdir().unwrap();
-        let body = journal(3);
-        let reader = reader_for(&tmp, &body).await;
-        // Byte offset of the "u3" line: find the text, walk back to the
-        // preceding newline.
-        let pos = body.find("\"u3\"").unwrap();
-        let line_start = body[..pos].rfind('\n').map(|n| n + 1).unwrap_or(0) as u64;
-        let slice = reader.read_from(line_start).await;
-        assert_eq!(slice.messages.len(), 2, "only the u3/a3 turn");
-        assert_eq!(slice.messages[0]["content"], "u3");
-        assert_eq!(slice.messages[1]["content"], "a3");
-        assert_eq!(slice.offsets[0], line_start);
-    }
-
-    #[tokio::test]
-    async fn read_from_past_eof_is_empty() {
-        let tmp = tempfile::tempdir().unwrap();
-        let body = journal(2);
-        let reader = reader_for(&tmp, &body).await;
-        let slice = reader.read_from(body.len() as u64 + 100).await;
-        assert!(slice.messages.is_empty());
-        assert!(slice.reached_head);
-    }
-
-    #[tokio::test]
-    async fn read_from_skips_invalid_lines() {
-        let tmp = tempfile::tempdir().unwrap();
-        let body = format!(
-            "{}\nnot-json\n{}\n",
-            json!({"role": "user", "content": "u1"}),
-            json!({"role": "assistant", "content": "a1"}),
-        );
-        let reader = reader_for(&tmp, &body).await;
-        let slice = reader.read_from(0).await;
-        assert_eq!(slice.messages.len(), 2, "the corrupt line is skipped");
-        // Offsets align with the surviving messages, not the raw lines.
-        let bytes = body.as_bytes();
-        let line0 = body.lines().next().unwrap().as_bytes();
-        assert_eq!(
-            &bytes[slice.offsets[0] as usize..slice.offsets[0] as usize + line0.len()],
-            line0
-        );
     }
 }

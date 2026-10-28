@@ -9,7 +9,6 @@
 //! starts from an empty context.
 
 use jyc_core::session_state::AGENT_CONTEXT_FILE;
-use jyc_types::channel::ContextStrategyConfig;
 use jyc_types::state_dir::resolve_state_dir;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -344,33 +343,26 @@ pub async fn append_wire_payload_dump(
 
 /// Load prior raw context from the `agent-context.jsonl` journal.
 ///
-/// Returns (internal_messages, raw_context, summary_len):
+/// Returns (internal_messages, raw_context):
 /// - internal_messages: for logic (reply detection, text extraction)
 /// - raw_context: for sending to the API (preserves provider-specific fields).
-/// - summary_len: how many leading `raw_context` messages are the anchored
-///   history summary (compacted notes). The sliding-window build sends them
-///   as the frozen region ①; `0` means "no summary — build the regions the
-///   classic windowed way".
 ///
-/// `Full` mode reads the whole journal; `sliding_window` with a note
-/// window anchors: everything older than the last `note_window` turns is
-/// compacted once into a persisted summary (`history-summary.json`), and
-/// each load reads the journal forward from the summary's byte offset.
-/// The summary's bytes never change between refolds, so the wire prefix
-/// stays stable across turns — the property the per-turn sliding window
-/// could not hold because its window slid every turn.
+/// `depth` is how much of the journal the caller needs: the strategies
+/// read a window, `full` mode reads everything. The reader parses only
+/// that much — a journal that grew to hundreds of megabytes costs the
+/// same per turn as a small one.
 ///
 /// If no session file exists (fresh or after reset), returns empty.
 pub async fn load_context(
     topic_name: &str,
     topic_path: &Path,
-    strategy: &ContextStrategyConfig,
-) -> (Vec<Message>, Vec<serde_json::Value>, usize) {
+    depth: PriorDepth,
+) -> (Vec<Message>, Vec<serde_json::Value>) {
     let state_dir = resolve_state_dir(topic_name, topic_path);
     let session_path = state_dir.join(SESSION_FILE);
     let journal_path = state_dir.join(AGENT_CONTEXT_FILE);
 
-    let empty = (Vec::new(), Vec::new(), 0);
+    let empty = (Vec::new(), Vec::new());
 
     // No session file = fresh start. No prior context.
     if !session_path.exists() {
@@ -391,30 +383,7 @@ pub async fn load_context(
     }
 
     let reader = ContextReader::new(topic_name, &state_dir);
-    match crate::agent_loop::context::prior_depth(strategy) {
-        PriorDepth::All => load_context_full(&reader, &state_dir).await,
-        PriorDepth::Window {
-            pairs: window,
-            openers: note_window,
-        } => {
-            load_context_anchored(
-                &reader,
-                &state_dir,
-                window,
-                note_window,
-                strategy.max_history_tokens,
-            )
-            .await
-        }
-    }
-}
-
-/// `load_context`'s `Full`-mode arm: the whole journal, verbatim.
-async fn load_context_full(
-    reader: &ContextReader,
-    state_dir: &Path,
-) -> (Vec<Message>, Vec<serde_json::Value>, usize) {
-    let slice = reader.read_prior(PriorDepth::All).await;
+    let slice = reader.read_prior(depth).await;
     let raw_context = slice.messages;
 
     if !raw_context.is_empty() {
@@ -430,7 +399,7 @@ async fn load_context_full(
             );
             // Build internal messages from raw context (for reply detection logic)
             let internal = raw_context_to_messages(&raw_context);
-            return (internal, raw_context, 0);
+            return (internal, raw_context);
         } else if slice.reached_head {
             // The whole journal holds no assistant message — the context
             // is corrupt (e.g. a summarization produced user-only
@@ -446,169 +415,13 @@ async fn load_context_full(
                  This indicates context corruption (e.g. summarization produced \
                  user-only context)."
             );
-            jyc_core::session_state::remove_raw_context_files(state_dir).await;
+            jyc_core::session_state::remove_raw_context_files(&state_dir).await;
             reader.invalidate();
         }
     }
 
     // Fallback: no raw context available, start fresh
-    (Vec::new(), Vec::new(), 0)
-}
-
-/// One forward-read pass over the journal, large enough that reading it
-/// whole is a cold-start event, not a per-turn cost. Above this the
-/// anchored path falls back to the classic backward window read —
-/// better a sliding window than a multi-hundred-megabyte parse.
-const EAGER_FOLD_MAX_JOURNAL_BYTES: u64 = 32 * 1024 * 1024;
-
-/// `load_context`'s anchored sliding-window arm.
-///
-/// The persisted [`jyc_core::session_state::HistorySummary`] pins where
-/// the verbatim tail begins; each load reads the journal forward from
-/// there and appends whatever the topic recorded since. The summary's
-/// notes are byte-stable between refolds, which is what keeps the
-/// cross-turn wire prefix cacheable. A missing summary (fresh topic or
-/// reset) cold-starts: the whole journal folds once down to
-/// `note_window` verbatim turns. When the assembled prior exceeds
-/// `max_history_tokens`, the tail folds the same way — whole turns,
-/// oldest first, into appended notes.
-async fn load_context_anchored(
-    reader: &ContextReader,
-    state_dir: &Path,
-    window: usize,
-    note_window: usize,
-    max_history_tokens: Option<usize>,
-) -> (Vec<Message>, Vec<serde_json::Value>, usize) {
-    let journal_len = tokio::fs::metadata(state_dir.join(AGENT_CONTEXT_FILE))
-        .await
-        .map(|m| m.len())
-        .unwrap_or(0);
-
-    let summary = jyc_core::session_state::read_history_summary(state_dir)
-        .await
-        .filter(|s| s.offset <= journal_len && !s.notes.is_empty());
-
-    let (notes, tail) = match summary {
-        Some(s) => (s.notes, reader.read_from(s.offset).await),
-        None if journal_len > EAGER_FOLD_MAX_JOURNAL_BYTES => {
-            // Journal too large for a one-shot forward read: fall back to
-            // the classic windowed tail read. No summary is written, so
-            // the build keeps the classic sliding-window shape.
-            let slice = reader
-                .read_prior(PriorDepth::Window {
-                    pairs: window,
-                    openers: note_window,
-                })
-                .await;
-            return finish_anchored_load(reader, state_dir, slice.messages, 0, true).await;
-        }
-        None => (Vec::new(), reader.read_from(0).await),
-    };
-
-    // Cold start (no summary): fold everything older than the note
-    // window into the summary right away, so the frozen prefix exists
-    // from the first turn instead of waiting for the budget to trip.
-    if notes.is_empty() {
-        let cut = verbatim_start_index(&tail.messages, note_window);
-        if cut > 0 && cut < tail.offsets.len() {
-            let notes = extract_user_assistant_pairs(&tail.messages[..cut], usize::MAX, Some(0));
-            let summary_len = notes.len();
-            let offset = tail.offsets[cut];
-            jyc_core::session_state::write_history_summary(
-                state_dir,
-                &jyc_core::session_state::HistorySummary {
-                    offset,
-                    notes: notes.clone(),
-                },
-            )
-            .await;
-            let raw = [notes, tail.messages[cut..].to_vec()].concat();
-            return finish_anchored_load(reader, state_dir, raw, summary_len, offset == 0).await;
-        }
-    }
-
-    // Assemble the prior: frozen notes + verbatim tail.
-    let mut raw = notes.clone();
-    raw.extend(tail.messages.iter().cloned());
-    let summary_len = notes.len();
-
-    // Budget refold: fold the tail's oldest whole turns into appended
-    // notes. Whole turns keep tool_use/result pairing intact; the note
-    // window is the floor of what stays verbatim, matching the classic
-    // build's ② floor.
-    if let Some(budget) = max_history_tokens.filter(|&b| b > 0) {
-        let estimated: usize = raw
-            .iter()
-            .map(crate::agent_loop::context::est_message_tokens)
-            .sum();
-        if estimated > budget {
-            let cut = verbatim_start_index(&tail.messages, note_window);
-            if cut > 0 && cut < tail.offsets.len() {
-                let folded =
-                    extract_user_assistant_pairs(&tail.messages[..cut], usize::MAX, Some(0));
-                let mut new_notes = notes;
-                new_notes.extend(folded);
-                let new_offset = tail.offsets[cut];
-                let kept = tail.messages[cut..].to_vec();
-                let new_len = new_notes.len();
-                tracing::info!(
-                    old_summary = summary_len,
-                    new_summary = new_len,
-                    new_offset,
-                    estimated_tokens = estimated,
-                    budget,
-                    "refolded anchored history summary to fit max_history_tokens"
-                );
-                jyc_core::session_state::write_history_summary(
-                    state_dir,
-                    &jyc_core::session_state::HistorySummary {
-                        offset: new_offset,
-                        notes: new_notes.clone(),
-                    },
-                )
-                .await;
-                let raw = [new_notes, kept].concat();
-                return finish_anchored_load(reader, state_dir, raw, new_len, false).await;
-            }
-        }
-    }
-
-    finish_anchored_load(reader, state_dir, raw, summary_len, false).await
-}
-
-/// Shared tail of the anchored arm: validate the assembled prior and
-/// build the internal view. `reached_head` mirrors the Full arm's
-/// corruption policy — the journal is only deleted when the slice we
-/// validated covers all of it; a summary-tailed slice that happens to
-/// hold no assistant message (a cancelled turn) is kept.
-async fn finish_anchored_load(
-    reader: &ContextReader,
-    state_dir: &Path,
-    raw: Vec<serde_json::Value>,
-    summary_len: usize,
-    reached_head: bool,
-) -> (Vec<Message>, Vec<serde_json::Value>, usize) {
-    if raw.is_empty() {
-        return (Vec::new(), raw, 0);
-    }
-    let has_assistant = raw
-        .iter()
-        .any(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"));
-    if !has_assistant && reached_head {
-        // The whole journal holds no assistant message — the context is
-        // corrupt (e.g. a summarization produced user-only context).
-        tracing::error!(
-            context_messages = raw.len(),
-            "Context file has no assistant messages after filtering, deleting. \
-             This indicates context corruption (e.g. summarization produced \
-             user-only context)."
-        );
-        jyc_core::session_state::remove_raw_context_files(state_dir).await;
-        reader.invalidate();
-        return (Vec::new(), Vec::new(), 0);
-    }
-    let internal = raw_context_to_messages(&raw);
-    (internal, raw, summary_len)
+    empty
 }
 
 /// Convert raw provider JSON context to internal Messages (best-effort).
@@ -2599,218 +2412,5 @@ mod tests {
         assert_eq!(entry["wire_payload"], serde_json::json!([]));
         assert_eq!(entry["regions"], serde_json::json!([]));
         assert_eq!(entry["iter"], 0);
-    }
-}
-
-#[cfg(test)]
-mod anchored_load_tests {
-    use super::*;
-    use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
-    use jyc_types::state_dir;
-
-    fn sliding(note_window: usize, max_history_tokens: Option<usize>) -> ContextStrategyConfig {
-        ContextStrategyConfig {
-            mode: ContextStrategy::SlidingWindow,
-            note_window: Some(note_window),
-            max_history_tokens,
-            ..Default::default()
-        }
-    }
-
-    fn turns_journal(from: usize, to: usize) -> String {
-        let mut out = String::new();
-        for i in from..=to {
-            out.push_str(&format!(
-                "{}\n",
-                serde_json::json!({"role": "user", "content": format!("u{i}")})
-            ));
-            out.push_str(&format!(
-                "{}\n",
-                serde_json::json!({"role": "assistant", "content": format!("a{i}")})
-            ));
-        }
-        out
-    }
-
-    /// Session file + journal in a temp state dir, registered so
-    /// `resolve_state_dir` finds them.
-    async fn setup(tmp: &tempfile::TempDir, topic: &str, journal: &str) -> std::path::PathBuf {
-        let state_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&state_dir).await.unwrap();
-        state_dir::register(topic, &state_dir);
-        tokio::fs::write(
-            state_dir.join(SESSION_FILE),
-            r#"{"created_at":"2026-01-01T00:00:00Z"}"#,
-        )
-        .await
-        .unwrap();
-        tokio::fs::write(state_dir.join(AGENT_CONTEXT_FILE), journal)
-            .await
-            .unwrap();
-        state_dir
-    }
-
-    async fn append_turn(state_dir: &std::path::Path, i: usize) {
-        let body = turns_journal(i, i);
-        let mut f = tokio::fs::OpenOptions::new()
-            .append(true)
-            .open(state_dir.join(AGENT_CONTEXT_FILE))
-            .await
-            .unwrap();
-        use tokio::io::AsyncWriteExt;
-        f.write_all(body.as_bytes()).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn cold_start_folds_everything_older_than_the_note_window() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "anchored-cold-start-folds";
-        let state_dir = setup(&tmp, topic, &turns_journal(1, 6)).await;
-
-        let (_, raw, summary_len) = load_context(topic, tmp.path(), &sliding(2, None)).await;
-
-        // 4 folded pairs -> 8 note messages; the last 2 turns stay verbatim.
-        assert_eq!(summary_len, 8, "4 folded pairs x (user, assistant)");
-        assert_eq!(raw.len(), 12);
-        assert_eq!(raw[0]["content"], "u1");
-        assert_eq!(raw[7]["content"], "a4");
-        assert_eq!(raw[8]["content"], "u5", "verbatim tail begins here");
-        assert_eq!(raw[11]["content"], "a6");
-
-        // The summary is persisted with the tail's byte offset.
-        let summary = jyc_core::session_state::read_history_summary(&state_dir)
-            .await
-            .expect("summary written");
-        assert_eq!(summary.notes.len(), 8);
-        let journal = tokio::fs::read(state_dir.join(AGENT_CONTEXT_FILE))
-            .await
-            .unwrap();
-        assert!(
-            (summary.offset as usize) < journal.len(),
-            "offset points inside the journal"
-        );
-        assert_eq!(
-            journal[summary.offset as usize], b'{',
-            "offset points at a line start"
-        );
-    }
-
-    #[tokio::test]
-    async fn reload_appends_new_turns_with_a_frozen_prefix() {
-        // The #995 property at load level: everything before the newest
-        // turn comes back byte-identical — notes frozen, verbatim tail a
-        // pure append.
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "anchored-reload-frozen-prefix";
-        let state_dir = setup(&tmp, topic, &turns_journal(1, 6)).await;
-
-        let (_, raw, summary_len) = load_context(topic, tmp.path(), &sliding(2, None)).await;
-        let summary_before = jyc_core::session_state::read_history_summary(&state_dir)
-            .await
-            .unwrap();
-
-        append_turn(&state_dir, 7).await;
-        let (_, raw2, summary_len2) = load_context(topic, tmp.path(), &sliding(2, None)).await;
-
-        assert_eq!(summary_len2, summary_len, "no refold: under budget");
-        assert_eq!(raw2.len(), raw.len() + 2, "one turn appended");
-        assert_eq!(
-            raw2[..raw.len()],
-            raw[..],
-            "the whole prior is a stable prefix of the next turn's prior"
-        );
-        assert_eq!(raw2[raw.len()]["content"], "u7");
-        assert_eq!(raw2[raw.len() + 1]["content"], "a7");
-
-        let summary_after = jyc_core::session_state::read_history_summary(&state_dir)
-            .await
-            .unwrap();
-        assert_eq!(summary_after.offset, summary_before.offset);
-        assert_eq!(summary_after.notes, summary_before.notes);
-    }
-
-    #[tokio::test]
-    async fn refold_folds_over_budget_tail_turns_into_appended_notes() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "anchored-refold-on-budget";
-        let state_dir = setup(&tmp, topic, &turns_journal(1, 4)).await;
-        let strategy = sliding(2, Some(1));
-
-        // Cold start folds 4 -> 2 turns regardless of budget.
-        let (_, raw, summary_len) = load_context(topic, tmp.path(), &strategy).await;
-        assert_eq!(summary_len, 4, "2 folded pairs");
-        assert_eq!(raw.len(), 8);
-
-        // Two more turns: the tail regrows to 4 turns, over the budget,
-        // and the refold folds its oldest two turns into the notes.
-        append_turn(&state_dir, 5).await;
-        append_turn(&state_dir, 6).await;
-        let (_, raw2, summary_len2) = load_context(topic, tmp.path(), &strategy).await;
-
-        assert_eq!(summary_len2, 8, "the u3/a3..u4/a4 pairs joined the notes");
-        assert_eq!(raw2.len(), 12, "8 notes + 2 verbatim turns");
-        assert_eq!(raw2[4]["content"], "u3");
-        assert_eq!(raw2[7]["content"], "a4");
-        assert_eq!(raw2[8]["content"], "u5", "note window kept verbatim");
-        assert_eq!(raw2[11]["content"], "a6");
-
-        let summary = jyc_core::session_state::read_history_summary(&state_dir)
-            .await
-            .unwrap();
-        let journal = tokio::fs::read(state_dir.join(AGENT_CONTEXT_FILE))
-            .await
-            .unwrap();
-        let line_end = journal[summary.offset as usize..]
-            .iter()
-            .position(|&b| b == b'\n')
-            .unwrap();
-        assert_eq!(
-            &journal[summary.offset as usize..summary.offset as usize + line_end],
-            serde_json::json!({"role": "user", "content": "u5"})
-                .to_string()
-                .as_bytes(),
-            "the offset points at the first verbatim message"
-        );
-    }
-
-    #[tokio::test]
-    async fn invalid_offset_restarts_cold() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "anchored-invalid-offset-restarts";
-        let state_dir = setup(&tmp, topic, &turns_journal(1, 6)).await;
-        jyc_core::session_state::write_history_summary(
-            &state_dir,
-            &jyc_core::session_state::HistorySummary {
-                offset: 9_999_999,
-                notes: vec![serde_json::json!({"role": "user", "content": "stale"})],
-            },
-        )
-        .await;
-
-        let (_, raw, summary_len) = load_context(topic, tmp.path(), &sliding(2, None)).await;
-        assert_eq!(summary_len, 8, "cold fold reran and rewrote the summary");
-        assert_eq!(raw.len(), 12);
-        let summary = jyc_core::session_state::read_history_summary(&state_dir)
-            .await
-            .unwrap();
-        assert!(summary.offset < 9_999_999);
-        assert_eq!(summary.notes.len(), 8);
-    }
-
-    #[tokio::test]
-    async fn journal_within_the_note_window_skips_the_summary() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "anchored-small-journal-no-fold";
-        let state_dir = setup(&tmp, topic, &turns_journal(1, 2)).await;
-
-        let (_, raw, summary_len) = load_context(topic, tmp.path(), &sliding(3, None)).await;
-        assert_eq!(summary_len, 0);
-        assert_eq!(raw.len(), 4, "everything stays verbatim");
-        assert!(
-            jyc_core::session_state::read_history_summary(&state_dir)
-                .await
-                .is_none(),
-            "no summary is written when there is nothing to fold"
-        );
     }
 }

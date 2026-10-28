@@ -15,63 +15,10 @@ pub const DEFAULT_CONTEXT_WINDOW: u64 = 128000;
 /// and tolerates a torn tail line.
 pub const AGENT_CONTEXT_FILE: &str = "agent-context.jsonl";
 
-/// Best-effort removal of the raw context journal and its anchored
-/// history summary. Missing files are ignored; used by reset paths
-/// where absence means "no context".
+/// Best-effort removal of the raw context journal. A missing file is
+/// ignored; used by reset paths where absence means "no context".
 pub async fn remove_raw_context_files(state_dir: &Path) {
     tokio::fs::remove_file(state_dir.join(AGENT_CONTEXT_FILE))
-        .await
-        .ok();
-    remove_history_summary(state_dir).await;
-}
-
-/// The anchored history summary: the compacted text notes of everything
-/// before `offset` in the raw context journal, plus the journal byte
-/// offset where the verbatim tail starts. Persisted per topic so the
-/// sliding-window strategy keeps a byte-stable prefix across turns —
-/// the notes only append at the tail, and the offset only moves forward
-/// when the token budget forces a refold.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct HistorySummary {
-    /// Byte offset into `agent-context.jsonl` where the verbatim tail
-    /// begins. Everything before it is represented by `notes`.
-    pub offset: u64,
-    /// Compacted user/assistant text notes, oldest first — the raw
-    /// extraction output, formatted provider-side at build time.
-    pub notes: Vec<serde_json::Value>,
-}
-
-/// Where the per-topic history summary lives inside the state dir.
-pub const HISTORY_SUMMARY_FILE: &str = "history-summary.json";
-
-/// Read the anchored history summary. A missing or unparsable file
-/// means "no summary" — the caller falls back to the cold path.
-pub async fn read_history_summary(state_dir: &Path) -> Option<HistorySummary> {
-    let path = state_dir.join(HISTORY_SUMMARY_FILE);
-    let bytes = tokio::fs::read(&path).await.ok()?;
-    let summary = serde_json::from_slice::<HistorySummary>(&bytes)
-        .map_err(|e| {
-            tracing::warn!(path = %path.display(), error = %e, "history summary unreadable, ignoring");
-            e
-        })
-        .ok()?;
-    Some(summary)
-}
-
-/// Persist the anchored history summary, replacing any previous one.
-pub async fn write_history_summary(state_dir: &Path, summary: &HistorySummary) {
-    let path = state_dir.join(HISTORY_SUMMARY_FILE);
-    let bytes = serde_json::to_vec(summary).unwrap_or_default();
-    if let Err(e) = tokio::fs::write(&path, bytes).await {
-        tracing::warn!(path = %path.display(), error = %e, "failed to persist history summary");
-    }
-}
-
-/// Best-effort removal of the history summary. A missing file is
-/// ignored; used by reset paths and cold-restart fallbacks where the
-/// summary no longer matches the journal.
-pub async fn remove_history_summary(state_dir: &Path) {
-    tokio::fs::remove_file(state_dir.join(HISTORY_SUMMARY_FILE))
         .await
         .ok();
 }

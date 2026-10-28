@@ -479,15 +479,10 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # takes priority. Overridden at runtime by the `.jyc/context-strategy.json`
 # file written by `/context`.
 # mode: "full" | "sliding_window" (alias "sliding"). Default: "sliding_window".
-# window: in sliding_window mode, bounds the cold-start tail read when the
-# journal is too large to fold in one pass (above 32 MiB). The anchored
-# tail itself grows by whole turns until max_history_tokens. Default: 10.
-# note_window: in sliding_window mode, the most recent M prior turns stay
-# verbatim (structured tool calls intact); everything older is compacted
-# into a persisted summary whose bytes stay frozen between refolds, which
-# keeps the cross-turn provider-cache prefix stable. At a refold (budget
-# trip or cold start) the oldest tail turns fold into appended notes and
-# only these M turns remain verbatim. Default: 3.
+# window: user+assistant turns to keep in sliding_window mode. Default: 10.
+# note_window: in sliding_window mode, only the most recent M windowed
+# turns carry tool-call history notes; older turns are text-only.
+# Default: 5. 0 = no notes at all.
 # tool_result_cap: in sliding_window mode, cap each tool result in the
 # verbatim prior region (region ②; the current turn is governed by
 # turn_tool_result_cap instead)
@@ -496,13 +491,10 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # turn_tool_result_cap: same, for the current turn (region ③), keeping the
 # head and tail of an oversized result. Unset by default (region ③ is the
 # turn in flight, so trimming it is opt-in).
-# max_history_tokens: token budget for the two history regions (① summary
-# notes + ② verbatim tail). The anchored tail grows by whole turns until
-# this weight; over budget, the oldest tail turns refold into appended
-# summary notes (lossless for text, tool structure dropped) — and only if
-# the note window alone still exceeds it does the oldest content shed.
-# window counts turns, so a turn-count bound weighs 2k tokens or 200k;
-# this caps the weight instead. The estimate
+# max_history_tokens: token budget for the two history regions (① compacted
+# + ② verbatim). window counts turns, so 10 turns may weigh 2k tokens or
+# 200k; this caps the weight instead — the oldest history is dropped first
+# (region ① oldest pairs, then region ② oldest whole turns). The estimate
 # is heuristic (CJK characters ~1 token, other bytes ~1/4), not a tokenizer.
 # The current turn is not part of it. Unset by default.
 # context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048 }

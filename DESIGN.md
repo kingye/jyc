@@ -2342,14 +2342,21 @@ JYC uses the following subset of the agent service API:
      the oldest tail turns into appended notes, down to `note_window`
      verbatim turns: `max_history_tokens` over the capped estimate,
      `window` turns when no budget is configured, and a verbatim tail
-     whose unread span outgrew 32 MiB since the last refold. Cold start
-     (fresh topic, reset, invalid offset) folds the whole journal once;
-     cold journals above 32 MiB fall back to the classic windowed tail
-     read bounded by `window`. A summary whose offset no longer points
-     at a journal line start is rejected and deleted — it cannot graft
-     the old conversation onto a replaced journal. `note_window` 0 is a
-     text-only window: the whole tail folds and region ② stays empty.
-     The summary dies with `/reset` and `/new` (via
+     whose unread span outgrew 32 MiB since the last refold — when that
+     last trigger fires with fewer tail turns than the note floor
+     (nothing foldable), the summary is dropped and the classic windowed
+     tail read takes over, keeping the per-turn forward read bounded.
+     When no budget is configured, every fold also trims the notes to
+     the last `window` pairs, so region ① cannot grow by a pair per
+     turn; with a budget, the wire build's `fit_history_to_budget`
+     trims region ① instead. Cold start (fresh topic, reset, invalid
+     offset) folds the whole journal once; cold journals above 32 MiB
+     fall back to the classic windowed tail read bounded by `window`.
+     A summary whose offset no longer points at a journal line start is
+     rejected and deleted — it cannot graft the old conversation onto a
+     replaced journal. `note_window` 0 folds the whole cold-start tail
+     into notes; afterwards the `window` bound keeps the newest turns
+     verbatim as usual. The summary dies with `/reset` and `/new` (via
      `remove_raw_context_files` / `remove_history_summary`).
 
    Resolution chain: runtime override file > the topic's own config

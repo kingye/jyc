@@ -482,7 +482,23 @@ pub(crate) fn est_capped_message_tokens(msg: &serde_json::Value, cap: usize) -> 
     if cap == 0 {
         return est_message_tokens(msg);
     }
-    est_message_tokens(&cap_tool_result_content(msg, cap))
+    // Only tool results can be capped; weigh everything else directly
+    // instead of cloning it through the capper (the loader estimates a
+    // whole prior per load).
+    let is_tool = msg.get("role").and_then(|r| r.as_str()) == Some("tool")
+        || msg
+            .get("content")
+            .and_then(|c| c.as_array())
+            .is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+            });
+    if is_tool {
+        est_message_tokens(&cap_tool_result_content(msg, cap))
+    } else {
+        est_message_tokens(msg)
+    }
 }
 
 /// Truncate oversized tool-result `content` to `cap` bytes with the given

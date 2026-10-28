@@ -159,11 +159,14 @@ impl ContextReader {
     /// [`PriorSlice::offsets`], so the caller can advance the summary
     /// past a fold without re-scanning.
     ///
-    /// [`PriorSlice::reached_head`] is true only when `offset` is 0 — the
-    /// read covered the whole journal. A tail that starts mid-journal did
-    /// not reach the head no matter where it ends, which is what the
-    /// corruption guard in `finish_anchored_load` keys on. Dangling tool
-    /// calls are repaired (suffix dropped), as in [`Self::read_prior`].
+    /// [`PriorSlice::reached_head`] is true when nothing older than
+    /// `offset` remained to read: the read started at the journal's head
+    /// (`offset == 0`), or there was nothing to read at all (missing
+    /// journal, `offset` at or past its end). A tail that starts
+    /// mid-journal did not reach the head no matter where it ends, which
+    /// is what the corruption guard in `finish_anchored_load` keys on.
+    /// Dangling tool calls are repaired (suffix dropped), as in
+    /// [`Self::read_prior`].
     pub(crate) async fn read_from(&self, offset: u64) -> PriorSlice {
         let Some((file_len, _)) = self.stat().await else {
             return PriorSlice {
@@ -263,6 +266,40 @@ impl ContextReader {
         let total = crate::session::pairs_tail_start(&messages, usize::MAX).1;
         self.cache_pair_count(total, file_len, file_mtime);
         total
+    }
+
+    /// Byte offset just past the journal's last newline-terminated line —
+    /// the end of its complete, parseable content. A trailing fragment
+    /// without a newline (a torn write, or a complete message that lost
+    /// only its newline) is not included: [`Self::read_from`] drops it,
+    /// and the writer's [`Self::clean_end`] owns its repair.
+    ///
+    /// The anchored summary's offset must always sit at a line start, so
+    /// a `fold_all` records this instead of the raw file length — the
+    /// byte before `file_len` can be a message's last byte, and an offset
+    /// there would be rejected (and the summary deleted) on the next
+    /// load.
+    pub(crate) async fn complete_line_end(&self) -> u64 {
+        let Some((file_len, _)) = self.stat().await else {
+            return 0;
+        };
+        let mut end = file_len;
+        loop {
+            let start = end.saturating_sub(READ_BLOCK);
+            let Some((_, bytes)) = self.read_block(start, end).await else {
+                // Unreadable: claim nothing is complete rather than point
+                // past content the next load cannot validate.
+                return 0;
+            };
+            if let Some(i) = bytes.iter().rposition(|&b| b == b'\n') {
+                return start + i as u64 + 1;
+            }
+            if start == 0 {
+                // One unterminated line from the very first append.
+                return 0;
+            }
+            end = start;
+        }
     }
 
     /// Where a new message is appended.

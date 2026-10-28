@@ -145,10 +145,15 @@ where that tail begins:
 
 1. **Compacted history (region ①)** — the summary's notes, oldest
    first, reformatted in the active provider's wire format. These bytes
-   are **frozen between refolds**: the summary only appends when a
-   refold folds more turns in, so region ① is a stable prefix of every
-   wire payload — the property that keeps the provider's cache alive
-   across turn boundaries.
+   are **frozen between refolds**: the summary only changes when a
+   refold folds more turns in (or, without a token budget, trims the
+   oldest notes — see below), so region ① is a stable prefix of every
+   wire payload between refolds — the property that keeps the
+   provider's cache alive across turn boundaries. When
+   `max_history_tokens` is unset, every fold also caps the notes at the
+   last `window` pairs: without the cap, region ① would grow by a pair
+   every turn and the default config's wire would be unbounded even
+   with the verbatim tail capped.
 2. **Recent turns, verbatim (region ②)** — everything in the journal
    from the summary's offset to the tail: **structured `tool_calls` /
    `tool_use` and tool results intact**, passed through untouched. It
@@ -169,9 +174,15 @@ Three things refold the tail's oldest whole turns into appended notes,
 down to the `note_window` floor: `max_history_tokens` over the
 capped estimate, `window` turns when no token budget is configured, and
 a verbatim tail whose unread span outgrew 32 MiB since the last refold
-(so the forward read stays bounded). `note_window` 0 is a text-only
-window: the whole tail folds and region ② stays empty. The summary dies
-with `/reset` and `/new`, as the session file always did.
+(so the forward read stays bounded). That last trigger cannot fire when
+the tail holds fewer turns than `note_window` — there is nothing the
+floor lets it fold — so instead it drops the summary and falls back to
+the classic windowed tail read, the same escape the oversized cold
+start takes. `note_window` 0 folds the whole cold-start tail into notes
+(a text-only start); afterwards the `window` bound, when no token
+budget is configured, keeps the newest `window` turns verbatim and
+region ② refolds like any other windowed tail. The summary dies with
+`/reset` and `/new`, as the session file always did.
 
 ```mermaid
 flowchart TB

@@ -151,7 +151,7 @@ pub fn context_region_pct(region: &crate::inspect::ContextRegionInfo, total: u64
 }
 
 /// A region's size and share in the compact form the info pane prints,
-/// e.g. `"~17.77K · 51%"`.
+/// e.g. `"~17.77K · 52%"`.
 pub fn format_context_region_share(
     region: &crate::inspect::ContextRegionInfo,
     total: u64,
@@ -165,7 +165,7 @@ pub fn format_context_region_share(
 
 /// A region's full plain-text row for `/info`: label, estimated weight,
 /// share, message count and exact wire bytes, e.g.
-/// `"History: ~17.77K · 51% · 31 messages · 128.91KB"`.
+/// `"History: ~17.77K · 52% · 31 messages · 128.91KB"`.
 pub fn format_context_region_row(region: &crate::inspect::ContextRegionInfo, total: u64) -> String {
     format!(
         "{}: {} · {} messages · {}",
@@ -351,7 +351,7 @@ mod tests {
         let history = region(crate::inspect::ContextRegion::History, 31, 132_000, 18_200);
         assert_eq!(
             format_context_region_row(&history, 35_100),
-            "History: ~17.77K · 51% · 31 messages · 128.91KB"
+            "History: ~17.77K · 52% · 31 messages · 128.91KB"
         );
         assert_eq!(
             format_context_region_row(&region(crate::inspect::ContextRegion::Current, 1, 12, 0), 0),

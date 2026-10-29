@@ -2433,6 +2433,47 @@ JYC uses the following subset of the agent service API:
    tools array is re-read on every agent loop iteration, so the schemas are in
    the *next* request of the *same* turn.
 
+   **The MCP tools.** The same argument applies to an MCP server's tools, and
+   harder: a server with fifty tools puts fifty schemas in the request of a
+   topic that wanted one of them. The registry therefore builds one **group
+   per MCP server** at registry-build time, and the group's tools are
+   **registered but not advertised** until the model calls `load_mcp_schema`
+   with that server's name. The loader's description is the index: each
+   server's name, and each of its tools with a one-line description — enough
+   to decide *which* server to load, and none of the schemas themselves. The
+   expansion is per tool, not per server (`tool_names` expands a subset), so
+   a server with a hundred tools can be brought in a few at a time. The
+   groups live in the registry, which is cached per topic, so an expansion
+   sticks for the rest of that topic's registry lifetime.
+
+   The boundary is the same as for the extended group, and the same rule
+   applies: only *advertisement* is gated. The MCP tools stay registered and
+   executable, so a model that names one before expanding it gets a working
+   call instead of an error; `disabled_tools` and `disabled_mcps` remain the
+   boundary that removes a tool or a server for good, the loader included. A
+   server removed that way is not in the index either — the index is built
+   from what actually landed in the registry, so a tool excluded by plain
+   name is in no group.
+
+   **One name, one owner.** The registry is keyed by tool name, so a name
+   belongs to whatever holds it last. Ownership is therefore read from the
+   live registry — `Tool::source()`, which an MCP-backed tool answers with its
+   server's name and a built-in or bridge tool answers with `None` — rather
+   than from a snapshot taken when the groups were built. An MCP server that
+   exposes a built-in's name has taken that name over: the tool belongs to
+   the MCP group and stays hidden until the model expands that server, and
+   the built-in's group does not claim it as well — otherwise the tool would
+   need *both* groups loaded, and each loader would report it as available
+   while it is still hidden. The loader names are reserved for the same
+   reason: `load_mcp_schema` and `load_extended_tools` stay the framework's,
+   and an MCP server exposing a tool under one of those names has that tool
+   skipped — the loaders are how the model reaches the MCP tools at all.
+
+   What this does **not** change is the connection policy: the index needs
+   the servers' tool names, so the servers are still connected at registry
+   build time. The saving is the per-request schema cost, not the startup
+   handshake or the subprocess.
+
    **What still moves the prompt, and why that is correct.** Spawning a
    child calls `access_grants::grant_subagent()`, which registers the
    child's directory as a read+write grant; the root resolvers fold

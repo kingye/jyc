@@ -31,6 +31,13 @@ use serde_json::{Value, json};
 use super::super::{Tool, ToolContext, ToolOutput};
 use crate::tools::registry::{ExtendedTools, ToolRegistry};
 
+/// The name of the tool that loads the extended group.
+///
+/// Reserved: an MCP server that exposes a tool under this name does not
+/// take the name over — the loader is registered after the MCP tools, and
+/// a loader the model cannot call is an MCP server it can never expand.
+pub const LOAD_EXTENDED_TOOLS: &str = "load_extended_tools";
+
 /// The extended tools, by name, with the one-liner that tells the model
 /// what each is for.
 ///
@@ -85,10 +92,14 @@ fn is_task_tool(name: &str) -> bool {
 /// never registered, like `jyc_spawn_subagent` off the `agents` channel) is
 /// not part of it.
 pub fn register_extended_tools(registry: &mut ToolRegistry) {
+    // A group claims a name only if the tool registered under it really is
+    // a built-in: an MCP server that exposes a built-in's name has taken
+    // that name over, and the built-in's group must not claim it as well —
+    // one name, one owner.
     let present: Vec<(&str, &str)> = EXTENDED_TOOLS
         .iter()
         .copied()
-        .filter(|(name, _)| registry.has_tool(name))
+        .filter(|(name, _)| registry.has_builtin_tool(name))
         .collect();
     if present.is_empty() {
         return;
@@ -96,11 +107,12 @@ pub fn register_extended_tools(registry: &mut ToolRegistry) {
 
     // The core tools this registry actually has: the loader says what is
     // already available, and a tool that was removed (by `disabled_tools`)
-    // is not available.
+    // is not available. A core tool an MCP server has taken over is not
+    // available either — it is hidden until the model expands that server.
     let core: Vec<&str> = CORE_TOOLS
         .iter()
         .copied()
-        .filter(|name| registry.has_tool(name))
+        .filter(|name| registry.has_builtin_tool(name))
         .collect();
 
     let group = Arc::new(ExtendedTools::new(
@@ -193,6 +205,38 @@ impl Tool for LoadExtendedToolsTool {
 mod tests {
     use super::*;
     use crate::tools::builtin::{create_builtin_registry, register_publish_file};
+    use crate::tools::registry::{McpGroup, McpToolEntry};
+    use async_trait::async_trait;
+
+    /// A tool as an MCP server provides it: owned by that server, so the
+    /// registry reads its ownership off the tool itself.
+    struct MockMcpTool {
+        name: String,
+        server: String,
+    }
+
+    #[async_trait]
+    impl Tool for MockMcpTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn source(&self) -> Option<&str> {
+            Some(&self.server)
+        }
+
+        fn description(&self) -> &str {
+            "a tool from an MCP server"
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({"type": "object", "properties": {}})
+        }
+
+        async fn execute(&self, _input: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput> {
+            Ok(ToolOutput::success("ok"))
+        }
+    }
 
     /// A registry with the group wired the way the service wires it.
     fn registry_with_group() -> ToolRegistry {
@@ -275,6 +319,105 @@ mod tests {
         register_extended_tools(&mut registry);
         assert!(registry.extended().is_none());
         assert!(!registry.has_tool("load_extended_tools"));
+    }
+
+    /// An MCP server that exposes a built-in's name takes that name over,
+    /// and the built-in's group must not claim it as well.
+    ///
+    /// This is the whole-registry shape of the collision: the extended
+    /// group is wired the way the service wires it, and an MCP tool holds
+    /// the name. The tool must be hidden until *its* server is expanded —
+    /// loading the extended group must not reveal it, and the loader must
+    /// not offer it as something that loading the group would bring in.
+    #[test]
+    fn a_name_an_mcp_server_takes_over_is_not_claimed_by_the_extended_group() {
+        let mut registry = create_builtin_registry();
+        // The server's copies take the names over: one out of the extended
+        // group, one out of the core set.
+        for name in ["webfetch", "read"] {
+            registry.register(Box::new(MockMcpTool {
+                name: name.to_string(),
+                server: "github".to_string(),
+            }));
+        }
+        // The group that owns them, and the extended group that must not.
+        registry.set_mcp_groups(vec![Arc::new(McpGroup::new(
+            "github".to_string(),
+            vec![
+                McpToolEntry {
+                    name: "webfetch".to_string(),
+                    description: "fetch a URL".to_string(),
+                },
+                McpToolEntry {
+                    name: "read".to_string(),
+                    description: "read a file".to_string(),
+                },
+            ],
+        ))]);
+        register_extended_tools(&mut registry);
+
+        let advertised = |reg: &ToolRegistry| -> Vec<String> {
+            reg.definitions().into_iter().map(|d| d.name).collect()
+        };
+
+        // Hidden: the server's group has not been expanded.
+        for name in ["webfetch", "read"] {
+            assert!(
+                !advertised(&registry).iter().any(|n| n == name),
+                "the MCP server's copy of '{name}' must not be advertised before its group is \
+                 expanded: {:?}",
+                advertised(&registry)
+            );
+        }
+
+        // Loading the extended group must not reveal them — that group does
+        // not own the names.
+        registry.extended().expect("a group").load();
+        for name in ["webfetch", "read"] {
+            assert!(
+                !advertised(&registry).iter().any(|n| n == name),
+                "the extended group must not reveal a name it does not own ('{name}'): {:?}",
+                advertised(&registry)
+            );
+        }
+
+        // Expanding the server's group does.
+        registry
+            .mcp_group("github")
+            .expect("the server's group")
+            .expand_all();
+        for name in ["webfetch", "read"] {
+            assert!(
+                advertised(&registry).iter().any(|n| n == name),
+                "the MCP server's copy of '{name}' must be advertised once its group is expanded: \
+                 {:?}",
+                advertised(&registry)
+            );
+        }
+
+        // And the loader's index does not offer them: loading the extended
+        // group does not bring them in.
+        let loader = registry
+            .definitions()
+            .into_iter()
+            .find(|d| d.name == "load_extended_tools")
+            .expect("the loader");
+        assert!(
+            !loader.description.contains("webfetch"),
+            "the loader must not index a name the extended group does not own: {}",
+            loader.description
+        );
+        // The core list is the other half of the index: a name the server
+        // took over is not "already available" either.
+        let core = loader
+            .description
+            .split_once("Already available: ")
+            .map(|(_, tail)| tail.trim_end_matches('.').split(", ").collect::<Vec<_>>())
+            .unwrap_or_default();
+        assert!(
+            !core.contains(&"read"),
+            "the loader must not call a shadowed core tool already available: {core:?}"
+        );
     }
 
     /// The loader must not offer a tool this registry does not have: a role

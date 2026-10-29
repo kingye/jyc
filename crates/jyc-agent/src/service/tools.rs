@@ -11,7 +11,7 @@ use jyc_core::topic_event_bus::TopicEventBusRef;
 use jyc_types::{ChannelPattern, McpServerConfig, TopicConfig};
 
 use crate::provider;
-use crate::tools::registry::ToolRegistry;
+use crate::tools::registry::{McpGroup, McpToolEntry, ToolRegistry};
 
 use super::JycAgentService;
 
@@ -304,31 +304,14 @@ impl JycAgentService {
             .iter()
             .map(|(c, _)| c.clone())
             .collect();
-        if !configs.is_empty() {
+        // What each MCP server contributes to this registry.
+        let mcp_entries: Vec<McpEntry> = if !configs.is_empty() {
             let mcp_tools =
                 crate::tools::mcp_client::load_mcp_tools(&configs, topic_name, topic_path).await;
-            for tool in mcp_tools {
-                // Skip tools matching disabled_server_tools (server/tool format)
-                let source = tool.source();
-                let name = tool.name();
-                let should_skip = disabled_server_tools.iter().any(|dt| {
-                    if let Some((server, tool_name)) = dt.split_once('/') {
-                        source == Some(server) && name == tool_name
-                    } else {
-                        false
-                    }
-                });
-                if should_skip {
-                    tracing::debug!(
-                        tool = %name,
-                        source = ?source,
-                        "Skipping disabled MCP tool (server/tool format)"
-                    );
-                    continue;
-                }
-                registry.register(tool);
-            }
-        }
+            admit_mcp_tools(&mut registry, mcp_tools, &disabled_server_tools)
+        } else {
+            Vec::new()
+        };
 
         // Apply plain-name exclusions (built-in, bridge, and MCP tools)
         for tool_name in &disabled_plain_tools {
@@ -339,6 +322,12 @@ impl JycAgentService {
             );
             registry.remove(tool_name);
         }
+
+        // The MCP groups: what actually landed in this registry. They keep
+        // the tools out of the advertised list until the model expands them
+        // through `load_mcp_schema`.
+        registry.set_mcp_groups(build_mcp_groups(&registry, mcp_entries));
+        crate::tools::mcp_schema::register_mcp_schema_tool(&mut registry);
 
         // The extended group: registered, but kept out of the advertised tool
         // list until the model loads it. Done after the exclusions above, so
@@ -361,6 +350,19 @@ impl JycAgentService {
                 "Removing disabled tool"
             );
             registry.remove("load_extended_tools");
+        }
+
+        // Same for the MCP loader: the exclusion pass above ran before it
+        // existed. The groups stay set — with no loader nothing can expand
+        // them, so the MCP tools stay out of the request (and remain
+        // callable by name, like every deferred tool).
+        if disabled_plain_tools.contains(&"load_mcp_schema") {
+            tracing::debug!(
+                tool = "load_mcp_schema",
+                pattern = %matched_pattern_name.unwrap_or("?"),
+                "Removing disabled tool"
+            );
+            registry.remove("load_mcp_schema");
         }
 
         // External hooks for tool events: global [[hooks]] first, then
@@ -487,6 +489,127 @@ impl JycAgentService {
     }
 }
 
+/// One MCP tool as it landed in the registry: which server it came from,
+/// its name, and the server's description of it.
+struct McpEntry {
+    server: String,
+    name: String,
+    description: String,
+}
+
+/// Whether a tool name belongs to one of the built-in loaders.
+///
+/// The loaders are how the model reaches the deferred groups at all, so an
+/// MCP server that exposes a tool under one of those names does not take
+/// the name over: the loader is registered after the MCP tools, and a
+/// loader the model cannot call is an MCP server it can never expand.
+fn is_reserved_loader_name(name: &str) -> bool {
+    name == crate::tools::mcp_schema::LOAD_MCP_SCHEMA
+        || name == crate::tools::builtin::extended::LOAD_EXTENDED_TOOLS
+}
+
+/// Register the MCP tools that survive the filters, and report what each
+/// server contributes to the registry.
+///
+/// Two filters apply before a tool lands:
+///
+/// - `disabled_tools` in its `server/tool` form excludes one tool of one
+///   server, and the tool is not registered at all.
+/// - The built-in loaders keep their names. A server that exposes a tool
+///   under one of those names does not take the name over — its copy is
+///   skipped, and the server's other tools stay reachable through the
+///   loader. Registering it would leave the loader shadowed, and a loader
+///   the model cannot call is a server it can never expand.
+///
+/// The returned entries are what the servers contribute to the index. A tool
+/// that is not registered contributes nothing: it is not in the registry, so
+/// it is neither callable nor in any group's list.
+fn admit_mcp_tools(
+    registry: &mut ToolRegistry,
+    tools: Vec<Box<dyn crate::tools::Tool>>,
+    disabled_server_tools: &[&str],
+) -> Vec<McpEntry> {
+    let mut mcp_entries = Vec::new();
+    for tool in tools {
+        let source = tool.source().map(|s| s.to_string());
+        let name = tool.name().to_string();
+        let description = tool.description().to_string();
+        let should_skip = disabled_server_tools.iter().any(|dt| {
+            if let Some((server, tool_name)) = dt.split_once('/') {
+                source.as_deref() == Some(server) && name == tool_name
+            } else {
+                false
+            }
+        });
+        if should_skip {
+            tracing::debug!(
+                tool = %name,
+                source = ?source,
+                "Skipping disabled MCP tool (server/tool format)"
+            );
+            continue;
+        }
+        if is_reserved_loader_name(&name) {
+            tracing::warn!(
+                tool = %name,
+                source = ?source,
+                "Skipping MCP tool: the name belongs to a built-in loader"
+            );
+            continue;
+        }
+        if let Some(server) = source {
+            mcp_entries.push(McpEntry {
+                server,
+                name,
+                description,
+            });
+        }
+        registry.register(tool);
+    }
+    mcp_entries
+}
+
+/// Build the MCP groups for a registry from the MCP tools that landed in it.
+///
+/// A tool removed by `disabled_tools` (plain name) is not part of a group,
+/// and a name two servers both expose belongs to the one that won the
+/// registration — the registry holds one tool per name, so the other
+/// server's copy is not in the index either, or the model would load a
+/// server and find a tool it does not own.
+///
+/// Ownership is read from the registry rather than from the order the
+/// tools arrived in: the registry is keyed by name, so whatever holds a
+/// name last is the tool the model would call. Reading it back from the
+/// registry means a name that a later registration took over is not
+/// claimed by the group that lost it.
+fn build_mcp_groups(registry: &ToolRegistry, entries: Vec<McpEntry>) -> Vec<Arc<McpGroup>> {
+    let mut by_server: Vec<(String, Vec<McpToolEntry>)> = Vec::new();
+    for entry in entries {
+        // The live tool under this name must still be this server's copy.
+        // A tool that was removed, or whose name a later registration took
+        // over, is not part of any group.
+        if registry.tool_source(&entry.name) != Some(entry.server.as_str()) {
+            continue;
+        }
+        let tool = McpToolEntry {
+            name: entry.name,
+            description: entry.description,
+        };
+        let index = by_server
+            .iter()
+            .position(|(known, _)| known == &entry.server);
+        match index {
+            Some(index) => by_server[index].1.push(tool),
+            None => by_server.push((entry.server, vec![tool])),
+        }
+    }
+
+    by_server
+        .into_iter()
+        .map(|(server, tools)| Arc::new(McpGroup::new(server, tools)))
+        .collect()
+}
+
 /// Modification time (ns since the Unix epoch) of the topic's
 /// `mcp-override.json`, or `0` when the file is absent or unreadable.
 ///
@@ -510,6 +633,7 @@ fn mcp_override_stamp(topic_name: &str, topic_path: &Path) -> u128 {
 mod tests {
     use super::*;
     use crate::service::tests::app_config_with_channels;
+    use crate::tools::builtin::read::ReadTool;
     use std::collections::HashMap;
 
     /// `disabled_tools` must be able to remove the loader itself.
@@ -558,6 +682,278 @@ mod tests {
         assert!(
             !advertised.contains(&"jyc_send_to_topic"),
             "the group's tools must stay out of the request: {advertised:?}"
+        );
+    }
+
+    /// A tool the registry does not hold is not part of a group: the model
+    /// would be told about a tool it cannot call.
+    #[test]
+    fn a_removed_mcp_tool_is_not_in_a_group() {
+        let registry = ToolRegistry::new();
+        let groups = build_mcp_groups(
+            &registry,
+            vec![McpEntry {
+                server: "github".to_string(),
+                name: "create_issue".to_string(),
+                description: "Create an issue".to_string(),
+            }],
+        );
+        assert!(
+            groups.is_empty(),
+            "a tool that is not in the registry must not be in a group"
+        );
+    }
+
+    /// A stand-in for a tool an MCP server provides: it reports its server,
+    /// which is how the registry knows who owns the name.
+    struct FakeMcpTool {
+        name: String,
+        server: String,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::tools::Tool for FakeMcpTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn source(&self) -> Option<&str> {
+            Some(&self.server)
+        }
+
+        fn description(&self) -> &str {
+            "an MCP tool"
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _ctx: &crate::tools::ToolContext<'_>,
+        ) -> anyhow::Result<crate::tools::ToolOutput> {
+            Ok(crate::tools::ToolOutput::success("ok"))
+        }
+    }
+
+    /// A name two servers both expose belongs to the one that won the
+    /// registration — the other server's copy is not in the index, or the
+    /// model would load a server and find a tool it does not own.
+    #[test]
+    fn a_duplicated_tool_name_belongs_to_the_last_server() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(FakeMcpTool {
+            name: "read".to_string(),
+            server: "first".to_string(),
+        }));
+        // The second registration takes the name over: the registry holds
+        // one tool per name.
+        registry.register(Box::new(FakeMcpTool {
+            name: "read".to_string(),
+            server: "second".to_string(),
+        }));
+        let groups = build_mcp_groups(
+            &registry,
+            vec![
+                McpEntry {
+                    server: "first".to_string(),
+                    name: "read".to_string(),
+                    description: "From the first server".to_string(),
+                },
+                McpEntry {
+                    server: "second".to_string(),
+                    name: "read".to_string(),
+                    description: "From the second server".to_string(),
+                },
+            ],
+        );
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].server_name(), "second");
+        assert_eq!(groups[0].tool_names(), vec!["read"]);
+    }
+
+    /// A group's tools are the server's.
+    #[test]
+    fn the_groups_hold_the_servers_tools() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(FakeMcpTool {
+            name: "read".to_string(),
+            server: "github".to_string(),
+        }));
+        let groups = build_mcp_groups(
+            &registry,
+            vec![McpEntry {
+                server: "github".to_string(),
+                name: "read".to_string(),
+                description: "Read a file".to_string(),
+            }],
+        );
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].server_name(), "github");
+        assert_eq!(groups[0].tool_names(), vec!["read"]);
+    }
+
+    /// A built-in that an MCP server took the name over is not in the MCP
+    /// group: the registry holds the server's copy, so the group would
+    /// advertise a tool the model cannot call.
+    #[test]
+    fn a_name_taken_over_by_a_later_registration_is_not_in_the_group() {
+        let mut registry = ToolRegistry::new();
+        // The MCP server's copy, then a built-in takes the name over.
+        registry.register(Box::new(FakeMcpTool {
+            name: "read".to_string(),
+            server: "github".to_string(),
+        }));
+        registry.register(Box::new(ReadTool));
+        let groups = build_mcp_groups(
+            &registry,
+            vec![McpEntry {
+                server: "github".to_string(),
+                name: "read".to_string(),
+                description: "Read a file".to_string(),
+            }],
+        );
+        assert!(
+            groups.is_empty(),
+            "a name a later registration took over must not be in a group"
+        );
+    }
+
+    /// The loaders keep their names: an MCP server that exposes a tool
+    /// under one of those names does not take the name over — the loader is
+    /// how the model reaches the MCP tools at all.
+    #[test]
+    fn the_loader_names_are_reserved() {
+        assert!(is_reserved_loader_name("load_mcp_schema"));
+        assert!(is_reserved_loader_name("load_extended_tools"));
+        assert!(!is_reserved_loader_name("create_issue"));
+        assert!(!is_reserved_loader_name("load_something_else"));
+    }
+
+    /// The reservation is enforced where the tools are admitted, not only
+    /// described: an MCP server's copy of a loader's name is neither
+    /// registered nor grouped.
+    ///
+    /// This is the production path — the same function the service calls
+    /// when it loads the servers — so a reserved name cannot reach the
+    /// registry and shadow the loader that makes the other MCP tools
+    /// reachable in the first place.
+    #[test]
+    fn a_reserved_name_is_neither_registered_nor_grouped() {
+        let mut registry = ToolRegistry::new();
+        let entries = admit_mcp_tools(
+            &mut registry,
+            vec![
+                Box::new(FakeMcpTool {
+                    name: "load_mcp_schema".to_string(),
+                    server: "github".to_string(),
+                }),
+                Box::new(FakeMcpTool {
+                    name: "load_extended_tools".to_string(),
+                    server: "github".to_string(),
+                }),
+                Box::new(FakeMcpTool {
+                    name: "create_issue".to_string(),
+                    server: "github".to_string(),
+                }),
+            ],
+            &[],
+        );
+
+        assert!(
+            !registry.has_tool("load_mcp_schema"),
+            "a reserved name must not be registered: the loader would be shadowed"
+        );
+        assert!(
+            !registry.has_tool("load_extended_tools"),
+            "a reserved name must not be registered: the loader would be shadowed"
+        );
+        assert!(
+            registry.has_tool("create_issue"),
+            "the server's other tools stay reachable"
+        );
+        assert!(
+            !entries.iter().any(|e| e.name == "load_mcp_schema")
+                && !entries.iter().any(|e| e.name == "load_extended_tools"),
+            "a reserved name must not be in the index: it is not a tool of the server"
+        );
+        assert!(
+            entries.iter().any(|e| e.name == "create_issue"),
+            "the server's other tools stay in the index"
+        );
+    }
+
+    /// A tool excluded in `server/tool` form is neither registered nor in
+    /// the index — the exclusion removes the tool, not just its schema.
+    #[test]
+    fn an_excluded_server_tool_is_neither_registered_nor_grouped() {
+        let mut registry = ToolRegistry::new();
+        let entries = admit_mcp_tools(
+            &mut registry,
+            vec![
+                Box::new(FakeMcpTool {
+                    name: "create_issue".to_string(),
+                    server: "github".to_string(),
+                }),
+                Box::new(FakeMcpTool {
+                    name: "delete_repo".to_string(),
+                    server: "github".to_string(),
+                }),
+            ],
+            &["github/delete_repo"],
+        );
+
+        assert!(
+            !registry.has_tool("delete_repo"),
+            "an excluded tool must not be registered"
+        );
+        assert!(
+            registry.has_tool("create_issue"),
+            "the server's other tools stay reachable"
+        );
+        assert!(
+            !entries.iter().any(|e| e.name == "delete_repo"),
+            "an excluded tool must not be in the index"
+        );
+    }
+
+    /// `disabled_tools` must be able to remove the MCP loader as well: it
+    /// is registered after the exclusion pass, so without a second pass the
+    /// tool `disabled_tools` is supposed to remove would sit in every
+    /// request.
+    #[tokio::test]
+    async fn the_mcp_loader_can_be_disabled() {
+        let tname = "the_mcp_loader_can_be_disabled";
+        let tmp = tempfile::tempdir().unwrap();
+        jyc_types::state_dir::register(tname, &tmp.path().join(".jyc"));
+
+        let channel = jyc_types::ChannelConfig {
+            patterns: Some(vec![ChannelPattern::default()]),
+            disabled_tools: Some(vec!["load_mcp_schema".to_string()]),
+            ..Default::default()
+        };
+        let mut channels = HashMap::new();
+        channels.insert("test".to_string(), channel);
+        let svc = JycAgentService::new(
+            app_config_with_channels(None, channels),
+            tmp.path().to_path_buf(),
+            vec![ChannelPattern::default()],
+            None,
+            None,
+            None,
+            None,
+            "test".to_string(),
+        );
+
+        let registry = svc
+            .build_tool_registry(tname, tmp.path(), None, false, None)
+            .await;
+
+        assert!(
+            !registry.has_tool("load_mcp_schema"),
+            "disabled_tools must remove the MCP loader"
         );
     }
 

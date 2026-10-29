@@ -2,10 +2,11 @@
 //! WebSocket topic chat (all channel types via `/ws/<channel>/<topic>`).
 
 use super::token_render::{
-    LABEL_WIDTH, PaneLayout, bar_width, context_pct, context_region_label_span, label_span,
-    layout_for, push_cache_creation_span, push_context_composition_bar_spans, push_cost_span,
-    push_latency_span, push_output_span, push_reasoning_span, push_session_cache_span,
-    push_status_span, push_today_all_span, push_tokens_span, push_turn_cache_span, value_width,
+    CONTEXT_COMPOSITION_LABEL, LABEL_WIDTH, PaneLayout, bar_width, context_pct,
+    context_region_label_span, label_span, layout_for, push_cache_creation_span,
+    push_context_composition_bar_spans, push_cost_span, push_latency_span, push_output_span,
+    push_reasoning_span, push_session_cache_span, push_status_span, push_today_all_span,
+    push_tokens_span, push_turn_cache_span, value_width,
 };
 use super::*;
 use jyc_core::duration::{DurationStyle, format_duration_ms, format_duration_secs};
@@ -1890,23 +1891,33 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         }
         // Context composition — how the last call's wire messages split
         // across history, the current turn's checkpoint and its recent raw
-        // suffix. The bar spans the whole pane; the legend rows carry the
-        // same estimated share `/info` prints.
+        // suffix. The bar follows the section's label on the same row; the
+        // legend rows under it line up with the bar's first cell and carry
+        // the same estimated share `/info` prints.
         if !t.context_composition.is_empty() {
-            rows.push(InfoRow::Raw(Line::from(Span::styled(
-                "Context composition (estimated):",
+            let mut composition_spans = vec![Span::styled(
+                CONTEXT_COMPOSITION_LABEL,
                 Style::default().add_modifier(Modifier::BOLD),
-            ))));
-            let mut bar_spans = Vec::with_capacity(t.context_composition.len());
-            if push_context_composition_bar_spans(&mut bar_spans, t, topic_inner.width as usize) {
-                rows.push(InfoRow::Raw(Line::from(bar_spans)));
-            }
+            )];
+            let bar_room =
+                (topic_inner.width as usize).saturating_sub(CONTEXT_COMPOSITION_LABEL.len());
+            push_context_composition_bar_spans(&mut composition_spans, t, bar_room);
+            rows.push(InfoRow::Raw(Line::from(composition_spans)));
             let total = jyc_types::context_composition_total(&t.context_composition);
+            let label_width = jyc_types::context_composition_label_width(&t.context_composition);
             for region in &t.context_composition {
-                rows.push(InfoRow::Field(vec![
-                    context_region_label_span(region.region),
+                // A raw row, not a field: the legend's label column and its
+                // indent are already part of the text, so the row keeps the
+                // bar's column in the stacked layout too — a field would
+                // move the label onto a row of its own and lose the indent.
+                rows.push(InfoRow::Raw(Line::from(vec![
+                    context_region_label_span(
+                        region.region,
+                        CONTEXT_COMPOSITION_LABEL.len(),
+                        label_width,
+                    ),
                     Span::raw(jyc_types::format_context_region_share(region, total)),
-                ]));
+                ])));
             }
         }
         // Output row — same pattern.

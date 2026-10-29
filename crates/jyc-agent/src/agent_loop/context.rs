@@ -249,7 +249,7 @@ pub(crate) fn build_send_context_cached<'a>(
 /// ponytail: fixed interval — one checkpoint every 16 interactions keeps the
 /// raw suffix bounded without a knob or a tokenizer. Make it configurable
 /// only if real workloads show the interval is the wrong size.
-const TURN_CHECKPOINT_INTERVAL: usize = 16;
+const TURN_CHECKPOINT_INTERVAL: usize = 32;
 
 /// Wire-only marker inserted at the start of a folded current-turn
 /// checkpoint. Not persisted to `raw_context`.

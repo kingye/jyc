@@ -210,7 +210,7 @@ impl Tool for LoadMcpSchemaTool {
             // No subset asked for: expand the whole server.
             let newly = group.expand_all();
             let held = group.tool_names();
-            return Ok(expansion_result(group.server_name(), &newly, &held, &held));
+            return Ok(expansion_result(group.server_name(), &newly, &held, group));
         };
 
         for name in &requested {
@@ -223,12 +223,11 @@ impl Tool for LoadMcpSchemaTool {
         }
         let newly = group.expand(&requested);
         let requested: Vec<&str> = requested.iter().map(|name| name.as_str()).collect();
-        let held = group.tool_names();
         Ok(expansion_result(
             group.server_name(),
             &newly,
             &requested,
-            &held,
+            group,
         ))
     }
 }
@@ -248,40 +247,51 @@ fn json_type_name(value: &Value) -> &'static str {
 
 /// The reply to an expansion: what it brought in, and what the server holds.
 ///
-/// `requested` is what the caller asked for and `held` is everything the
-/// server has. The two differ when the caller asked for a subset: saying
-/// "the tools of this server are already expanded" after a subset request
-/// would claim the whole server is available when the rest of it is still
-/// hidden.
+/// The state reported is the group's *live* expansion state, not the shape
+/// of the request: a repeated subset expansion must not claim the whole
+/// server is available, and the tools still hidden are the ones the group
+/// has not expanded — not every tool the server happens to expose.
 fn expansion_result(
     server_name: &str,
     newly: &[String],
     requested: &[&str],
-    held: &[&str],
+    group: &McpGroup,
 ) -> ToolOutput {
-    if newly.is_empty() {
-        if requested.len() == held.len() {
-            // The whole server was asked for, and it is all expanded.
-            return ToolOutput::success(format!(
-                "The tools of MCP server '{server_name}' are already expanded: {}.",
-                held.join(", ")
-            ));
-        }
-        // A subset was asked for, and that subset is already expanded —
-        // the rest of the server is still hidden.
+    if !newly.is_empty() {
         return ToolOutput::success(format!(
-            "The requested tools of MCP server '{server_name}' are already expanded: {}. The \
-             server's other tools are still hidden: {}.",
-            requested.join(", "),
-            held.join(", ")
+            "Expanded {} tool(s) of MCP server '{server_name}': {}. They are in your tool list from \
+             the next model call on, while this topic's tool registry is reused — a config reload or \
+             an `/mcp` change rebuilds it, and hides them again until they are expanded once more.",
+            newly.len(),
+            newly.join(", ")
         ));
     }
+    // Nothing new: the tools asked for were already expanded.
+    let hidden: Vec<&str> = group
+        .tool_names()
+        .into_iter()
+        .filter(|name| !group.is_expanded(name))
+        .collect();
+    if hidden.is_empty() {
+        // Every tool the server exposes is expanded.
+        return ToolOutput::success(format!(
+            "The tools of MCP server '{server_name}' are already expanded: {}.",
+            group.tool_names().join(", ")
+        ));
+    }
+    // Some are still hidden: name them, and name only them. A request may
+    // repeat a tool, so the ones asked for are listed once each.
+    let mut asked: Vec<&str> = Vec::with_capacity(requested.len());
+    for name in requested {
+        if !asked.contains(name) {
+            asked.push(name);
+        }
+    }
     ToolOutput::success(format!(
-        "Expanded {} tool(s) of MCP server '{server_name}': {}. They are in your tool list from \
-         the next model call on, while this topic's tool registry is reused — a config reload or \
-         an `/mcp` change rebuilds it, and hides them again until they are expanded once more.",
-        newly.len(),
-        newly.join(", ")
+        "The requested tools of MCP server '{server_name}' are already expanded: {}. The \
+         server's other tools are still hidden: {}.",
+        asked.join(", "),
+        hidden.join(", ")
     ))
 }
 
@@ -584,6 +594,23 @@ mod tests {
             "the reply must say the rest of the server is still hidden: {}",
             second.content
         );
+        // It must name the tool that is still hidden — and only that one.
+        // `create_issue` is expanded: calling it hidden would be a lie.
+        assert!(
+            second.content.contains("search_repositories"),
+            "the reply must name the tool that is still hidden: {}",
+            second.content
+        );
+        let hidden_clause = second
+            .content
+            .split_once("still hidden:")
+            .expect("the reply names the hidden tools")
+            .1;
+        assert!(
+            !hidden_clause.contains("create_issue"),
+            "an expanded tool must not be reported as hidden: {}",
+            second.content
+        );
 
         // The tool that was never asked for is still out of the request.
         let advertised: Vec<String> = registry.definitions().into_iter().map(|d| d.name).collect();
@@ -594,6 +621,87 @@ mod tests {
         assert!(
             !advertised.iter().any(|n| n == "search_repositories"),
             "the tool that was not asked for stays hidden: {advertised:?}"
+        );
+    }
+
+    /// A repeated request that names the same tool twice is still a subset
+    /// request: the reply must not read the request's *length* as "the whole
+    /// server" and claim a tool is available that is still hidden.
+    #[tokio::test]
+    async fn a_repeated_duplicate_request_does_not_claim_the_whole_server() {
+        let registry = registry_with_groups();
+        let ctx = ToolContext::new(std::path::Path::new("."));
+        for _ in 0..2 {
+            let out = registry
+                .execute(
+                    LOAD_MCP_SCHEMA,
+                    json!({"mcp_name": "github", "tool_names": ["create_issue", "create_issue"]}),
+                    &ctx,
+                )
+                .await
+                .expect("the loader runs");
+            assert!(!out.is_error, "{}", out.content);
+        }
+        let out = registry
+            .execute(
+                LOAD_MCP_SCHEMA,
+                json!({"mcp_name": "github", "tool_names": ["create_issue", "create_issue"]}),
+                &ctx,
+            )
+            .await
+            .expect("the loader runs");
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("search_repositories"),
+            "the reply must name the tool that is still hidden: {}",
+            out.content
+        );
+        assert!(
+            !out.content
+                .contains("The tools of MCP server 'github' are already expanded"),
+            "a subset request must not claim the whole server is expanded: {}",
+            out.content
+        );
+    }
+
+    /// Expanding one tool of a server and then another leaves the first
+    /// one expanded: a later request for it must not report it as hidden.
+    #[tokio::test]
+    async fn a_partially_expanded_server_reports_only_what_is_still_hidden() {
+        let registry = registry_with_groups();
+        let ctx = ToolContext::new(std::path::Path::new("."));
+        for tool in ["create_issue", "search_repositories"] {
+            let out = registry
+                .execute(
+                    LOAD_MCP_SCHEMA,
+                    json!({"mcp_name": "github", "tool_names": [tool]}),
+                    &ctx,
+                )
+                .await
+                .expect("the loader runs");
+            assert!(!out.is_error, "{}", out.content);
+        }
+        // The whole server is expanded now.
+        let out = registry
+            .execute(
+                LOAD_MCP_SCHEMA,
+                json!({"mcp_name": "github", "tool_names": ["create_issue"]}),
+                &ctx,
+            )
+            .await
+            .expect("the loader runs");
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            !out.content.contains("still hidden"),
+            "nothing is hidden any more: {}",
+            out.content
+        );
+
+        let advertised: Vec<String> = registry.definitions().into_iter().map(|d| d.name).collect();
+        assert!(
+            advertised.iter().any(|n| n == "create_issue")
+                && advertised.iter().any(|n| n == "search_repositories"),
+            "both tools are advertised: {advertised:?}"
         );
     }
 

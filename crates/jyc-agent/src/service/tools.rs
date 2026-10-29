@@ -305,53 +305,13 @@ impl JycAgentService {
             .map(|(c, _)| c.clone())
             .collect();
         // What each MCP server contributes to this registry.
-        let mut mcp_entries: Vec<McpEntry> = Vec::new();
-        if !configs.is_empty() {
+        let mcp_entries: Vec<McpEntry> = if !configs.is_empty() {
             let mcp_tools =
                 crate::tools::mcp_client::load_mcp_tools(&configs, topic_name, topic_path).await;
-            for tool in mcp_tools {
-                // Skip tools matching disabled_server_tools (server/tool format)
-                let source = tool.source().map(|s| s.to_string());
-                let name = tool.name().to_string();
-                let description = tool.description().to_string();
-                let should_skip = disabled_server_tools.iter().any(|dt| {
-                    if let Some((server, tool_name)) = dt.split_once('/') {
-                        source.as_deref() == Some(server) && name == tool_name
-                    } else {
-                        false
-                    }
-                });
-                if should_skip {
-                    tracing::debug!(
-                        tool = %name,
-                        source = ?source,
-                        "Skipping disabled MCP tool (server/tool format)"
-                    );
-                    continue;
-                }
-                // The loaders keep their names: they are how the model
-                // reaches the MCP tools at all, so a server that exposes a
-                // tool under one of those names does not take the name over
-                // — its copy is skipped and the server's other tools stay
-                // reachable through the loader.
-                if is_reserved_loader_name(&name) {
-                    tracing::warn!(
-                        tool = %name,
-                        source = ?source,
-                        "Skipping MCP tool: the name belongs to a built-in loader"
-                    );
-                    continue;
-                }
-                if let Some(server) = source {
-                    mcp_entries.push(McpEntry {
-                        server,
-                        name,
-                        description,
-                    });
-                }
-                registry.register(tool);
-            }
-        }
+            admit_mcp_tools(&mut registry, mcp_tools, &disabled_server_tools)
+        } else {
+            Vec::new()
+        };
 
         // Apply plain-name exclusions (built-in, bridge, and MCP tools)
         for tool_name in &disabled_plain_tools {
@@ -546,6 +506,67 @@ struct McpEntry {
 fn is_reserved_loader_name(name: &str) -> bool {
     name == crate::tools::mcp_schema::LOAD_MCP_SCHEMA
         || name == crate::tools::builtin::extended::LOAD_EXTENDED_TOOLS
+}
+
+/// Register the MCP tools that survive the filters, and report what each
+/// server contributes to the registry.
+///
+/// Two filters apply before a tool lands:
+///
+/// - `disabled_tools` in its `server/tool` form excludes one tool of one
+///   server, and the tool is not registered at all.
+/// - The built-in loaders keep their names. A server that exposes a tool
+///   under one of those names does not take the name over — its copy is
+///   skipped, and the server's other tools stay reachable through the
+///   loader. Registering it would leave the loader shadowed, and a loader
+///   the model cannot call is a server it can never expand.
+///
+/// The returned entries are what the servers contribute to the index. A tool
+/// that is not registered contributes nothing: it is not in the registry, so
+/// it is neither callable nor in any group's list.
+fn admit_mcp_tools(
+    registry: &mut ToolRegistry,
+    tools: Vec<Box<dyn crate::tools::Tool>>,
+    disabled_server_tools: &[&str],
+) -> Vec<McpEntry> {
+    let mut mcp_entries = Vec::new();
+    for tool in tools {
+        let source = tool.source().map(|s| s.to_string());
+        let name = tool.name().to_string();
+        let description = tool.description().to_string();
+        let should_skip = disabled_server_tools.iter().any(|dt| {
+            if let Some((server, tool_name)) = dt.split_once('/') {
+                source.as_deref() == Some(server) && name == tool_name
+            } else {
+                false
+            }
+        });
+        if should_skip {
+            tracing::debug!(
+                tool = %name,
+                source = ?source,
+                "Skipping disabled MCP tool (server/tool format)"
+            );
+            continue;
+        }
+        if is_reserved_loader_name(&name) {
+            tracing::warn!(
+                tool = %name,
+                source = ?source,
+                "Skipping MCP tool: the name belongs to a built-in loader"
+            );
+            continue;
+        }
+        if let Some(server) = source {
+            mcp_entries.push(McpEntry {
+                server,
+                name,
+                description,
+            });
+        }
+        registry.register(tool);
+    }
+    mcp_entries
 }
 
 /// Build the MCP groups for a registry from the MCP tools that landed in it.
@@ -809,6 +830,93 @@ mod tests {
         assert!(is_reserved_loader_name("load_extended_tools"));
         assert!(!is_reserved_loader_name("create_issue"));
         assert!(!is_reserved_loader_name("load_something_else"));
+    }
+
+    /// The reservation is enforced where the tools are admitted, not only
+    /// described: an MCP server's copy of a loader's name is neither
+    /// registered nor grouped.
+    ///
+    /// This is the production path — the same function the service calls
+    /// when it loads the servers — so a reserved name cannot reach the
+    /// registry and shadow the loader that makes the other MCP tools
+    /// reachable in the first place.
+    #[test]
+    fn a_reserved_name_is_neither_registered_nor_grouped() {
+        let mut registry = ToolRegistry::new();
+        let entries = admit_mcp_tools(
+            &mut registry,
+            vec![
+                Box::new(FakeMcpTool {
+                    name: "load_mcp_schema".to_string(),
+                    server: "github".to_string(),
+                }),
+                Box::new(FakeMcpTool {
+                    name: "load_extended_tools".to_string(),
+                    server: "github".to_string(),
+                }),
+                Box::new(FakeMcpTool {
+                    name: "create_issue".to_string(),
+                    server: "github".to_string(),
+                }),
+            ],
+            &[],
+        );
+
+        assert!(
+            !registry.has_tool("load_mcp_schema"),
+            "a reserved name must not be registered: the loader would be shadowed"
+        );
+        assert!(
+            !registry.has_tool("load_extended_tools"),
+            "a reserved name must not be registered: the loader would be shadowed"
+        );
+        assert!(
+            registry.has_tool("create_issue"),
+            "the server's other tools stay reachable"
+        );
+        assert!(
+            !entries.iter().any(|e| e.name == "load_mcp_schema")
+                && !entries.iter().any(|e| e.name == "load_extended_tools"),
+            "a reserved name must not be in the index: it is not a tool of the server"
+        );
+        assert!(
+            entries.iter().any(|e| e.name == "create_issue"),
+            "the server's other tools stay in the index"
+        );
+    }
+
+    /// A tool excluded in `server/tool` form is neither registered nor in
+    /// the index — the exclusion removes the tool, not just its schema.
+    #[test]
+    fn an_excluded_server_tool_is_neither_registered_nor_grouped() {
+        let mut registry = ToolRegistry::new();
+        let entries = admit_mcp_tools(
+            &mut registry,
+            vec![
+                Box::new(FakeMcpTool {
+                    name: "create_issue".to_string(),
+                    server: "github".to_string(),
+                }),
+                Box::new(FakeMcpTool {
+                    name: "delete_repo".to_string(),
+                    server: "github".to_string(),
+                }),
+            ],
+            &["github/delete_repo"],
+        );
+
+        assert!(
+            !registry.has_tool("delete_repo"),
+            "an excluded tool must not be registered"
+        );
+        assert!(
+            registry.has_tool("create_issue"),
+            "the server's other tools stay reachable"
+        );
+        assert!(
+            !entries.iter().any(|e| e.name == "delete_repo"),
+            "an excluded tool must not be in the index"
+        );
     }
 
     /// `disabled_tools` must be able to remove the MCP loader as well: it

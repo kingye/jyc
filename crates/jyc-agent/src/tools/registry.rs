@@ -690,9 +690,19 @@ mod tests {
             name: "webfetch".to_string(),
             server: "github".to_string(),
         }));
-        // The extended group would claim "webfetch" by name — but the
-        // registry holds the MCP server's copy, so it must not.
-        reg.set_extended(Arc::new(ExtendedTools::new(vec!["webfetch".to_string()])));
+        // The extended group claims the name too — the collision this
+        // rule exists for. In production the group is built from the
+        // registry's own contents and would not claim it; here it does, so
+        // the test pins what happens when both would gate it.
+        let group = Arc::new(ExtendedTools::new(vec!["webfetch".to_string()]));
+        reg.set_extended(group.clone());
+        reg.set_mcp_groups(vec![Arc::new(McpGroup::new(
+            "github".to_string(),
+            vec![McpToolEntry {
+                name: "webfetch".to_string(),
+                description: "fetch a URL".to_string(),
+            }],
+        ))]);
 
         assert!(
             !reg.has_builtin_tool("webfetch"),
@@ -701,6 +711,49 @@ mod tests {
         assert!(
             reg.tool_source("webfetch") == Some("github"),
             "the MCP server owns the name"
+        );
+
+        let advertised = |reg: &ToolRegistry| -> Vec<String> {
+            reg.definitions().into_iter().map(|d| d.name).collect()
+        };
+
+        // Hidden: the MCP server's group has not been expanded.
+        assert!(
+            !advertised(&reg).iter().any(|n| n == "webfetch"),
+            "the MCP server's copy must not be advertised before its group is expanded: {:?}",
+            advertised(&reg)
+        );
+
+        // Expanding the MCP group reveals it — even though the extended
+        // group claims the same name and is *not* loaded. Two owners would
+        // hide it until both were satisfied; one owner does not.
+        reg.mcp_group("github").unwrap().expand_all();
+        assert!(
+            advertised(&reg).iter().any(|n| n == "webfetch"),
+            "the MCP server's copy must be advertised once its group is expanded: {:?}",
+            advertised(&reg)
+        );
+
+        // And the extended group alone does not reveal it.
+        let mut reg = ToolRegistry::new();
+        reg.register(Box::new(MockMcpTool {
+            name: "webfetch".to_string(),
+            server: "github".to_string(),
+        }));
+        let group = Arc::new(ExtendedTools::new(vec!["webfetch".to_string()]));
+        reg.set_extended(group.clone());
+        reg.set_mcp_groups(vec![Arc::new(McpGroup::new(
+            "github".to_string(),
+            vec![McpToolEntry {
+                name: "webfetch".to_string(),
+                description: "fetch a URL".to_string(),
+            }],
+        ))]);
+        group.load();
+        assert!(
+            !advertised(&reg).iter().any(|n| n == "webfetch"),
+            "the extended group must not reveal a name it does not own: {:?}",
+            advertised(&reg)
         );
     }
 

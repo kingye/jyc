@@ -475,8 +475,12 @@ they stay advertised for the rest of the topic's registry lifetime (a config
 reload or an `/mcp` change rebuilds the registry and starts over). The call
 is idempotent: calling it again for an expanded server reports that its
 tools are already there. A repeated call for a *subset* says the requested
-tools are already expanded and names the ones still hidden — it does not
-claim the whole server is available.
+tools are already expanded and names the tools that are still hidden — it
+does not claim the whole server is available. What is reported is the
+group's actual state, not the shape of the request: a repeated subset call
+names only the tools that are still hidden, and a request that repeats a
+tool name does not read as "the whole server" when part of it is still
+hidden.
 
 **Malformed input is an error.** `tool_names` must be an array of non-empty
 tool names; a string, a number, an empty list, or a list with a bad entry

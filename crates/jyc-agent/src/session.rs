@@ -1005,6 +1005,29 @@ pub(crate) fn extract_message_text(msg: &serde_json::Value) -> String {
     text
 }
 
+/// The assistant's visible text for the text-only transcript view.
+///
+/// Raw assistant messages may carry reasoning twice: inline as one leading
+/// reasoning block and as `reasoning_content`. The transcript is semantic
+/// history, not provider replay input, so it keeps only the visible
+/// response. Stripping one *complete leading* block leaves a literal
+/// reasoning marker elsewhere in a response untouched.
+pub(crate) fn extract_assistant_transcript_text(msg: &serde_json::Value) -> String {
+    strip_leading_reasoning_block(&extract_message_text(msg))
+}
+
+fn strip_leading_reasoning_block(text: &str) -> String {
+    let open = concat!("<", "think>");
+    let close = concat!("</", "think>");
+    let Some(rest) = text.strip_prefix(open) else {
+        return text.to_string();
+    };
+    let Some((_, visible)) = rest.split_once(close) else {
+        return text.to_string();
+    };
+    visible.strip_prefix("\n\n").unwrap_or(visible).to_string()
+}
+
 /// Max length of a single rendered tool-call argument value kept in a
 /// turn's rendered calls; longer values are truncated with an explicit
 /// `… [truncated N bytes]` marker.
@@ -1278,7 +1301,7 @@ fn flush_turn(
         // the text; the calls are rendered separately so a tool-call-only
         // step (empty text) still shows up as a call instead of being
         // dropped.
-        let text = extract_message_text(msg);
+        let text = extract_assistant_transcript_text(msg);
         let calls = collect_tool_calls(msg);
         has_payload |= keeps_turn_alive(&text, !calls.is_empty());
         for (name, args) in &calls {
@@ -1353,7 +1376,7 @@ fn keeps_turn_alive(text: &str, has_calls: bool) -> bool {
 /// [`keeps_turn_alive`] for a whole message: the tool calls are parsed only
 /// when the text is empty (a text-bearing reply needs no second look).
 fn message_keeps_turn_alive(msg: &serde_json::Value) -> bool {
-    let text = extract_message_text(msg);
+    let text = extract_assistant_transcript_text(msg);
     keeps_turn_alive(&text, false) || !collect_tool_calls(msg).is_empty()
 }
 
@@ -2006,6 +2029,97 @@ mod tests {
         assert_eq!(pairs[2].assistant.as_ref().unwrap()["content"], "a3");
         // u4 must NOT be paired.
         assert!(pairs.iter().all(|p| p.user["content"] != "u4"));
+    }
+
+    /// The transcript keeps the visible reply, not the reasoning copy that
+    /// raw OpenAI-compatible messages carry inline on top of
+    /// `reasoning_content`.
+    #[test]
+    fn extract_pairs_strips_inline_reasoning_from_assistant_text() {
+        let reasoning = "secret chain of thought";
+        let content = format!(
+            "{}{reasoning}{}\n\nvisible answer",
+            concat!("<", "think>"),
+            concat!("</", "think>")
+        );
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({
+                "role": "assistant",
+                "content": content,
+                "reasoning_content": reasoning,
+            }),
+            json!({"role": "assistant", "content": "second visible step"}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        assert_eq!(pairs.len(), 1);
+        let text = pairs[0].assistant.as_ref().unwrap()["content"]
+            .as_str()
+            .unwrap();
+        assert_eq!(text, "visible answer\nsecond visible step");
+        assert!(!text.contains(reasoning), "reasoning leaked: {text:?}");
+    }
+
+    /// Inline-only reasoning (the shape left after conversion between
+    /// providers) is stripped too, while a literal marker in the middle of
+    /// a reply survives.
+    #[test]
+    fn extract_pairs_strips_only_one_leading_reasoning_block() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({
+                "role": "assistant",
+                "content": format!(
+                    "{}hidden{}\n\nvisible {}{}",
+                    concat!("<", "think>"),
+                    concat!("</", "think>"),
+                    concat!("<", "think>"),
+                    concat!("</", "think>")
+                ),
+            }),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        let text = pairs[0].assistant.as_ref().unwrap()["content"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            text,
+            format!(
+                "visible {}{}",
+                concat!("<", "think>"),
+                concat!("</", "think>")
+            )
+        );
+    }
+
+    /// Reasoning-only and tool-call-only assistants apply the same keep rule
+    /// in pair extraction and the tail scan, so a trimmed turn boundary
+    /// cannot differ between the two readers.
+    #[test]
+    fn reasoning_only_assistant_does_not_keep_turn_alive() {
+        let reasoning_only = json!({
+            "role": "assistant",
+            "content": format!("{}hidden{}", concat!("<", "think>"), concat!("</", "think>")),
+        });
+        let tool_only = json!({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+        ]});
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            reasoning_only,
+            tool_only,
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        assert_eq!(pairs.len(), 1, "the tool step must keep the turn");
+        assert!(
+            pairs[0].assistant.is_none(),
+            "reasoning is not visible text"
+        );
+        assert_eq!(
+            super::pairs_tail_start(&ctx, 1),
+            (0, 1),
+            "the tail scan must agree with pair extraction"
+        );
     }
 
     /// A multi-step tool turn (user → assistant(call) → tool → assistant(call)

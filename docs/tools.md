@@ -13,7 +13,7 @@ This document lists all tools available to the AI agent in JYC, including built-
 | **Built-in** | Core file system and execution tools. Always available unless explicitly disabled. | Hardcoded in `jyc-agent` |
 | **MCP Bridge** | In-process JYC-specific tools (send message). | Always registered |
 | **Cross-Topic** | Cross-channel topic communication tool. | Registered when cross-channel `topic_managers` available |
-| **External MCP** | Optional tools provided by external MCP servers configured in `config.toml`. | `[[mcps]]` config |
+| **External MCP** | Optional tools provided by external MCP servers configured in `config.toml`. Registered but not advertised until the model expands the server through `load_mcp_schema`. | `[[mcps]]` config |
 
 ---
 
@@ -450,6 +450,77 @@ them automatically at every MCP connect. Re-run the command only when the
 refresh token itself expires or is revoked. See `config.example.toml` for
 the optional `scopes` / `redirect_uri` fields.
 
+### `load_mcp_schema`
+
+An MCP server's tools are schemas like any other: they ride in every
+request's stable prompt prefix, whether or not this conversation ever calls
+them. A server with fifty tools puts fifty schemas in the request of a
+topic that wanted one of them.
+
+So the MCP tools stay out of the advertised list until the model asks for
+them. What it sees instead is this tool, whose description is the index of
+the configured servers: each server's name, and each of its tools with a
+one-line description — enough to decide *which* server to load, and none of
+the schemas themselves.
+
+**Parameters:**
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `mcp_name` | string (required) | The MCP server to expand, as listed in the tool's description |
+| `tool_names` | string[] (optional) | Only these tools of that server; omit to expand all of them |
+
+**Effect:** the named tools are advertised from the next model call on, and
+they stay advertised for the rest of the topic's registry lifetime (a config
+reload or an `/mcp` change rebuilds the registry and starts over). The call
+is idempotent: calling it again for an expanded server reports that its
+tools are already there. A repeated call for a *subset* says the requested
+tools are already expanded and names the tools that are still hidden — it
+does not claim the whole server is available. What is reported is the
+group's actual state, not the shape of the request: a repeated subset call
+names only the tools that are still hidden, and a request that repeats a
+tool name does not read as "the whole server" when part of it is still
+hidden.
+
+**Malformed input is an error.** `tool_names` must be an array of non-empty
+tool names; a string, a number, an empty list, or a list with a bad entry
+is rejected rather than treated as "no subset" — silently expanding the
+whole server would defeat the point of asking for a subset. Omit
+`tool_names` to expand every tool of the server.
+
+**Only advertisement is gated.** The tools stay registered and executable, so
+a model that names one before expanding it gets a working call rather than a
+"not found" error. `disabled_tools` and `disabled_mcps` remain the boundary
+that removes a tool or a server for good — a server removed that way is not
+in the index either. That includes the loader itself:
+`disabled_tools = ["load_mcp_schema"]` removes it, and the MCP tools then
+stay out of every request (they remain callable by name, as always).
+
+**One name, one owner.** The registry holds one tool per name, so a name
+belongs to whatever holds it last. An MCP server that exposes a built-in's
+name (`webfetch`, say) takes that name over: the tool belongs to the MCP
+group and stays hidden until the model expands that server, and the
+extended group does not claim it as well. For the same reason the loader
+names are reserved — `load_mcp_schema` and `load_extended_tools` stay the
+framework's, and an MCP server exposing a tool under one of those names has
+that tool skipped. The loaders are how the model reaches the MCP tools at
+all, so a loader it cannot call is a server it can never expand.
+
+**For tool implementers.** That "read from the live registry" is
+`Tool::source()`: a tool an MCP server provides returns `Some(server_name)`,
+a built-in or bridge tool returns `None`. It is not optional metadata —
+advertisement is decided from it, so getting it wrong misclassifies the
+tool silently. An MCP-backed tool that leaves it at `None` is treated as a
+built-in (the extended group can claim it, and it never appears in the MCP
+index); a built-in that returns `Some(..)` is advertised eagerly and
+defeats the schema budget. `Some` must name the server exactly as the
+groups do, and it should borrow a field: it is called once per tool on
+every model request.
+
+**What it does not change:** the servers are still connected at registry
+build time — the index needs their tool names — so this saves the schema
+cost of every request, not the startup handshake or the subprocess.
+
 ---
 
 ## Tool Exclusion
@@ -627,13 +698,21 @@ build_tool_registry()
   ├─ Register jyc_publish_file (base URL from [inspect] base_url)
   ├─ Register MCP bridge tools: jyc_send_message
   ├─ Register jyc_send_to_topic (when the topic managers are available)
-  ├─ Load external MCP tools (filtered by disabled_mcps)
+  ├─ Load external MCP tools (filtered by disabled_mcps); a tool named
+  │  load_mcp_schema or load_extended_tools is skipped — the loaders keep
+  │  their names
   ├─ Apply exclusions: remove tools matching disabled_tools
+  ├─ Wire the MCP groups: one per server, holding the tools that landed in
+  │  this registry — they are advertised only after load_mcp_schema expands
+  │  them
+  ├─ Register load_mcp_schema: its description is the index of the servers
   ├─ Wire the extended group: register load_extended_tools and mark the
   │  group's tools as advertised-only-after-loading
-  └─ Apply the exclusions to the loader as well: it is registered after the
-     pass above, so disabled_tools may name load_extended_tools
+  └─ Apply the exclusions to the loaders as well: they are registered after
+     the pass above, so disabled_tools may name load_extended_tools or
+     load_mcp_schema
 ```
 
 The final registry is what the LLM sees in its `tools` list — minus the
-extended group, until the model loads it.
+extended group, until the model loads it, and minus the MCP tools, until the
+model expands their server.

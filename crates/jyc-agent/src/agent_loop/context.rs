@@ -5,6 +5,7 @@
 use std::borrow::Cow;
 
 use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
+use jyc_types::{ContextRegion, ContextRegionInfo};
 
 use crate::provider::Provider;
 use crate::types::ContentBlock;
@@ -244,9 +245,52 @@ pub(crate) fn build_send_context_cached<'a>(
     }
 }
 
+/// Measure the wire payload by region — how many messages each region
+/// carries, their exact compact-JSON bytes, and their estimated token
+/// weight (the same heuristic the context budget uses).
+///
+/// The per-message labels come from [`build_send_context_cached`]; this
+/// only aggregates them, so the composition describes exactly what was
+/// sent. `Full` mode labels the whole payload as one `Full` region.
+///
+/// The rows keep the order the regions appear on the wire.
+pub(crate) fn context_composition(
+    messages: &[serde_json::Value],
+    regions: &[u8],
+    mode: &ContextStrategy,
+) -> Vec<ContextRegionInfo> {
+    let mut rows: Vec<ContextRegionInfo> = Vec::new();
+    for (msg, label) in messages.iter().zip(regions) {
+        let region = match (mode, *label) {
+            (ContextStrategy::Full, 1) => ContextRegion::Full,
+            (ContextStrategy::SlidingWindow, 1) => ContextRegion::History,
+            (ContextStrategy::SlidingWindow, 3) => ContextRegion::Checkpoint,
+            (ContextStrategy::SlidingWindow, 2) => ContextRegion::Current,
+            _ => continue,
+        };
+        let bytes = serde_json::to_vec(msg)
+            .map(|wire| wire.len() as u64)
+            .unwrap_or(0);
+        let estimated_tokens = est_message_tokens(msg) as u64;
+        if let Some(row) = rows.iter_mut().find(|row| row.region == region) {
+            row.messages += 1;
+            row.bytes = row.bytes.saturating_add(bytes);
+            row.estimated_tokens = row.estimated_tokens.saturating_add(estimated_tokens);
+        } else {
+            rows.push(ContextRegionInfo {
+                region,
+                messages: 1,
+                bytes,
+                estimated_tokens,
+            });
+        }
+    }
+    rows
+}
+
 /// Completed assistant messages per current-turn checkpoint.
 ///
-/// ponytail: fixed interval — one checkpoint every 16 interactions keeps the
+/// ponytail: fixed interval — one checkpoint every 32 interactions keeps the
 /// raw suffix bounded without a knob or a tokenizer. Make it configurable
 /// only if real workloads show the interval is the wrong size.
 const TURN_CHECKPOINT_INTERVAL: usize = 32;
@@ -773,8 +817,8 @@ mod render_raw_context_tests {
     }
 
     #[test]
-    fn current_turn_has_no_checkpoint_through_sixteen_interactions() {
-        let ctx = current_with_interactions(16, "secret");
+    fn current_turn_has_no_checkpoint_through_thirty_two_interactions() {
+        let ctx = current_with_interactions(32, "secret");
         let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, 0, &sliding_cfg());
         assert_eq!(sent.len(), ctx.len());
         assert!(
@@ -785,7 +829,7 @@ mod render_raw_context_tests {
 
     #[test]
     fn current_turn_checkpoint_folds_older_interactions_only() {
-        let ctx = current_with_interactions(17, "secret");
+        let ctx = current_with_interactions(33, "secret");
         let (cold, cold_regions) =
             build_send_context_with_regions(&prov(), &ctx, 0, &sliding_cfg());
         let mut cache = SendContextCache::default();
@@ -809,47 +853,47 @@ mod render_raw_context_tests {
             json!({"role": "user", "content": TURN_CHECKPOINT_MARKER_TEXT})
         );
         assert_eq!(
-            sent[raw_start], ctx[33],
-            "the seventeenth assistant step stays verbatim"
+            sent[raw_start], ctx[65],
+            "the latest assistant step stays verbatim"
         );
         assert_eq!(
             sent[raw_start + 1],
-            ctx[34],
+            ctx[66],
             "its tool result stays verbatim"
         );
 
         let folded = serde_json::to_string(&sent[..raw_start]).unwrap();
         assert!(!folded.contains("secret"), "reasoning leaked: {folded}");
         assert!(!folded.contains("RESULT-"), "tool result leaked: {folded}");
-        assert!(folded.contains("step 0") && folded.contains("step 15"));
-        assert!(!folded.contains("step 16"), "latest step must stay raw");
+        assert!(folded.contains("step 0") && folded.contains("step 31"));
+        assert!(!folded.contains("step 32"), "latest step must stay raw");
     }
 
     #[test]
     fn current_turn_checkpoint_is_stable_between_boundaries() {
-        let mut ctx = current_with_interactions(17, "secret");
+        let mut ctx = current_with_interactions(33, "secret");
         let mut cache = SendContextCache::default();
         let _ = build_send_context_cached(&prov(), &ctx, 0, &sliding_cfg(), &mut cache);
         let first = cache.checkpoint.clone();
         assert_eq!(cache.checkpoint_rebuilt(), Some(true));
 
-        push_interaction(&mut ctx, 17, "secret");
+        push_interaction(&mut ctx, 33, "secret");
         let _ = build_send_context_cached(&prov(), &ctx, 0, &sliding_cfg(), &mut cache);
         assert_eq!(cache.checkpoint, first);
         assert_eq!(cache.checkpoint_rebuilt(), Some(false));
 
-        for i in 18..33 {
+        for i in 34..65 {
             push_interaction(&mut ctx, i, "secret");
         }
         let _ = build_send_context_cached(&prov(), &ctx, 0, &sliding_cfg(), &mut cache);
-        assert_ne!(cache.checkpoint, first, "33 interactions advance once");
+        assert_ne!(cache.checkpoint, first, "65 interactions advance once");
         assert_eq!(cache.checkpoint_rebuilt(), Some(true));
     }
 
     #[test]
     fn current_turn_checkpoint_uses_provider_wire_shape() {
-        let mut ctx = current_with_interactions(17, "folded-reasoning");
-        // The seventeenth step is retained verbatim, so give it a distinct
+        let mut ctx = current_with_interactions(33, "folded-reasoning");
+        // The latest step is retained verbatim, so give it a distinct
         // reasoning marker: only the folded marker may disappear from the wire.
         let last_assistant = ctx
             .iter()
@@ -857,7 +901,7 @@ mod render_raw_context_tests {
             .expect("fixture has assistant steps");
         ctx[last_assistant]["reasoning_content"] = serde_json::json!("retained-reasoning");
         ctx[last_assistant]["content"] = serde_json::json!(format!(
-            "{open}retained-reasoning{close}\n\nstep 16\n",
+            "{open}retained-reasoning{close}\n\nstep 32\n",
             open = concat!("<", "think", ">"),
             close = concat!("</", "think", ">"),
         ));
@@ -900,7 +944,7 @@ mod render_raw_context_tests {
                 "retained reasoning was dropped: {wire}"
             );
             assert!(
-                wire.contains("RESULT-16") && wire.contains("step 16"),
+                wire.contains("RESULT-32") && wire.contains("step 32"),
                 "the retained assistant/tool-result pair was dropped: {wire}"
             );
         }
@@ -908,7 +952,7 @@ mod render_raw_context_tests {
 
     #[test]
     fn full_mode_keeps_a_long_turn_verbatim() {
-        let ctx = current_with_interactions(17, "secret");
+        let ctx = current_with_interactions(33, "secret");
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::Full,
             window: 10,
@@ -920,6 +964,92 @@ mod render_raw_context_tests {
         assert!(matches!(sent, Cow::Borrowed(_)));
         assert_eq!(sent.len(), ctx.len());
         assert!(regions.iter().all(|r| *r == 1));
+    }
+
+    #[test]
+    fn composition_full_mode_is_one_full_region() {
+        let ctx = current_with_interactions(3, "secret");
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::Full,
+            ..sliding_cfg()
+        };
+        let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, 0, &cfg);
+        let rows = context_composition(sent.as_ref(), &regions, &cfg.mode);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].region, ContextRegion::Full);
+        assert_eq!(rows[0].messages, sent.len() as u64);
+        let expected_bytes: u64 = sent
+            .iter()
+            .map(|msg| serde_json::to_vec(msg).unwrap().len() as u64)
+            .sum();
+        let expected_tokens: u64 = sent.iter().map(|msg| est_message_tokens(msg) as u64).sum();
+        assert_eq!(rows[0].bytes, expected_bytes);
+        assert_eq!(rows[0].estimated_tokens, expected_tokens);
+    }
+
+    #[test]
+    fn composition_without_checkpoint_splits_history_and_current() {
+        let prior = vec![
+            json!({"role": "user", "content": "previous task"}),
+            json!({"role": "assistant", "content": "previous answer"}),
+        ];
+        let prior_len = prior.len();
+        let mut ctx = prior;
+        ctx.extend(current_with_interactions(32, "secret"));
+        let (sent, regions) =
+            build_send_context_with_regions(&prov(), &ctx, prior_len, &sliding_cfg());
+        assert!(
+            !regions.contains(&3),
+            "fixture must stay below the interval"
+        );
+
+        let rows = context_composition(sent.as_ref(), &regions, &ContextStrategy::SlidingWindow);
+        assert_eq!(
+            rows.iter().map(|r| r.region).collect::<Vec<_>>(),
+            vec![ContextRegion::History, ContextRegion::Current]
+        );
+        assert_eq!(
+            rows[0].messages,
+            regions.iter().filter(|r| **r == 1).count() as u64
+        );
+        assert_eq!(
+            rows[1].messages,
+            regions.iter().filter(|r| **r == 2).count() as u64
+        );
+        assert_eq!(
+            rows.iter().map(|r| r.messages).sum::<u64>(),
+            sent.len() as u64
+        );
+    }
+
+    #[test]
+    fn composition_splits_current_turn_checkpoint_from_raw_suffix() {
+        let ctx = current_with_interactions(33, "secret");
+        let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, 0, &sliding_cfg());
+        assert!(regions.contains(&3), "fixture must cross the interval");
+
+        let rows = context_composition(sent.as_ref(), &regions, &ContextStrategy::SlidingWindow);
+        assert_eq!(
+            rows.iter().map(|r| r.region).collect::<Vec<_>>(),
+            vec![ContextRegion::Checkpoint, ContextRegion::Current]
+        );
+        assert_eq!(
+            rows[0].messages,
+            regions.iter().filter(|r| **r == 3).count() as u64
+        );
+        assert_eq!(
+            rows[1].messages,
+            regions.iter().filter(|r| **r == 2).count() as u64
+        );
+        let expected_bytes: u64 = sent
+            .iter()
+            .zip(&regions)
+            .filter(|(_, region)| **region == 3)
+            .map(|(msg, _)| serde_json::to_vec(msg).unwrap().len() as u64)
+            .sum();
+        assert_eq!(rows[0].bytes, expected_bytes);
+        assert!(rows[0].estimated_tokens > 0 && rows[1].estimated_tokens > 0);
     }
 
     #[test]

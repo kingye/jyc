@@ -10,7 +10,7 @@
 //! of the dashboard's public surface.
 
 use jyc_core::duration::format_latency;
-use jyc_types::TopicInfo;
+use jyc_types::{ContextRegion, ContextRegionInfo, TopicInfo};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
@@ -41,6 +41,119 @@ const TODAY_ALL_LABEL: &str = "Today (all): ";
 /// A label longer than this pushes its own value out of the column —
 /// raise it when a longer label arrives.
 pub(super) const LABEL_WIDTH: usize = TODAY_ALL_LABEL.len();
+
+/// The full block the context-composition bar is drawn from. One cell wide
+/// in every font, so a segment's width is its share of the bar.
+const CONTEXT_BLOCK: &str = "█";
+
+/// The colour of a context region, shared by its bar segment and its legend
+/// label so the two identify the same part of the context.
+fn context_region_color(region: ContextRegion) -> Color {
+    match region {
+        ContextRegion::Full | ContextRegion::History => Color::Green,
+        ContextRegion::Checkpoint => Color::Yellow,
+        ContextRegion::Current => Color::Cyan,
+    }
+}
+
+/// A region's legend label, padded and coloured to match its bar segment.
+pub(super) fn context_region_label_span(region: ContextRegion) -> Span<'static> {
+    let label = format!("{}:", region.label());
+    Span::styled(
+        format!("{label:<width$}", width = LABEL_WIDTH),
+        Style::default()
+            .fg(context_region_color(region))
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+/// Append the context-composition bar to `spans`: one coloured run of full
+/// blocks per region, sized by its estimated token share.
+///
+/// The bar uses the pane's whole inner width (less [`BAR_EDGE_ROOM`]), so
+/// its segments are as wide as the pane allows. Every region with a
+/// non-zero estimate gets at least one cell when the bar is wide enough
+/// for them all; a narrower bar falls back to proportional rounding.
+///
+/// Returns `false` — and pushes nothing — when the composition has no
+/// estimated weight or no room is left for a bar.
+pub(super) fn push_context_composition_bar_spans(
+    spans: &mut Vec<Span>,
+    t: &TopicInfo,
+    inner_width: usize,
+) -> bool {
+    let width = inner_width.saturating_sub(BAR_EDGE_ROOM);
+    let total = jyc_types::context_composition_total(&t.context_composition);
+    if width == 0 || total == 0 {
+        return false;
+    }
+    let widths = composition_widths(&t.context_composition, total, width);
+    let mut drew = false;
+    for (region, cells) in t.context_composition.iter().zip(widths) {
+        if cells == 0 {
+            continue;
+        }
+        spans.push(Span::styled(
+            CONTEXT_BLOCK.repeat(cells),
+            Style::default().fg(context_region_color(region.region)),
+        ));
+        drew = true;
+    }
+    drew
+}
+
+/// Split `width` cells among the regions in proportion to their estimated
+/// token weight.
+///
+/// With room for every weighted region, each starts with one cell (so a
+/// small region cannot vanish) and the rest follows the largest-remainder
+/// method. A bar narrower than the number of weighted regions instead
+/// rounds cumulative boundaries, which still fills the width exactly.
+fn composition_widths(regions: &[ContextRegionInfo], total: u64, width: usize) -> Vec<usize> {
+    let mut widths = vec![0usize; regions.len()];
+    if width == 0 || total == 0 {
+        return widths;
+    }
+    let weighted: Vec<usize> = regions
+        .iter()
+        .enumerate()
+        .filter_map(|(i, region)| (region.estimated_tokens > 0).then_some(i))
+        .collect();
+    if weighted.is_empty() {
+        return widths;
+    }
+    if width < weighted.len() {
+        let total = total as u128;
+        let mut cumulative = 0u128;
+        let mut previous = 0usize;
+        for (i, region) in regions.iter().enumerate() {
+            cumulative += region.estimated_tokens as u128;
+            let end = ((cumulative * width as u128 + total / 2) / total) as usize;
+            widths[i] = end.saturating_sub(previous);
+            previous = end;
+        }
+        return widths;
+    }
+
+    for &i in &weighted {
+        widths[i] = 1;
+    }
+    let remaining = width - weighted.len();
+    let mut used = 0usize;
+    let mut remainders: Vec<(u128, usize)> = Vec::with_capacity(weighted.len());
+    for &i in &weighted {
+        let scaled = regions[i].estimated_tokens as u128 * remaining as u128;
+        let share = (scaled / total as u128) as usize;
+        widths[i] += share;
+        used += share;
+        remainders.push((scaled % total as u128, i));
+    }
+    remainders.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    for &(_, i) in remainders.iter().take(remaining - used) {
+        widths[i] += 1;
+    }
+    widths
+}
 
 /// The cells a bar keeps to the pane's right edge. The bar stops two
 /// cells short of the edge, so it never touches the border and the pane
@@ -516,6 +629,21 @@ fn push_queue_blocks(spans: &mut Vec<Span>, t: &TopicInfo, room: usize) {
 mod tests {
     use super::*;
 
+    /// One context-composition row for the width tests.
+    fn region(
+        region: ContextRegion,
+        messages: u64,
+        bytes: u64,
+        estimated_tokens: u64,
+    ) -> ContextRegionInfo {
+        ContextRegionInfo {
+            region,
+            messages,
+            bytes,
+            estimated_tokens,
+        }
+    }
+
     /// A pane label as the pane draws it: padded to the label width, so
     /// that every value of the pane starts in the same column.
     fn padded(label: &str) -> String {
@@ -571,6 +699,7 @@ mod tests {
             context_input_tokens: input,
             context_output_tokens: context_output,
             max_tokens: max,
+            context_composition: Vec::new(),
             output_tokens: output,
             turn_output_tokens: None,
             total_input_tokens: total_input,
@@ -1269,5 +1398,34 @@ mod tests {
         let mut spans = Vec::new();
         push_latency_span(&mut spans, &half);
         assert!(spans.is_empty());
+    }
+
+    /// The composition bar fills the width exactly, and every region with
+    /// weight keeps a cell even when its share would round it away.
+    #[test]
+    fn composition_widths_fill_the_bar_and_keep_small_regions_visible() {
+        let regions = [
+            region(ContextRegion::History, 31, 100, 100),
+            region(ContextRegion::Checkpoint, 17, 50, 1),
+            region(ContextRegion::Current, 9, 50, 50),
+        ];
+        let widths = composition_widths(&regions, 151, 20);
+        assert_eq!(widths.iter().sum::<usize>(), 20);
+        assert!(widths.iter().all(|cells| *cells >= 1));
+        assert!(widths[0] > widths[2] && widths[2] > widths[1]);
+    }
+
+    /// A bar narrower than the number of regions still fills the width;
+    /// a region with no estimated weight stays out of it.
+    #[test]
+    fn composition_widths_fit_a_narrow_bar_and_skip_zero_weight() {
+        let regions = [
+            region(ContextRegion::History, 1, 10, 0),
+            region(ContextRegion::Checkpoint, 1, 10, 50),
+            region(ContextRegion::Current, 1, 10, 50),
+        ];
+        let widths = composition_widths(&regions, 100, 1);
+        assert_eq!(widths.iter().sum::<usize>(), 1);
+        assert_eq!(widths[0], 0);
     }
 }

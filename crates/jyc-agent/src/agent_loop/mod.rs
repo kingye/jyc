@@ -451,6 +451,15 @@ pub async fn run(
             &mut send_context_cache,
         );
         let context_build_ms = build_started.elapsed().as_millis() as u64;
+        // The composition of the payload about to be sent, measured from
+        // the same region labels the debug dump uses. Persisted once the
+        // call returns, so a failed call never overwrites the last
+        // completed call's snapshot.
+        let context_composition = crate::agent_loop::context::context_composition(
+            send_context.as_ref(),
+            &send_regions,
+            &context_strategy.mode,
+        );
         // Optional debug dump: when the user runs `/context dump on`, append
         // one JSON line per LLM call to `<topic>/.jyc/wire-payload.jsonl`
         // (capped at 50 lines). Best-effort — failures are not fatal.
@@ -601,6 +610,8 @@ pub async fn run(
             response.reasoning_tokens,
         )
         .await;
+        crate::session::persist_context_composition(topic_name, topic_path, &context_composition)
+            .await;
 
         // 3. Check for empty response (likely an API error we didn't catch)
         if response.text.is_empty() && response.tool_calls.is_empty() && response.input_tokens == 0

@@ -134,13 +134,38 @@ pub fn context_composition_total(regions: &[crate::inspect::ContextRegionInfo]) 
 /// The width of the legend's label column: the widest [`ContextRegion::label`]
 /// in the composition, so every share of the legend starts in one column.
 ///
+/// Counted in characters, not bytes, because that is what the padding in
+/// [`format_context_region_label`] counts — the two must agree for the
+/// column to line up.
+///
 /// [`ContextRegion::label`]: crate::inspect::ContextRegion::label
 pub fn context_composition_label_width(regions: &[crate::inspect::ContextRegionInfo]) -> usize {
     regions
         .iter()
-        .map(|region| region.region.label().len())
+        .map(|region| region.region.label().chars().count())
         .max()
         .unwrap_or(0)
+}
+
+/// The legend's label column for one region: `indent` spaces, the region's
+/// [`label`] padded to `label_width`, and one trailing space, so the share
+/// that follows starts in the same column on every row.
+///
+/// One owner for the column's shape: the TUI colours the result, `/info`
+/// prints it plain, and both therefore pad and indent it the same way.
+///
+/// [`label`]: crate::inspect::ContextRegion::label
+pub fn format_context_region_label(
+    region: crate::inspect::ContextRegion,
+    label_width: usize,
+    indent: usize,
+) -> String {
+    format!(
+        "{}{:<width$} ",
+        " ".repeat(indent),
+        region.label(),
+        width = label_width
+    )
 }
 
 /// One region's share of the estimated context weight, in percent.
@@ -348,5 +373,27 @@ mod tests {
             "History".len()
         );
         assert_eq!(context_composition_label_width(&[]), 0);
+    }
+
+    /// One owner for the label column: indent, padded label, one space.
+    /// The label is padded by character count, which is what the width
+    /// helper counts — the row the TUI and `/info` build is the same one.
+    #[test]
+    fn region_label_column_pads_by_characters() {
+        assert_eq!(
+            format_context_region_label(crate::inspect::ContextRegion::History, 12, 9),
+            "         History      "
+        );
+        assert_eq!(
+            format_context_region_label(crate::inspect::ContextRegion::Current, 12, 2),
+            "  Current turn "
+        );
+        // A label wider than the column is not truncated — the column
+        // comes from the widest label, so this only happens on a caller
+        // bug; the formatter still returns the label whole.
+        assert_eq!(
+            format_context_region_label(crate::inspect::ContextRegion::Checkpoint, 1, 0),
+            "Checkpoint "
+        );
     }
 }

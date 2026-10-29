@@ -2042,6 +2042,103 @@ fn info_pane_draws_context_composition_bar_and_legend() {
     assert!(bar_colors.contains(&Color::Cyan), "{screen}");
 }
 
+/// Render the info pane at `width` × `height` with `composition` on the
+/// detail, and return it as one string with a line per terminal row.
+fn info_pane_screen_with_composition(
+    composition: Vec<jyc_types::ContextRegionInfo>,
+    width: u16,
+    height: u16,
+) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = info_pane_app(jyc_types::task::TaskList::default());
+    app.topic_detail
+        .as_mut()
+        .expect("the detail")
+        .context_composition = composition;
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| render_topic_info_pane(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A pane too narrow for the bar keeps the section header and drops only
+/// the bar: below `MIN_BAR_WIDTH` a cell would carry too much of the share
+/// to be honest, so the bar is refused rather than drawn. The header row
+/// survives with nothing behind it — the bar helper's `false` means "no
+/// bar on this row", not "no row at all".
+#[test]
+fn info_pane_keeps_the_context_header_when_the_bar_is_refused() {
+    use jyc_types::{ContextRegion, ContextRegionInfo};
+
+    // 15 columns less the pane's left border leaves 14: `Context: ` takes
+    // 9, leaving 5, and `BAR_EDGE_ROOM` takes 2 of those — 3 cells, under
+    // `MIN_BAR_WIDTH` (5).
+    let screen = info_pane_screen_with_composition(
+        vec![
+            ContextRegionInfo {
+                region: ContextRegion::History,
+                messages: 3,
+                bytes: 1_000,
+                estimated_tokens: 600,
+            },
+            ContextRegionInfo {
+                region: ContextRegion::Current,
+                messages: 1,
+                bytes: 200,
+                estimated_tokens: 400,
+            },
+        ],
+        15,
+        24,
+    );
+
+    // The bar shares the header row, so a header with nothing behind it is
+    // exactly a refused bar; a bar drawn here would follow the label.
+    let header = screen
+        .lines()
+        .find(|line| line.contains("Context:"))
+        .expect("the composition header");
+    assert_eq!(header.trim(), "Context:", "{screen}");
+}
+
+/// A composition whose estimates are all zero has no weight to split: the
+/// bar is refused and the legend reads `~0 · 0%` rather than dividing by
+/// zero — the same rows, one bar short.
+#[test]
+fn info_pane_shows_a_zero_weight_composition_without_a_bar() {
+    use jyc_types::{ContextRegion, ContextRegionInfo};
+
+    let screen = info_pane_screen_with_composition(
+        vec![ContextRegionInfo {
+            region: ContextRegion::History,
+            messages: 3,
+            bytes: 1_000,
+            estimated_tokens: 0,
+        }],
+        60,
+        24,
+    );
+
+    let header = screen
+        .lines()
+        .find(|line| line.contains("Context:"))
+        .expect("the composition header");
+    assert_eq!(header.trim(), "Context:", "{screen}");
+    assert!(screen.contains("         History      ~0 · 0%"), "{screen}");
+}
+
 /// The status row carries the topic's backlog: the blocks say how much of
 /// the queue is taken — the queued ones yellow, the free slots gray — and
 /// the word `queue` says what they count, so they cannot be read as the

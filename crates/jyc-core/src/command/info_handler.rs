@@ -9,6 +9,11 @@ use crate::duration::format_latency;
 use crate::topic_manager::TopicManager;
 use crate::topic_manager::topic_tree;
 
+/// The indent of `/info`'s context-composition legend rows under the
+/// `Context:` header. The pane indents them to the bar's first cell
+/// instead, which has no meaning in plain text — there is no bar here.
+const INFO_CONTEXT_LEGEND_INDENT: usize = 2;
+
 /// /info command — show this topic's info, mirroring the dashboard chat
 /// screen's Topic Info pane (name, pattern, model, mode, branch, status,
 /// token usage, call latency, cost, changed files).
@@ -100,10 +105,13 @@ fn format_topic_info(t: &TopicInfo) -> String {
         lines.push("Context:".to_string());
         for region in &t.context_composition {
             lines.push(format!(
-                "  {:<width$} {}",
-                region.region.label(),
+                "{}{}",
+                jyc_types::format_context_region_label(
+                    region.region,
+                    label_width,
+                    INFO_CONTEXT_LEGEND_INDENT
+                ),
                 jyc_types::format_context_region_share(region, total),
-                width = label_width
             ));
         }
     }

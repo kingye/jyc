@@ -65,18 +65,17 @@ fn context_region_color(region: ContextRegion) -> Color {
 /// A region's legend label: indented to the column the bar starts in,
 /// padded to `label_width` and followed by one space, so the shares line
 /// up in one column under the bar. Coloured to match the region's segment.
+///
+/// The column itself is built by
+/// [`jyc_types::format_context_region_label`], shared with `/info`, so the
+/// two cannot pad or indent it differently.
 pub(super) fn context_region_label_span(
     region: ContextRegion,
     indent: usize,
     label_width: usize,
 ) -> Span<'static> {
     Span::styled(
-        format!(
-            "{}{:<width$} ",
-            " ".repeat(indent),
-            region.label(),
-            width = label_width
-        ),
+        jyc_types::format_context_region_label(region, label_width, indent),
         Style::default()
             .fg(context_region_color(region))
             .add_modifier(Modifier::BOLD),
@@ -97,6 +96,11 @@ pub(super) fn context_region_label_span(
 /// estimated weight, or when the room left is below [`MIN_BAR_WIDTH`]: a
 /// bar that narrow would misreport the share, so the legend figures stand
 /// alone, the same rule the token bar follows.
+///
+/// The caller keeps the `Context:` label row either way — the legend rows
+/// below it still need their header, and the label costs no cells the bar
+/// could have used. `false` therefore reads as "no bar on this row", not
+/// "no row at all".
 pub(super) fn push_context_composition_bar_spans(
     spans: &mut Vec<Span>,
     t: &TopicInfo,

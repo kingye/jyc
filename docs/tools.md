@@ -474,7 +474,15 @@ the schemas themselves.
 they stay advertised for the rest of the topic's registry lifetime (a config
 reload or an `/mcp` change rebuilds the registry and starts over). The call
 is idempotent: calling it again for an expanded server reports that its
-tools are already there.
+tools are already there. A repeated call for a *subset* says the requested
+tools are already expanded and names the ones still hidden — it does not
+claim the whole server is available.
+
+**Malformed input is an error.** `tool_names` must be an array of non-empty
+tool names; a string, a number, an empty list, or a list with a bad entry
+is rejected rather than treated as "no subset" — silently expanding the
+whole server would defeat the point of asking for a subset. Omit
+`tool_names` to expand every tool of the server.
 
 **Only advertisement is gated.** The tools stay registered and executable, so
 a model that names one before expanding it gets a working call rather than a
@@ -483,6 +491,16 @@ that removes a tool or a server for good — a server removed that way is not
 in the index either. That includes the loader itself:
 `disabled_tools = ["load_mcp_schema"]` removes it, and the MCP tools then
 stay out of every request (they remain callable by name, as always).
+
+**One name, one owner.** The registry holds one tool per name, so a name
+belongs to whatever holds it last. An MCP server that exposes a built-in's
+name (`webfetch`, say) takes that name over: the tool belongs to the MCP
+group and stays hidden until the model expands that server, and the
+extended group does not claim it as well. For the same reason the loader
+names are reserved — `load_mcp_schema` and `load_extended_tools` stay the
+framework's, and an MCP server exposing a tool under one of those names has
+that tool skipped. The loaders are how the model reaches the MCP tools at
+all, so a loader it cannot call is a server it can never expand.
 
 **What it does not change:** the servers are still connected at registry
 build time — the index needs their tool names — so this saves the schema
@@ -665,7 +683,9 @@ build_tool_registry()
   ├─ Register jyc_publish_file (base URL from [inspect] base_url)
   ├─ Register MCP bridge tools: jyc_send_message
   ├─ Register jyc_send_to_topic (when the topic managers are available)
-  ├─ Load external MCP tools (filtered by disabled_mcps)
+  ├─ Load external MCP tools (filtered by disabled_mcps); a tool named
+  │  load_mcp_schema or load_extended_tools is skipped — the loaders keep
+  │  their names
   ├─ Apply exclusions: remove tools matching disabled_tools
   ├─ Wire the MCP groups: one per server, holding the tools that landed in
   │  this registry — they are advertised only after load_mcp_schema expands

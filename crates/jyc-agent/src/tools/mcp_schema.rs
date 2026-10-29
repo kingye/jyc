@@ -163,28 +163,55 @@ impl Tool for LoadMcpSchemaTool {
             )));
         };
 
-        // An empty list means "all of them", like omitting the parameter.
-        let requested: Vec<String> = input
-            .get("tool_names")
-            .and_then(|v| v.as_array())
-            .map(|names| {
-                names
-                    .iter()
-                    .filter_map(|v| v.as_str())
-                    .map(|name| name.trim().to_string())
-                    .filter(|name| !name.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
+        // `tool_names` is optional. When it is present it must be an array
+        // of tool names: a malformed value is an error, not a silent
+        // "expand everything" — the caller asked for a subset, and
+        // expanding the whole server would defeat the point of asking.
+        // An explicit null is the JSON way of saying "no value", so it is
+        // treated like an omitted field.
+        let requested: Option<Vec<String>> = match input.get("tool_names") {
+            None | Some(Value::Null) => None,
+            Some(value) => {
+                let Some(items) = value.as_array() else {
+                    return Ok(ToolOutput::error(format!(
+                        "'tool_names' must be an array of tool names, got {}",
+                        json_type_name(value)
+                    )));
+                };
+                let mut names = Vec::with_capacity(items.len());
+                for item in items {
+                    let Some(name) = item.as_str() else {
+                        return Ok(ToolOutput::error(format!(
+                            "'tool_names' must contain only tool names, got {}",
+                            json_type_name(item)
+                        )));
+                    };
+                    let name = name.trim();
+                    if name.is_empty() {
+                        return Ok(ToolOutput::error(
+                            "'tool_names' must not contain an empty tool name",
+                        ));
+                    }
+                    names.push(name.to_string());
+                }
+                // An explicitly empty list is the caller saying "none of
+                // them" — but there is nothing to expand, so it is an error
+                // rather than a quiet no-op.
+                if names.is_empty() {
+                    return Ok(ToolOutput::error(
+                        "'tool_names' is empty — omit it to expand every tool of the server",
+                    ));
+                }
+                Some(names)
+            }
+        };
 
-        if requested.is_empty() {
+        let Some(requested) = requested else {
+            // No subset asked for: expand the whole server.
             let newly = group.expand_all();
-            return Ok(expansion_result(
-                group.server_name(),
-                &newly,
-                &group.tool_names(),
-            ));
-        }
+            let held = group.tool_names();
+            return Ok(expansion_result(group.server_name(), &newly, &held, &held));
+        };
 
         for name in &requested {
             if !group.has_tool(name) {
@@ -195,19 +222,57 @@ impl Tool for LoadMcpSchemaTool {
             }
         }
         let newly = group.expand(&requested);
+        let requested: Vec<&str> = requested.iter().map(|name| name.as_str()).collect();
+        let held = group.tool_names();
         Ok(expansion_result(
             group.server_name(),
             &newly,
-            &group.tool_names(),
+            &requested,
+            &held,
         ))
     }
 }
 
+/// The JSON type of a value, for an error message that says what came in
+/// instead of what was expected.
+fn json_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+    }
+}
+
 /// The reply to an expansion: what it brought in, and what the server holds.
-fn expansion_result(server_name: &str, newly: &[String], held: &[&str]) -> ToolOutput {
+///
+/// `requested` is what the caller asked for and `held` is everything the
+/// server has. The two differ when the caller asked for a subset: saying
+/// "the tools of this server are already expanded" after a subset request
+/// would claim the whole server is available when the rest of it is still
+/// hidden.
+fn expansion_result(
+    server_name: &str,
+    newly: &[String],
+    requested: &[&str],
+    held: &[&str],
+) -> ToolOutput {
     if newly.is_empty() {
+        if requested.len() == held.len() {
+            // The whole server was asked for, and it is all expanded.
+            return ToolOutput::success(format!(
+                "The tools of MCP server '{server_name}' are already expanded: {}.",
+                held.join(", ")
+            ));
+        }
+        // A subset was asked for, and that subset is already expanded —
+        // the rest of the server is still hidden.
         return ToolOutput::success(format!(
-            "The tools of MCP server '{server_name}' are already expanded: {}.",
+            "The requested tools of MCP server '{server_name}' are already expanded: {}. The \
+             server's other tools are still hidden: {}.",
+            requested.join(", "),
             held.join(", ")
         ));
     }
@@ -230,12 +295,17 @@ mod tests {
     /// the advertisement rules have something to hold.
     struct FakeMcpTool {
         name: String,
+        server: String,
     }
 
     #[async_trait]
     impl Tool for FakeMcpTool {
         fn name(&self) -> &str {
             &self.name
+        }
+
+        fn source(&self) -> Option<&str> {
+            Some(&self.server)
         }
 
         fn description(&self) -> &str {
@@ -269,9 +339,14 @@ mod tests {
     /// loader registered over them.
     fn registry_with_groups() -> ToolRegistry {
         let mut registry = ToolRegistry::new();
-        for tool in ["create_issue", "search_repositories", "query_invoice"] {
+        for (server, tool) in [
+            ("github", "create_issue"),
+            ("github", "search_repositories"),
+            ("invoice", "query_invoice"),
+        ] {
             registry.register(Box::new(FakeMcpTool {
                 name: tool.to_string(),
+                server: server.to_string(),
             }));
         }
         registry.set_mcp_groups(vec![
@@ -471,5 +546,139 @@ mod tests {
             .expect("the loader runs");
         assert!(out.is_error);
         assert!(out.content.contains("create_issue"), "{}", out.content);
+    }
+
+    /// A repeated *subset* expansion must not claim the whole server is
+    /// expanded: the tools that were not asked for are still hidden, and
+    /// saying otherwise would have the model believe they are callable.
+    #[tokio::test]
+    async fn a_repeated_subset_expansion_does_not_claim_the_whole_server() {
+        let registry = registry_with_groups();
+        let ctx = ToolContext::new(std::path::Path::new("."));
+        let first = registry
+            .execute(
+                LOAD_MCP_SCHEMA,
+                json!({"mcp_name": "github", "tool_names": ["create_issue"]}),
+                &ctx,
+            )
+            .await
+            .expect("the loader runs");
+        assert!(!first.is_error, "{}", first.content);
+
+        let second = registry
+            .execute(
+                LOAD_MCP_SCHEMA,
+                json!({"mcp_name": "github", "tool_names": ["create_issue"]}),
+                &ctx,
+            )
+            .await
+            .expect("the loader runs");
+        assert!(!second.is_error, "{}", second.content);
+        assert!(
+            second.content.contains("already expanded"),
+            "{}",
+            second.content
+        );
+        assert!(
+            second.content.contains("still hidden"),
+            "the reply must say the rest of the server is still hidden: {}",
+            second.content
+        );
+
+        // The tool that was never asked for is still out of the request.
+        let advertised: Vec<String> = registry.definitions().into_iter().map(|d| d.name).collect();
+        assert!(
+            advertised.iter().any(|n| n == "create_issue"),
+            "the expanded tool is advertised: {advertised:?}"
+        );
+        assert!(
+            !advertised.iter().any(|n| n == "search_repositories"),
+            "the tool that was not asked for stays hidden: {advertised:?}"
+        );
+    }
+
+    /// A malformed `tool_names` is an error, not a silent "expand
+    /// everything" — the caller asked for a subset, and expanding the whole
+    /// server would defeat the point of asking.
+    #[tokio::test]
+    async fn a_malformed_tool_names_is_an_error_and_expands_nothing() {
+        for malformed in [
+            json!("create_issue"),
+            json!([42]),
+            json!([""]),
+            json!(["create_issue", 7]),
+            json!([]),
+        ] {
+            let registry = registry_with_groups();
+            let out = registry
+                .execute(
+                    LOAD_MCP_SCHEMA,
+                    json!({"mcp_name": "github", "tool_names": malformed.clone()}),
+                    &ToolContext::new(std::path::Path::new(".")),
+                )
+                .await
+                .expect("the loader runs");
+            assert!(
+                out.is_error,
+                "{malformed} must be an error: {}",
+                out.content
+            );
+
+            let advertised: Vec<String> =
+                registry.definitions().into_iter().map(|d| d.name).collect();
+            assert!(
+                !advertised.iter().any(|n| n == "create_issue")
+                    && !advertised.iter().any(|n| n == "search_repositories"),
+                "{malformed} must expand nothing: {advertised:?}"
+            );
+        }
+    }
+
+    /// An MCP server that exposes a tool under a loader's name does not
+    /// take the name over: the loader is how the model reaches the server
+    /// at all, and a loader it cannot call is a server it can never expand.
+    #[tokio::test]
+    async fn an_mcp_tool_cannot_take_over_a_loader_name() {
+        let mut registry = ToolRegistry::new();
+        // The MCP server's copy of the loader's name, registered first.
+        registry.register(Box::new(FakeMcpTool {
+            name: LOAD_MCP_SCHEMA.to_string(),
+            server: "github".to_string(),
+        }));
+        registry.set_mcp_groups(vec![group(
+            "github",
+            &[(LOAD_MCP_SCHEMA, "An MCP lookalike")],
+        )]);
+        register_mcp_schema_tool(&mut registry);
+
+        let advertised: Vec<String> = registry.definitions().into_iter().map(|d| d.name).collect();
+        assert!(
+            advertised.iter().any(|n| n == LOAD_MCP_SCHEMA),
+            "the loader must be advertised: {advertised:?}"
+        );
+    }
+
+    /// A name belongs to exactly one deferred owner. An MCP server that
+    /// exposes a built-in's name has taken that name, so the built-in's
+    /// group must not claim it as well — otherwise the tool stays hidden
+    /// until *both* groups are loaded, and each loader reports it as
+    /// available while it is still hidden.
+    #[test]
+    fn an_mcp_tool_that_shadows_a_built_in_has_one_owner() {
+        let mut registry = ToolRegistry::new();
+        // The built-in comes first, then the MCP server's copy takes the
+        // name over — the registry holds one tool per name.
+        registry.register(Box::new(FakeMcpTool {
+            name: "webfetch".to_string(),
+            server: "github".to_string(),
+        }));
+        registry.set_mcp_groups(vec![group("github", &[("webfetch", "Fetch a URL")])]);
+
+        // The MCP group owns it: it is hidden until the server is expanded.
+        let advertised: Vec<String> = registry.definitions().into_iter().map(|d| d.name).collect();
+        assert!(
+            !advertised.iter().any(|n| n == "webfetch"),
+            "the MCP tool must not be advertised before its server is expanded: {advertised:?}"
+        );
     }
 }

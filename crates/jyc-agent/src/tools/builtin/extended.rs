@@ -31,6 +31,13 @@ use serde_json::{Value, json};
 use super::super::{Tool, ToolContext, ToolOutput};
 use crate::tools::registry::{ExtendedTools, ToolRegistry};
 
+/// The name of the tool that loads the extended group.
+///
+/// Reserved: an MCP server that exposes a tool under this name does not
+/// take the name over — the loader is registered after the MCP tools, and
+/// a loader the model cannot call is an MCP server it can never expand.
+pub const LOAD_EXTENDED_TOOLS: &str = "load_extended_tools";
+
 /// The extended tools, by name, with the one-liner that tells the model
 /// what each is for.
 ///
@@ -85,10 +92,14 @@ fn is_task_tool(name: &str) -> bool {
 /// never registered, like `jyc_spawn_subagent` off the `agents` channel) is
 /// not part of it.
 pub fn register_extended_tools(registry: &mut ToolRegistry) {
+    // A group claims a name only if the tool registered under it really is
+    // a built-in: an MCP server that exposes a built-in's name has taken
+    // that name over, and the built-in's group must not claim it as well —
+    // one name, one owner.
     let present: Vec<(&str, &str)> = EXTENDED_TOOLS
         .iter()
         .copied()
-        .filter(|(name, _)| registry.has_tool(name))
+        .filter(|(name, _)| registry.has_builtin_tool(name))
         .collect();
     if present.is_empty() {
         return;
@@ -96,11 +107,12 @@ pub fn register_extended_tools(registry: &mut ToolRegistry) {
 
     // The core tools this registry actually has: the loader says what is
     // already available, and a tool that was removed (by `disabled_tools`)
-    // is not available.
+    // is not available. A core tool an MCP server has taken over is not
+    // available either — it is hidden until the model expands that server.
     let core: Vec<&str> = CORE_TOOLS
         .iter()
         .copied()
-        .filter(|name| registry.has_tool(name))
+        .filter(|name| registry.has_builtin_tool(name))
         .collect();
 
     let group = Arc::new(ExtendedTools::new(

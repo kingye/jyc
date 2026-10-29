@@ -2105,12 +2105,16 @@ fn info_pane_keeps_the_context_header_when_the_bar_is_refused() {
     );
 
     // The bar shares the header row, so a header with nothing behind it is
-    // exactly a refused bar; a bar drawn here would follow the label.
+    // exactly a refused bar; a bar drawn here would follow the label. The
+    // pane's left border leads every row, so it comes off before comparing.
     let header = screen
         .lines()
         .find(|line| line.contains("Context:"))
         .expect("the composition header");
-    assert_eq!(header.trim(), "Context:", "{screen}");
+    let header = header
+        .trim_matches(|c: char| c == '│' || c.is_whitespace())
+        .to_string();
+    assert_eq!(header, "Context:", "{screen}");
 }
 
 /// A composition whose estimates are all zero has no weight to split: the
@@ -2135,8 +2139,13 @@ fn info_pane_shows_a_zero_weight_composition_without_a_bar() {
         .lines()
         .find(|line| line.contains("Context:"))
         .expect("the composition header");
-    assert_eq!(header.trim(), "Context:", "{screen}");
-    assert!(screen.contains("         History      ~0 · 0%"), "{screen}");
+    let header = header
+        .trim_matches(|c: char| c == '│' || c.is_whitespace())
+        .to_string();
+    assert_eq!(header, "Context:", "{screen}");
+    // One region sets the label column to its own width (`History`, 7), not
+    // to the widest of all four — see `composition_label_column_is_the_widest`.
+    assert!(screen.contains("         History ~0 · 0%"), "{screen}");
 }
 
 /// The status row carries the topic's backlog: the blocks say how much of

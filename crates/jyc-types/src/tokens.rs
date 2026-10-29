@@ -151,8 +151,10 @@ pub fn context_composition_label_width(regions: &[crate::inspect::ContextRegionI
 /// [`label`] padded to `label_width`, and one trailing space, so the share
 /// that follows starts in the same column on every row.
 ///
-/// One owner for the column's shape: the TUI colours the result, `/info`
-/// prints it plain, and both therefore pad and indent it the same way.
+/// One owner for the column's shape: the TUI colours the result and `/info`
+/// prints it plain, so both pad the label identically. The `indent` is a
+/// caller parameter and deliberately differs — the pane lines the rows up
+/// under the bar, the command under `Context:`.
 ///
 /// [`label`]: crate::inspect::ContextRegion::label
 pub fn format_context_region_label(
@@ -377,7 +379,10 @@ mod tests {
 
     /// One owner for the label column: indent, padded label, one space.
     /// The label is padded by character count, which is what the width
-    /// helper counts — the row the TUI and `/info` build is the same one.
+    /// helper counts — the label column the TUI and `/info` build is the
+    /// same one. The indent is a caller parameter and deliberately differs
+    /// (the pane lines the rows up under the bar, the command under
+    /// `Context:`).
     #[test]
     fn region_label_column_pads_by_characters() {
         assert_eq!(

@@ -1,7 +1,8 @@
 //! Tool registry — collects all available tools and provides definitions to the LLM.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
@@ -59,6 +60,103 @@ impl ExtendedTools {
     }
 }
 
+/// One MCP server's tools, and which of them the model has expanded.
+///
+/// A tool schema is a standing per-call cost, and an MCP server's tools are
+/// no exception: a server with fifty tools puts fifty schemas in every
+/// request, whether or not this conversation ever touches them. The group's
+/// tools stay out of the advertised list until the model expands them
+/// through `load_mcp_schema`.
+///
+/// The state is shared between the registry — which decides what the model
+/// sees — and the tool that flips it. One group is created per MCP server per
+/// registry build, and the registry itself is cached per topic, so an
+/// expansion sticks for the rest of that topic's registry lifetime (a config
+/// reload rebuilds the registry and the server's tools hide again).
+///
+/// Only *advertisement* is gated: an MCP tool stays registered and
+/// executable, so a model that names one before expanding it gets a working
+/// call rather than a "not found" error.
+#[derive(Debug)]
+pub struct McpGroup {
+    /// The MCP server's name, as configured.
+    server_name: String,
+    /// The server's tools, sorted by name.
+    tools: Vec<McpToolEntry>,
+    /// The tools the model has expanded.
+    expanded: RwLock<HashSet<String>>,
+}
+
+/// One MCP tool, as it appears in the group's index.
+#[derive(Debug, Clone)]
+pub struct McpToolEntry {
+    /// The tool's name — the name it is called by.
+    pub name: String,
+    /// The server's own description of the tool, in one line.
+    pub description: String,
+}
+
+impl McpGroup {
+    /// Create a group for one MCP server. The tools are sorted by name, so
+    /// the index the model reads is stable across builds.
+    pub fn new(server_name: String, mut tools: Vec<McpToolEntry>) -> Self {
+        tools.sort_by(|a, b| a.name.cmp(&b.name));
+        Self {
+            server_name,
+            tools,
+            expanded: RwLock::new(HashSet::new()),
+        }
+    }
+
+    /// The MCP server's name.
+    pub fn server_name(&self) -> &str {
+        &self.server_name
+    }
+
+    /// The server's tools, sorted by name.
+    pub fn tools(&self) -> &[McpToolEntry] {
+        &self.tools
+    }
+
+    /// The server's tool names, sorted.
+    pub fn tool_names(&self) -> Vec<&str> {
+        self.tools.iter().map(|t| t.name.as_str()).collect()
+    }
+
+    /// Whether the server exposes a tool by that name.
+    pub fn has_tool(&self, name: &str) -> bool {
+        self.tools.iter().any(|t| t.name == name)
+    }
+
+    /// Whether the tool has been expanded into the advertised list.
+    pub fn is_expanded(&self, tool_name: &str) -> bool {
+        self.expanded
+            .read()
+            .expect("MCP group lock poisoned")
+            .contains(tool_name)
+    }
+
+    /// Expand the named tools. Returns the ones this call actually expanded
+    /// — a tool that was already expanded is not reported again.
+    pub fn expand(&self, names: &[String]) -> Vec<String> {
+        let mut expanded = self.expanded.write().expect("MCP group lock poisoned");
+        let mut newly = Vec::new();
+        for name in names {
+            if expanded.insert(name.clone()) {
+                newly.push(name.clone());
+            }
+        }
+        newly
+    }
+
+    /// Expand every tool the server exposes. Returns the ones this call
+    /// actually expanded.
+    pub fn expand_all(&self) -> Vec<String> {
+        let names: Vec<String> = self.tools.iter().map(|t| t.name.clone()).collect();
+        self.expand(&names)
+    }
+}
+
 /// Registry of available tools.
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
@@ -68,6 +166,11 @@ pub struct ToolRegistry {
     hooks: Option<Arc<HookSet>>,
     /// The extended-tools group, when this registry has one.
     extended: Option<Arc<ExtendedTools>>,
+    /// The MCP groups, when this registry has any, sorted by server name.
+    mcp_groups: Vec<Arc<McpGroup>>,
+    /// Which group owns each MCP tool, by tool name. A tool name two servers
+    /// both expose belongs to the one that won the registration.
+    mcp_tool_owner: HashMap<String, usize>,
 }
 
 impl ToolRegistry {
@@ -77,6 +180,8 @@ impl ToolRegistry {
             tools: HashMap::new(),
             hooks: None,
             extended: None,
+            mcp_groups: Vec::new(),
+            mcp_tool_owner: HashMap::new(),
         }
     }
 
@@ -96,6 +201,41 @@ impl ToolRegistry {
     /// The extended-tools group, when this registry has one.
     pub fn extended(&self) -> Option<&Arc<ExtendedTools>> {
         self.extended.as_ref()
+    }
+
+    /// Attach the MCP groups. The tools they name stay out of the advertised
+    /// list until the model expands them through `load_mcp_schema`.
+    pub fn set_mcp_groups(&mut self, mut groups: Vec<Arc<McpGroup>>) {
+        groups.sort_by(|a, b| a.server_name().cmp(b.server_name()));
+        let mut owner = HashMap::new();
+        for (index, group) in groups.iter().enumerate() {
+            for entry in group.tools() {
+                owner.insert(entry.name.clone(), index);
+            }
+        }
+        self.mcp_groups = groups;
+        self.mcp_tool_owner = owner;
+    }
+
+    /// The MCP groups, when this registry has any.
+    pub fn mcp_groups(&self) -> &[Arc<McpGroup>] {
+        &self.mcp_groups
+    }
+
+    /// The group of one MCP server, by name.
+    pub fn mcp_group(&self, server_name: &str) -> Option<&Arc<McpGroup>> {
+        self.mcp_groups
+            .iter()
+            .find(|group| group.server_name() == server_name)
+    }
+
+    /// Whether a tool belongs to an MCP group that has not been expanded
+    /// for it yet. A tool that is not an MCP tool is always advertised.
+    fn mcp_tool_is_advertised(&self, name: &str) -> bool {
+        match self.mcp_tool_owner.get(name) {
+            None => true,
+            Some(index) => self.mcp_groups[*index].is_expanded(name),
+        }
     }
 
     /// Register a tool.
@@ -118,15 +258,22 @@ impl ToolRegistry {
     ///
     /// The extended tools are filtered out until the model loads them —
     /// their schemas are a standing per-call cost, and most turns never need
-    /// them. Use [`Self::all_definitions`] for the unfiltered set.
+    /// them. The MCP tools are filtered out until the model expands their
+    /// server, for the same reason. Use [`Self::all_definitions`] for the
+    /// unfiltered set.
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         let hidden = self.extended.as_ref().filter(|group| !group.is_loaded());
         let mut defs: Vec<ToolDefinition> = self
             .tools
             .values()
-            .filter(|tool| match hidden {
-                Some(group) => !group.names().iter().any(|name| name == tool.name()),
-                None => true,
+            .filter(|tool| {
+                let name = tool.name();
+                if let Some(group) = hidden {
+                    if group.names().iter().any(|hidden_name| hidden_name == name) {
+                        return false;
+                    }
+                }
+                self.mcp_tool_is_advertised(name)
             })
             .map(|t| t.to_definition())
             .collect();
@@ -273,6 +420,85 @@ impl Default for ToolRegistry {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+
+    /// A group with two tools.
+    fn mcp_group(server: &str) -> Arc<McpGroup> {
+        Arc::new(McpGroup::new(
+            server.to_string(),
+            vec![
+                McpToolEntry {
+                    name: "create_issue".to_string(),
+                    description: "Create an issue".to_string(),
+                },
+                McpToolEntry {
+                    name: "search_repositories".to_string(),
+                    description: "Search repositories".to_string(),
+                },
+            ],
+        ))
+    }
+
+    /// The group's tools are sorted, so the index the model reads is stable.
+    #[test]
+    fn the_group_sorts_its_tools() {
+        let group = McpGroup::new(
+            "github".to_string(),
+            vec![
+                McpToolEntry {
+                    name: "search_repositories".to_string(),
+                    description: "Search repositories".to_string(),
+                },
+                McpToolEntry {
+                    name: "create_issue".to_string(),
+                    description: "Create an issue".to_string(),
+                },
+            ],
+        );
+        assert_eq!(
+            group.tool_names(),
+            vec!["create_issue", "search_repositories"]
+        );
+    }
+
+    /// An expansion reports what it brought in; a second one brings in
+    /// nothing.
+    #[test]
+    fn expanding_reports_only_the_new_tools() {
+        let group = mcp_group("github");
+        let newly = group.expand(&["create_issue".to_string()]);
+        assert_eq!(newly, vec!["create_issue".to_string()]);
+        assert!(group.is_expanded("create_issue"));
+        assert!(!group.is_expanded("search_repositories"));
+
+        let again = group.expand(&["create_issue".to_string()]);
+        assert!(again.is_empty());
+    }
+
+    /// Expanding the whole server covers every tool it has.
+    #[test]
+    fn expanding_all_covers_every_tool() {
+        let group = mcp_group("github");
+        let newly = group.expand_all();
+        assert_eq!(newly.len(), 2);
+        assert!(group.is_expanded("create_issue"));
+        assert!(group.is_expanded("search_repositories"));
+    }
+
+    /// The registry keeps the groups sorted by server name, whatever order
+    /// they arrive in.
+    #[test]
+    fn the_groups_are_sorted_by_server_name() {
+        let mut registry = ToolRegistry::new();
+        registry.set_mcp_groups(vec![mcp_group("zulu"), mcp_group("alpha")]);
+        let names: Vec<&str> = registry
+            .mcp_groups()
+            .iter()
+            .map(|group| group.server_name())
+            .collect();
+        assert_eq!(names, vec!["alpha", "zulu"]);
+        assert!(registry.mcp_group("alpha").is_some());
+        assert!(registry.mcp_group("missing").is_none());
+    }
 
     struct MockTool {
         name: String,

@@ -13,7 +13,7 @@ This document lists all tools available to the AI agent in JYC, including built-
 | **Built-in** | Core file system and execution tools. Always available unless explicitly disabled. | Hardcoded in `jyc-agent` |
 | **MCP Bridge** | In-process JYC-specific tools (send message). | Always registered |
 | **Cross-Topic** | Cross-channel topic communication tool. | Registered when cross-channel `topic_managers` available |
-| **External MCP** | Optional tools provided by external MCP servers configured in `config.toml`. | `[[mcps]]` config |
+| **External MCP** | Optional tools provided by external MCP servers configured in `config.toml`. Registered but not advertised until the model expands the server through `load_mcp_schema`. | `[[mcps]]` config |
 
 ---
 
@@ -450,6 +450,44 @@ them automatically at every MCP connect. Re-run the command only when the
 refresh token itself expires or is revoked. See `config.example.toml` for
 the optional `scopes` / `redirect_uri` fields.
 
+### `load_mcp_schema`
+
+An MCP server's tools are schemas like any other: they ride in every
+request's stable prompt prefix, whether or not this conversation ever calls
+them. A server with fifty tools puts fifty schemas in the request of a
+topic that wanted one of them.
+
+So the MCP tools stay out of the advertised list until the model asks for
+them. What it sees instead is this tool, whose description is the index of
+the configured servers: each server's name, and each of its tools with a
+one-line description — enough to decide *which* server to load, and none of
+the schemas themselves.
+
+**Parameters:**
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `mcp_name` | string (required) | The MCP server to expand, as listed in the tool's description |
+| `tool_names` | string[] (optional) | Only these tools of that server; omit to expand all of them |
+
+**Effect:** the named tools are advertised from the next model call on, and
+they stay advertised for the rest of the topic's registry lifetime (a config
+reload or an `/mcp` change rebuilds the registry and starts over). The call
+is idempotent: calling it again for an expanded server reports that its
+tools are already there.
+
+**Only advertisement is gated.** The tools stay registered and executable, so
+a model that names one before expanding it gets a working call rather than a
+"not found" error. `disabled_tools` and `disabled_mcps` remain the boundary
+that removes a tool or a server for good — a server removed that way is not
+in the index either. That includes the loader itself:
+`disabled_tools = ["load_mcp_schema"]` removes it, and the MCP tools then
+stay out of every request (they remain callable by name, as always).
+
+**What it does not change:** the servers are still connected at registry
+build time — the index needs their tool names — so this saves the schema
+cost of every request, not the startup handshake or the subprocess.
+
 ---
 
 ## Tool Exclusion
@@ -629,11 +667,17 @@ build_tool_registry()
   ├─ Register jyc_send_to_topic (when the topic managers are available)
   ├─ Load external MCP tools (filtered by disabled_mcps)
   ├─ Apply exclusions: remove tools matching disabled_tools
+  ├─ Wire the MCP groups: one per server, holding the tools that landed in
+  │  this registry — they are advertised only after load_mcp_schema expands
+  │  them
+  ├─ Register load_mcp_schema: its description is the index of the servers
   ├─ Wire the extended group: register load_extended_tools and mark the
   │  group's tools as advertised-only-after-loading
-  └─ Apply the exclusions to the loader as well: it is registered after the
-     pass above, so disabled_tools may name load_extended_tools
+  └─ Apply the exclusions to the loaders as well: they are registered after
+     the pass above, so disabled_tools may name load_extended_tools or
+     load_mcp_schema
 ```
 
 The final registry is what the LLM sees in its `tools` list — minus the
-extended group, until the model loads it.
+extended group, until the model loads it, and minus the MCP tools, until the
+model expands their server.

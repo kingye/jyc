@@ -1,3 +1,9 @@
+## [Unreleased]
+
+### Added
+
+- The MCP tools are loaded on demand: an MCP server's tools are **registered but not advertised** until the model calls the new `load_mcp_schema` with that server's name, whose description is the index of the configured servers — each server's name and each of its tools with a one-line description, and none of the schemas themselves. A server with many tools can be expanded a few at a time (`tool_names`). The expansion is per topic's registry lifetime, like the extended group. Only *advertisement* is gated — the MCP tools stay executable, so a model that names one before expanding it gets a working call — and `disabled_tools` / `disabled_mcps` remain the boundary that removes a tool or a server for good, the loader included: `disabled_tools = ["load_mcp_schema"]` removes it and the MCP tools then stay out of every request. A server removed by `disabled_mcps` is not in the index either. The servers are still connected at registry build time — the index needs their tool names — so this saves the per-request schema cost, not the startup handshake
+
 ## [0.7.3] - 2026-10-28
 
 ### Added

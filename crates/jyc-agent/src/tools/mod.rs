@@ -6,6 +6,7 @@ pub mod builtin;
 pub mod mcp_auth;
 pub mod mcp_bridge;
 pub mod mcp_client;
+pub mod mcp_schema;
 pub mod registry;
 
 use anyhow::Result;

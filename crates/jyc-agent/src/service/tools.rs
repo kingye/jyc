@@ -4,6 +4,7 @@
 
 use anyhow::Result;
 use jyc_types::state_dir::resolve_state_dir;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -11,7 +12,7 @@ use jyc_core::topic_event_bus::TopicEventBusRef;
 use jyc_types::{ChannelPattern, McpServerConfig, TopicConfig};
 
 use crate::provider;
-use crate::tools::registry::ToolRegistry;
+use crate::tools::registry::{McpGroup, McpToolEntry, ToolRegistry};
 
 use super::JycAgentService;
 
@@ -304,16 +305,19 @@ impl JycAgentService {
             .iter()
             .map(|(c, _)| c.clone())
             .collect();
+        // What each MCP server contributes to this registry.
+        let mut mcp_entries: Vec<McpEntry> = Vec::new();
         if !configs.is_empty() {
             let mcp_tools =
                 crate::tools::mcp_client::load_mcp_tools(&configs, topic_name, topic_path).await;
             for tool in mcp_tools {
                 // Skip tools matching disabled_server_tools (server/tool format)
-                let source = tool.source();
-                let name = tool.name();
+                let source = tool.source().map(|s| s.to_string());
+                let name = tool.name().to_string();
+                let description = tool.description().to_string();
                 let should_skip = disabled_server_tools.iter().any(|dt| {
                     if let Some((server, tool_name)) = dt.split_once('/') {
-                        source == Some(server) && name == tool_name
+                        source.as_deref() == Some(server) && name == tool_name
                     } else {
                         false
                     }
@@ -325,6 +329,13 @@ impl JycAgentService {
                         "Skipping disabled MCP tool (server/tool format)"
                     );
                     continue;
+                }
+                if let Some(server) = source {
+                    mcp_entries.push(McpEntry {
+                        server,
+                        name,
+                        description,
+                    });
                 }
                 registry.register(tool);
             }
@@ -339,6 +350,12 @@ impl JycAgentService {
             );
             registry.remove(tool_name);
         }
+
+        // The MCP groups: what actually landed in this registry. They keep
+        // the tools out of the advertised list until the model expands them
+        // through `load_mcp_schema`.
+        registry.set_mcp_groups(build_mcp_groups(&registry, mcp_entries));
+        crate::tools::mcp_schema::register_mcp_schema_tool(&mut registry);
 
         // The extended group: registered, but kept out of the advertised tool
         // list until the model loads it. Done after the exclusions above, so
@@ -361,6 +378,19 @@ impl JycAgentService {
                 "Removing disabled tool"
             );
             registry.remove("load_extended_tools");
+        }
+
+        // Same for the MCP loader: the exclusion pass above ran before it
+        // existed. The groups stay set — with no loader nothing can expand
+        // them, so the MCP tools stay out of the request (and remain
+        // callable by name, like every deferred tool).
+        if disabled_plain_tools.contains(&"load_mcp_schema") {
+            tracing::debug!(
+                tool = "load_mcp_schema",
+                pattern = %matched_pattern_name.unwrap_or("?"),
+                "Removing disabled tool"
+            );
+            registry.remove("load_mcp_schema");
         }
 
         // External hooks for tool events: global [[hooks]] first, then
@@ -487,6 +517,56 @@ impl JycAgentService {
     }
 }
 
+/// One MCP tool as it landed in the registry: which server it came from,
+/// its name, and the server's description of it.
+struct McpEntry {
+    server: String,
+    name: String,
+    description: String,
+}
+
+/// Build the MCP groups for a registry from the MCP tools that landed in it.
+///
+/// A tool removed by `disabled_tools` (plain name) is not part of a group,
+/// and a name two servers both expose belongs to the one that won the
+/// registration — the registry holds one tool per name, so the other
+/// server's copy is not in the index either, or the model would load a
+/// server and find a tool it does not own.
+fn build_mcp_groups(registry: &ToolRegistry, entries: Vec<McpEntry>) -> Vec<Arc<McpGroup>> {
+    // The last registration of a name wins: that is the tool the registry
+    // holds.
+    let mut owner: HashMap<String, String> = HashMap::new();
+    for entry in &entries {
+        owner.insert(entry.name.clone(), entry.server.clone());
+    }
+
+    let mut by_server: Vec<(String, Vec<McpToolEntry>)> = Vec::new();
+    for entry in entries {
+        if owner.get(&entry.name) != Some(&entry.server) {
+            continue;
+        }
+        if !registry.has_tool(&entry.name) {
+            continue;
+        }
+        let tool = McpToolEntry {
+            name: entry.name,
+            description: entry.description,
+        };
+        let index = by_server
+            .iter()
+            .position(|(known, _)| known == &entry.server);
+        match index {
+            Some(index) => by_server[index].1.push(tool),
+            None => by_server.push((entry.server, vec![tool])),
+        }
+    }
+
+    by_server
+        .into_iter()
+        .map(|(server, tools)| Arc::new(McpGroup::new(server, tools)))
+        .collect()
+}
+
 /// Modification time (ns since the Unix epoch) of the topic's
 /// `mcp-override.json`, or `0` when the file is absent or unreadable.
 ///
@@ -510,6 +590,7 @@ fn mcp_override_stamp(topic_name: &str, topic_path: &Path) -> u128 {
 mod tests {
     use super::*;
     use crate::service::tests::app_config_with_channels;
+    use crate::tools::builtin::read::ReadTool;
     use std::collections::HashMap;
 
     /// `disabled_tools` must be able to remove the loader itself.
@@ -559,6 +640,70 @@ mod tests {
             !advertised.contains(&"jyc_send_to_topic"),
             "the group's tools must stay out of the request: {advertised:?}"
         );
+    }
+
+    /// A tool the registry does not hold is not part of a group: the model
+    /// would be told about a tool it cannot call.
+    #[test]
+    fn a_removed_mcp_tool_is_not_in_a_group() {
+        let registry = ToolRegistry::new();
+        let groups = build_mcp_groups(
+            &registry,
+            vec![McpEntry {
+                server: "github".to_string(),
+                name: "create_issue".to_string(),
+                description: "Create an issue".to_string(),
+            }],
+        );
+        assert!(
+            groups.is_empty(),
+            "a tool that is not in the registry must not be in a group"
+        );
+    }
+
+    /// A name two servers both expose belongs to the one that won the
+    /// registration — the other server's copy is not in the index, or the
+    /// model would load a server and find a tool it does not own.
+    #[test]
+    fn a_duplicated_tool_name_belongs_to_the_last_server() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(ReadTool));
+        let groups = build_mcp_groups(
+            &registry,
+            vec![
+                McpEntry {
+                    server: "first".to_string(),
+                    name: "read".to_string(),
+                    description: "From the first server".to_string(),
+                },
+                McpEntry {
+                    server: "second".to_string(),
+                    name: "read".to_string(),
+                    description: "From the second server".to_string(),
+                },
+            ],
+        );
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].server_name(), "second");
+        assert_eq!(groups[0].tool_names(), vec!["read"]);
+    }
+
+    /// A group's tools are the server's.
+    #[test]
+    fn the_groups_hold_the_servers_tools() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(ReadTool));
+        let groups = build_mcp_groups(
+            &registry,
+            vec![McpEntry {
+                server: "github".to_string(),
+                name: "read".to_string(),
+                description: "Read a file".to_string(),
+            }],
+        );
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].server_name(), "github");
+        assert_eq!(groups[0].tool_names(), vec!["read"]);
     }
 
     #[test]

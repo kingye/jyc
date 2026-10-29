@@ -866,6 +866,101 @@ pub async fn persist_tokens(
     call_output_tokens: u64,
     call_reasoning_tokens: u64,
 ) {
+    persist_tokens_and_composition(
+        topic_name,
+        topic_path,
+        context_input_tokens,
+        context_output_tokens,
+        total_input_tokens,
+        total_output_tokens,
+        total_cache_hit_tokens,
+        total_cache_creation_tokens,
+        total_reasoning_tokens,
+        context_window,
+        call_cost,
+        call_ms,
+        call_cache_hit_tokens,
+        call_input_tokens,
+        call_output_tokens,
+        call_reasoning_tokens,
+        None,
+    )
+    .await;
+}
+
+/// [`persist_tokens`] plus the composition of the call's wire payload, in
+/// one load and one save.
+///
+/// The agent loop has both figures immediately after a call returns;
+/// writing them separately rewrote `agent-session.json` twice back to
+/// back. The composition is still only written when a call completes —
+/// a failed call never overwrites the last successful snapshot.
+///
+/// The arguments after `topic_path` carry the same meaning as in
+/// [`persist_tokens`]; `composition` is the snapshot the info pane and
+/// `/info` show.
+#[allow(clippy::too_many_arguments)]
+pub async fn persist_tokens_with_composition(
+    topic_name: &str,
+    topic_path: &Path,
+    context_input_tokens: u64,
+    context_output_tokens: u64,
+    total_input_tokens: u64,
+    total_output_tokens: u64,
+    total_cache_hit_tokens: u64,
+    total_cache_creation_tokens: u64,
+    total_reasoning_tokens: u64,
+    context_window: Option<u64>,
+    call_cost: f64,
+    call_ms: u64,
+    call_cache_hit_tokens: u64,
+    call_input_tokens: u64,
+    call_output_tokens: u64,
+    call_reasoning_tokens: u64,
+    composition: &[ContextRegionInfo],
+) {
+    persist_tokens_and_composition(
+        topic_name,
+        topic_path,
+        context_input_tokens,
+        context_output_tokens,
+        total_input_tokens,
+        total_output_tokens,
+        total_cache_hit_tokens,
+        total_cache_creation_tokens,
+        total_reasoning_tokens,
+        context_window,
+        call_cost,
+        call_ms,
+        call_cache_hit_tokens,
+        call_input_tokens,
+        call_output_tokens,
+        call_reasoning_tokens,
+        Some(composition),
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn persist_tokens_and_composition(
+    topic_name: &str,
+    topic_path: &Path,
+    context_input_tokens: u64,
+    context_output_tokens: u64,
+    total_input_tokens: u64,
+    total_output_tokens: u64,
+    total_cache_hit_tokens: u64,
+    total_cache_creation_tokens: u64,
+    total_reasoning_tokens: u64,
+    context_window: Option<u64>,
+    call_cost: f64,
+    call_ms: u64,
+    call_cache_hit_tokens: u64,
+    call_input_tokens: u64,
+    call_output_tokens: u64,
+    call_reasoning_tokens: u64,
+    composition: Option<&[ContextRegionInfo]>,
+) {
     let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
 
@@ -909,31 +1004,17 @@ pub async fn persist_tokens(
         state.context_window = cw;
     }
 
+    // A `None` write (the post-loop save) leaves the last completed
+    // call's snapshot in place: it loads the state above, so the field
+    // survives without the caller having to re-send it.
+    if let Some(composition) = composition {
+        state.context_composition = composition.to_vec();
+    }
+
     if state.created_at.is_empty() {
         state.created_at = chrono::Utc::now().to_rfc3339();
     }
 
-    save_session_state(topic_name, &session_path, &state).await;
-}
-
-/// Persist the composition of the wire payload sent to the most recent
-/// completed LLM call.
-///
-/// Kept separate from [`persist_tokens`] so the token writer's long
-/// argument list does not grow: this field has one caller (the agent
-/// loop, right after a call returns) and is written from the same
-/// session state file. The save helper already skips a closed topic.
-pub async fn persist_context_composition(
-    topic_name: &str,
-    topic_path: &Path,
-    composition: &[ContextRegionInfo],
-) {
-    let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
-    let mut state = load_session_state(&session_path).await;
-    state.context_composition = composition.to_vec();
-    if state.created_at.is_empty() {
-        state.created_at = chrono::Utc::now().to_rfc3339();
-    }
     save_session_state(topic_name, &session_path, &state).await;
 }
 

@@ -440,8 +440,9 @@ pub async fn run(
         // end of the loop — the strategy only changes what the LLM sees.
         //
         // `send_regions` is the parallel Vec<u8> of per-message labels
-        // (1=text-only history / Full-mode, 2=current turn) — used only
-        // by the wire-payload debug dump.
+        // (1=text-only history / Full-mode, 2=current turn's recent raw
+        // suffix, 3=folded current-turn checkpoint) — used by the
+        // wire-payload debug dump and the composition snapshot.
         let build_started = Instant::now();
         let (send_context, send_regions) = crate::agent_loop::context::build_send_context_cached(
             provider,
@@ -591,7 +592,7 @@ pub async fn run(
         // data mid-round. The last three are this call's own cache-hit,
         // input and output tokens — the turn-scoped figures are accumulated
         // per call, the way the latency pair is.
-        crate::session::persist_tokens(
+        crate::session::persist_tokens_with_composition(
             topic_name,
             topic_path,
             context_input_tokens,
@@ -608,10 +609,9 @@ pub async fn run(
             response.input_tokens,
             response.output_tokens,
             response.reasoning_tokens,
+            &context_composition,
         )
         .await;
-        crate::session::persist_context_composition(topic_name, topic_path, &context_composition)
-            .await;
 
         // 3. Check for empty response (likely an API error we didn't catch)
         if response.text.is_empty() && response.tool_calls.is_empty() && response.input_tokens == 0

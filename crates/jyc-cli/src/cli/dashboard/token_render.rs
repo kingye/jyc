@@ -76,7 +76,9 @@ pub(super) fn context_region_label_span(region: ContextRegion) -> Span<'static> 
 /// for them all; a narrower bar falls back to proportional rounding.
 ///
 /// Returns `false` — and pushes nothing — when the composition has no
-/// estimated weight or no room is left for a bar.
+/// estimated weight, or when the room left is below [`MIN_BAR_WIDTH`]: a
+/// bar that narrow would misreport the share, so the legend figures stand
+/// alone, the same rule the token bar follows.
 pub(super) fn push_context_composition_bar_spans(
     spans: &mut Vec<Span>,
     t: &TopicInfo,
@@ -84,7 +86,7 @@ pub(super) fn push_context_composition_bar_spans(
 ) -> bool {
     let width = inner_width.saturating_sub(BAR_EDGE_ROOM);
     let total = jyc_types::context_composition_total(&t.context_composition);
-    if width == 0 || total == 0 {
+    if width < MIN_BAR_WIDTH || total == 0 {
         return false;
     }
     let widths = composition_widths(&t.context_composition, total, width);
@@ -1398,6 +1400,37 @@ mod tests {
         let mut spans = Vec::new();
         push_latency_span(&mut spans, &half);
         assert!(spans.is_empty());
+    }
+
+    /// A composition bar too narrow to carry a share is refused, the same
+    /// rule the token bar follows; the legend figures stand alone.
+    #[test]
+    fn composition_bar_needs_the_minimum_width() {
+        let mut t = info_with(None, None, None, None, None, None);
+        t.context_composition = vec![
+            region(ContextRegion::History, 1, 10, 1),
+            region(ContextRegion::Current, 1, 10, 1),
+        ];
+        let mut spans = Vec::new();
+        assert!(!push_context_composition_bar_spans(
+            &mut spans,
+            &t,
+            MIN_BAR_WIDTH + BAR_EDGE_ROOM - 1
+        ));
+        assert!(spans.is_empty());
+
+        assert!(push_context_composition_bar_spans(
+            &mut spans,
+            &t,
+            MIN_BAR_WIDTH + BAR_EDGE_ROOM
+        ));
+        assert_eq!(
+            spans
+                .iter()
+                .map(|span| span.content.chars().count())
+                .sum::<usize>(),
+            MIN_BAR_WIDTH
+        );
     }
 
     /// The composition bar fills the width exactly, and every region with

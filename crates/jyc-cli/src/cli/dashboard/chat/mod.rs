@@ -1894,7 +1894,7 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         // same estimated share `/info` prints.
         if !t.context_composition.is_empty() {
             rows.push(InfoRow::Raw(Line::from(Span::styled(
-                "Context (estimated):",
+                "Context composition (estimated):",
                 Style::default().add_modifier(Modifier::BOLD),
             ))));
             let mut bar_spans = Vec::with_capacity(t.context_composition.len());

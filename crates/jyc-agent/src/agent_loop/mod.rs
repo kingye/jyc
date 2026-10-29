@@ -492,6 +492,9 @@ pub async fn run(
             history_rebuilt = %send_context_cache
                 .history_rebuilt()
                 .map_or("-", |rebuilt| if rebuilt { "rebuilt" } else { "reused" }),
+            checkpoint_rebuilt = %send_context_cache
+                .checkpoint_rebuilt()
+                .map_or("-", |rebuilt| if rebuilt { "rebuilt" } else { "reused" }),
             last_input_tokens = context_input_tokens,
             "LLM call started"
         );

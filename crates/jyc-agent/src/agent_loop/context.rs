@@ -73,10 +73,16 @@ pub(crate) struct SendContextCache {
     /// cache that outlived a turn would need a content key.
     boundary: Option<usize>,
     history: Vec<serde_json::Value>,
-    /// Whether the last build rebuilt the block (`Some(true)`), reused it
+    /// Absolute raw-context index where the verbatim current-turn suffix
+    /// starts; `None` when no checkpoint is active.
+    checkpoint_end: Option<usize>,
+    checkpoint: Vec<serde_json::Value>,
+    /// Whether the last build rebuilt the history block (`Some(true)`), reused it
     /// (`Some(false)`), or built nothing at all (`None`, `Full` mode — the log
     /// must not read that as "reused").
     rebuilt: Option<bool>,
+    /// Same three states for the current-turn checkpoint.
+    checkpoint_rebuilt: Option<bool>,
 }
 
 impl SendContextCache {
@@ -84,6 +90,12 @@ impl SendContextCache {
     /// block, or `None` when it built nothing (`Full` mode).
     pub(crate) fn history_rebuilt(&self) -> Option<bool> {
         self.rebuilt
+    }
+
+    /// Whether the last build rebuilt the current-turn checkpoint, reused
+    /// it, or had no checkpoint to build.
+    pub(crate) fn checkpoint_rebuilt(&self) -> Option<bool> {
+        self.checkpoint_rebuilt
     }
 }
 
@@ -93,22 +105,28 @@ impl SendContextCache {
 /// untouched; this function only shapes what is sent to the LLM.
 ///
 /// * `Full` — borrow the full context (no copy).
-/// * `SlidingWindow` — two parts, in order:
+/// * `SlidingWindow` — three parts, in order:
 ///   1. The prior turns as user+assistant text pairs, reformatted in
 ///      provider wire format (string content → provider-correct content
 ///      shape). This block only ever grows: nothing trims its head.
-///   2. The full current turn (`raw_context[prior_len..]`) verbatim, so
-///      tool calls / results stay coherent mid-loop.
+///   2. A checkpoint for the older part of a long current turn, in the
+///      same text-only form. It appears once the turn has more than
+///      [`TURN_CHECKPOINT_INTERVAL`] assistant messages and advances in
+///      whole intervals, so it changes at most once per interval.
+///   3. The recent current-turn suffix (`raw_context[checkpoint_end..]`)
+///      verbatim, so the latest tool calls / results stay coherent
+///      mid-loop and provider-specific replay fields survive there.
 ///
 /// Also returns a per-message region label (parallel to the wire payload)
-/// so callers that need to distinguish the two parts — the wire-payload
+/// so callers that need to distinguish the three parts — the wire-payload
 /// debug dump and tests — can do so without re-running the strategy
 /// logic.
 ///
 /// Region labels:
 /// - `1` = text-only history (`SlidingWindow`) or the whole context (`Full`
 ///   mode, no split).
-/// - `2` = current turn verbatim (`SlidingWindow` only).
+/// - `2` = verbatim current-turn suffix (`SlidingWindow` only).
+/// - `3` = folded earlier work in the current turn (`SlidingWindow` only).
 ///
 /// How much history the prior holds is the loader's decision, not this
 /// function's: `window` / `extend_rate` / `max_history_tokens` slide the
@@ -116,14 +134,16 @@ impl SendContextCache {
 /// slides. Between slides it grows by append, so the provider's cached
 /// prefix carries from one turn to the next.
 ///
-/// The current turn is uncapped by default — the model is
+/// The current-turn suffix is uncapped by default — the model is
 /// reasoning over those tool results mid-loop, so they must stay complete
 /// — and bounded by the opt-in `strategy.turn_tool_result_cap`, which
 /// keeps head and tail instead of the head alone. `Some(0)` or `None`
-/// disables capping.
+/// disables capping. The checkpoint bounds the *older* part independently:
+/// its reasoning and tool results leave the wire exactly as prior-turn
+/// history does.
 ///
-/// `cache` lets a turn's calls reuse the history block instead of
-/// rebuilding it per call (see [`SendContextCache`]).
+/// `cache` lets a turn's calls reuse the history and checkpoint blocks
+/// instead of rebuilding them per call (see [`SendContextCache`]).
 pub(crate) fn build_send_context_cached<'a>(
     provider: &dyn Provider,
     raw_context: &'a [serde_json::Value],
@@ -135,6 +155,7 @@ pub(crate) fn build_send_context_cached<'a>(
         ContextStrategy::Full => {
             // Nothing is built: `Full` borrows the context as it is.
             cache.rebuilt = None;
+            cache.checkpoint_rebuilt = None;
             (Cow::Borrowed(raw_context), vec![1; raw_context.len()])
         }
         ContextStrategy::SlidingWindow => {
@@ -153,18 +174,51 @@ pub(crate) fn build_send_context_cached<'a>(
                 cache.history = build_history_region(provider, &raw_context[..boundary]);
                 cache.boundary = Some(boundary);
                 cache.rebuilt = Some(true);
+                // Absolute checkpoint indices belong to the previous
+                // boundary, so they cannot be reused.
+                cache.checkpoint_end = None;
+                cache.checkpoint.clear();
+                cache.checkpoint_rebuilt = None;
             } else {
                 cache.rebuilt = Some(false);
             }
 
+            let checkpoint_end = current_turn_checkpoint_end(current).map(|idx| boundary + idx);
+            match checkpoint_end {
+                Some(end) if cache.checkpoint_end != Some(end) => {
+                    cache.checkpoint =
+                        build_checkpoint_region(provider, &raw_context[boundary..end]);
+                    cache.checkpoint_end = Some(end);
+                    cache.checkpoint_rebuilt = Some(true);
+                }
+                Some(_) => cache.checkpoint_rebuilt = Some(false),
+                None => {
+                    cache.checkpoint.clear();
+                    cache.checkpoint_end = None;
+                    cache.checkpoint_rebuilt = None;
+                }
+            }
+            if cache.checkpoint.is_empty() {
+                // No pair to fold (for example assistants without a user
+                // anchor): keep the whole current turn verbatim instead of
+                // dropping the prefix.
+                cache.checkpoint_end = None;
+                cache.checkpoint_rebuilt = None;
+            }
+
+            let raw_start = cache.checkpoint_end.unwrap_or(boundary);
             let history_len = cache.history.len();
-            let mut out = Vec::with_capacity(history_len + current.len());
+            let checkpoint_len = cache.checkpoint.len();
+            let raw_len = raw_context.len().saturating_sub(raw_start);
+            let mut out = Vec::with_capacity(history_len + checkpoint_len + raw_len);
             let mut regions = Vec::with_capacity(out.capacity());
 
             out.extend_from_slice(&cache.history);
             regions.resize(history_len, 1);
+            out.extend_from_slice(&cache.checkpoint);
+            regions.resize(history_len + checkpoint_len, 3);
 
-            // Current turn. Verbatim by default (`turn_tool_result_cap`
+            // Recent current turn. Verbatim by default (`turn_tool_result_cap`
             // unset, so `0` short-circuits): the model is reasoning over
             // these tool results mid-loop, so they normally stay
             // complete. When the cap is configured, oversized results
@@ -177,7 +231,7 @@ pub(crate) fn build_send_context_cached<'a>(
             // the value is finally trusted, so an old `config.toml` or a
             // stale override cannot skip it.
             let turn_cap = jyc_types::channel::effective_turn_cap(strategy.turn_tool_result_cap);
-            for msg in current {
+            for msg in &raw_context[raw_start..] {
                 out.push(cap_tool_result_content_with(
                     msg,
                     turn_cap,
@@ -188,6 +242,48 @@ pub(crate) fn build_send_context_cached<'a>(
             (Cow::Owned(out), regions)
         }
     }
+}
+
+/// Completed assistant messages per current-turn checkpoint.
+///
+/// ponytail: fixed interval — one checkpoint every 16 interactions keeps the
+/// raw suffix bounded without a knob or a tokenizer. Make it configurable
+/// only if real workloads show the interval is the wrong size.
+const TURN_CHECKPOINT_INTERVAL: usize = 16;
+
+/// Wire-only marker inserted at the start of a folded current-turn
+/// checkpoint. Not persisted to `raw_context`.
+pub(crate) const TURN_CHECKPOINT_MARKER_TEXT: &str = "[Current-turn checkpoint] earlier work in this turn follows — text-only, \
+     tool calls/results omitted.";
+
+/// Where the verbatim current-turn suffix starts, relative to the current
+/// turn slice.
+///
+/// With `n` completed assistant messages, fold every whole interval but
+/// leave the latest interaction raw:
+///
+/// ```text
+/// folded = floor((n - 1) / TURN_CHECKPOINT_INTERVAL) × TURN_CHECKPOINT_INTERVAL
+/// ```
+///
+/// The boundary is derived from the slice alone, so a cold build and a warm
+/// cache produce the same payload. It advances only when `n` crosses an
+/// interval, which keeps the folded prefix byte-stable in between.
+fn current_turn_checkpoint_end(current: &[serde_json::Value]) -> Option<usize> {
+    let assistant_count = current
+        .iter()
+        .filter(|msg| msg.get("role").and_then(|r| r.as_str()) == Some("assistant"))
+        .count();
+    if assistant_count <= TURN_CHECKPOINT_INTERVAL {
+        return None;
+    }
+    let folded = ((assistant_count - 1) / TURN_CHECKPOINT_INTERVAL) * TURN_CHECKPOINT_INTERVAL;
+    current
+        .iter()
+        .enumerate()
+        .filter(|(_, msg)| msg.get("role").and_then(|r| r.as_str()) == Some("assistant"))
+        .nth(folded)
+        .map(|(idx, _)| idx)
 }
 
 /// Build the text-only history block from the prior window: the history
@@ -206,16 +302,35 @@ fn build_history_region(
     provider: &dyn Provider,
     prior: &[serde_json::Value],
 ) -> Vec<serde_json::Value> {
+    build_text_region(provider, prior, crate::session::HISTORY_MARKER_TEXT)
+}
+
+/// Compact the older part of the current turn into the same text-only
+/// shape as prior-turn history.
+fn build_checkpoint_region(
+    provider: &dyn Provider,
+    prefix: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
+    build_text_region(provider, prefix, TURN_CHECKPOINT_MARKER_TEXT)
+}
+
+/// The one text-only region builder shared by history and current-turn
+/// checkpoints.
+fn build_text_region(
+    provider: &dyn Provider,
+    raw: &[serde_json::Value],
+    marker: &str,
+) -> Vec<serde_json::Value> {
     // No keep-limit: the window bound is the loader's job, and dropping
     // pairs here would cut the head the cache matches on.
-    let compacted = crate::session::extract_user_assistant_pairs(prior, usize::MAX);
+    let compacted = crate::session::extract_user_assistant_pairs(raw, usize::MAX);
 
-    // The block leads with the history marker and keeps it: it explains the
+    // The block leads with its marker and keeps it: it explains the
     // text-only form the compacted pairs come in.
     let mut region: Vec<serde_json::Value> = Vec::new();
     if !compacted.is_empty() {
         region.push(provider.format_user_message(&[ContentBlock::Text {
-            text: crate::session::HISTORY_MARKER_TEXT.into(),
+            text: marker.into(),
         }]));
     }
     for msg in &compacted {
@@ -434,7 +549,8 @@ fn append_region_summary(
     // without a legend.
     let region_headers = [
         (1u8, "History — text-only turns, calls/results folded out"),
-        (2u8, "Current turn — verbatim"),
+        (3u8, "Current-turn checkpoint — older work, text-only"),
+        (2u8, "Current turn — recent suffix, verbatim"),
     ];
 
     let mut first = true;
@@ -614,6 +730,196 @@ mod render_raw_context_tests {
 
     fn anthropic() -> AnthropicProvider {
         AnthropicProvider
+    }
+
+    fn sliding_cfg() -> ContextStrategyConfig {
+        ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 10,
+            extend_rate: 0.5,
+            turn_tool_result_cap: None,
+            max_history_tokens: None,
+        }
+    }
+
+    /// Append one assistant tool-call step and its result. The assistant
+    /// carries reasoning twice, exactly as the OpenAI-compatible builder
+    /// persists it.
+    fn push_interaction(ctx: &mut Vec<serde_json::Value>, i: usize, reasoning: &str) {
+        let (open, close) = (concat!("<", "think>"), concat!("</", "think>"));
+        ctx.push(json!({
+            "role": "assistant",
+            "content": format!("{open}{reasoning}{close}\n\nstep {i}"),
+            "reasoning_content": reasoning,
+            "tool_calls": [{
+                "id": format!("call-{i}"),
+                "type": "function",
+                "function": {"name": "bash", "arguments": "{}"}
+            }]
+        }));
+        ctx.push(json!({
+            "role": "tool",
+            "tool_call_id": format!("call-{i}"),
+            "content": format!("RESULT-{i}")
+        }));
+    }
+
+    fn current_with_interactions(n: usize, reasoning: &str) -> Vec<serde_json::Value> {
+        let mut ctx = vec![json!({"role": "user", "content": "task"})];
+        for i in 0..n {
+            push_interaction(&mut ctx, i, reasoning);
+        }
+        ctx
+    }
+
+    #[test]
+    fn current_turn_has_no_checkpoint_through_sixteen_interactions() {
+        let ctx = current_with_interactions(16, "secret");
+        let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, 0, &sliding_cfg());
+        assert_eq!(sent.len(), ctx.len());
+        assert!(
+            regions.iter().all(|r| *r == 2),
+            "no checkpoint before the interval: {regions:?}"
+        );
+    }
+
+    #[test]
+    fn current_turn_checkpoint_folds_older_interactions_only() {
+        let ctx = current_with_interactions(17, "secret");
+        let (cold, cold_regions) =
+            build_send_context_with_regions(&prov(), &ctx, 0, &sliding_cfg());
+        let mut cache = SendContextCache::default();
+        let (warm, warm_regions) =
+            build_send_context_cached(&prov(), &ctx, 0, &sliding_cfg(), &mut cache);
+        assert_eq!(cold, warm, "cold and cached builds must agree");
+        assert_eq!(cold_regions, warm_regions);
+        assert_eq!(cache.checkpoint_rebuilt(), Some(true));
+
+        let sent = warm.into_owned();
+        let raw_start = warm_regions
+            .iter()
+            .position(|r| *r == 2)
+            .expect("the latest interaction stays raw");
+        assert!(
+            warm_regions[..raw_start].contains(&3),
+            "older work must be checkpointed: {warm_regions:?}"
+        );
+        assert_eq!(
+            sent[0],
+            json!({"role": "user", "content": TURN_CHECKPOINT_MARKER_TEXT})
+        );
+        assert_eq!(
+            sent[raw_start], ctx[33],
+            "the seventeenth assistant step stays verbatim"
+        );
+        assert_eq!(
+            sent[raw_start + 1],
+            ctx[34],
+            "its tool result stays verbatim"
+        );
+
+        let folded = serde_json::to_string(&sent[..raw_start]).unwrap();
+        assert!(!folded.contains("secret"), "reasoning leaked: {folded}");
+        assert!(!folded.contains("RESULT-"), "tool result leaked: {folded}");
+        assert!(folded.contains("step 0") && folded.contains("step 15"));
+        assert!(!folded.contains("step 16"), "latest step must stay raw");
+    }
+
+    #[test]
+    fn current_turn_checkpoint_is_stable_between_boundaries() {
+        let mut ctx = current_with_interactions(17, "secret");
+        let mut cache = SendContextCache::default();
+        let _ = build_send_context_cached(&prov(), &ctx, 0, &sliding_cfg(), &mut cache);
+        let first = cache.checkpoint.clone();
+        assert_eq!(cache.checkpoint_rebuilt(), Some(true));
+
+        push_interaction(&mut ctx, 17, "secret");
+        let _ = build_send_context_cached(&prov(), &ctx, 0, &sliding_cfg(), &mut cache);
+        assert_eq!(cache.checkpoint, first);
+        assert_eq!(cache.checkpoint_rebuilt(), Some(false));
+
+        for i in 18..33 {
+            push_interaction(&mut ctx, i, "secret");
+        }
+        let _ = build_send_context_cached(&prov(), &ctx, 0, &sliding_cfg(), &mut cache);
+        assert_ne!(cache.checkpoint, first, "33 interactions advance once");
+        assert_eq!(cache.checkpoint_rebuilt(), Some(true));
+    }
+
+    #[test]
+    fn current_turn_checkpoint_uses_provider_wire_shape() {
+        let mut ctx = current_with_interactions(17, "folded-reasoning");
+        // The seventeenth step is retained verbatim, so give it a distinct
+        // reasoning marker: only the folded marker may disappear from the wire.
+        let last_assistant = ctx
+            .iter()
+            .rposition(|msg| msg["role"] == "assistant")
+            .expect("fixture has assistant steps");
+        ctx[last_assistant]["reasoning_content"] = serde_json::json!("retained-reasoning");
+        ctx[last_assistant]["content"] = serde_json::json!(format!(
+            "{open}retained-reasoning{close}\n\nstep 16\n",
+            open = concat!("<", "think", ">"),
+            close = concat!("</", "think", ">"),
+        ));
+
+        let (sent, regions) =
+            build_send_context_with_regions(&anthropic(), &ctx, 0, &sliding_cfg());
+        assert!(
+            regions.contains(&3),
+            "checkpoint region missing: {regions:?}"
+        );
+        for (msg, region) in sent.iter().zip(&regions) {
+            if *region != 3 {
+                continue;
+            }
+            let blocks = msg["content"]
+                .as_array()
+                .expect("checkpoint uses Anthropic content blocks");
+            assert!(!blocks.is_empty(), "empty Anthropic block: {msg}");
+        }
+
+        // The retained raw suffix is still chat-shaped (the journal may predate
+        // a provider switch), so exercising both conversions covers the mixed
+        // payload the agent loop actually sends.
+        let openai = serde_json::to_string(&crate::provider::filter_valid_messages(&sent)).unwrap();
+        let anthropic = serde_json::to_string(&crate::provider::filter_valid_messages(
+            &crate::provider::chat_to_anthropic_messages(&sent),
+        ))
+        .unwrap();
+        for wire in [&openai, &anthropic] {
+            assert!(
+                !wire.contains("folded-reasoning"),
+                "folded reasoning reached the wire: {wire}"
+            );
+            assert!(
+                !wire.contains("RESULT-0"),
+                "folded tool result reached the wire: {wire}"
+            );
+            assert!(
+                wire.contains("retained-reasoning"),
+                "retained reasoning was dropped: {wire}"
+            );
+            assert!(
+                wire.contains("RESULT-16") && wire.contains("step 16"),
+                "the retained assistant/tool-result pair was dropped: {wire}"
+            );
+        }
+    }
+
+    #[test]
+    fn full_mode_keeps_a_long_turn_verbatim() {
+        let ctx = current_with_interactions(17, "secret");
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::Full,
+            window: 10,
+            extend_rate: 0.5,
+            turn_tool_result_cap: None,
+            max_history_tokens: None,
+        };
+        let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, 0, &cfg);
+        assert!(matches!(sent, Cow::Borrowed(_)));
+        assert_eq!(sent.len(), ctx.len());
+        assert!(regions.iter().all(|r| *r == 1));
     }
 
     #[test]
@@ -1038,7 +1344,7 @@ mod render_raw_context_tests {
             "missing the history box: {dump}"
         );
         assert!(
-            dump.contains("Current turn — verbatim"),
+            dump.contains("Current turn — recent suffix"),
             "missing the current-turn box: {dump}"
         );
         assert!(

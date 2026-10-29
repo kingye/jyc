@@ -848,7 +848,20 @@ mod render_raw_context_tests {
 
     #[test]
     fn current_turn_checkpoint_uses_provider_wire_shape() {
-        let ctx = current_with_interactions(17, "secret");
+        let mut ctx = current_with_interactions(17, "folded-reasoning");
+        // The seventeenth step is retained verbatim, so give it a distinct
+        // reasoning marker: only the folded marker may disappear from the wire.
+        let last_assistant = ctx
+            .iter()
+            .rposition(|msg| msg["role"] == "assistant")
+            .expect("fixture has assistant steps");
+        ctx[last_assistant]["reasoning_content"] = serde_json::json!("retained-reasoning");
+        ctx[last_assistant]["content"] = serde_json::json!(format!(
+            "{open}retained-reasoning{close}\n\nstep 16\n",
+            open = concat!("<", "think", ">"),
+            close = concat!("</", "think", ">"),
+        ));
+
         let (sent, regions) =
             build_send_context_with_regions(&anthropic(), &ctx, 0, &sliding_cfg());
         assert!(
@@ -875,12 +888,16 @@ mod render_raw_context_tests {
         .unwrap();
         for wire in [&openai, &anthropic] {
             assert!(
-                !wire.contains("secret"),
+                !wire.contains("folded-reasoning"),
                 "folded reasoning reached the wire: {wire}"
             );
             assert!(
                 !wire.contains("RESULT-0"),
                 "folded tool result reached the wire: {wire}"
+            );
+            assert!(
+                wire.contains("retained-reasoning"),
+                "retained reasoning was dropped: {wire}"
             );
             assert!(
                 wire.contains("RESULT-16") && wire.contains("step 16"),

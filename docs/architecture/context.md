@@ -305,9 +305,11 @@ The pairing unit is the **turn**, not the single message:
   context) closes it.
 - **All assistant messages in a turn are merged into one entry** holding
   only their visible text — intermediate tool-call steps and the final reply
-  alike. `reasoning_content`, one leading inline reasoning block and
-  `tool_calls` are stripped from the assistant entry, so the history block
-  carries neither reasoning nor call structure.
+  alike. The separate `reasoning_content` field, one leading inline block
+  that duplicates it, and `tool_calls` are stripped from the assistant
+  entry, so the history block carries neither reasoning nor call structure.
+  A block-shaped leading string without that field is preserved as visible
+  text.
 - **The turn's tool calls are collected separately** (`TurnPair::tool_calls`,
   one `name(args)` string per call — at most 20 per turn, the rest counted
   in `TurnPair::omitted_tool_calls` and rendered as `…(N more calls)`) for
@@ -513,11 +515,14 @@ problem. Capping per-result gives both levers — keep individual
 results readable while bounding the total. A global token budget on
 the wire payload is a separate concern (`max_history_tokens`).
 
-## Current-turn checkpoint — bounding a long turn
+## Current-turn checkpoint — bounding verbatim replay
 
 A turn is not bounded by `window`: its assistant steps accumulate until
-the turn ends. The checkpoint bounds that growth without an LLM summary
-and without moving the history prefix.
+the turn ends. The checkpoint bounds the **verbatim replay** of that
+growth without an LLM summary and without moving the history prefix. It
+is not a hard bound on the whole payload: the folded text still grows
+with the turn's visible assistant text and retained user messages, but
+older reasoning and tool-result payloads stop riding every call.
 
 With `n` completed assistant messages in the current turn:
 

@@ -94,6 +94,16 @@ fn format_topic_info(t: &TopicInfo) -> String {
             jyc_types::format_token_count(max)
         ));
     }
+    if !t.context_composition.is_empty() {
+        let total = jyc_types::context_composition_total(&t.context_composition);
+        lines.push("Context composition (estimated):".to_string());
+        for region in &t.context_composition {
+            lines.push(format!(
+                "  {}",
+                jyc_types::format_context_region_row(region, total)
+            ));
+        }
+    }
     if let Some(figures) = jyc_types::format_output_pair(t.output_tokens, t.turn_output_tokens) {
         lines.push(format!("Output: {figures}"));
     }
@@ -242,6 +252,7 @@ mod tests {
             context_input_tokens: Some(105_432),
             context_output_tokens: Some(2_048),
             max_tokens: Some(256_000),
+            context_composition: Vec::new(),
             output_tokens: Some(12_345),
             turn_output_tokens: Some(2_048),
             total_input_tokens: Some(1_234_567),
@@ -411,6 +422,32 @@ Files (2):
         let mut t = full_info();
         t.total_cache_creation_tokens = Some(0);
         assert!(!format_topic_info(&t).contains("Create:"));
+    }
+
+    /// The composition sits between the context size and the output, so
+    /// the caller reads what filled the context before what it produced.
+    #[test]
+    fn formats_context_composition_before_output() {
+        let mut t = full_info();
+        t.context_composition = vec![
+            jyc_types::ContextRegionInfo {
+                region: jyc_types::ContextRegion::History,
+                messages: 3,
+                bytes: 512,
+                estimated_tokens: 60,
+            },
+            jyc_types::ContextRegionInfo {
+                region: jyc_types::ContextRegion::Current,
+                messages: 2,
+                bytes: 256,
+                estimated_tokens: 40,
+            },
+        ];
+        let text = format_topic_info(&t);
+        let section = "Context composition (estimated):\n  History: ~60 · 60% · 3 messages · 512B\n  Current turn: ~40 · 40% · 2 messages · 256B\n";
+        let composition = text.find(section).expect("the composition section");
+        let output = text.find("Output:").expect("the output row");
+        assert!(composition < output, "{text}");
     }
 
     #[test]

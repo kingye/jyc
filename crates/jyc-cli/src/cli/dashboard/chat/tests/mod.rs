@@ -1701,6 +1701,7 @@ fn app_with_topic_summary() -> App {
         context_input_tokens: Some(1_000),
         context_output_tokens: None,
         max_tokens: Some(10_000),
+        context_composition: Vec::new(),
         output_tokens: None,
         turn_output_tokens: None,
         total_input_tokens: None,

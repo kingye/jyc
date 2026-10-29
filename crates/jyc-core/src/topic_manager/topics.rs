@@ -801,6 +801,7 @@ impl TopicManager {
                 context_input_tokens: input_tokens,
                 context_output_tokens,
                 max_tokens,
+                context_composition: token_state.context_composition.clone(),
                 output_tokens,
                 total_input_tokens,
                 total_cache_hit_tokens,

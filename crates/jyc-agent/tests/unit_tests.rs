@@ -521,6 +521,89 @@ mod session {
         assert_eq!(state["context_window"], 100000);
     }
 
+    /// The composition is written by its own save after a call, and a
+    /// later token save must carry it forward instead of dropping it.
+    #[tokio::test]
+    async fn persist_context_composition_survives_token_updates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "persist_context_composition_survives_token_updates";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let state_dir = tmp.path().join(".jyc");
+        let session_path = state_dir.join("agent-session.json");
+
+        session::persist_tokens(
+            topic,
+            tmp.path(),
+            1000,
+            100,
+            1000,
+            100,
+            0,
+            0,
+            0,
+            Some(100_000),
+            0.0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+        .await;
+
+        let composition = vec![
+            jyc_types::ContextRegionInfo {
+                region: jyc_types::ContextRegion::History,
+                messages: 3,
+                bytes: 512,
+                estimated_tokens: 128,
+            },
+            jyc_types::ContextRegionInfo {
+                region: jyc_types::ContextRegion::Current,
+                messages: 2,
+                bytes: 256,
+                estimated_tokens: 64,
+            },
+        ];
+        session::persist_context_composition(topic, tmp.path(), &composition).await;
+
+        let read = || async {
+            let content = tokio::fs::read_to_string(&session_path).await.unwrap();
+            serde_json::from_str::<serde_json::Value>(&content).unwrap()
+        };
+        let state = read().await;
+        assert_eq!(state["context_composition"][0]["region"], "history");
+        assert_eq!(state["context_composition"][0]["messages"], 3);
+        assert_eq!(state["context_composition"][1]["region"], "current");
+        assert_eq!(state["context_composition"][1]["estimated_tokens"], 64);
+
+        // The next call's token save starts from the file, so it must keep
+        // the composition rather than write back an empty vector.
+        session::persist_tokens(
+            topic,
+            tmp.path(),
+            2000,
+            200,
+            2000,
+            300,
+            0,
+            0,
+            0,
+            Some(100_000),
+            0.0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+        .await;
+        let state = read().await;
+        assert_eq!(state["context_input_tokens"], 2000);
+        assert_eq!(state["context_composition"][0]["region"], "history");
+        assert_eq!(state["context_composition"][1]["region"], "current");
+    }
+
     /// `context_input_tokens` and `total_input_tokens` are stored as passed
     /// in (= latest call's value, since each call already includes full
     /// context). `total_output_tokens` is also stored as passed in (= the

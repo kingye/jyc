@@ -9,6 +9,7 @@
 //! starts from an empty context.
 
 use jyc_core::session_state::AGENT_CONTEXT_FILE;
+use jyc_types::ContextRegionInfo;
 use jyc_types::channel::ContextStrategyConfig;
 use jyc_types::state_dir::resolve_state_dir;
 use serde::{Deserialize, Serialize};
@@ -182,6 +183,11 @@ pub struct SessionState {
     /// rewrites the field with the raw window.
     #[serde(default, alias = "max_input_tokens")]
     pub context_window: u64,
+    /// How the most recent completed LLM call's wire messages split into
+    /// context regions. Empty when no call has completed, and on session
+    /// files written before the field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_composition: Vec<ContextRegionInfo>,
     /// Journal byte offset where the sliding window's oldest retained turn
     /// begins (`agent-context.jsonl`). The window reads forward from here,
     /// so between slides the wire prefix is stable across turns — what the
@@ -907,6 +913,27 @@ pub async fn persist_tokens(
         state.created_at = chrono::Utc::now().to_rfc3339();
     }
 
+    save_session_state(topic_name, &session_path, &state).await;
+}
+
+/// Persist the composition of the wire payload sent to the most recent
+/// completed LLM call.
+///
+/// Kept separate from [`persist_tokens`] so the token writer's long
+/// argument list does not grow: this field has one caller (the agent
+/// loop, right after a call returns) and is written from the same
+/// session state file. The save helper already skips a closed topic.
+pub async fn persist_context_composition(
+    topic_name: &str,
+    topic_path: &Path,
+    composition: &[ContextRegionInfo],
+) {
+    let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
+    let mut state = load_session_state(&session_path).await;
+    state.context_composition = composition.to_vec();
+    if state.created_at.is_empty() {
+        state.created_at = chrono::Utc::now().to_rfc3339();
+    }
     save_session_state(topic_name, &session_path, &state).await;
 }
 

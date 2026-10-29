@@ -648,6 +648,7 @@ fn topic_detail_for(name: &str, channel: &str) -> jyc_types::TopicInfo {
         context_input_tokens: None,
         context_output_tokens: None,
         max_tokens: None,
+        context_composition: Vec::new(),
         output_tokens: None,
         turn_output_tokens: None,
         total_input_tokens: None,
@@ -758,6 +759,7 @@ fn files_section_colors_uncommitted_paths_yellow() {
         context_input_tokens: None,
         context_output_tokens: None,
         max_tokens: None,
+        context_composition: Vec::new(),
         output_tokens: None,
         turn_output_tokens: None,
         total_input_tokens: None,
@@ -1019,6 +1021,7 @@ fn info_scroll_is_clamped_after_render() {
         context_input_tokens: None,
         context_output_tokens: None,
         max_tokens: None,
+        context_composition: Vec::new(),
         output_tokens: None,
         turn_output_tokens: None,
         total_input_tokens: None,
@@ -1911,6 +1914,7 @@ fn info_pane_app(tasks: jyc_types::task::TaskList) -> App {
         context_input_tokens: None,
         context_output_tokens: None,
         max_tokens: None,
+        context_composition: Vec::new(),
         output_tokens: None,
         turn_output_tokens: None,
         total_input_tokens: None,
@@ -1947,6 +1951,78 @@ fn info_pane_app(tasks: jyc_types::task::TaskList) -> App {
     });
     app.table_state.select(Some(0));
     app
+}
+
+/// The info pane draws the last call's context composition as one stacked
+/// bar and a legend row per region. The bar's segments carry each region's
+/// colour, and the rows carry the same estimated size and share `/info`
+/// prints.
+#[test]
+fn info_pane_draws_context_composition_bar_and_legend() {
+    use jyc_types::{ContextRegion, ContextRegionInfo};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = info_pane_app(jyc_types::task::TaskList::default());
+    app.topic_detail
+        .as_mut()
+        .expect("the detail")
+        .context_composition = vec![
+        ContextRegionInfo {
+            region: ContextRegion::History,
+            messages: 31,
+            bytes: 132_000,
+            estimated_tokens: 18_000,
+        },
+        ContextRegionInfo {
+            region: ContextRegion::Checkpoint,
+            messages: 17,
+            bytes: 41_000,
+            estimated_tokens: 4_000,
+        },
+        ContextRegionInfo {
+            region: ContextRegion::Current,
+            messages: 9,
+            bytes: 58_000,
+            estimated_tokens: 8_000,
+        },
+    ];
+
+    let width = 60;
+    let height = 40;
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| render_topic_info_pane(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    let screen = (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(screen.contains("Context (estimated):"), "{screen}");
+    assert!(screen.contains("History:"), "{screen}");
+    assert!(screen.contains("Checkpoint:"), "{screen}");
+    assert!(screen.contains("Current turn:"), "{screen}");
+    assert!(screen.contains("~17.58K · 60%"), "{screen}");
+    assert!(screen.contains("~3.91K · 13%"), "{screen}");
+    assert!(screen.contains("~7.81K · 26%"), "{screen}");
+
+    let bar_colors: Vec<Color> = (0..height)
+        .flat_map(|y| (0..width).map(move |x| (x, y)))
+        .filter_map(|(x, y)| {
+            let cell = &buffer[(x, y)];
+            (cell.symbol() == "█").then_some(cell.fg)
+        })
+        .collect();
+    assert!(bar_colors.contains(&Color::Green), "{screen}");
+    assert!(bar_colors.contains(&Color::Yellow), "{screen}");
+    assert!(bar_colors.contains(&Color::Cyan), "{screen}");
 }
 
 /// The status row carries the topic's backlog: the blocks say how much of
@@ -2498,6 +2574,7 @@ fn info_pane_end_reaches_the_last_wrapped_row() {
         context_input_tokens: None,
         context_output_tokens: None,
         max_tokens: None,
+        context_composition: Vec::new(),
         output_tokens: None,
         turn_output_tokens: None,
         total_input_tokens: None,

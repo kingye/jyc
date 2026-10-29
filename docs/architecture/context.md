@@ -68,8 +68,10 @@ flowchart TD
 `prior_len` is the length of the raw context at the moment the incoming
 message was received. Everything after it — the new user message, the
 assistant's intermediate steps, tool calls, tool results — is the
-**current turn**, which is always sent verbatim so tool_use/tool_result
-pairing stays valid mid-loop.
+**current turn**. Its most recent interaction is sent verbatim so
+tool_use/tool_result pairing stays valid mid-loop; once a turn passes 16
+assistant steps, the older part folds into a text-only checkpoint, the
+same shape as prior-turn history.
 
 ### Reading the prior back
 
@@ -146,9 +148,18 @@ there:
    the payload (the journal keeps them; `context_browse` reads the turns
    and their calls back, without results).
    This block only ever **grows**: nothing trims its head.
-2. **Current turn, verbatim** — `raw_context[prior_len..]`,
-   untouched, tool calls and results included, so the loop's
-   `tool_use` ↔ `tool_result` pairing stays legal mid-flight.
+2. **Current-turn checkpoint, text-only** — after 16 assistant steps,
+   every whole group of 16 older steps folds into one checkpoint in that
+   same text-only shape, with a marker. It contains the turn's opening
+   user message and the folded assistant conclusions; older reasoning and
+   tool results leave the wire exactly as they do for prior turns.
+   The boundary advances one group at a time, so the checkpoint changes
+   at most once per 16 steps.
+3. **Recent current turn, verbatim** — from the first assistant step
+   after the checkpoint to the end of `raw_context`, untouched, tool
+   calls and results included, so the loop's `tool_use` ↔ `tool_result`
+   pairing stays legal mid-flight and provider-specific replay fields
+   survive where they matter.
 
 `window` (default `10`) is the number of turns the window keeps after a
 slide. `extend_rate` (default `0.5`) is how far it may grow first:
@@ -181,8 +192,8 @@ count, with hysteresis — not a per-turn fitter.
 #### What a request looks like
 
 One request with six prior turns (t1…t6) and turn 7 in flight. Nothing
-else is in `messages`: the history is text-only, and only the current turn
-carries tool calls.
+else is in `messages`: prior history and the folded checkpoint are
+text-only, and only the recent current turn carries tool calls.
 
 ```
 POST /v1/messages
@@ -208,10 +219,12 @@ POST /v1/messages
 11  user        t6: what the user said                     |
 12  assistant   t6: the reply text                         |
 
-13  user        "turn 7"
-14  assistant   "..." + tool_calls[bash(...)]              -- current turn
-15  tool        the full tool result                       -- current turn,
-16  assistant   "..."                                      -- uncapped by default
+13  user        "turn 7"                                  -- current turn
+    ...         checkpoint marker + folded older steps       (only after 16
+                                                             assistant steps)
+14  assistant   "..." + tool_calls[bash(...)]              -- recent suffix,
+15  tool        the full tool result                       -- verbatim
+16  assistant   "..."                                      -- turn cap applies
 ```
 
 Two properties follow from that shape, and both are what the design is
@@ -220,8 +233,9 @@ for:
 - **The history block is a byte-stable prefix from one turn to the next.**
   Turn k+1's history is turn k's history plus that turn's own pair:
   nothing before it is rewritten, so the provider's cache carries.
-- **Only the current turn is structured.** A prior turn's tool calls are
-  never replayed, so an old result cannot look like something the model
+- **Only the recent current turn is structured.** A prior turn's tool calls
+  are never replayed, and neither are the current turn's once they age
+  past a checkpoint, so an old result cannot look like something the model
   is still working on — and `context_browse` is where the turns and their
   calls are read back.
 
@@ -232,14 +246,19 @@ flowchart TB
         R1A["assistant: 'a1'<br/><i>pure text, no tools</i>"]
         R1N["tool calls · results dropped"]
     end
-    subgraph R2["Current turn — verbatim"]
+    subgraph R3["Current-turn checkpoint — text-only"]
+        R3M["marker + folded older steps"]
+        R3N["reasoning · tool results dropped"]
+    end
+    subgraph R2["Recent current turn — verbatim"]
         R2U["user: 'u2'"]
         R2ATU["assistant: tool_use / tool_calls blocks<br/><i>as recorded</i>"]
         R2TR["tool/user: tool_result / tool messages<br/><i>as recorded</i>"]
-        R2MORE["… further steps as the loop continues"]
+        R2MORE["… latest steps as the loop continues"]
     end
-    R1 --> R2
+    R1 --> R3 --> R2
     style R1 fill:#fce4ec,stroke:#c2185b
+    style R3 fill:#fff8e1,stroke:#f9a825
     style R2 fill:#e8f5e9,stroke:#2e7d32
 ```
 
@@ -266,6 +285,13 @@ for the turn's remaining calls; the log's `history_rebuilt` says whether a
 call rebuilt it (`rebuilt`), reused it (`reused`), or built nothing at all
 (`-`, `full` mode).
 
+The current-turn checkpoint is cached the same way, keyed on its absolute
+end index. Its boundary is derived from the number of assistant messages,
+so a cold build and a warm cache produce the same payload. It advances
+once every 16 assistant steps; between advances the log's
+`checkpoint_rebuilt` says `reused`, and at a boundary it says `rebuilt`
+(`-` means no checkpoint is active).
+
 The journal still holds each turn's raw messages, tool calls and results
 included — nothing is lost, it is just not replayed. `context_browse` is
 the way back to them, and it renders each turn's calls on its own
@@ -278,9 +304,12 @@ The pairing unit is the **turn**, not the single message:
 - A **text-bearing user message opens a turn**; the next one (or end of
   context) closes it.
 - **All assistant messages in a turn are merged into one entry** holding
-  only their text — intermediate tool-call steps and the final reply
-  alike. `reasoning_content` and `tool_calls` are stripped from the
-  assistant entry, so the history block carries no call structure.
+  only their visible text — intermediate tool-call steps and the final reply
+  alike. The separate `reasoning_content` field, one leading inline block
+  that duplicates it, and `tool_calls` are stripped from the assistant
+  entry, so the history block carries neither reasoning nor call structure.
+  A block-shaped leading string without that field is preserved as visible
+  text.
 - **The turn's tool calls are collected separately** (`TurnPair::tool_calls`,
   one `name(args)` string per call — at most 20 per turn, the rest counted
   in `TurnPair::omitted_tool_calls` and rendered as `…(N more calls)`) for
@@ -348,9 +377,9 @@ Each line of `wire-payload.jsonl` is one JSON object:
 ```
 
 `regions` is a parallel `Vec<u8>` to `wire_payload`: `1` = text-only
-history, `2` = current turn. `1` for `Full` mode means "one block, no
-windowing". Use it to partition the payload when reconstructing what each
-LLM call looked like.
+history, `2` = recent current turn verbatim, `3` = folded current-turn
+checkpoint. `1` for `Full` mode means "one block, no windowing". Use it to
+partition the payload when reconstructing what each LLM call looked like.
 
 **Bounded footprint.** The file is capped at the **last 50 lines**
 (oldest dropped). For a 12-message payload at ~10 KB per call this
@@ -396,12 +425,14 @@ is about to fire anyway — when its estimated weight exceeds
 budget alone: a window whose `window` turns already exceed the budget
 cannot get under it, and chasing it every turn would move the anchor on
 every turn.
-The slide is the only way history shrinks; nothing trims between slides,
+The slide is the only way **history** shrinks; nothing trims between slides,
 which is what keeps the wire prefix byte-stable and the provider cache
-alive. `full` mode grows verbatim until the provider's own limit. There
-is no second layer underneath — no mid-loop compaction, no auto-reset, no
-reset-compression mode. A session reset (`/reset`) clears the context
-outright; it does not summarize or compact it.
+alive. The current turn has its own two bounds — `turn_tool_result_cap`
+per result, and a checkpoint every 16 assistant steps that folds older
+steps into the text-only form — but neither moves the history head.
+`full` mode grows verbatim until the provider's own limit; it has no
+checkpoint and no history window. A session reset (`/reset`) clears the
+context outright; it does not summarize or compact it.
 
 The context-window figures the dashboard and `/info` show come from the
 same place: the most recent LLM call's `usage.input_tokens` plus that
@@ -427,21 +458,23 @@ All counts are **turns**, not messages or tokens:
 |-------|---------|---------|
 | `window` | `10` | Turns kept after a slide — the window's floor |
 | `extend_rate` | `0.5` | Growth allowed before a slide: `max_window = window + round(extend_rate × window)`; `0` = hard window (slides every turn) |
-| `turn_tool_result_cap` | unset | Per-result byte cap on the current turn — see below |
+| `turn_tool_result_cap` | unset | Per-result byte cap on the recent current-turn suffix — see below |
 | `max_history_tokens` | unset | Second slide trigger, at the top of the extension cycle — see below |
 
 ## `turn_tool_result_cap` — bounding the current turn
 
-The current turn is uncapped by default: the model is
+The current turn's **recent suffix** is uncapped by default: the model is
 mid-reasoning over those
 tool results, and silently trimming what it is still working through is
 the more damaging failure. The cost is that one verbose result — a
 `read` of a large file, a chatty command — rides every remaining call
-of the turn, at full price each time.
+of the turn, at full price each time. The per-result cap below bounds
+one result; the checkpoint bounds how many old results remain on the
+wire at all.
 
-`turn_tool_result_cap: N` opts into a bound on the current turn (nothing
-else
-bounds the current turn — the window bound is history-only). An oversized
+`turn_tool_result_cap: N` opts into a size bound on the recent suffix
+(nothing else bounds those results — the window bound is history-only and
+the checkpoint already dropped the older steps' results). An oversized
 result keeps its **head and tail** with the middle replaced by
 
 ```
@@ -456,7 +489,7 @@ the marker **inside** `N` — the caller gets the byte bound it asked for.
 
 | Value | Behavior |
 |-------|----------|
-| unset (default) | The current turn sent in full. |
+| unset (default) | The recent suffix is sent in full. |
 | `Some(0)` | Explicit "off" sentinel — same as unset. |
 | `Some(N > 0)` | Each current-turn tool result keeps head + tail within `N` bytes total. A value below 130 cannot hold the drop marker plus both ends, so it is lifted to 130 rather than silently degrading to a head-only cut — the `/context` command refuses such a value instead, since there the user is present to be told. |
 
@@ -471,15 +504,58 @@ refused outright), or from config as
 `context_strategy = { …, turn_tool_result_cap = 32768 }` — where a
 non-zero value below 130 is lifted to 130 rather than rejected.
 
-**History has no tool results to cap.** The history block is text-only, so the
-cap has nothing else to apply to: prior turns were folded without their
-results in the first place.
+**History and checkpoints have no tool results to cap.** Both are
+text-only, so the cap has nothing else to apply to: prior turns and the
+folded older part of the current turn were folded without their results
+in the first place.
 
 **Why per-result, not global:** a single 5 KB `read` result is usually
 fine; ten 100 KB results from one bash test suite are the actual
 problem. Capping per-result gives both levers — keep individual
 results readable while bounding the total. A global token budget on
 the wire payload is a separate concern (`max_history_tokens`).
+
+## Current-turn checkpoint — bounding verbatim replay
+
+A turn is not bounded by `window`: its assistant steps accumulate until
+the turn ends. The checkpoint bounds the **verbatim replay** of that
+growth without an LLM summary and without moving the history prefix. It
+is not a hard bound on the whole payload: the folded text still grows
+with the turn's visible assistant text and retained user messages, but
+older reasoning and tool-result payloads stop riding every call.
+
+With `n` completed assistant messages in the current turn:
+
+```text
+folded = floor((n - 1) / 16) × 16
+```
+
+When `folded` is 0 the turn is sent exactly as before (no checkpoint).
+Otherwise the first `folded` steps — from the turn's opening user message
+through the result before the first retained assistant step — are folded
+with the same `extract_user_assistant_pairs` representation as prior
+history. The rest of the turn stays verbatim, so the latest
+`tool_use`/`tool_result` sequence and any provider-specific reasoning
+fields are intact.
+
+The checkpoint is derived from message roles alone, which makes it
+cache-aware:
+
+- A cold build and a warm cache produce byte-identical output.
+- The boundary advances at 17, 33, 49… assistant messages, not every
+  call; between advances the checkpoint is reused byte-for-byte.
+- Full mode does not checkpoint.
+
+What the folded part keeps is the opening user message and assistant
+visible text. Like prior-turn history, it drops tool calls, arguments,
+results and reasoning. The journal and `context_browse` still hold the raw
+steps.
+
+**Tradeoff:** an older result is no longer replayed after a checkpoint.
+If the model needs that exact output again, it must re-read or re-run its
+source. The latest 1–16 steps remain raw, which covers the normal
+read→act→observe cycle; this is deliberately simpler than spilling every
+result to a file and adding a retrieval API.
 
 ## `max_history_tokens` — the weight trigger for a slide
 
@@ -502,8 +578,8 @@ avoid. So the budget only decides *when* the slide happens; the slide
 decides *what* goes.
 
 The current turn is never part of the estimate: it is the turn in flight,
-and
-`turn_tool_result_cap` is its lever. If the last `window` turns alone
+and it has its own two bounds — `turn_tool_result_cap` and the
+current-turn checkpoint. If the last `window` turns alone
 exceed the budget, they are still sent — the window is the floor, and
 `window` is the knob to lower.
 
@@ -565,9 +641,17 @@ bounds how much history survives before the next slide.
 
 Key changes, newest first (see CHANGELOG.md for full entries):
 
-- **`note_window` removed** — the wire payload has two parts: text-only
-  history and the verbatim current turn. History notes are gone from the
-  wire, the config, the `/context` command and the system prompt.
+- **current-turn checkpoint** — the sliding-window payload has three parts:
+  text-only history, an optional text-only checkpoint for older steps of a
+  long current turn, and the verbatim recent suffix. The checkpoint folds
+  the first `floor((n-1)/16)×16` assistant steps once a turn has more than
+  16, dropping their reasoning and tool results the same way prior-turn
+  history does. It advances only at 17, 33, 49… steps, so it is byte-stable
+  between advances; the journal is untouched and the latest steps remain
+  raw. `regions` in the wire dump marks it `3`, and the `LLM call started`
+  log carries `checkpoint_rebuilt`.
+- **`note_window` removed** — history notes are gone from the wire, the
+  config, the `/context` command and the system prompt.
   `context_browse` still renders each turn's tool calls (`[n] TOOLS:`, at
   most 20 per turn and at most 4000 bytes per turn, whole calls dropped with
   a `…(N more calls)` count when either bound bites), built from the journal

@@ -2335,8 +2335,13 @@ JYC uses the following subset of the agent service API:
      retained turn begins, and each load reads the journal forward from
      there. The wire payload is the history block — the prior turns as
      text-only pairs, append-only, never trimmed — followed by the
-     current turn verbatim (`raw_context[prior_len..]`, structured tool
-     calls and results intact). The window
+     current turn in two parts: once it passes 16 assistant steps, the
+     older steps fold into a text-only checkpoint (same representation as
+     history, so their reasoning and tool results leave the wire), and
+     the recent suffix stays verbatim with structured tool calls and
+     results intact. The checkpoint boundary advances one group of 16 at
+     a time, so it is byte-stable between advances and a cold build equals
+     a cached one. The window
      grows by append until it holds more than `max_window = window +
      round(extend_rate × window)` turns — or has reached that bound and
      exceeds `max_history_tokens`' weight, the budget being a second
@@ -2345,11 +2350,12 @@ JYC uses the following subset of the agent service API:
      remain, whole turns at a time.
      Slides are the only way history shrinks — a per-turn trim of the
      head is what destroys the cross-turn prefix cache. The prefix is
-     therefore append-only up to the end of the history block; only
-     the current turn is re-encoded from one turn to the next. A cold start
-     (fresh topic, reset, no anchor, or an anchor no longer on a turn
-     boundary) reads the journal once from its head and drops the bad
-     anchor; the next slide persists a fresh one.
+     therefore append-only up to the end of the history block; within a
+     turn only the recent suffix is re-encoded from one call to the next,
+     and the checkpoint changes at most once per 16 assistant steps. A
+     cold start (fresh topic, reset, no anchor, or an anchor no longer on
+     a turn boundary) reads the journal once from its head and drops the
+     bad anchor; the next slide persists a fresh one.
 
    Resolution chain: runtime override file > the topic's own config
    (`[context_strategy]` in `<topic>/.jyc/config.toml` — including one a
@@ -2363,7 +2369,8 @@ JYC uses the following subset of the agent service API:
    shapes what that returned:
    for `full` it returns `Cow::Borrowed(&raw_context)`; for
    `sliding_window` it returns `Cow::Owned` of `[windowed_prior,
-   current_turn]`. Synthetic messages use the provider's
+   current_turn_checkpoint, recent_current_turn]`. Synthetic messages use
+   the provider's
    own formatter, so Anthropic (`content: [...]`) and OpenAI-compat
    (`content: "..."`) wire formats both stay valid.
 
@@ -2383,7 +2390,8 @@ JYC uses the following subset of the agent service API:
    whole turns, anchor forward, exactly what the turn bound does. Below
    `max_window` it never fires, because a window whose `window` turns
    alone exceed the budget cannot get under it. The current turn is
-   excluded: the turn in flight has `turn_tool_result_cap`. The estimate is a
+   excluded: the turn in flight has `turn_tool_result_cap` for a single
+   result and the 16-assistant-step checkpoint for older steps. The estimate is a
    heuristic, not a tokenizer — CJK characters ×1, other bytes ÷4, plus a
    small per-message constant — because a tokenizer dependency would buy
    precision this knob does not need. Unset by default.
@@ -2556,7 +2564,9 @@ tokens ↓
 │  当前轮            0 → 增长                      │
 │  ├ user: <runtime-state> 参考块 ~300B ★易变★     │ ★新位置★
 │  │        + 入站消息(含 <mode> 块) + 附件          │
-│  ├ assistant: tool_call                          │ ◇断点3 (n-3)
+│  ├ 每 16 个 assistant 步: 旧步折叠为 text-only    │ ★checkpoint★
+│  │     checkpoint (reasoning/tool result 丢弃)    │   每16步一次
+│  ├ recent suffix: assistant/tool 原样             │ ◇断点3 (n-3)
 │  ├ tool: result                                 │ ◇断点4 (n-2)
 │  │     默认原样携带 ★turn_tool_result_cap★       │  ★置了则 ≤ N 字节:
 │  │     设了则留头2/3 + 标记 + 尾1/3               │  头 2/3 + 缺口标记 + 尾 1/3

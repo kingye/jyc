@@ -133,17 +133,21 @@ pub fn context_composition_total(regions: &[crate::inspect::ContextRegionInfo]) 
 
 /// One region's share of the estimated context weight, in percent.
 ///
+/// Rounded to the nearest whole percent: truncating instead left a
+/// composition whose real shares are 60.0 / 13.3 / 26.7 printing as
+/// 60 / 13 / 26 — a legend that visibly adds up to 99%. Independent
+/// rounding can still leave a one-point gap when several regions tie,
+/// so the rows are not forced to sum to 100.
+///
 /// `0` when the composition's total is zero: there is no share to report.
-/// Checked arithmetic, so a very large estimate cannot wrap.
+/// The arithmetic is in `u128`, so a very large estimate cannot wrap.
 pub fn context_region_pct(region: &crate::inspect::ContextRegionInfo, total: u64) -> u32 {
     if total == 0 {
         return 0;
     }
-    region
-        .estimated_tokens
-        .checked_mul(100)
-        .and_then(|v| v.checked_div(total))
-        .unwrap_or(0) as u32
+    let tokens = u128::from(region.estimated_tokens);
+    let total = u128::from(total);
+    ((tokens * 100 + total / 2) / total) as u32
 }
 
 /// A region's size and share in the compact form the info pane prints,
@@ -328,6 +332,14 @@ mod tests {
         assert_eq!(context_region_pct(&history, 100), 52);
         assert_eq!(context_region_pct(&current, 100), 48);
         assert_eq!(context_region_pct(&current, 0), 0);
+        // 60.0 / 13.3 / 26.7 percent rounds to a legend that still adds
+        // up to 100%; truncation would print 60 / 13 / 26.
+        let history_60 = region(crate::inspect::ContextRegion::History, 1, 50, 18);
+        let checkpoint_13 = region(crate::inspect::ContextRegion::Checkpoint, 1, 50, 4);
+        let current_27 = region(crate::inspect::ContextRegion::Current, 1, 50, 8);
+        assert_eq!(context_region_pct(&history_60, 30), 60);
+        assert_eq!(context_region_pct(&checkpoint_13, 30), 13);
+        assert_eq!(context_region_pct(&current_27, 30), 27);
         assert_eq!(
             format_context_region_share(&history, 100),
             "~52 · 52%".to_string()

@@ -2005,13 +2005,16 @@ fn info_pane_draws_context_composition_bar_and_legend() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    assert!(screen.contains("Context (estimated):"), "{screen}");
+    assert!(
+        screen.contains("Context composition (estimated):"),
+        "{screen}"
+    );
     assert!(screen.contains("History:"), "{screen}");
     assert!(screen.contains("Checkpoint:"), "{screen}");
     assert!(screen.contains("Current turn:"), "{screen}");
     assert!(screen.contains("~17.58K · 60%"), "{screen}");
     assert!(screen.contains("~3.91K · 13%"), "{screen}");
-    assert!(screen.contains("~7.81K · 26%"), "{screen}");
+    assert!(screen.contains("~7.81K · 27%"), "{screen}");
 
     let bar_colors: Vec<Color> = (0..height)
         .flat_map(|y| (0..width).map(move |x| (x, y)))

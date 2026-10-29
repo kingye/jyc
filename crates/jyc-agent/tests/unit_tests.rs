@@ -521,17 +521,31 @@ mod session {
         assert_eq!(state["context_window"], 100000);
     }
 
-    /// The composition is written by its own save after a call, and a
-    /// later token save must carry it forward instead of dropping it.
+    /// The composition rides the token save in one write, and a later
+    /// token-only save must carry it forward instead of dropping it.
     #[tokio::test]
-    async fn persist_context_composition_survives_token_updates() {
+    async fn persist_tokens_with_composition_survives_token_updates() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "persist_context_composition_survives_token_updates";
+        let topic = "persist_tokens_with_composition_survives_token_updates";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let state_dir = tmp.path().join(".jyc");
         let session_path = state_dir.join("agent-session.json");
 
-        session::persist_tokens(
+        let composition = vec![
+            jyc_types::ContextRegionInfo {
+                region: jyc_types::ContextRegion::History,
+                messages: 3,
+                bytes: 512,
+                estimated_tokens: 128,
+            },
+            jyc_types::ContextRegionInfo {
+                region: jyc_types::ContextRegion::Current,
+                messages: 2,
+                bytes: 256,
+                estimated_tokens: 64,
+            },
+        ];
+        session::persist_tokens_with_composition(
             topic,
             tmp.path(),
             1000,
@@ -548,24 +562,9 @@ mod session {
             0,
             0,
             0,
+            &composition,
         )
         .await;
-
-        let composition = vec![
-            jyc_types::ContextRegionInfo {
-                region: jyc_types::ContextRegion::History,
-                messages: 3,
-                bytes: 512,
-                estimated_tokens: 128,
-            },
-            jyc_types::ContextRegionInfo {
-                region: jyc_types::ContextRegion::Current,
-                messages: 2,
-                bytes: 256,
-                estimated_tokens: 64,
-            },
-        ];
-        session::persist_context_composition(topic, tmp.path(), &composition).await;
 
         let read = || async {
             let content = tokio::fs::read_to_string(&session_path).await.unwrap();

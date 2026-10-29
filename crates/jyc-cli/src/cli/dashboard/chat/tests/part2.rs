@@ -1954,9 +1954,10 @@ fn info_pane_app(tasks: jyc_types::task::TaskList) -> App {
 }
 
 /// The info pane draws the last call's context composition as one stacked
-/// bar and a legend row per region. The bar's segments carry each region's
-/// colour, and the rows carry the same estimated size and share `/info`
-/// prints.
+/// bar behind the section's `Context:` label, and a legend row per region
+/// under it, indented to the column the bar starts in. The bar's segments
+/// carry each region's colour, and the rows carry the same estimated size
+/// and share `/info` prints — estimated tokens only, no wire bytes.
 #[test]
 fn info_pane_draws_context_composition_bar_and_legend() {
     use jyc_types::{ContextRegion, ContextRegionInfo};
@@ -2005,27 +2006,146 @@ fn info_pane_draws_context_composition_bar_and_legend() {
         .collect::<Vec<_>>()
         .join("\n");
 
+    // The bar shares the title's row: the label introduces it, the cells
+    // follow it. The section is titled `Context:` — nothing more.
+    let title_row = screen
+        .lines()
+        .find(|line| line.contains("Context:"))
+        .expect("the composition title");
+    assert!(title_row.contains('▊'), "{screen}");
+    assert!(!screen.contains("(estimated)"), "{screen}");
+    // The legend rows are indented to the bar's first cell and share one
+    // column of figures: no colon after a label, no byte count anywhere.
     assert!(
-        screen.contains("Context composition (estimated):"),
+        screen.contains("         History      ~17.58K · 60%"),
         "{screen}"
     );
-    assert!(screen.contains("History:"), "{screen}");
-    assert!(screen.contains("Checkpoint:"), "{screen}");
-    assert!(screen.contains("Current turn:"), "{screen}");
-    assert!(screen.contains("~17.58K · 60%"), "{screen}");
-    assert!(screen.contains("~3.91K · 13%"), "{screen}");
-    assert!(screen.contains("~7.81K · 27%"), "{screen}");
+    assert!(
+        screen.contains("         Checkpoint   ~3.91K · 13%"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("         Current turn ~7.81K · 27%"),
+        "{screen}"
+    );
+    assert!(!screen.contains("messages"), "{screen}");
 
     let bar_colors: Vec<Color> = (0..height)
         .flat_map(|y| (0..width).map(move |x| (x, y)))
         .filter_map(|(x, y)| {
             let cell = &buffer[(x, y)];
-            (cell.symbol() == "█").then_some(cell.fg)
+            (cell.symbol() == "▊").then_some(cell.fg)
         })
         .collect();
     assert!(bar_colors.contains(&Color::Green), "{screen}");
     assert!(bar_colors.contains(&Color::Yellow), "{screen}");
     assert!(bar_colors.contains(&Color::Cyan), "{screen}");
+}
+
+/// Render the info pane at `width` × `height` with `composition` on the
+/// detail, and return it as one string with a line per terminal row.
+fn info_pane_screen_with_composition(
+    composition: Vec<jyc_types::ContextRegionInfo>,
+    width: u16,
+    height: u16,
+) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = info_pane_app(jyc_types::task::TaskList::default());
+    app.topic_detail
+        .as_mut()
+        .expect("the detail")
+        .context_composition = composition;
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| render_topic_info_pane(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A pane too narrow for the bar keeps the section header and drops only
+/// the bar: below `MIN_BAR_WIDTH` a cell would carry too much of the share
+/// to be honest, so the bar is refused rather than drawn. The header row
+/// survives with nothing behind it — the bar helper's `false` means "no
+/// bar on this row", not "no row at all".
+#[test]
+fn info_pane_keeps_the_context_header_when_the_bar_is_refused() {
+    use jyc_types::{ContextRegion, ContextRegionInfo};
+
+    // 15 columns less the pane's left border leaves 14: `Context: ` takes
+    // 9, leaving 5, and `BAR_EDGE_ROOM` takes 2 of those — 3 cells, under
+    // `MIN_BAR_WIDTH` (5).
+    let screen = info_pane_screen_with_composition(
+        vec![
+            ContextRegionInfo {
+                region: ContextRegion::History,
+                messages: 3,
+                bytes: 1_000,
+                estimated_tokens: 600,
+            },
+            ContextRegionInfo {
+                region: ContextRegion::Current,
+                messages: 1,
+                bytes: 200,
+                estimated_tokens: 400,
+            },
+        ],
+        15,
+        24,
+    );
+
+    // The bar shares the header row, so a header with nothing behind it is
+    // exactly a refused bar; a bar drawn here would follow the label. The
+    // pane's left border leads every row, so it comes off before comparing.
+    let header = screen
+        .lines()
+        .find(|line| line.contains("Context:"))
+        .expect("the composition header");
+    let header = header
+        .trim_matches(|c: char| c == '│' || c.is_whitespace())
+        .to_string();
+    assert_eq!(header, "Context:", "{screen}");
+}
+
+/// A composition whose estimates are all zero has no weight to split: the
+/// bar is refused and the legend reads `~0 · 0%` rather than dividing by
+/// zero — the same rows, one bar short.
+#[test]
+fn info_pane_shows_a_zero_weight_composition_without_a_bar() {
+    use jyc_types::{ContextRegion, ContextRegionInfo};
+
+    let screen = info_pane_screen_with_composition(
+        vec![ContextRegionInfo {
+            region: ContextRegion::History,
+            messages: 3,
+            bytes: 1_000,
+            estimated_tokens: 0,
+        }],
+        60,
+        24,
+    );
+
+    let header = screen
+        .lines()
+        .find(|line| line.contains("Context:"))
+        .expect("the composition header");
+    let header = header
+        .trim_matches(|c: char| c == '│' || c.is_whitespace())
+        .to_string();
+    assert_eq!(header, "Context:", "{screen}");
+    // One region sets the label column to its own width (`History`, 7), not
+    // to the widest of all four — see `composition_label_column_is_the_widest`.
+    assert!(screen.contains("         History ~0 · 0%"), "{screen}");
 }
 
 /// The status row carries the topic's backlog: the blocks say how much of

@@ -96,11 +96,14 @@ fn format_topic_info(t: &TopicInfo) -> String {
     }
     if !t.context_composition.is_empty() {
         let total = jyc_types::context_composition_total(&t.context_composition);
-        lines.push("Context composition (estimated):".to_string());
+        let label_width = jyc_types::context_composition_label_width(&t.context_composition);
+        lines.push("Context:".to_string());
         for region in &t.context_composition {
             lines.push(format!(
-                "  {}",
-                jyc_types::format_context_region_row(region, total)
+                "  {:<width$} {}",
+                region.region.label(),
+                jyc_types::format_context_region_share(region, total),
+                width = label_width
             ));
         }
     }
@@ -444,7 +447,7 @@ Files (2):
             },
         ];
         let text = format_topic_info(&t);
-        let section = "Context composition (estimated):\n  History: ~60 · 60% · 3 messages · 512B\n  Current turn: ~40 · 40% · 2 messages · 256B\n";
+        let section = "Context:\n  History      ~60 · 60%\n  Current turn ~40 · 40%\n";
         let composition = text.find(section).expect("the composition section");
         let output = text.find("Output:").expect("the output row");
         assert!(composition < output, "{text}");

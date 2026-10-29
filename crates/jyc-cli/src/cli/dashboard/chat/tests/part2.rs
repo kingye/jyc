@@ -1954,9 +1954,10 @@ fn info_pane_app(tasks: jyc_types::task::TaskList) -> App {
 }
 
 /// The info pane draws the last call's context composition as one stacked
-/// bar and a legend row per region. The bar's segments carry each region's
-/// colour, and the rows carry the same estimated size and share `/info`
-/// prints.
+/// bar behind the section's `Context:` label, and a legend row per region
+/// under it, indented to the column the bar starts in. The bar's segments
+/// carry each region's colour, and the rows carry the same estimated size
+/// and share `/info` prints — estimated tokens only, no wire bytes.
 #[test]
 fn info_pane_draws_context_composition_bar_and_legend() {
     use jyc_types::{ContextRegion, ContextRegionInfo};
@@ -2005,22 +2006,35 @@ fn info_pane_draws_context_composition_bar_and_legend() {
         .collect::<Vec<_>>()
         .join("\n");
 
+    // The bar shares the title's row: the label introduces it, the cells
+    // follow it. The section is titled `Context:` — nothing more.
+    let title_row = screen
+        .lines()
+        .find(|line| line.contains("Context:"))
+        .expect("the composition title");
+    assert!(title_row.contains('▊'), "{screen}");
+    assert!(!screen.contains("(estimated)"), "{screen}");
+    // The legend rows are indented to the bar's first cell and share one
+    // column of figures: no colon after a label, no byte count anywhere.
     assert!(
-        screen.contains("Context composition (estimated):"),
+        screen.contains("         History      ~17.58K · 60%"),
         "{screen}"
     );
-    assert!(screen.contains("History:"), "{screen}");
-    assert!(screen.contains("Checkpoint:"), "{screen}");
-    assert!(screen.contains("Current turn:"), "{screen}");
-    assert!(screen.contains("~17.58K · 60%"), "{screen}");
-    assert!(screen.contains("~3.91K · 13%"), "{screen}");
-    assert!(screen.contains("~7.81K · 27%"), "{screen}");
+    assert!(
+        screen.contains("         Checkpoint   ~3.91K · 13%"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("         Current turn ~7.81K · 27%"),
+        "{screen}"
+    );
+    assert!(!screen.contains("messages"), "{screen}");
 
     let bar_colors: Vec<Color> = (0..height)
         .flat_map(|y| (0..width).map(move |x| (x, y)))
         .filter_map(|(x, y)| {
             let cell = &buffer[(x, y)];
-            (cell.symbol() == "█").then_some(cell.fg)
+            (cell.symbol() == "▊").then_some(cell.fg)
         })
         .collect();
     assert!(bar_colors.contains(&Color::Green), "{screen}");

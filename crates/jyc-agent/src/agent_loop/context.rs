@@ -851,6 +851,10 @@ mod render_raw_context_tests {
         let ctx = current_with_interactions(17, "secret");
         let (sent, regions) =
             build_send_context_with_regions(&anthropic(), &ctx, 0, &sliding_cfg());
+        assert!(
+            regions.contains(&3),
+            "checkpoint region missing: {regions:?}"
+        );
         for (msg, region) in sent.iter().zip(&regions) {
             if *region != 3 {
                 continue;
@@ -859,6 +863,29 @@ mod render_raw_context_tests {
                 .as_array()
                 .expect("checkpoint uses Anthropic content blocks");
             assert!(!blocks.is_empty(), "empty Anthropic block: {msg}");
+        }
+
+        // The retained raw suffix is still chat-shaped (the journal may predate
+        // a provider switch), so exercising both conversions covers the mixed
+        // payload the agent loop actually sends.
+        let openai = serde_json::to_string(&crate::provider::filter_valid_messages(&sent)).unwrap();
+        let anthropic = serde_json::to_string(&crate::provider::filter_valid_messages(
+            &crate::provider::chat_to_anthropic_messages(&sent),
+        ))
+        .unwrap();
+        for wire in [&openai, &anthropic] {
+            assert!(
+                !wire.contains("secret"),
+                "folded reasoning reached the wire: {wire}"
+            );
+            assert!(
+                !wire.contains("RESULT-0"),
+                "folded tool result reached the wire: {wire}"
+            );
+            assert!(
+                wire.contains("RESULT-16") && wire.contains("step 16"),
+                "the retained assistant/tool-result pair was dropped: {wire}"
+            );
         }
     }
 
@@ -1300,7 +1327,7 @@ mod render_raw_context_tests {
             "missing the history box: {dump}"
         );
         assert!(
-            dump.contains("Current turn — verbatim"),
+            dump.contains("Current turn — recent suffix"),
             "missing the current-turn box: {dump}"
         );
         assert!(

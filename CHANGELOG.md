@@ -7,8 +7,8 @@
 
 ### Changed
 
-- A long `sliding_window` turn is now bounded: once it passes 16 assistant steps, the older ones fold into a text-only checkpoint (same representation as prior-turn history) while the recent suffix stays verbatim, so older reasoning and tool results stop riding every remaining call. The boundary advances one group of 16 at a time, making it byte-stable between advances, and `full` mode is unchanged. The wire dump marks the new region `3` and `LLM call started` logs `checkpoint_rebuilt`. The journal is untouched (#1023)
-- The text-only transcript (prior-turn history, checkpoints and `context_browse`) keeps an assistant's visible reply only: a leading inline reasoning block is stripped, so reasoning is no longer replayed as assistant text in history. Active raw current-turn messages still carry whatever their provider needs (#1023)
+- The verbatim replay of a long `sliding_window` turn is now bounded: once it passes 16 assistant steps, the older ones fold into a text-only checkpoint (same representation as prior-turn history) while the recent suffix stays verbatim, so older reasoning and tool results stop riding every remaining call. The folded checkpoint text still grows with visible assistant text and retained user messages; what is bounded is the verbatim suffix, not the total prompt. The boundary advances one group of 16 at a time, making it byte-stable between advances, and `full` mode is unchanged. The wire dump marks the new region `3` and `LLM call started` logs `checkpoint_rebuilt`. The journal is untouched (#1023)
+- The text-only transcript (prior-turn history, checkpoints and `context_browse`) keeps an assistant's visible reply only: a leading inline block is stripped only when it exactly duplicates `reasoning_content`, so reasoning is no longer replayed as assistant text in history while a block-shaped reply without that field is preserved. Active raw current-turn messages still carry whatever their provider needs (#1023)
 
 ## [0.7.3] - 2026-10-28
 

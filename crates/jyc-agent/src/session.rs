@@ -1007,22 +1007,41 @@ pub(crate) fn extract_message_text(msg: &serde_json::Value) -> String {
 
 /// The assistant's visible text for the text-only transcript view.
 ///
-/// Raw assistant messages may carry reasoning twice: inline as one leading
-/// reasoning block and as `reasoning_content`. The transcript is semantic
-/// history, not provider replay input, so it keeps only the visible
-/// response. Stripping one *complete leading* block leaves a literal
-/// reasoning marker elsewhere in a response untouched.
+/// Raw OpenAI-compatible assistant messages may carry reasoning twice:
+/// inline as one leading reasoning block and as `reasoning_content`. The
+/// transcript is semantic history, not provider replay input, so it keeps
+/// only the response text and removes that duplicate.
+///
+/// The inline block is removed **only when it repeats `reasoning_content`
+/// exactly**. Without that field, a leading block-shaped string is treated
+/// as ordinary visible text: after a provider conversion the separate field
+/// can be gone, and guessing would silently delete a legitimate reply (and
+/// with it the whole turn). A reasoning marker anywhere after the leading
+/// block is likewise left untouched.
 pub(crate) fn extract_assistant_transcript_text(msg: &serde_json::Value) -> String {
-    strip_leading_reasoning_block(&extract_message_text(msg))
+    let text = extract_message_text(msg);
+    let Some(reasoning) = msg.get("reasoning_content").and_then(|v| v.as_str()) else {
+        return text;
+    };
+    strip_duplicated_inline_reasoning(&text, reasoning)
 }
 
-fn strip_leading_reasoning_block(text: &str) -> String {
+/// Drop one leading inline block that duplicates `reasoning`, plus the
+/// single blank-line separator the raw builder writes after it. Returns
+/// `text` unchanged unless every piece matches.
+fn strip_duplicated_inline_reasoning(text: &str, reasoning: &str) -> String {
+    if reasoning.is_empty() {
+        return text.to_string();
+    }
     let open = concat!("<", "think>");
     let close = concat!("</", "think>");
     let Some(rest) = text.strip_prefix(open) else {
         return text.to_string();
     };
-    let Some((_, visible)) = rest.split_once(close) else {
+    let Some(rest) = rest.strip_prefix(reasoning) else {
+        return text.to_string();
+    };
+    let Some(visible) = rest.strip_prefix(close) else {
         return text.to_string();
     };
     visible.strip_prefix("\n\n").unwrap_or(visible).to_string()
@@ -2060,22 +2079,23 @@ mod tests {
         assert!(!text.contains(reasoning), "reasoning leaked: {text:?}");
     }
 
-    /// Inline-only reasoning (the shape left after conversion between
-    /// providers) is stripped too, while a literal marker in the middle of
-    /// a reply survives.
+    /// Only one leading block is stripped, and only when it duplicates the
+    /// separate reasoning field; a literal marker later in the reply stays.
     #[test]
     fn extract_pairs_strips_only_one_leading_reasoning_block() {
+        let reasoning = "hidden";
         let ctx = vec![
             json!({"role": "user", "content": "u1"}),
             json!({
                 "role": "assistant",
                 "content": format!(
-                    "{}hidden{}\n\nvisible {}{}",
+                    "{}{reasoning}{}\n\nvisible {}{}",
                     concat!("<", "think>"),
                     concat!("</", "think>"),
                     concat!("<", "think>"),
                     concat!("</", "think>")
                 ),
+                "reasoning_content": reasoning,
             }),
         ];
         let pairs = super::extract_pairs(&ctx);
@@ -2092,6 +2112,54 @@ mod tests {
         );
     }
 
+    /// A leading block-shaped string without `reasoning_content` is visible
+    /// text, not hidden reasoning: converted histories may have lost the
+    /// separate field, and deleting the reply would drop the whole turn.
+    #[test]
+    fn extract_pairs_keeps_leading_literal_block_without_reasoning_field() {
+        let content = format!(
+            "{}literal{}",
+            concat!("<", "think>"),
+            concat!("</", "think>")
+        );
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": content}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        assert_eq!(
+            pairs[0].assistant.as_ref().unwrap()["content"],
+            content,
+            "a block without reasoning_content must survive"
+        );
+        assert_eq!(super::pairs_tail_start(&ctx, 1), (0, 1));
+    }
+
+    /// A leading inline block that does not repeat `reasoning_content` is
+    /// also visible text; only the exact duplicate is removed.
+    #[test]
+    fn extract_pairs_keeps_mismatched_leading_block() {
+        let content = format!(
+            "{}visible{}",
+            concat!("<", "think>"),
+            concat!("</", "think>")
+        );
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({
+                "role": "assistant",
+                "content": content,
+                "reasoning_content": "some other reasoning",
+            }),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        assert_eq!(
+            pairs[0].assistant.as_ref().unwrap()["content"],
+            content,
+            "mismatched field must not cause deletion"
+        );
+    }
+
     /// Reasoning-only and tool-call-only assistants apply the same keep rule
     /// in pair extraction and the tail scan, so a trimmed turn boundary
     /// cannot differ between the two readers.
@@ -2100,6 +2168,7 @@ mod tests {
         let reasoning_only = json!({
             "role": "assistant",
             "content": format!("{}hidden{}", concat!("<", "think>"), concat!("</", "think>")),
+            "reasoning_content": "hidden",
         });
         let tool_only = json!({"role": "assistant", "content": "", "tool_calls": [
             {"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}

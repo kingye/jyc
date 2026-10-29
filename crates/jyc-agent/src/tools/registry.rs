@@ -268,10 +268,10 @@ impl ToolRegistry {
             .values()
             .filter(|tool| {
                 let name = tool.name();
-                if let Some(group) = hidden {
-                    if group.names().iter().any(|hidden_name| hidden_name == name) {
-                        return false;
-                    }
+                if let Some(group) = hidden
+                    && group.names().iter().any(|hidden_name| hidden_name == name)
+                {
+                    return false;
                 }
                 self.mcp_tool_is_advertised(name)
             })

@@ -131,6 +131,45 @@ pub fn context_composition_total(regions: &[crate::inspect::ContextRegionInfo]) 
     })
 }
 
+/// The width of the legend's label column: the widest [`ContextRegion::label`]
+/// in the composition, so every share of the legend starts in one column.
+///
+/// Counted in characters, not bytes, because that is what the padding in
+/// [`format_context_region_label`] counts — the two must agree for the
+/// column to line up.
+///
+/// [`ContextRegion::label`]: crate::inspect::ContextRegion::label
+pub fn context_composition_label_width(regions: &[crate::inspect::ContextRegionInfo]) -> usize {
+    regions
+        .iter()
+        .map(|region| region.region.label().chars().count())
+        .max()
+        .unwrap_or(0)
+}
+
+/// The legend's label column for one region: `indent` spaces, the region's
+/// [`label`] padded to `label_width`, and one trailing space, so the share
+/// that follows starts in the same column on every row.
+///
+/// One owner for the column's shape: the TUI colours the result and `/info`
+/// prints it plain, so both pad the label identically. The `indent` is a
+/// caller parameter and deliberately differs — the pane lines the rows up
+/// under the bar, the command under `Context:`.
+///
+/// [`label`]: crate::inspect::ContextRegion::label
+pub fn format_context_region_label(
+    region: crate::inspect::ContextRegion,
+    label_width: usize,
+    indent: usize,
+) -> String {
+    format!(
+        "{}{:<width$} ",
+        " ".repeat(indent),
+        region.label(),
+        width = label_width
+    )
+}
+
 /// One region's share of the estimated context weight, in percent.
 ///
 /// Rounded to the nearest whole percent: truncating instead left a
@@ -150,8 +189,9 @@ pub fn context_region_pct(region: &crate::inspect::ContextRegionInfo, total: u64
     ((tokens * 100 + total / 2) / total) as u32
 }
 
-/// A region's size and share in the compact form the info pane prints,
-/// e.g. `"~17.77K · 52%"`.
+/// A region's size and share in the compact form the legend prints,
+/// e.g. `"~17.77K · 52%"`. The region's label leads it, in its own column:
+/// the TUI colours it, `/info` indents it.
 pub fn format_context_region_share(
     region: &crate::inspect::ContextRegionInfo,
     total: u64,
@@ -161,33 +201,6 @@ pub fn format_context_region_share(
         format_token_count(region.estimated_tokens),
         context_region_pct(region, total)
     )
-}
-
-/// A region's full plain-text row for `/info`: label, estimated weight,
-/// share, message count and exact wire bytes, e.g.
-/// `"History: ~17.77K · 52% · 31 messages · 128.91KB"`.
-pub fn format_context_region_row(region: &crate::inspect::ContextRegionInfo, total: u64) -> String {
-    format!(
-        "{}: {} · {} messages · {}",
-        region.region.label(),
-        format_context_region_share(region, total),
-        region.messages,
-        format_byte_count(region.bytes)
-    )
-}
-
-/// Format an exact byte count with binary units, matching the token
-/// formatter's 1024-based units.
-fn format_byte_count(bytes: u64) -> String {
-    const KIB: u64 = 1024;
-    const MIB: u64 = 1024 * 1024;
-    if bytes >= MIB {
-        format!("{:.2}MB", bytes as f64 / MIB as f64)
-    } else if bytes >= KIB {
-        format!("{:.2}KB", bytes as f64 / KIB as f64)
-    } else {
-        format!("{bytes}B")
-    }
 }
 
 #[cfg(test)]
@@ -347,15 +360,45 @@ mod tests {
     }
 
     #[test]
-    fn composition_row_carries_messages_and_exact_bytes() {
-        let history = region(crate::inspect::ContextRegion::History, 31, 132_000, 18_200);
+    fn composition_label_column_is_the_widest_label() {
+        let regions = [
+            region(crate::inspect::ContextRegion::History, 31, 132_000, 18_200),
+            region(crate::inspect::ContextRegion::Checkpoint, 1, 12, 4),
+            region(crate::inspect::ContextRegion::Current, 1, 12, 8),
+        ];
         assert_eq!(
-            format_context_region_row(&history, 35_100),
-            "History: ~17.77K · 52% · 31 messages · 128.91KB"
+            context_composition_label_width(&regions),
+            "Current turn".len()
         );
         assert_eq!(
-            format_context_region_row(&region(crate::inspect::ContextRegion::Current, 1, 12, 0), 0),
-            "Current turn: ~0 · 0% · 1 messages · 12B"
+            context_composition_label_width(&regions[..1]),
+            "History".len()
+        );
+        assert_eq!(context_composition_label_width(&[]), 0);
+    }
+
+    /// One owner for the label column: indent, padded label, one space.
+    /// The label is padded by character count, which is what the width
+    /// helper counts — the label column the TUI and `/info` build is the
+    /// same one. The indent is a caller parameter and deliberately differs
+    /// (the pane lines the rows up under the bar, the command under
+    /// `Context:`).
+    #[test]
+    fn region_label_column_pads_by_characters() {
+        assert_eq!(
+            format_context_region_label(crate::inspect::ContextRegion::History, 12, 9),
+            "         History      "
+        );
+        assert_eq!(
+            format_context_region_label(crate::inspect::ContextRegion::Current, 12, 2),
+            "  Current turn "
+        );
+        // A label wider than the column is not truncated — the column
+        // comes from the widest label, so this only happens on a caller
+        // bug; the formatter still returns the label whole.
+        assert_eq!(
+            format_context_region_label(crate::inspect::ContextRegion::Checkpoint, 1, 0),
+            "Checkpoint "
         );
     }
 }

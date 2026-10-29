@@ -506,6 +506,17 @@ framework's, and an MCP server exposing a tool under one of those names has
 that tool skipped. The loaders are how the model reaches the MCP tools at
 all, so a loader it cannot call is a server it can never expand.
 
+**For tool implementers.** That "read from the live registry" is
+`Tool::source()`: a tool an MCP server provides returns `Some(server_name)`,
+a built-in or bridge tool returns `None`. It is not optional metadata —
+advertisement is decided from it, so getting it wrong misclassifies the
+tool silently. An MCP-backed tool that leaves it at `None` is treated as a
+built-in (the extended group can claim it, and it never appears in the MCP
+index); a built-in that returns `Some(..)` is advertised eagerly and
+defeats the schema budget. `Some` must name the server exactly as the
+groups do, and it should borrow a field: it is called once per tool on
+every model request.
+
 **What it does not change:** the servers are still connected at registry
 build time — the index needs their tool names — so this saves the schema
 cost of every request, not the startup handshake or the subprocess.

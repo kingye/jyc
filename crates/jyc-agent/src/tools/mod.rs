@@ -433,8 +433,25 @@ pub trait Tool: Send + Sync {
     /// Tool name (used in LLM tool_use).
     fn name(&self) -> &str;
 
-    /// Optional source identifier (e.g. MCP server name).
-    /// Returns `None` for built-in and bridge tools.
+    /// Which MCP server provided this tool, or `None` for a built-in tool or
+    /// the in-process bridge.
+    ///
+    /// This is load-bearing, not descriptive metadata. Advertisement is decided
+    /// from it: `Some(server)` hides the tool until that server is expanded
+    /// through `load_mcp_schema`, and `None` leaves it to the extended group
+    /// instead. A name therefore has exactly one owner — the live tool that
+    /// holds it — so an implementation that gets this wrong misclassifies its
+    /// tool silently rather than failing:
+    ///
+    /// - an MCP-backed tool that leaves this at `None` is treated as a
+    ///   built-in, which lets the extended group claim it and keeps it out of
+    ///   the MCP index the model reads;
+    /// - a built-in that returns `Some(..)` is advertised eagerly, defeating
+    ///   the schema budget its group exists to enforce.
+    ///
+    /// `Some` must name the server exactly as the registry's groups do. Return
+    /// a borrow of a field: this is called once per tool on every model
+    /// request, so it must stay cheap and must neither allocate nor lock.
     fn source(&self) -> Option<&str> {
         None
     }

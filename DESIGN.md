@@ -2457,17 +2457,17 @@ JYC uses the following subset of the agent service API:
 
    **One name, one owner.** The registry is keyed by tool name, so a name
    belongs to whatever holds it last. Ownership is therefore read from the
-   live registry (a tool reports the MCP server that provided it, and a
-   built-in reports nothing) rather than from a snapshot taken when the
-   groups were built. An MCP server that exposes a built-in's name has taken
-   that name over: the tool belongs to the MCP group and stays hidden until
-   the model expands that server, and the built-in's group does not claim it
-   as well — otherwise the tool would need *both* groups loaded, and each
-   loader would report it as available while it is still hidden. The loader
-   names are reserved for the same reason: `load_mcp_schema` and
-   `load_extended_tools` stay the framework's, and an MCP server exposing a
-   tool under one of those names has that tool skipped — the loaders are how
-   the model reaches the MCP tools at all.
+   live registry — `Tool::source()`, which an MCP-backed tool answers with its
+   server's name and a built-in or bridge tool answers with `None` — rather
+   than from a snapshot taken when the groups were built. An MCP server that
+   exposes a built-in's name has taken that name over: the tool belongs to
+   the MCP group and stays hidden until the model expands that server, and
+   the built-in's group does not claim it as well — otherwise the tool would
+   need *both* groups loaded, and each loader would report it as available
+   while it is still hidden. The loader names are reserved for the same
+   reason: `load_mcp_schema` and `load_extended_tools` stay the framework's,
+   and an MCP server exposing a tool under one of those names has that tool
+   skipped — the loaders are how the model reaches the MCP tools at all.
 
    What this does **not** change is the connection policy: the index needs
    the servers' tool names, so the servers are still connected at registry

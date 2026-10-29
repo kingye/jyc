@@ -9,6 +9,7 @@
 //! starts from an empty context.
 
 use jyc_core::session_state::AGENT_CONTEXT_FILE;
+use jyc_types::ContextRegionInfo;
 use jyc_types::channel::ContextStrategyConfig;
 use jyc_types::state_dir::resolve_state_dir;
 use serde::{Deserialize, Serialize};
@@ -182,6 +183,11 @@ pub struct SessionState {
     /// rewrites the field with the raw window.
     #[serde(default, alias = "max_input_tokens")]
     pub context_window: u64,
+    /// How the most recent completed LLM call's wire messages split into
+    /// context regions. Empty when no call has completed, and on session
+    /// files written before the field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_composition: Vec<ContextRegionInfo>,
     /// Journal byte offset where the sliding window's oldest retained turn
     /// begins (`agent-context.jsonl`). The window reads forward from here,
     /// so between slides the wire prefix is stable across turns — what the
@@ -860,6 +866,101 @@ pub async fn persist_tokens(
     call_output_tokens: u64,
     call_reasoning_tokens: u64,
 ) {
+    persist_tokens_and_composition(
+        topic_name,
+        topic_path,
+        context_input_tokens,
+        context_output_tokens,
+        total_input_tokens,
+        total_output_tokens,
+        total_cache_hit_tokens,
+        total_cache_creation_tokens,
+        total_reasoning_tokens,
+        context_window,
+        call_cost,
+        call_ms,
+        call_cache_hit_tokens,
+        call_input_tokens,
+        call_output_tokens,
+        call_reasoning_tokens,
+        None,
+    )
+    .await;
+}
+
+/// [`persist_tokens`] plus the composition of the call's wire payload, in
+/// one load and one save.
+///
+/// The agent loop has both figures immediately after a call returns;
+/// writing them separately rewrote `agent-session.json` twice back to
+/// back. The composition is still only written when a call completes —
+/// a failed call never overwrites the last successful snapshot.
+///
+/// The arguments after `topic_path` carry the same meaning as in
+/// [`persist_tokens`]; `composition` is the snapshot the info pane and
+/// `/info` show.
+#[allow(clippy::too_many_arguments)]
+pub async fn persist_tokens_with_composition(
+    topic_name: &str,
+    topic_path: &Path,
+    context_input_tokens: u64,
+    context_output_tokens: u64,
+    total_input_tokens: u64,
+    total_output_tokens: u64,
+    total_cache_hit_tokens: u64,
+    total_cache_creation_tokens: u64,
+    total_reasoning_tokens: u64,
+    context_window: Option<u64>,
+    call_cost: f64,
+    call_ms: u64,
+    call_cache_hit_tokens: u64,
+    call_input_tokens: u64,
+    call_output_tokens: u64,
+    call_reasoning_tokens: u64,
+    composition: &[ContextRegionInfo],
+) {
+    persist_tokens_and_composition(
+        topic_name,
+        topic_path,
+        context_input_tokens,
+        context_output_tokens,
+        total_input_tokens,
+        total_output_tokens,
+        total_cache_hit_tokens,
+        total_cache_creation_tokens,
+        total_reasoning_tokens,
+        context_window,
+        call_cost,
+        call_ms,
+        call_cache_hit_tokens,
+        call_input_tokens,
+        call_output_tokens,
+        call_reasoning_tokens,
+        Some(composition),
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn persist_tokens_and_composition(
+    topic_name: &str,
+    topic_path: &Path,
+    context_input_tokens: u64,
+    context_output_tokens: u64,
+    total_input_tokens: u64,
+    total_output_tokens: u64,
+    total_cache_hit_tokens: u64,
+    total_cache_creation_tokens: u64,
+    total_reasoning_tokens: u64,
+    context_window: Option<u64>,
+    call_cost: f64,
+    call_ms: u64,
+    call_cache_hit_tokens: u64,
+    call_input_tokens: u64,
+    call_output_tokens: u64,
+    call_reasoning_tokens: u64,
+    composition: Option<&[ContextRegionInfo]>,
+) {
     let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
 
@@ -901,6 +1002,13 @@ pub async fn persist_tokens(
 
     if let Some(cw) = context_window {
         state.context_window = cw;
+    }
+
+    // A `None` write (the post-loop save) leaves the last completed
+    // call's snapshot in place: it loads the state above, so the field
+    // survives without the caller having to re-send it.
+    if let Some(composition) = composition {
+        state.context_composition = composition.to_vec();
     }
 
     if state.created_at.is_empty() {

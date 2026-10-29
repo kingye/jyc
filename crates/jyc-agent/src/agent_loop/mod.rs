@@ -440,8 +440,9 @@ pub async fn run(
         // end of the loop — the strategy only changes what the LLM sees.
         //
         // `send_regions` is the parallel Vec<u8> of per-message labels
-        // (1=text-only history / Full-mode, 2=current turn) — used only
-        // by the wire-payload debug dump.
+        // (1=text-only history / Full-mode, 2=current turn's recent raw
+        // suffix, 3=folded current-turn checkpoint) — used by the
+        // wire-payload debug dump and the composition snapshot.
         let build_started = Instant::now();
         let (send_context, send_regions) = crate::agent_loop::context::build_send_context_cached(
             provider,
@@ -451,6 +452,15 @@ pub async fn run(
             &mut send_context_cache,
         );
         let context_build_ms = build_started.elapsed().as_millis() as u64;
+        // The composition of the payload about to be sent, measured from
+        // the same region labels the debug dump uses. Persisted once the
+        // call returns, so a failed call never overwrites the last
+        // completed call's snapshot.
+        let context_composition = crate::agent_loop::context::context_composition(
+            send_context.as_ref(),
+            &send_regions,
+            &context_strategy.mode,
+        );
         // Optional debug dump: when the user runs `/context dump on`, append
         // one JSON line per LLM call to `<topic>/.jyc/wire-payload.jsonl`
         // (capped at 50 lines). Best-effort — failures are not fatal.
@@ -582,7 +592,7 @@ pub async fn run(
         // data mid-round. The last three are this call's own cache-hit,
         // input and output tokens — the turn-scoped figures are accumulated
         // per call, the way the latency pair is.
-        crate::session::persist_tokens(
+        crate::session::persist_tokens_with_composition(
             topic_name,
             topic_path,
             context_input_tokens,
@@ -599,6 +609,7 @@ pub async fn run(
             response.input_tokens,
             response.output_tokens,
             response.reasoning_tokens,
+            &context_composition,
         )
         .await;
 

@@ -123,6 +123,73 @@ pub fn format_output_pair(session: Option<u64>, turn: Option<u64>) -> Option<Str
     ))
 }
 
+/// The estimated token weight of a context composition: the sum of every
+/// region's heuristic. `0` for an empty composition.
+pub fn context_composition_total(regions: &[crate::inspect::ContextRegionInfo]) -> u64 {
+    regions.iter().fold(0u64, |sum, region| {
+        sum.saturating_add(region.estimated_tokens)
+    })
+}
+
+/// One region's share of the estimated context weight, in percent.
+///
+/// Rounded to the nearest whole percent: truncating instead left a
+/// composition whose real shares are 60.0 / 13.3 / 26.7 printing as
+/// 60 / 13 / 26 — a legend that visibly adds up to 99%. Independent
+/// rounding can still leave a one-point gap when several regions tie,
+/// so the rows are not forced to sum to 100.
+///
+/// `0` when the composition's total is zero: there is no share to report.
+/// The arithmetic is in `u128`, so a very large estimate cannot wrap.
+pub fn context_region_pct(region: &crate::inspect::ContextRegionInfo, total: u64) -> u32 {
+    if total == 0 {
+        return 0;
+    }
+    let tokens = u128::from(region.estimated_tokens);
+    let total = u128::from(total);
+    ((tokens * 100 + total / 2) / total) as u32
+}
+
+/// A region's size and share in the compact form the info pane prints,
+/// e.g. `"~17.77K · 52%"`.
+pub fn format_context_region_share(
+    region: &crate::inspect::ContextRegionInfo,
+    total: u64,
+) -> String {
+    format!(
+        "~{} · {}%",
+        format_token_count(region.estimated_tokens),
+        context_region_pct(region, total)
+    )
+}
+
+/// A region's full plain-text row for `/info`: label, estimated weight,
+/// share, message count and exact wire bytes, e.g.
+/// `"History: ~17.77K · 52% · 31 messages · 128.91KB"`.
+pub fn format_context_region_row(region: &crate::inspect::ContextRegionInfo, total: u64) -> String {
+    format!(
+        "{}: {} · {} messages · {}",
+        region.region.label(),
+        format_context_region_share(region, total),
+        region.messages,
+        format_byte_count(region.bytes)
+    )
+}
+
+/// Format an exact byte count with binary units, matching the token
+/// formatter's 1024-based units.
+fn format_byte_count(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * 1024;
+    if bytes >= MIB {
+        format!("{:.2}MB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.2}KB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{bytes}B")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +292,70 @@ mod tests {
         assert_eq!(cache_util_pct(Some(300), Some(1000)), Some(30));
         assert_eq!(cache_util_pct(Some(300), None), None);
         assert_eq!(cache_util_pct(Some(300), Some(0)), None);
+    }
+
+    fn region(
+        region: crate::inspect::ContextRegion,
+        messages: u64,
+        bytes: u64,
+        estimated_tokens: u64,
+    ) -> crate::inspect::ContextRegionInfo {
+        crate::inspect::ContextRegionInfo {
+            region,
+            messages,
+            bytes,
+            estimated_tokens,
+        }
+    }
+
+    #[test]
+    fn composition_total_adds_every_region_without_wrapping() {
+        let regions = [
+            region(crate::inspect::ContextRegion::History, 2, 100, 10),
+            region(crate::inspect::ContextRegion::Current, 1, 50, 5),
+        ];
+        assert_eq!(context_composition_total(&regions), 15);
+        assert_eq!(context_composition_total(&[]), 0);
+        assert_eq!(
+            context_composition_total(&[
+                region(crate::inspect::ContextRegion::Full, 1, 1, u64::MAX),
+                region(crate::inspect::ContextRegion::Full, 1, 1, 1),
+            ]),
+            u64::MAX
+        );
+    }
+
+    #[test]
+    fn region_share_is_the_estimated_share_of_the_composition() {
+        let history = region(crate::inspect::ContextRegion::History, 2, 100, 52);
+        let current = region(crate::inspect::ContextRegion::Current, 1, 50, 48);
+        assert_eq!(context_region_pct(&history, 100), 52);
+        assert_eq!(context_region_pct(&current, 100), 48);
+        assert_eq!(context_region_pct(&current, 0), 0);
+        // 60.0 / 13.3 / 26.7 percent rounds to a legend that still adds
+        // up to 100%; truncation would print 60 / 13 / 26.
+        let history_60 = region(crate::inspect::ContextRegion::History, 1, 50, 18);
+        let checkpoint_13 = region(crate::inspect::ContextRegion::Checkpoint, 1, 50, 4);
+        let current_27 = region(crate::inspect::ContextRegion::Current, 1, 50, 8);
+        assert_eq!(context_region_pct(&history_60, 30), 60);
+        assert_eq!(context_region_pct(&checkpoint_13, 30), 13);
+        assert_eq!(context_region_pct(&current_27, 30), 27);
+        assert_eq!(
+            format_context_region_share(&history, 100),
+            "~52 · 52%".to_string()
+        );
+    }
+
+    #[test]
+    fn composition_row_carries_messages_and_exact_bytes() {
+        let history = region(crate::inspect::ContextRegion::History, 31, 132_000, 18_200);
+        assert_eq!(
+            format_context_region_row(&history, 35_100),
+            "History: ~17.77K · 52% · 31 messages · 128.91KB"
+        );
+        assert_eq!(
+            format_context_region_row(&region(crate::inspect::ContextRegion::Current, 1, 12, 0), 0),
+            "Current turn: ~0 · 0% · 1 messages · 12B"
+        );
     }
 }

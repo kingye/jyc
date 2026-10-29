@@ -1,7 +1,7 @@
-use jyc_types::AppConfig;
 use jyc_types::channel::ContextStrategyConfig;
 use jyc_types::state_dir::resolve_state_dir;
 use jyc_types::task::TaskList;
+use jyc_types::{AppConfig, ContextRegionInfo};
 use serde::Deserialize;
 use std::path::Path;
 
@@ -180,6 +180,10 @@ pub struct TokenState {
     /// The reasoning tokens of the LLM calls in the latest turn — the
     /// turn-scoped twin of `total_reasoning_tokens`.
     pub turn_reasoning_tokens: Option<u64>,
+    /// How the last completed call's wire messages split into context
+    /// regions. Empty when no call has completed or the session file
+    /// predates the field.
+    pub context_composition: Vec<ContextRegionInfo>,
 }
 
 /// Read every token field of a session in a single file read.
@@ -215,6 +219,7 @@ pub async fn read_token_state(topic_name: &str, topic_path: &Path) -> TokenState
             .then_some(state.total_reasoning_tokens),
         turn_reasoning_tokens: (state.turn_reasoning_tokens > 0)
             .then_some(state.turn_reasoning_tokens),
+        context_composition: state.context_composition,
     }
 }
 
@@ -227,6 +232,8 @@ struct AgentSessionState {
     context_output_tokens: u64,
     #[serde(default, alias = "max_input_tokens")]
     context_window: u64,
+    #[serde(default)]
+    context_composition: Vec<ContextRegionInfo>,
     #[serde(default)]
     total_input_tokens: u64,
     #[serde(default)]

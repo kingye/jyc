@@ -2,7 +2,7 @@
 
 ### Added
 
-- The info pane's context-composition legend ends with the turn's depth — `Iteration    56`, a row under the region shares in their label column, plain because it is no region of the bar. It says how many measured LLM calls the latest turn has made — one agent-loop call is one iteration, and a call too fast to record a duration is counted nowhere — and `/info` prints the same row under its `Context:` legend from the same formatter and the same `TopicInfo.turn_call_count`, so the pane and the command cannot disagree about it
+- The info pane's context-composition legend ends with the turn's depth — `Iteration    56`, a row under the region shares in their label column, plain because it is no region of the bar. It says how many measured LLM calls the latest turn has made — one agent-loop call is one iteration, and a call too fast to record a duration counts in the token figures but not as an iteration — and `/info` prints the same row under its `Context:` legend from the same formatter and the same `TopicInfo.turn_call_count`, so the pane and the command cannot disagree about it
 
 ### Changed
 

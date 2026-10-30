@@ -3484,8 +3484,9 @@ Not connected: connection refused
   with the turn's depth — `Iteration    56` under the shares, in their
   label column and without a colour, since it is no region of the bar. It
   says how many measured LLM calls the latest turn has made — one
-  agent-loop call is one iteration, a call too fast to record a duration
-  is counted nowhere — and it is the same `TopicInfo` figure `/info` prints:
+  agent-loop call is one iteration, and a call too fast to record a
+  duration counts in the token figures but not as an iteration — and it is
+  the same `TopicInfo` figure `/info` prints:
   one formatter builds the row, so the pane and the command cannot drift.
   The figures have a row of their own so
   that the bar can reach for the edge: the bar is as wide as the column

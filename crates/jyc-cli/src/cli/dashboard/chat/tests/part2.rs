@@ -2110,7 +2110,7 @@ fn info_pane_ends_the_composition_legend_with_the_iteration() {
 
     // Last in the legend: under the shares, in their column.
     assert!(
-        screen.contains("             Current turn ~40 · 40%"),
+        screen.contains("             Current turn ~400 · 40%"),
         "{screen}"
     );
     assert!(screen.contains("             Iteration    56"), "{screen}");
@@ -2241,16 +2241,16 @@ fn info_pane_draws_the_composition_bar_in_the_stacked_layout() {
 }
 
 /// A pane narrower than the narrowest bar worth drawing refuses the bar and
-/// keeps the figures. `MIN_BAR_WIDTH` notes that only a column can reach
-/// it: the table layout always leaves the bar more than that, so this is a
-/// stacked pane of inner width 6 — 4 cells of bar.
+/// keeps the figures. `MIN_BAR_WIDTH` notes that only a pane of inner width
+/// under seven can reach it, so this is a stacked pane of inner width 6 —
+/// where every bar of the pane is refused, and where the title `Context:`
+/// is itself cut short by the width.
 ///
-/// A refused bar leaves no row of its own: the legend's first row takes the
-/// place the bar would have had. The bar is a rule of `─` like every other
-/// bar of the pane, so the glyph alone cannot say whether it was drawn —
-/// this pane's other bars are refused for the same width, but the row under
-/// the title is what the assertion reads, and only the composition's bar
-/// could be there.
+/// So the refusal is read against a control: the same pane with no
+/// composition on the detail. The composition is the only thing that could
+/// add a rule of `─` to it, so a count of `─` that does not move is the bar
+/// that was not drawn. Neither the glyph nor the title can anchor this at
+/// that width — every other bar is `─` too, and the section's title wraps.
 #[test]
 fn info_pane_keeps_the_composition_figures_when_the_bar_is_refused() {
     use jyc_types::{ContextRegion, ContextRegionInfo};
@@ -2275,15 +2275,15 @@ fn info_pane_keeps_the_composition_figures_when_the_bar_is_refused() {
     );
 
     // The weights are not zero, so the bar is refused for its width alone:
-    // the row under the title is the first legend row, not a rule of `─`.
-    let lines: Vec<&str> = screen.lines().collect();
-    let title = lines
-        .iter()
-        .position(|line| line.contains("Context:"))
-        .expect("the composition title");
-    let under = lines[title + 1];
-    assert!(!under.starts_with("│─"), "the bar is refused: {screen}");
-    assert!(under.contains("History"), "{screen}");
+    // it adds no rule of `─` — and this pane draws no bar of its own. The
+    // same pane without a composition is the control, since a composition
+    // is the only thing that could put a `─` there.
+    let without = info_pane_screen_with_composition(Vec::new(), 7, 24);
+    assert_eq!(
+        screen.matches('─').count(),
+        without.matches('─').count(),
+        "the bar is refused: {screen}"
+    );
     // The figures are still there, the shares with them: a truncated pane
     // cuts the row short, it does not drop it.
     assert!(screen.contains("~600"), "{screen}");

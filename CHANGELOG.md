@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-30
+
 ### Added
 
 - The `Cost:` row of the info pane and `/info` leads with the latest turn's own spend, ordered smallest scope first: `Cost: $0.0031 turn · $0.05 today · $1.31 session`. The turn figure climbs as the turn runs — a turn of a hundred-odd iterations makes a hundred-odd calls, each landing in it — so "this turn has spent $1.80 and is still going" reads mid-turn rather than only after it. Money still reads to the cent; an amount too small to show one escalates to four decimals, so a fresh turn shows `$0.0031` instead of a `$0.00` that reads as nothing spent. Both surfaces spell the row through one formatter from the same `TopicInfo`, so they cannot drift, and a payload without the field (an older server) omits the turn rather than printing a zero

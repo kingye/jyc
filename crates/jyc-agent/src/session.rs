@@ -2571,6 +2571,7 @@ mod tests {
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let wire = vec![serde_json::json!({"role":"user","content":"hi"})];
         let regions = vec![2u8];
@@ -2627,6 +2628,7 @@ mod tests {
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let empty_wire: Vec<serde_json::Value> = vec![];
         let empty_regions: Vec<u8> = vec![];

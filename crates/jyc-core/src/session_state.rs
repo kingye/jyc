@@ -1669,6 +1669,7 @@ mode = "agent"
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let app = config_with_strategies(vec![("a", None), ("b", Some(slide.clone()))], None);
         let resolved = resolve_context_strategy(&app, "c", Some("b"), None);
@@ -1684,6 +1685,7 @@ mode = "agent"
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let app = config_with_strategies(vec![("a", Some(slide.clone()))], None);
         let resolved = resolve_context_strategy(&app, "c", None, None);
@@ -1699,6 +1701,7 @@ mode = "agent"
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let app = config_with_strategies(vec![], Some(slide.clone()));
         let resolved = resolve_context_strategy(&app, "c", Some("a"), None);
@@ -1725,6 +1728,7 @@ mode = "agent"
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let app = config_with_strategies(vec![("a", Some(pattern))], None);
         let topic_strategy = ContextStrategyConfig {
@@ -1733,6 +1737,7 @@ mode = "agent"
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
 
         let resolved = resolve_context_strategy(&app, "c", Some("a"), Some(&topic_strategy));
@@ -1826,6 +1831,7 @@ mode = "agent"
             extend_rate: 1.0,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let app = config_with_strategies(vec![], Some(slide));
         let resolved = resolve_context_strategy(&app, "c", Some("a"), None);
@@ -1841,6 +1847,7 @@ mode = "agent"
             extend_rate: 2.0,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let global = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
@@ -1848,6 +1855,7 @@ mode = "agent"
             extend_rate: 0.25,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let app = config_with_strategies(vec![("a", Some(pattern))], Some(global));
         let resolved = resolve_context_strategy(&app, "c", Some("a"), None);
@@ -1893,6 +1901,35 @@ mode = "agent"
             .await
             .unwrap();
         assert_eq!(cfg.extend_rate, 0.5);
+    }
+
+    #[tokio::test]
+    async fn read_context_strategy_override_checkpoint_interval_missing_uses_default() {
+        // The override file is JSON, not TOML, so the `#[serde(default)]` on
+        // `checkpoint_interval` has to be pinned on this path specifically: an
+        // existing topic's `.jyc/context-strategy.json` was written before the
+        // field existed. Missing must mean 32, never 0 — 0 is the off sentinel,
+        // so reading it would silently stop in-turn folding for every topic
+        // that already had a `/context` override.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "read_context_strategy_override_checkpoint_interval_missing_uses_default";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(
+            state_dir.join(CONTEXT_STRATEGY_FILE),
+            r#"{"mode":"sliding_window","window":10}"#,
+        )
+        .await
+        .unwrap();
+        let cfg = read_context_strategy_override(topic, tmp.path())
+            .await
+            .unwrap();
+        assert_eq!(
+            cfg.checkpoint_interval,
+            jyc_types::channel::DEFAULT_CHECKPOINT_INTERVAL
+        );
+        assert_eq!(cfg.checkpoint_interval, 32);
     }
 
     // ── task list ─────────────────────────────────────────────────────

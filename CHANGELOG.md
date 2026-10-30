@@ -6,7 +6,7 @@
 
 ### Changed
 
-- Every bar of the TUI is one rule of `─`: the unfilled part of the token and cache bars used `·` and the context composition drew its regions with `▊`, so a filled share, an unfilled one and a context region were three different glyphs. All three now use `─` and the share is told by colour alone — bold yellow against dim gray for the percentage bars, the region colours for the composition, which are laid end to end and so still say what a cell is part of. In a rendering without colour every bar is therefore one flat rule and no share is visible in it; the figures on the row under it still state the share. The queue blocks are unchanged: they count messages rather than draw a share, and their quarter-cell gap is what keeps them reading as blocks
+- Every bar of the TUI is one rule of cells drawn at two weights: the filled part of the token and cache bars is `━` and the unfilled part `─`, and the context composition — which has no unfilled part, every cell of it being a region of the context — is `━` throughout. The share is told by weight and colour together (bold yellow against dim gray, and the region colours for the composition, laid end to end so they still say what a cell is part of), so a rendering without colour still shows how far a bar is filled. Before, all of them drew `─` — the unfilled part of the percentage bars used `·` and the composition drew its regions with `▊`, and the share lived in the colour alone. The queue blocks are unchanged: they count messages rather than draw a share, and their quarter-cell gap is what keeps them reading as blocks
 
 ### Fixed
 

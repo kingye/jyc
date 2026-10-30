@@ -1786,8 +1786,7 @@ async fn topic_snapshots_report_the_live_status() {
 
     // A turn that succeeded ends clean: a tool that failed along the way is
     // a step on the way, not the turn failing, so the topic does not stay in
-    // error for it.
-    tm.set_topic_processing("live-status-topic");
+    // error for it. The turn is already the one started above.
     tm.end_topic_turn_if_known("live-status-topic", true);
     assert_eq!(status(&tm).await, jyc_types::TopicStatus::Idle);
 

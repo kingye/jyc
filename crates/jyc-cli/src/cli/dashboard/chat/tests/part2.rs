@@ -1880,11 +1880,11 @@ fn info_pane_screen(app: &mut App, width: u16, height: u16) -> (String, ratatui:
     (screen, buffer)
 }
 
-/// How much of a row's bar is filled: the number of `─` cells before the
-/// colour stops being the filled part's, and the bar's whole length. The
-/// pane's own rendering is the only place this can be read — both halves of
-/// a bar are `─` now — so it is what keeps the two percentage rows
-/// distinguishable from each other.
+/// How much of a row's bar is filled: the number of cells that are the
+/// filled part's colour, and the bar's whole length. The pane's own rendering
+/// is the only place this can be read — both halves of a bar are a bar cell,
+/// the filled one a heavier rule than the empty one — so it is what keeps the
+/// two percentage rows distinguishable from each other.
 fn bar_fill(
     buffer: &ratatui::buffer::Buffer,
     screen: &str,
@@ -1897,7 +1897,7 @@ fn bar_fill(
         .unwrap_or_else(|| panic!("the {label} row:\n{screen}")) as u16;
     let cells: Vec<&ratatui::buffer::Cell> = (0..width)
         .map(|x| &buffer[(x, row)])
-        .filter(|cell| cell.symbol() == "─")
+        .filter(|cell| cell.symbol() == "━" || cell.symbol() == "─")
         .collect();
     let filled = cells
         .iter()
@@ -3506,13 +3506,12 @@ fn info_pane_renders_subagents_as_a_tree() {
     );
 }
 
-/// The bar the pane draws for a share: `width` cells of `─`, every one of
-/// them — the share is told by colour alone, so how much of the bar is
-/// filled is not readable from the glyphs. [`bar_fill`] reads that off the
-/// cells where a test needs it; these pin the bar's place and length, the
-/// width stated on purpose so a change to it shows up here.
-fn info_pane_bar(width: usize) -> String {
-    "─".repeat(width)
+/// The bar the pane draws for a share: `filled` cells of `━` for the share
+/// and `width - filled` of `─` for the room left. The pane tells the two
+/// halves apart by both weight and colour, so a bar of the wrong length, or
+/// one filled past its share, shows up as a string mismatch here.
+fn info_pane_bar(filled: usize, width: usize) -> String {
+    format!("{}{}", "━".repeat(filled), "─".repeat(width - filled))
 }
 
 /// The width every label of the info pane is padded to — the length of
@@ -3580,8 +3579,8 @@ fn info_pane_draws_the_percentage_bars() {
     }
 
     // Wide enough that neither row wraps. The buffer comes along because
-    // the two bars draw the same glyph now: only the colours say how far
-    // each one is filled, so the shares have to be read off the cells.
+    // the colour of a cell says how far each bar is filled, and this test
+    // reads that off the cells as well as off the glyphs.
     let (pane, buffer) = info_pane_screen(&mut app, 70, 30);
     let rows = info_pane_rows(&pane);
 
@@ -3590,12 +3589,13 @@ fn info_pane_draws_the_percentage_bars() {
     // 47% of the window, 88% of the input served from the cache.
     assert!(
         rows.iter()
-            .any(|r| { r == &format!("{}{}", info_pane_label("Tokens: "), info_pane_bar(54)) }),
+            .any(|r| { r == &format!("{}{}", info_pane_label("Tokens: "), info_pane_bar(25, 54)) }),
         "the tokens row must lead with its bar:\n{pane}"
     );
     assert!(
-        rows.iter()
-            .any(|r| { r == &format!("{}{}", info_pane_label("Session: "), info_pane_bar(54)) }),
+        rows.iter().any(|r| {
+            r == &format!("{}{}", info_pane_label("Session: "), info_pane_bar(48, 54))
+        }),
         "the cache row must lead with its bar:\n{pane}"
     );
     // The figures have a row of their own, in the value's column, under
@@ -3638,7 +3638,7 @@ fn info_pane_shows_the_turn_cache_row_at_zero() {
 
     assert!(
         rows.iter()
-            .any(|r| { r == &format!("{}{}", info_pane_label("Turn: "), info_pane_bar(54)) }),
+            .any(|r| { r == &format!("{}{}", info_pane_label("Turn: "), info_pane_bar(0, 54)) }),
         "the turn's cache row must be there, at zero:\n{pane}"
     );
     // Its figures have a row of their own, under the bar.
@@ -3725,11 +3725,11 @@ fn info_pane_bar_fits_a_narrow_pane() {
     let pane = info_pane_text(&mut app, 30, 30);
     let rows = info_pane_rows(&pane);
     assert!(
-        info_pane_value_row(&rows, "Tokens:").starts_with(&info_pane_bar(27)),
+        info_pane_value_row(&rows, "Tokens:").starts_with(&info_pane_bar(13, 27)),
         "the bar must stay whole in a narrow pane:\n{pane}"
     );
     assert!(
-        info_pane_value_row(&rows, "Session:").starts_with(&info_pane_bar(27)),
+        info_pane_value_row(&rows, "Session:").starts_with(&info_pane_bar(24, 27)),
         "the bar must stay whole in a narrow pane:\n{pane}"
     );
 }

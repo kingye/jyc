@@ -3428,12 +3428,12 @@ Not connected: connection refused
                                                                                            │ Branch:      feat/issue-42           
                                                                                            │ Status:      Processing · queue ▊▊▊▊▊
                                                                                            │              2 / 10
-                                                                                           │ Tokens:      ──────────────────────  
+                                                                                           │ Tokens:      ━━━━━━━━──────────────  
                                                                                            │              44.17K / 117.19K (38%)  
                                                                                            │ Cache:                               
-                                                                                           │ Turn:        ──────────────────────  
+                                                                                           │ Turn:        ━━━━━━━━━━━━━━━━━━────  
                                                                                            │              12.00K / 15.00K (80%)   
-                                                                                           │ Session:     ──────────────────────  
+                                                                                           │ Session:     ━━━━━━━━━━━━━━━━━━━───  
                                                                                            │              78.24K / 88.19K (88%)   
                                                                                            │ Files (2):                           
                                                                                            │   crates/…/mod.rs                    
@@ -3469,18 +3469,19 @@ Not connected: connection refused
   length of the longest label (`Today (all): `) — so, in the table layout,
   every value starts in the same column and the pane reads as one table
   rather than a ragged list. The percentage rows draw their share as a bar
-  — one rule of `─`, bold yellow for the filled part and dim gray for the
-  rest, so the share is told by colour alone and every bar of the pane is
-  the same glyph: the token row, both cache rows and the context
-  composition, whose regions keep their own colours and are laid end to
-  end, so colour still says which part of the context a cell is. The cost
-  is that a rendering without colour shows every bar as one flat rule and
-  no share in it at all; the figures on the row under each bar still state
-  the share, so the bar stays a glance aid. The bar
+  — one rule of cells drawn at two weights: `━` bold yellow for the filled
+  part, `─` dim gray for the rest, so the share is told by weight and
+  colour together and a rendering without colour still shows how far the
+  bar is filled. The token row, both cache rows and the context
+  composition are that one bar; the composition has no unfilled part —
+  every cell of it is a region of the context — so it is `━` throughout,
+  its regions keeping their own colours and laid end to end, so colour
+  still says which part of the context a cell is. The figures on the row
+  under each bar still state the share, so the bar stays a glance aid. The bar
   has the label's row to itself and the figures follow on the
   next one, in the same column —
-  `Tokens:      ──────────────────────` with `44.17K / 117.19K (38%)` under
-  it, and `Session:   ──────────────────────` with
+  `Tokens:      ━━━━━━━━──────────────` with `44.17K / 117.19K (38%)` under
+  it, and `Session:   ━━━━━━━━━━━━━━━━━━━───` with
   `78.24K / 88.19K (88%)` under it; the bars start in that column too, so the
   shares can be compared by eye. The context composition's legend ends
   with the turn's depth — `Iteration    56` under the shares, in their

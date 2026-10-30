@@ -1909,8 +1909,8 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
                     Span::raw(jyc_types::format_context_region_share(region, total)),
                 ]));
             }
-            // The turn's depth, last in the legend: how many LLM calls the
-            // turn has made, one per iteration of the agent loop. Plain —
+            // The turn's depth, last in the legend: its measured LLM
+            // calls, one agent-loop call per iteration of the loop. Plain —
             // it is no region of the bar, so it carries no colour of its
             // own — and in the legend's label column like the shares above
             // it. The figure is `TopicInfo`'s, the same one `/info` prints.

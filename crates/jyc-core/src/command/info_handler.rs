@@ -114,8 +114,8 @@ fn format_topic_info(t: &TopicInfo) -> String {
                 jyc_types::format_context_region_share(region, total),
             ));
         }
-        // The turn's depth in its own legend: how many LLM calls it has
-        // made, one per iteration of the agent loop. The same field the
+        // The turn's depth in its own legend: its measured LLM calls, one
+        // agent-loop call per iteration of the loop. The same field the
         // pane reads, from the same `TopicInfo`.
         if let Some(iteration) = t.turn_call_count {
             lines.push(jyc_types::format_iteration_row(

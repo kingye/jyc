@@ -3471,7 +3471,10 @@ Not connected: connection refused
   rest, so the share is told by colour alone and every bar of the pane is
   the same glyph: the token row, both cache rows and the context
   composition, whose regions keep their own colours and are laid end to
-  end, so colour still says which part of the context a cell is. The bar
+  end, so colour still says which part of the context a cell is. The cost
+  is that a rendering without colour shows every bar as one flat rule and
+  no share in it at all; the figures on the row under each bar still state
+  the share, so the bar stays a glance aid. The bar
   has the label's row to itself and the figures follow on the
   next one, in the same column —
   `Tokens:      ──────────────────────` with `44.17K / 117.19K (38%)` under
@@ -3480,8 +3483,9 @@ Not connected: connection refused
   shares can be compared by eye. The context composition's legend ends
   with the turn's depth — `Iteration    56` under the shares, in their
   label column and without a colour, since it is no region of the bar. It
-  says how many LLM calls the latest turn has made, one per iteration of
-  the agent loop, and it is the same `TopicInfo` figure `/info` prints:
+  says how many measured LLM calls the latest turn has made — one
+  agent-loop call is one iteration, a call too fast to record a duration
+  is counted nowhere — and it is the same `TopicInfo` figure `/info` prints:
   one formatter builds the row, so the pane and the command cannot drift.
   The figures have a row of their own so
   that the bar can reach for the edge: the bar is as wide as the column

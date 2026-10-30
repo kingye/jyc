@@ -1854,6 +1854,13 @@ fn confirm_out_of_range_digit_is_noop() {
 /// Render the topic-info pane for the selected topic into a plain string
 /// (wide enough that no row wraps, so assertions can match whole rows).
 fn info_pane_text(app: &mut App, width: u16, height: u16) -> String {
+    info_pane_screen(app, width, height).0
+}
+
+/// The same rendering, with the buffer kept: the pane's bars are one glyph
+/// now, so a test that has to know how much of a bar is filled reads the
+/// colours off the cells rather than the text.
+fn info_pane_screen(app: &mut App, width: u16, height: u16) -> (String, ratatui::buffer::Buffer) {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     let backend = TestBackend::new(width, height);
@@ -1862,14 +1869,41 @@ fn info_pane_text(app: &mut App, width: u16, height: u16) -> String {
         .draw(|frame| render_topic_info_pane(frame, frame.area(), app))
         .expect("draw");
     let buffer = terminal.backend().buffer().clone();
-    (0..height)
+    let screen = (0..height)
         .map(|y| {
             (0..width)
                 .map(|x| buffer[(x, y)].symbol().to_string())
                 .collect::<String>()
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    (screen, buffer)
+}
+
+/// How much of a row's bar is filled: the number of `─` cells before the
+/// colour stops being the filled part's, and the bar's whole length. The
+/// pane's own rendering is the only place this can be read — both halves of
+/// a bar are `─` now — so it is what keeps the two percentage rows
+/// distinguishable from each other.
+fn bar_fill(
+    buffer: &ratatui::buffer::Buffer,
+    screen: &str,
+    label: &str,
+    width: u16,
+) -> (usize, usize) {
+    let row = screen
+        .lines()
+        .position(|line| line.contains(label))
+        .unwrap_or_else(|| panic!("the {label} row:\n{screen}")) as u16;
+    let cells: Vec<&ratatui::buffer::Cell> = (0..width)
+        .map(|x| &buffer[(x, row)])
+        .filter(|cell| cell.symbol() == "─")
+        .collect();
+    let filled = cells
+        .iter()
+        .take_while(|cell| cell.fg == Color::Yellow)
+        .count();
+    (filled, cells.len())
 }
 
 /// The chat topic the two info-pane tests below select: a priced model (so the
@@ -2284,6 +2318,9 @@ fn info_pane_keeps_the_composition_figures_when_the_bar_is_refused() {
         without.matches('─').count(),
         "the bar is refused: {screen}"
     );
+    // The same claim in its direct form: at this width the pane holds no
+    // rule of `─` at all, the refused composition's included.
+    assert!(!screen.contains('─'), "no bar of any kind: {screen}");
     // The figures are still there, the shares with them: a truncated pane
     // cuts the row short, it does not drop it.
     assert!(screen.contains("~600"), "{screen}");
@@ -3458,8 +3495,8 @@ fn info_pane_renders_subagents_as_a_tree() {
 
 /// The bar the pane draws for a share: `width` cells of `─`, every one of
 /// them — the share is told by colour alone, so how much of the bar is
-/// filled is not readable from the glyphs. `token_render`'s own tests pin
-/// where the colour changes; these pin the bar's place and length, the
+/// filled is not readable from the glyphs. [`bar_fill`] reads that off the
+/// cells where a test needs it; these pin the bar's place and length, the
 /// width stated on purpose so a change to it shows up here.
 fn info_pane_bar(width: usize) -> String {
     "─".repeat(width)
@@ -3529,8 +3566,10 @@ fn info_pane_draws_the_percentage_bars() {
         detail.total_cache_hit_tokens = Some(80_120);
     }
 
-    // Wide enough that neither row wraps.
-    let pane = info_pane_text(&mut app, 70, 30);
+    // Wide enough that neither row wraps. The buffer comes along because
+    // the two bars draw the same glyph now: only the colours say how far
+    // each one is filled, so the shares have to be read off the cells.
+    let (pane, buffer) = info_pane_screen(&mut app, 70, 30);
     let rows = info_pane_rows(&pane);
 
     // The pane's inner width is 69: the bar takes what the label's room
@@ -3555,6 +3594,21 @@ fn info_pane_draws_the_percentage_bars() {
             "the figures must have a row of their own:\n{pane}"
         );
     }
+
+    // Where each bar stops being filled: one glyph draws both halves, so
+    // this is the only remaining proof that the two rows' shares differ —
+    // 47% and 88% of the same 54 cells. A bar that filled regardless of
+    // its share would show both rows full and fail here.
+    assert_eq!(
+        bar_fill(&buffer, &pane, "Tokens: ", 70),
+        (25, 54),
+        "47% of 54 cells:\n{pane}"
+    );
+    assert_eq!(
+        bar_fill(&buffer, &pane, "Session: ", 70),
+        (48, 54),
+        "88% of 54 cells:\n{pane}"
+    );
 }
 
 /// The turn's cache row is drawn before the turn's first call, at zero:

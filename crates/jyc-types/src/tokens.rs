@@ -192,18 +192,26 @@ pub fn context_region_pct(region: &crate::inspect::ContextRegionInfo, total: u64
 /// The label of the legend's iteration row — the row that says how deep
 /// into the latest turn the loop is.
 ///
-/// The figure under it is the turn's own LLM-call count, one call per
-/// iteration of the agent loop; see [`format_iteration_row`].
+/// The figure under it is the turn's own count of measured LLM calls, one
+/// agent-loop call per iteration of the loop; see [`format_iteration_row`].
 pub const ITERATION_LABEL: &str = "Iteration";
 
 /// The legend's iteration row: `indent` spaces, [`ITERATION_LABEL`] padded
 /// to `label_width`, one space, then `iteration`.
 ///
-/// The figure is the turn's `turn_call_count` — the LLM calls the latest
-/// turn has completed, and one call is one iteration of the agent loop
-/// (see `TopicInfo::turn_call_count`). Only a composition that reports the
-/// count prints the row: a turn that has not called yet has no depth to
-/// state, and a zero there would read as one.
+/// The figure is the turn's `turn_call_count` — the latest turn's LLM calls
+/// that recorded a duration. One agent-loop call is one iteration of the
+/// loop, so the row states the turn's depth; the one case where the two
+/// part company is a call too fast to record a duration (a mock or a local
+/// provider answering in under a millisecond), which the turn's cache
+/// figures count but this one does not.
+///
+/// Printed only inside a composition legend, which is the bar the row hangs
+/// under: a turn that has no composition has no legend, and so no row —
+/// including a session file written before the composition was recorded,
+/// which reads back as an empty one until the turn's next call writes it.
+/// A turn that has not called yet has no depth to state, and a zero there
+/// would read as one.
 ///
 /// It sits under the region shares and keeps their column: the label
 /// column is the one [`format_context_region_label`] builds, so the figure

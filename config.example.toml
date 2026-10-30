@@ -513,8 +513,18 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # counts turns, so a window of 10 weighs 2k tokens or 200k; this bounds that
 # weight by triggering the slide. The estimate is heuristic (CJK characters
 # ~1 token, other bytes ~1/4), not a tokenizer. Unset by default.
+# checkpoint_interval: how many completed assistant messages the current
+# turn may reach before its older steps fold into a text-only checkpoint
+# (tool calls, arguments and results drop off the wire; visible text stays).
+# It counts assistant messages — every step that produced output, a tool
+# call or a final reply — not turns and not tool calls. Default: 32. 0
+# disables in-turn folding, so the whole current turn rides verbatim and
+# only `turn_tool_result_cap` bounds it. Raise it for long, read-heavy
+# turns: too small an interval folds a read away before the model has used
+# it, and the turn degrades into read → drop → read again.
 # context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5 }
 # context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5, max_history_tokens = 30000 }
+# context_strategy = { mode = "sliding_window", window = 10, checkpoint_interval = 64 }
 
 
 [ai.attachments]
@@ -1232,6 +1242,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #   # extend_rate = 0        # 0 = hard window: slide on every turn
 #   # max_history_tokens = 40000  # second slide trigger, at the top of a cycle
 #   # turn_tool_result_cap   # unset = current turn uncapped; 0 = off
+#   # checkpoint_interval = 32  # assistant steps before in-turn folding; 0 = off
 #
 #   # Default: additive. Adds a topic-only MCP without dropping inherited ones.
 #   [[mcps]]

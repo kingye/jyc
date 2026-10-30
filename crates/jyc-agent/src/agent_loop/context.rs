@@ -112,8 +112,10 @@ impl SendContextCache {
 ///      shape). This block only ever grows: nothing trims its head.
 ///   2. A checkpoint for the older part of a long current turn, in the
 ///      same text-only form. It appears once the turn has more than
-///      [`TURN_CHECKPOINT_INTERVAL`] assistant messages and advances in
-///      whole intervals, so it changes at most once per interval.
+///      [`ContextStrategyConfig::checkpoint_interval`] assistant messages
+///      and advances in whole intervals, so it changes at most once per
+///      interval. An interval of `0` disables it, leaving the whole turn
+///      verbatim.
 ///   3. The recent current-turn suffix (`raw_context[checkpoint_end..]`)
 ///      verbatim, so the latest tool calls / results stay coherent
 ///      mid-loop and provider-specific replay fields survive there.
@@ -184,7 +186,8 @@ pub(crate) fn build_send_context_cached<'a>(
                 cache.rebuilt = Some(false);
             }
 
-            let checkpoint_end = current_turn_checkpoint_end(current).map(|idx| boundary + idx);
+            let checkpoint_end = current_turn_checkpoint_end(current, strategy.checkpoint_interval)
+                .map(|idx| boundary + idx);
             match checkpoint_end {
                 Some(end) if cache.checkpoint_end != Some(end) => {
                     cache.checkpoint =
@@ -288,13 +291,6 @@ pub(crate) fn context_composition(
     rows
 }
 
-/// Completed assistant messages per current-turn checkpoint.
-///
-/// ponytail: fixed interval — one checkpoint every 32 interactions keeps the
-/// raw suffix bounded without a knob or a tokenizer. Make it configurable
-/// only if real workloads show the interval is the wrong size.
-const TURN_CHECKPOINT_INTERVAL: usize = 32;
-
 /// Wire-only marker inserted at the start of a folded current-turn
 /// checkpoint. Not persisted to `raw_context`.
 pub(crate) const TURN_CHECKPOINT_MARKER_TEXT: &str = "[Current-turn checkpoint] earlier work in this turn follows — text-only, \
@@ -303,25 +299,34 @@ pub(crate) const TURN_CHECKPOINT_MARKER_TEXT: &str = "[Current-turn checkpoint] 
 /// Where the verbatim current-turn suffix starts, relative to the current
 /// turn slice.
 ///
+/// `interval` is [`ContextStrategyConfig::checkpoint_interval`], defaulting to
+/// [`jyc_types::channel::DEFAULT_CHECKPOINT_INTERVAL`]; `0` disables the
+/// in-turn checkpoint and always returns `None`.
+///
 /// With `n` completed assistant messages, fold every whole interval but
 /// leave the latest interaction raw:
 ///
 /// ```text
-/// folded = floor((n - 1) / TURN_CHECKPOINT_INTERVAL) × TURN_CHECKPOINT_INTERVAL
+/// folded = floor((n - 1) / interval) × interval
 /// ```
 ///
 /// The boundary is derived from the slice alone, so a cold build and a warm
 /// cache produce the same payload. It advances only when `n` crosses an
 /// interval, which keeps the folded prefix byte-stable in between.
-fn current_turn_checkpoint_end(current: &[serde_json::Value]) -> Option<usize> {
+fn current_turn_checkpoint_end(current: &[serde_json::Value], interval: usize) -> Option<usize> {
+    // 0 is the off sentinel: no in-turn checkpoint, so the whole current turn
+    // rides verbatim. Guarded here because `interval` is also the divisor.
+    if interval == 0 {
+        return None;
+    }
     let assistant_count = current
         .iter()
         .filter(|msg| msg.get("role").and_then(|r| r.as_str()) == Some("assistant"))
         .count();
-    if assistant_count <= TURN_CHECKPOINT_INTERVAL {
+    if assistant_count <= interval {
         return None;
     }
-    let folded = ((assistant_count - 1) / TURN_CHECKPOINT_INTERVAL) * TURN_CHECKPOINT_INTERVAL;
+    let folded = ((assistant_count - 1) / interval) * interval;
     current
         .iter()
         .enumerate()
@@ -783,6 +788,7 @@ mod render_raw_context_tests {
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         }
     }
 
@@ -824,6 +830,64 @@ mod render_raw_context_tests {
         assert!(
             regions.iter().all(|r| *r == 2),
             "no checkpoint before the interval: {regions:?}"
+        );
+    }
+
+    #[test]
+    fn custom_interval_moves_the_checkpoint_boundary() {
+        // interval = 2: three interactions fold the first two and leave the
+        // latest raw. This is the knob the default 32 stands in for — the
+        // boundary moves with it, and only the latest interaction is spared.
+        let ctx = current_with_interactions(3, "secret");
+        let cfg = ContextStrategyConfig {
+            checkpoint_interval: 2,
+            ..sliding_cfg()
+        };
+        let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, 0, &cfg);
+        assert!(
+            regions.contains(&3),
+            "a shorter interval must fold: {regions:?}"
+        );
+        let raw_start = regions
+            .iter()
+            .position(|r| *r == 2)
+            .expect("the latest interaction stays raw");
+        assert_eq!(sent[raw_start], ctx[5], "only the latest step stays raw");
+        assert_eq!(sent[raw_start + 1], ctx[6]);
+
+        // interval = 4 over the same three interactions: under the interval,
+        // so nothing folds.
+        let cfg = ContextStrategyConfig {
+            checkpoint_interval: 4,
+            ..sliding_cfg()
+        };
+        let (_, regions) = build_send_context_with_regions(&prov(), &ctx, 0, &cfg);
+        assert!(
+            regions.iter().all(|r| *r == 2),
+            "under the interval nothing folds: {regions:?}"
+        );
+    }
+
+    #[test]
+    fn zero_interval_disables_the_current_turn_checkpoint() {
+        // 0 is the off sentinel: the whole turn rides verbatim, bounded only
+        // by turn_tool_result_cap. The guard matters — `interval` is also the
+        // divisor, so an unguarded 0 would panic instead of disabling.
+        let ctx = current_with_interactions(40, "secret");
+        let cfg = ContextStrategyConfig {
+            checkpoint_interval: 0,
+            ..sliding_cfg()
+        };
+        let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, 0, &cfg);
+        assert_eq!(sent.len(), ctx.len());
+        assert!(
+            regions.iter().all(|r| *r == 2),
+            "the checkpoint must be off: {regions:?}"
+        );
+        let wire = serde_json::to_string(sent.as_ref()).unwrap();
+        assert!(
+            !wire.contains(TURN_CHECKPOINT_MARKER_TEXT),
+            "no checkpoint marker without folding: {wire}"
         );
     }
 
@@ -959,6 +1023,7 @@ mod render_raw_context_tests {
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, 0, &cfg);
         assert!(matches!(sent, Cow::Borrowed(_)));
@@ -1129,6 +1194,7 @@ mod render_raw_context_tests {
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg).0;
         assert!(matches!(sent, Cow::Borrowed(_)));
@@ -1164,6 +1230,7 @@ mod render_raw_context_tests {
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg).0;
         let sent = sent.into_owned();
@@ -1201,6 +1268,7 @@ mod render_raw_context_tests {
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, 99, &cfg)
             .0
@@ -1282,6 +1350,7 @@ mod render_raw_context_tests {
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, 0, &cfg)
             .0
@@ -1325,6 +1394,7 @@ mod render_raw_context_tests {
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let sent = build_send_context_with_regions(&anthropic(), &ctx, prior_len, &cfg)
             .0
@@ -1390,6 +1460,7 @@ mod render_raw_context_tests {
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg)
             .0
@@ -1425,6 +1496,7 @@ mod render_raw_context_tests {
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, 0, &cfg);
         assert_eq!(sent.len(), 3);
@@ -1459,6 +1531,7 @@ mod render_raw_context_tests {
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, prior.len(), &cfg);
         assert_eq!(sent.len(), 6);
@@ -1505,6 +1578,7 @@ mod render_raw_context_tests {
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let prior_len = prior.len();
         let mut ctx = prior.clone();
@@ -1558,6 +1632,7 @@ mod render_raw_context_tests {
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let prior_len = prior.len();
         let mut ctx = prior.clone();
@@ -1615,6 +1690,7 @@ mod render_raw_context_tests {
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, prior.len(), &cfg);
         assert_eq!(sent.len(), 4);
@@ -1652,6 +1728,7 @@ mod render_raw_context_tests {
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
 
         let (sent1, _) = build_send_context_with_regions(&prov(), &prior1, prior1.len(), &cfg);
@@ -1682,6 +1759,7 @@ mod render_raw_context_tests {
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let (sent, _) = build_send_context_with_regions(&prov(), &ctx, 0, &cfg);
         let texts: Vec<&str> = sent.iter().filter_map(|m| m["content"].as_str()).collect();
@@ -1720,6 +1798,7 @@ mod render_raw_context_tests {
             // must be the turn cap.
             turn_tool_result_cap: Some(600),
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
         let wire = serde_json::to_string(out.as_ref()).unwrap();
@@ -1773,6 +1852,7 @@ mod render_raw_context_tests {
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let zero_cfg = ContextStrategyConfig {
             turn_tool_result_cap: Some(0),
@@ -1821,6 +1901,7 @@ mod render_raw_context_tests {
             // A slot-shifted leftover command: 3 bytes would leave nothing.
             turn_tool_result_cap: Some(3),
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let (out, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
         let wire = serde_json::to_string(out.as_ref()).unwrap();

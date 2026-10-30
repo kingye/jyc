@@ -13,28 +13,42 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 /// Usage:
 ///   /context              Show current strategy
 ///   /context full         Switch to full context (send everything)
-///   /context sliding [N] [EXT] [TURNCAP] [MAXHIST]
-///     Switch to sliding window (default N = 10 turns). EXT is the
-///     extension rate: the window grows from N up to
-///     N + round(EXT × N) turns before it slides back to N (default 0.5;
-///     0 makes N a hard window that slides every turn).
-///     TURNCAP is the optional per-tool-result byte cap on the current
-///     turn; an oversized result keeps its head and tail with
-///     the middle replaced by a paging marker. 0 means off; a non-zero
-///     value must be between `MIN_EDGE_KEEPING_CAP` and
-///     `MAX_TURN_TOOL_RESULT_CAP` bytes (below the floor the trim cannot
-///     keep both ends of an ASCII result). A configured value below the
-///     floor is lifted to it rather than rejected; a command-line value
-///     below it is refused. Unset by default.
-///     MAXHIST is the optional token budget for the windowed history: when
-///     the window has reached its turn bound and estimates over it, the window
+///   /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT]
+///     Switch to sliding window. Parameters are positional and all
+///     optional:
+///
+///       slot        type    accepted range           default
+///       N           int     1..=200                  10
+///       EXT         float   0.0..=10.0               0.5
+///       TURNCAP     int     0, or 130..=1048576      0 (off)
+///       MAXHIST     int     0..=4000000              0 (off)
+///       CHECKPOINT  int     0 (off), else any        32
+///
+///     N is the window's floor in turns: it keeps N turns after a slide.
+///     EXT is the extension rate: the window grows from N up to
+///     N + round(EXT × N) turns before it slides back to N (0 makes N a
+///     hard window that slides every turn).
+///     TURNCAP is the per-tool-result byte cap on the current turn; an
+///     oversized result keeps its head and tail with the middle replaced
+///     by a paging marker. A non-zero value below `MIN_EDGE_KEEPING_CAP`
+///     cannot hold the marker and both ends of an ASCII result — a
+///     configured value is lifted to the floor, a command-line value is
+///     refused here.
+///     MAXHIST is the token budget for the windowed history: when the
+///     window has reached its turn bound and estimates over it, the window
 ///     slides back to N turns — the same slide the turn bound performs.
-///     Unset by default.
+///     CHECKPOINT is how many completed assistant messages the current
+///     turn may reach before its older steps fold into a text-only
+///     checkpoint. It counts assistant messages — steps that produced
+///     output, tool call or reply — not turns or tool calls, and 0
+///     disables in-turn folding so the whole current turn rides verbatim.
+///     Raise it when a long read-heavy turn keeps re-reading what it just
+///     read; lower it when a long turn's verbatim replay costs too much.
 ///
 ///     The slots moved when `note_window` was removed (it was the old 4th
-///     slot, between EXT and TURNCAP): an extra positional — a five-argument
-///     command copied from an older build — is refused rather than
-///     silently reinterpreted.
+///     slot, between EXT and TURNCAP), so a command carrying more
+///     positionals than the table above is refused rather than silently
+///     reinterpreted.
 ///
 ///     Per-slot semantics: an absent slot falls back to the *configured*
 ///     value (the config.toml chain) — not to whatever an earlier
@@ -151,6 +165,7 @@ impl CommandHandler for ContextCommandHandler {
                         extend_rate: configured.extend_rate,
                         turn_tool_result_cap: configured.turn_tool_result_cap,
                         max_history_tokens: configured.max_history_tokens,
+                        checkpoint_interval: configured.checkpoint_interval,
                     },
                 )
                 .await?;
@@ -166,11 +181,11 @@ impl CommandHandler for ContextCommandHandler {
                 // 4th slot). A command copied from an older build can
                 // therefore carry one trailing argument too many; refuse it
                 // rather than silently dropping it.
-                if let Some(extra) = context.args.get(5) {
+                if let Some(extra) = context.args.get(6) {
                     return Ok(CommandResult {
                         success: false,
                         message: format!(
-                            "/context: unexpected argument '{extra}' (usage: /context sliding [N] [EXT] [TURNCAP] [MAXHIST])"
+                            "/context: unexpected argument '{extra}' (usage: /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT])"
                         ),
                         error: None,
                         append_body: None,
@@ -311,12 +326,39 @@ impl CommandHandler for ContextCommandHandler {
                 };
                 let max_history_tokens =
                     max_history_tokens.unwrap_or(configured.max_history_tokens);
+                // Optional current-turn checkpoint interval CHECKPOINT
+                // (args[5]): completed assistant messages before the turn's
+                // older steps fold to a text-only checkpoint. 0 is the
+                // explicit "off" sentinel (same convention as CAP and
+                // MAXHIST) and leaves the whole turn verbatim; absent = keep
+                // the configured value, which defaults to
+                // `DEFAULT_CHECKPOINT_INTERVAL`.
+                let checkpoint_interval = if let Some(arg) = context.args.get(5) {
+                    match arg.parse::<usize>() {
+                        Ok(n) => Some(n),
+                        Err(_) => {
+                            return Ok(CommandResult {
+                                success: false,
+                                message: format!(
+                                    "/context: invalid checkpoint_interval '{arg}', expected a non-negative integer"
+                                ),
+                                error: None,
+                                append_body: None,
+                            });
+                        }
+                    }
+                } else {
+                    None
+                };
+                let checkpoint_interval =
+                    checkpoint_interval.unwrap_or(configured.checkpoint_interval);
                 let cfg = ContextStrategyConfig {
                     mode: ContextStrategy::SlidingWindow,
                     window,
                     extend_rate,
                     turn_tool_result_cap,
                     max_history_tokens,
+                    checkpoint_interval,
                 };
                 write_override(&state_dir, &override_path, cfg.clone()).await?;
                 Ok(CommandResult {
@@ -330,7 +372,7 @@ impl CommandHandler for ContextCommandHandler {
             other => Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/context: unknown argument '{other}'. Use: /context sliding [N] [EXT] [TURNCAP] [MAXHIST] | full | reset | dump [on|off]"
+                    "/context: unknown argument '{other}'. Use: /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] | full | reset | dump [on|off]"
                 ),
                 error: None,
                 append_body: None,
@@ -429,6 +471,16 @@ fn describe_strategy(cfg: &ContextStrategyConfig) -> String {
             if let Some(t) = cfg.max_history_tokens {
                 s.push_str(&format!(", max_history_tokens={t}"));
             }
+            // Always echoed: unlike the two caps above it has a non-off
+            // default, so "absent from the echo" would be ambiguous.
+            if cfg.checkpoint_interval == 0 {
+                s.push_str(", checkpoint_interval=0 (off)");
+            } else {
+                s.push_str(&format!(
+                    ", checkpoint_interval={}",
+                    cfg.checkpoint_interval
+                ));
+            }
             s.push(')');
             s
         }
@@ -438,6 +490,7 @@ fn describe_strategy(cfg: &ContextStrategyConfig) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jyc_types::channel::DEFAULT_CHECKPOINT_INTERVAL;
     use std::path::Path;
 
     fn test_context(topic_name: &str, topic_path: &Path) -> CommandContext {
@@ -713,10 +766,11 @@ mod tests {
             "8192".into(),
             "60000".into(),
             "3".into(),
+            "7".into(),
         ];
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
-        assert!(result.message.contains("unexpected argument '3'"));
+        assert!(result.message.contains("unexpected argument '7'"));
         assert!(!tmp.path().join(".jyc/context-strategy.json").exists());
     }
 
@@ -996,11 +1050,106 @@ mod tests {
             extend_rate: 1.0,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         let s = describe_strategy(&cfg);
         assert!(s.contains("window=10"));
         assert!(s.contains("extend_rate=1"), "{s}");
         assert!(s.contains("max_window=20"), "{s}");
+    }
+
+    #[tokio::test]
+    async fn test_sliding_with_checkpoint_interval() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_with_checkpoint_interval";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec![
+            "sliding".into(),
+            "10".into(),
+            "0.5".into(),
+            "0".into(),
+            "0".into(),
+            "16".into(),
+        ];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success, "message: {}", result.message);
+        assert!(
+            result.message.contains("checkpoint_interval=16"),
+            "message: {}",
+            result.message
+        );
+        let v: serde_json::Value = serde_json::from_str(
+            &tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(v["checkpoint_interval"], 16);
+    }
+
+    #[tokio::test]
+    async fn test_sliding_checkpoint_interval_off_and_default() {
+        // 0 is the explicit "off" sentinel; omitting the slot keeps the
+        // configured value, which defaults to `DEFAULT_CHECKPOINT_INTERVAL`.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_checkpoint_interval_off_and_default";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec![
+            "sliding".into(),
+            "10".into(),
+            "0.5".into(),
+            "0".into(),
+            "0".into(),
+            "0".into(),
+        ];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success, "message: {}", result.message);
+        assert!(
+            result.message.contains("checkpoint_interval=0 (off)"),
+            "message: {}",
+            result.message
+        );
+
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec!["sliding".into(), "10".into()];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success, "message: {}", result.message);
+        assert!(
+            result.message.contains(&format!(
+                "checkpoint_interval={DEFAULT_CHECKPOINT_INTERVAL}"
+            )),
+            "message: {}",
+            result.message
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sliding_checkpoint_interval_invalid_arg() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_checkpoint_interval_invalid_arg";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec![
+            "sliding".into(),
+            "10".into(),
+            "0.5".into(),
+            "0".into(),
+            "0".into(),
+            "abc".into(),
+        ];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(!result.success);
+        assert!(
+            result.message.contains("invalid checkpoint_interval 'abc'"),
+            "message: {}",
+            result.message
+        );
+        assert!(!tmp.path().join(".jyc/context-strategy.json").exists());
     }
 
     #[tokio::test]
@@ -1211,6 +1360,7 @@ mod tests {
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: Some(30000),
+            ..ContextStrategyConfig::default()
         };
         assert!(describe_strategy(&cfg).contains("max_history_tokens=30000"));
 
@@ -1235,6 +1385,7 @@ mod tests {
             extend_rate: 0.5,
             turn_tool_result_cap: Some(3),
             max_history_tokens: None,
+            ..ContextStrategyConfig::default()
         };
         assert!(
             describe_strategy(&cfg).contains(&format!(
@@ -1260,5 +1411,48 @@ mod tests {
         };
         assert!(describe_strategy(&big).contains("turn_tool_result_cap=32768"));
         assert!(!describe_strategy(&big).contains("lifted"));
+    }
+
+    /// The checkpoint interval is always echoed, unlike the two caps above it:
+    /// it has a non-off default, so its absence from the echo would read as
+    /// "not configured" when it is in fact 32. `0` is the off sentinel and
+    /// says so.
+    #[test]
+    fn describe_strategy_always_shows_the_checkpoint_interval() {
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 10,
+            extend_rate: 0.5,
+            turn_tool_result_cap: None,
+            max_history_tokens: None,
+            ..ContextStrategyConfig::default()
+        };
+        assert!(
+            describe_strategy(&cfg).contains(&format!(
+                "checkpoint_interval={DEFAULT_CHECKPOINT_INTERVAL}"
+            )),
+            "{}",
+            describe_strategy(&cfg)
+        );
+
+        let off = ContextStrategyConfig {
+            checkpoint_interval: 0,
+            ..cfg.clone()
+        };
+        assert!(
+            describe_strategy(&off).contains("checkpoint_interval=0 (off)"),
+            "{}",
+            describe_strategy(&off)
+        );
+
+        let custom = ContextStrategyConfig {
+            checkpoint_interval: 64,
+            ..cfg
+        };
+        assert!(
+            describe_strategy(&custom).contains("checkpoint_interval=64"),
+            "{}",
+            describe_strategy(&custom)
+        );
     }
 }

@@ -170,13 +170,23 @@ pub struct ChangedFileEntry {
 
 /// Accumulated cost for a topic, in `currency`.
 ///
-/// `session` is scoped to the current agent session and zeroes on
-/// reset (read from `agent-session.json`); `today` is the durable
-/// per-day total from the billing ledger, which no reset touches.
-/// The two are expected to differ after a reset — that is the point
-/// of keeping both.
+/// `turn` is scoped to the latest turn, `session` to the current agent
+/// session (both read from `agent-session.json`; a reset zeroes them);
+/// `today` is the durable per-day total from the billing ledger, which no
+/// reset touches. The row orders them by breadth, smallest first, and a
+/// session outlives a day, so it is usually the largest of the three.
+///
+/// `session` and `today` are expected to differ after a reset — that is
+/// the point of keeping both.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TopicCost {
+    /// Cost of the latest turn so far. `None` when the current turn has
+    /// not completed an LLM call yet — and in a payload from a server
+    /// that predates the field, where `#[serde(default)]` yields `None`.
+    /// The row then leaves the turn out rather than printing a `$0.00`
+    /// it cannot vouch for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<f64>,
     /// Cost of the current session so far.
     pub session: f64,
     /// Cost accumulated today (UTC day), across sessions.
@@ -194,29 +204,48 @@ pub struct TopicCost {
 /// unrecognised currency still reads correctly rather than being
 /// mislabelled with the wrong symbol.
 ///
-/// Two decimals: a cent is the smallest unit that reads as money, so
-/// the figures are the ones a bill would show. An amount below half a
-/// cent rounds to `0.00`.
+/// A cent is the smallest unit that reads as money, so an amount of at
+/// least a cent keeps two decimals — the figures a bill would show. A
+/// smaller amount escalates to four: a single short exchange, or a turn
+/// that has just started, can sit well below a cent, and rounding it to
+/// `0.00` reads as "nothing spent" when something was. Zero itself stays
+/// `0.00`.
 pub fn format_amount(amount: f64, currency: &str) -> String {
+    let body = if amount != 0.0 && amount.abs() < 0.01 {
+        format!("{amount:.4}")
+    } else {
+        format!("{amount:.2}")
+    };
     match currency {
-        "USD" => format!("${amount:.2}"),
-        "CNY" => format!("¥{amount:.2}"),
-        other => format!("{amount:.2} {other}"),
+        "USD" => format!("${body}"),
+        "CNY" => format!("¥{body}"),
+        other => format!("{body} {other}"),
     }
 }
 
-/// Format the topic's cost row as one display string: `"$1.31 today ·
-/// $0.05 session"` — the durable day's total first, the session's second.
+/// Format the topic's cost row as one display string: `"$0.0031 turn ·
+/// $0.05 today · $1.31 session"` — smallest scope first.
 ///
-/// Takes the struct rather than the two amounts: they share a type and a
+/// The row orders the three scopes by breadth, smallest first — turn,
+/// today, session — and a session outlives a UTC day, so it is usually
+/// the largest. That is an ordering, not a nesting guarantee: a session
+/// reset mid-day leaves the day's ledger total larger than the fresh
+/// session's. The row leaves the turn out when the current turn has no
+/// call yet, reading `"$0.05 today · $1.31 session"`.
+///
+/// Takes the struct rather than the amounts: they share a type and a
 /// currency, so swapped arguments would compile and print each figure
 /// under the other's label.
-pub fn format_cost_pair(cost: &TopicCost) -> String {
-    format!(
-        "{} today · {} session",
-        format_amount(cost.today, &cost.currency),
-        format_amount(cost.session, &cost.currency)
-    )
+pub fn format_cost_row(cost: &TopicCost) -> String {
+    let today = format_amount(cost.today, &cost.currency);
+    let session = format_amount(cost.session, &cost.currency);
+    match cost.turn {
+        Some(turn) => format!(
+            "{} turn · {today} today · {session} session",
+            format_amount(turn, &cost.currency)
+        ),
+        None => format!("{today} today · {session} session"),
+    }
 }
 
 /// Format the day's per-currency totals as one display string: `"$12.34"`,
@@ -1064,6 +1093,59 @@ mod tests {
         assert_eq!(
             tool_activity("bash", Some(&input)).unwrap().chars().count(),
             200
+        );
+    }
+
+    /// Money reads to the cent; only an amount too small to show one
+    /// escalates to four decimals. Both ends of that rule are load-bearing:
+    /// a cent-scale amount must not gain noise, and a sub-cent one must not
+    /// round to `$0.00` and read as "nothing spent".
+    #[test]
+    fn format_amount_keeps_a_cent_and_escalates_below_one() {
+        assert_eq!(format_amount(0.0, "USD"), "$0.00");
+        assert_eq!(format_amount(0.05, "USD"), "$0.05");
+        assert_eq!(format_amount(1.3057, "USD"), "$1.31");
+        assert_eq!(format_amount(3.2, "USD"), "$3.20");
+        // A turn of 100-odd iterations costs dollars, and those stay on the
+        // cent scale rather than showing a fraction of one.
+        assert_eq!(format_amount(12.3456, "USD"), "$12.35");
+        // Below a cent, four decimals: `$0.0031` not `$0.00`.
+        assert_eq!(format_amount(0.0031, "USD"), "$0.0031");
+        assert_eq!(format_amount(0.0031, "CNY"), "¥0.0031");
+        assert_eq!(format_amount(1.5, "EUR"), "1.50 EUR");
+    }
+
+    /// The row runs smallest scope first — turn, today, session — and a
+    /// missing turn is left out rather than printed as a zero the data
+    /// cannot vouch for.
+    #[test]
+    fn format_cost_row_runs_small_to_large_and_omits_a_missing_turn() {
+        let cost = TopicCost {
+            turn: Some(0.0031),
+            session: 1.3057,
+            today: 0.0521,
+            currency: "USD".to_string(),
+        };
+        assert_eq!(
+            format_cost_row(&cost),
+            "$0.0031 turn · $0.05 today · $1.31 session"
+        );
+        let no_turn = TopicCost { turn: None, ..cost };
+        assert_eq!(format_cost_row(&no_turn), "$0.05 today · $1.31 session");
+    }
+
+    /// A payload that predates the `turn` field — an older daemon's JSON —
+    /// deserializes with `None`, and `None` is not written back out, so the
+    /// row simply omits the turn instead of claiming `$0.00`.
+    #[test]
+    fn topic_cost_turn_is_optional_for_older_payloads() {
+        let old = r#"{"session": 0.42, "today": 1.23, "currency": "USD"}"#;
+        let cost: TopicCost = serde_json::from_str(old).unwrap();
+        assert_eq!(cost.turn, None);
+        let json = serde_json::to_string(&cost).unwrap();
+        assert!(
+            !json.contains("turn"),
+            "turn should not be serialized: {json}"
         );
     }
 }

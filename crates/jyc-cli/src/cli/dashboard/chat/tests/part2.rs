@@ -1976,6 +1976,7 @@ fn info_pane_app(tasks: jyc_types::task::TaskList) -> App {
         // task list has to sit above.
         changed_files: Some(vec![]),
         cost: Some(jyc_types::TopicCost {
+            turn: Some(0.0031),
             session: 0.42,
             today: 1.23,
             currency: "USD".to_string(),
@@ -3502,6 +3503,7 @@ fn info_pane_renders_subagents_as_a_tree() {
     // A cost row and a resolved file list, so the tree has the two sections
     // it is placed between.
     detail.cost = Some(jyc_types::TopicCost {
+        turn: Some(0.0031),
         session: 0.42,
         today: 1.23,
         currency: "USD".to_string(),

@@ -75,21 +75,49 @@ pub async fn read_total_cache_creation_tokens(topic_name: &str, topic_path: &Pat
         .total_cache_creation_tokens
 }
 
-/// Read the accumulated cost of the current session.
+/// Cost figures for a topic: the session's running total and the latest
+/// turn's share of it.
 ///
-/// Returns `None` when the file is missing, malformed, or the cost is
-/// zero — zero covers both "no calls yet" and "model has no configured
-/// pricing", and in either case there is nothing meaningful to show.
+/// Shaped like `CallLatency` next door — one read of the session file,
+/// both scopes, named fields. The two amounts share a type and a
+/// currency, so a tuple would let swapped arguments compile and print
+/// each figure under the other's label.
+///
+/// A field is `None` when there is nothing to show in that scope: no
+/// call yet in the session, no call yet in the current turn (the turn
+/// counters were just cleared at its start), a session file written
+/// before the field existed, or a model without configured pricing (which
+/// banks `0`).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct CostFigures {
+    /// Cost of the current session so far.
+    pub session: Option<f64>,
+    /// Cost of the LLM calls in the latest turn — never more than
+    /// `session`, which accumulates every call this turn does too.
+    pub turn: Option<f64>,
+}
+
+/// Read the session-wide and latest-turn cost from the topic's session
+/// file.
 ///
 /// Kept separate from `read_token_state` rather than widening its
-/// tuple: cost has a single caller, and References a sixth element
-/// through four existing helpers would be a much larger change than
-/// one extra read of an already page-cached file.
-pub async fn read_session_cost(topic_name: &str, topic_path: &Path) -> Option<f64> {
+/// tuple: cost has a single production caller (the `TopicInfo` assembly
+/// in `TopicManager`), and threading further elements through four
+/// existing helpers would be a much larger change than one extra read of
+/// an already page-cached file.
+pub async fn read_cost_figures(topic_name: &str, topic_path: &Path) -> CostFigures {
     let agent_path = resolve_state_dir(topic_name, topic_path).join("agent-session.json");
-    let content = tokio::fs::read_to_string(&agent_path).await.ok()?;
-    let state = serde_json::from_str::<AgentSessionState>(&content).ok()?;
-    (state.session_cost > 0.0).then_some(state.session_cost)
+    let Ok(content) = tokio::fs::read_to_string(&agent_path).await else {
+        return CostFigures::default();
+    };
+    let Ok(state) = serde_json::from_str::<AgentSessionState>(&content) else {
+        return CostFigures::default();
+    };
+    let figure = |amount: f64| (amount > 0.0).then_some(amount);
+    CostFigures {
+        session: figure(state.session_cost),
+        turn: figure(state.turn_cost),
+    }
 }
 
 /// Call-latency figures for a topic: the session-wide average and the
@@ -117,7 +145,7 @@ pub struct CallLatency {
 ///
 /// Returns default (no figures) when the file is missing or malformed.
 /// Kept separate from `read_token_state` rather than widening its tuple,
-/// mirroring `read_session_cost`: one extra read of an already
+/// mirroring `read_cost_figures`: one extra read of an already
 /// page-cached file is cheaper than threading more elements through
 /// every tuple consumer.
 pub async fn read_call_latency(topic_name: &str, topic_path: &Path) -> CallLatency {
@@ -248,6 +276,8 @@ struct AgentSessionState {
     turn_reasoning_tokens: u64,
     #[serde(default)]
     session_cost: f64,
+    #[serde(default)]
+    turn_cost: f64,
     #[serde(default)]
     total_call_duration_ms: u64,
     #[serde(default)]

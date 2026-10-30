@@ -159,7 +159,7 @@ fn format_topic_info(t: &TopicInfo) -> String {
         lines.push(format!("Reasoning: {figures}"));
     }
     if let Some(cost) = &t.cost {
-        lines.push(format!("Cost: {}", jyc_types::format_cost_pair(cost)));
+        lines.push(format!("Cost: {}", jyc_types::format_cost_row(cost)));
     }
     // The day's spend across every topic, per currency — the same figure
     // `/bill` reports.
@@ -311,6 +311,7 @@ mod tests {
                 },
             ]),
             cost: Some(TopicCost {
+                turn: Some(0.0031),
                 session: 0.42,
                 today: 1.23,
                 currency: "USD".into(),
@@ -340,7 +341,7 @@ Cache:
   Session: 964.51K / 1.18M (80%)
   Create: 111
 Reasoning: 512 turn · 4.00K session
-Cost: $1.23 today · $0.42 session
+Cost: $0.0031 turn · $1.23 today · $0.42 session
 Latency: 1.10s/call (3) · 820ms/call (37)
 Tasks (1/3):
   [✓] 1. inspect list_topics

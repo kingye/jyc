@@ -489,19 +489,20 @@ pub(super) fn push_reasoning_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     }
 }
 
-/// Append the "Cost: $Y today · $X session" row to `spans`. Pushes
-/// nothing when the topic has no cost data (model without configured
-/// `pricing`), so an unpriced topic shows no row at all rather than a
-/// misleading zero.
+/// Append the "Cost: $Z turn · $Y today · $X session" row to `spans`.
+/// Pushes nothing when the topic has no cost data (model without
+/// configured `pricing`), so an unpriced topic shows no row at all rather
+/// than a misleading zero.
 ///
-/// `session` resets with the agent session; `today` is the durable
-/// per-day total from the billing ledger — they differ after a reset by
-/// design. The row is spelled by `jyc_types::format_cost_pair`, which
-/// `/info` shares, so the two surfaces cannot drift apart.
+/// The row orders the scopes by breadth, smallest first: the latest
+/// turn's spend, the durable per-day total from the billing ledger, then
+/// the session's (which outlives a day and zeroes on a session reset).
+/// The row is spelled by `jyc_types::format_cost_row`, which `/info`
+/// shares, so the two surfaces cannot drift apart.
 pub(super) fn push_cost_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     if let Some(ref c) = t.cost {
         spans.push(label_span("Cost: "));
-        spans.push(Span::raw(jyc_types::format_cost_pair(c)));
+        spans.push(Span::raw(jyc_types::format_cost_row(c)));
     }
 }
 
@@ -1261,11 +1262,14 @@ mod tests {
         assert!(spans.is_empty());
     }
 
-    /// Both figures render, the day first, and USD uses the `$` symbol.
+    /// All three figures render, smallest scope first, and USD uses the
+    /// `$` symbol. The turn is sub-cent, so it keeps four decimals instead
+    /// of rounding to `$0.00`.
     #[test]
-    fn push_cost_span_writes_today_and_session() {
+    fn push_cost_span_writes_turn_today_and_session() {
         let mut t = info_with(Some(100), Some(10000), Some(50), Some(720), Some(640), None);
         t.cost = Some(jyc_types::TopicCost {
+            turn: Some(0.0031),
             session: 0.0521,
             today: 1.3057,
             currency: "USD".into(),
@@ -1274,7 +1278,10 @@ mod tests {
         push_cost_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content, padded("Cost: "));
-        assert_eq!(spans[1].content, "$1.31 today · $0.05 session");
+        assert_eq!(
+            spans[1].content,
+            "$0.0031 turn · $1.31 today · $0.05 session"
+        );
     }
 
     /// CNY renders with `¥`, not a dollar sign.
@@ -1282,21 +1289,29 @@ mod tests {
     fn push_cost_span_uses_cny_symbol() {
         let mut t = info_with(None, None, None, None, None, None);
         t.cost = Some(jyc_types::TopicCost {
+            turn: Some(0.25),
             session: 2.5,
             today: 10.0,
             currency: "CNY".into(),
         });
         let mut spans = Vec::new();
         push_cost_span(&mut spans, &t);
-        assert_eq!(spans[1].content, "¥10.00 today · ¥2.50 session");
+        assert_eq!(
+            spans[1].content,
+            "¥0.25 turn · ¥10.00 today · ¥2.50 session"
+        );
     }
 
     /// An unrecognised currency is suffixed rather than given the wrong
-    /// symbol — including the "mixed" marker for multi-currency days.
+    /// symbol — including the "mixed" marker for multi-currency days. With
+    /// no turn figure (a turn that has not completed a call, or a payload
+    /// from a server that predates the field) the row leaves it out rather
+    /// than printing a zero.
     #[test]
-    fn push_cost_span_suffixes_unknown_currency() {
+    fn push_cost_span_suffixes_unknown_currency_and_omits_a_missing_turn() {
         let mut t = info_with(None, None, None, None, None, None);
         t.cost = Some(jyc_types::TopicCost {
+            turn: None,
             session: 1.0,
             today: 2.0,
             currency: "mixed".into(),

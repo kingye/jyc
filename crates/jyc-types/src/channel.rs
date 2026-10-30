@@ -803,6 +803,16 @@ pub const MARKER_RESERVE: usize = 128;
 /// a correct trim, just head-only.
 pub const MIN_EDGE_KEEPING_CAP: usize = MARKER_RESERVE + 2;
 
+/// Completed assistant messages per current-turn checkpoint — the default for
+/// [`ContextStrategyConfig::checkpoint_interval`].
+///
+/// One checkpoint every 32 steps keeps the verbatim current-turn suffix
+/// bounded without a tokenizer. It is a knob rather than a constant because
+/// the right size depends on the workload: 16 folded a read-heavy turn's file
+/// contents away before the model had used them, so the turn degraded into
+/// read → drop → read again. 32 leaves a normal read→act→observe cycle intact.
+pub const DEFAULT_CHECKPOINT_INTERVAL: usize = 32;
+
 /// The current-turn result cap actually applied for a configured value.
 ///
 /// `None` and `Some(0)` both mean off and come back as `0`; any other value
@@ -892,6 +902,28 @@ pub struct ContextStrategyConfig {
     /// compatible.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_history_tokens: Option<usize>,
+    /// Completed assistant messages per current-turn checkpoint
+    /// (`sliding_window` mode): once the current turn passes this many
+    /// assistant messages, the older ones fold into a text-only checkpoint
+    /// and the recent suffix stays verbatim. Counting is by assistant
+    /// message — every step that produced output, tool call or final reply —
+    /// not by turn or by tool call. Default:
+    /// [`DEFAULT_CHECKPOINT_INTERVAL`] (32).
+    ///
+    /// `0` disables the in-turn checkpoint: the whole current turn then
+    /// rides verbatim, bounded only by [`Self::turn_tool_result_cap`]. That
+    /// is the right setting for a turn whose value is in the results
+    /// themselves; it trades the checkpoint's bounded replay for the risk of
+    /// a very long turn. A small non-zero value (1 folds after every
+    /// interaction) is legal but aggressive — it is the setting that made
+    /// long read-heavy turns loop, so raise it rather than lower it when the
+    /// model keeps re-reading what it just read.
+    ///
+    /// Only meaningful when `mode = "sliding_window"`. Always serialized
+    /// (unlike the two `Option` caps above) because unlike them it has a
+    /// non-off default: a reader that omitted it gets 32, not "off".
+    #[serde(default = "default_checkpoint_interval")]
+    pub checkpoint_interval: usize,
 }
 
 impl ContextStrategyConfig {
@@ -922,8 +954,13 @@ impl Default for ContextStrategyConfig {
             // users already know, and a token budget silently truncating
             // history is the more surprising default.
             max_history_tokens: None,
+            checkpoint_interval: default_checkpoint_interval(),
         }
     }
+}
+
+fn default_checkpoint_interval() -> usize {
+    DEFAULT_CHECKPOINT_INTERVAL
 }
 
 fn default_context_window_size() -> usize {
@@ -1366,5 +1403,58 @@ topic_path = "~/projects/jyc"
             serde_json::from_str(&serde_json::to_string(&cfg0).unwrap()).unwrap();
         assert_eq!(cfg0_back.max_history_tokens, Some(0));
         assert_ne!(cfg0_back.max_history_tokens, None);
+    }
+
+    #[test]
+    fn test_context_strategy_checkpoint_interval_defaults_and_serializes() {
+        // 32 by default, so a turn's normal read→act→observe cycle survives.
+        assert_eq!(
+            ContextStrategyConfig::default().checkpoint_interval,
+            DEFAULT_CHECKPOINT_INTERVAL
+        );
+
+        // A config file written before the field existed (including the
+        // runtime override files already on disk) must load with the default
+        // rather than failing or reading 0 — 0 would silently disable
+        // in-turn folding for every existing topic.
+        let cfg: ContextStrategyConfig =
+            toml::from_str("mode = \"sliding_window\"\nwindow = 10\n").unwrap();
+        assert_eq!(cfg.checkpoint_interval, DEFAULT_CHECKPOINT_INTERVAL);
+
+        // Unlike the two `Option` caps, it always serializes: its default is
+        // not "off", so a reader that omitted it would not be telling the
+        // truth about what it uses.
+        let serialized = toml::to_string(&ContextStrategyConfig::default()).unwrap();
+        assert!(
+            serialized.contains(&format!(
+                "checkpoint_interval = {DEFAULT_CHECKPOINT_INTERVAL}"
+            )),
+            "the interval has a non-off default and must serialize: {serialized}"
+        );
+    }
+
+    #[test]
+    fn test_context_strategy_checkpoint_interval_roundtrip() {
+        let cfg = ContextStrategyConfig {
+            checkpoint_interval: 64,
+            ..ContextStrategyConfig::default()
+        };
+        let serialized = toml::to_string(&cfg).unwrap();
+        assert!(
+            serialized.contains("checkpoint_interval = 64"),
+            "checkpoint_interval should serialize in TOML, got: {serialized}"
+        );
+        let deserialized: ContextStrategyConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized, cfg);
+
+        // 0 is the explicit off sentinel, distinct from the default 32.
+        let off = ContextStrategyConfig {
+            checkpoint_interval: 0,
+            ..ContextStrategyConfig::default()
+        };
+        let off_back: ContextStrategyConfig =
+            serde_json::from_str(&serde_json::to_string(&off).unwrap()).unwrap();
+        assert_eq!(off_back.checkpoint_interval, 0);
+        assert_ne!(off_back.checkpoint_interval, DEFAULT_CHECKPOINT_INTERVAL);
     }
 }

@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+### Added
+
+- The info pane's context-composition legend ends with the turn's depth — `Iteration    56`, a row under the region shares in their label column, plain because it is no region of the bar. It says how many measured LLM calls the latest turn has made — one agent-loop call is one iteration, and a call too fast to record a duration counts in the token figures but not as an iteration — and `/info` prints the same row under its `Context:` legend from the same formatter and the same `TopicInfo.turn_call_count`, so the pane and the command cannot disagree about it
+
+### Changed
+
+- Every bar of the TUI is one rule of `─`: the unfilled part of the token and cache bars used `·` and the context composition drew its regions with `▊`, so a filled share, an unfilled one and a context region were three different glyphs. All three now use `─` and the share is told by colour alone — bold yellow against dim gray for the percentage bars, the region colours for the composition, which are laid end to end and so still say what a cell is part of. In a rendering without colour every bar is therefore one flat rule and no share is visible in it; the figures on the row under it still state the share. The queue blocks are unchanged: they count messages rather than draw a share, and their quarter-cell gap is what keeps them reading as blocks
+
 ## [0.8.0] - 2026-10-30
 
 ### Added

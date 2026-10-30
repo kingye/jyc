@@ -1854,6 +1854,13 @@ fn confirm_out_of_range_digit_is_noop() {
 /// Render the topic-info pane for the selected topic into a plain string
 /// (wide enough that no row wraps, so assertions can match whole rows).
 fn info_pane_text(app: &mut App, width: u16, height: u16) -> String {
+    info_pane_screen(app, width, height).0
+}
+
+/// The same rendering, with the buffer kept: the pane's bars are one glyph
+/// now, so a test that has to know how much of a bar is filled reads the
+/// colours off the cells rather than the text.
+fn info_pane_screen(app: &mut App, width: u16, height: u16) -> (String, ratatui::buffer::Buffer) {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     let backend = TestBackend::new(width, height);
@@ -1862,14 +1869,41 @@ fn info_pane_text(app: &mut App, width: u16, height: u16) -> String {
         .draw(|frame| render_topic_info_pane(frame, frame.area(), app))
         .expect("draw");
     let buffer = terminal.backend().buffer().clone();
-    (0..height)
+    let screen = (0..height)
         .map(|y| {
             (0..width)
                 .map(|x| buffer[(x, y)].symbol().to_string())
                 .collect::<String>()
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    (screen, buffer)
+}
+
+/// How much of a row's bar is filled: the number of `─` cells before the
+/// colour stops being the filled part's, and the bar's whole length. The
+/// pane's own rendering is the only place this can be read — both halves of
+/// a bar are `─` now — so it is what keeps the two percentage rows
+/// distinguishable from each other.
+fn bar_fill(
+    buffer: &ratatui::buffer::Buffer,
+    screen: &str,
+    label: &str,
+    width: u16,
+) -> (usize, usize) {
+    let row = screen
+        .lines()
+        .position(|line| line.contains(label))
+        .unwrap_or_else(|| panic!("the {label} row:\n{screen}")) as u16;
+    let cells: Vec<&ratatui::buffer::Cell> = (0..width)
+        .map(|x| &buffer[(x, row)])
+        .filter(|cell| cell.symbol() == "─")
+        .collect();
+    let filled = cells
+        .iter()
+        .take_while(|cell| cell.fg == Color::Yellow)
+        .count();
+    (filled, cells.len())
 }
 
 /// The chat topic the two info-pane tests below select: a priced model (so the
@@ -2015,7 +2049,9 @@ fn info_pane_draws_context_composition_bar_and_legend() {
         .lines()
         .find(|line| line.contains("Context:"))
         .expect("the composition title");
-    assert!(title_row.contains('▊'), "{screen}");
+    // The bar is one rule of `─`, the same glyph the token row draws, so it
+    // is found the way that row's bar is: the first cell after the label.
+    let bar_start = title_row.find('─').expect("the composition bar");
     assert!(!screen.contains("(estimated)"), "{screen}");
     // The two bars share their first cell: the composition's sits in the
     // pane's value column, not after its own short label.
@@ -2023,7 +2059,7 @@ fn info_pane_draws_context_composition_bar_and_legend() {
         .lines()
         .find(|line| line.contains("Tokens:"))
         .expect("the token row");
-    assert_eq!(tokens_row.find(['─', '·']), title_row.find('▊'), "{screen}");
+    assert_eq!(tokens_row.find('─'), Some(bar_start), "{screen}");
     // The legend rows are indented to that column — `LABEL_WIDTH` past the
     // left border — and share one column of figures: no colon after a
     // label, no byte count anywhere.
@@ -2041,11 +2077,18 @@ fn info_pane_draws_context_composition_bar_and_legend() {
     );
     assert!(!screen.contains("messages"), "{screen}");
 
-    let bar_colors: Vec<Color> = (0..height)
-        .flat_map(|y| (0..width).map(move |x| (x, y)))
-        .filter_map(|(x, y)| {
-            let cell = &buffer[(x, y)];
-            (cell.symbol() == "▊").then_some(cell.fg)
+    // The regions are told apart by colour alone now that one glyph draws
+    // every bar, so the colours are read off the composition's own row —
+    // the title row — rather than the whole screen, where the token and
+    // cache bars would answer for it.
+    let title_y = screen
+        .lines()
+        .position(|line| line.contains("Context:"))
+        .expect("the composition title") as u16;
+    let bar_colors: Vec<Color> = (0..width)
+        .filter_map(|x| {
+            let cell = &buffer[(x, title_y)];
+            (cell.symbol() == "─").then_some(cell.fg)
         })
         .collect();
     assert!(bar_colors.contains(&Color::Green), "{screen}");
@@ -2053,17 +2096,113 @@ fn info_pane_draws_context_composition_bar_and_legend() {
     assert!(bar_colors.contains(&Color::Cyan), "{screen}");
 }
 
+/// The composition's legend ends with the turn's depth: `Iteration 56`, in
+/// the legend's own label column — the one `Current turn` sets — and plain,
+/// because it is no region of the bar and so owns no colour. The figure is
+/// `TopicInfo`'s, the field `/info` prints as the same row, so the pane and
+/// the command cannot disagree about how deep the turn is.
+#[test]
+fn info_pane_ends_the_composition_legend_with_the_iteration() {
+    use jyc_types::{ContextRegion, ContextRegionInfo};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = info_pane_app(jyc_types::task::TaskList::default());
+    let detail = app.topic_detail.as_mut().expect("the detail");
+    detail.turn_call_count = Some(56);
+    detail.context_composition = vec![
+        ContextRegionInfo {
+            region: ContextRegion::History,
+            messages: 3,
+            bytes: 1_000,
+            estimated_tokens: 600,
+        },
+        ContextRegionInfo {
+            region: ContextRegion::Current,
+            messages: 1,
+            bytes: 200,
+            estimated_tokens: 400,
+        },
+    ];
+
+    let width = 60;
+    let height = 40;
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| render_topic_info_pane(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    let screen = (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Last in the legend: under the shares, in their column.
+    assert!(
+        screen.contains("             Current turn ~400 · 40%"),
+        "{screen}"
+    );
+    assert!(screen.contains("             Iteration    56"), "{screen}");
+
+    // Plain: the row carries the pane's default colour, not a region's, so
+    // it cannot be read as part of the bar above it. Column 0 is the pane's
+    // left border `│`, dim by design and no part of the row's text, so the
+    // row's own cells are the ones after it.
+    let row = screen
+        .lines()
+        .position(|line| line.contains("Iteration"))
+        .expect("the iteration row") as u16;
+    let coloured: Vec<(u16, Color)> = (1..width)
+        .filter(|x| buffer[(*x, row)].symbol() != " ")
+        .map(|x| (x, buffer[(x, row)].fg))
+        .filter(|(_, fg)| *fg != Color::Reset)
+        .collect();
+    assert!(
+        coloured.is_empty(),
+        "the row is plain: {coloured:?}\n{screen}"
+    );
+}
+
+/// A topic that has not reported its calls gets no iteration row: a zero
+/// would read as a measured depth, and there is none to state.
+#[test]
+fn info_pane_omits_the_iteration_row_without_a_count() {
+    use jyc_types::{ContextRegion, ContextRegionInfo};
+
+    let screen = info_pane_screen_with_composition(
+        vec![ContextRegionInfo {
+            region: ContextRegion::History,
+            messages: 3,
+            bytes: 1_000,
+            estimated_tokens: 600,
+        }],
+        60,
+        24,
+        true,
+    );
+    assert!(!screen.contains("Iteration"), "{screen}");
+}
+
 /// Render the info pane at `width` × `height` with `composition` on the
 /// detail, and return it as one string with a line per terminal row.
+/// `status_visible` decides whether the pane carries its status block —
+/// the one rule of `─` the pane draws itself, its sub-pane's top border.
 fn info_pane_screen_with_composition(
     composition: Vec<jyc_types::ContextRegionInfo>,
     width: u16,
     height: u16,
+    status_visible: bool,
 ) -> String {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
     let mut app = info_pane_app(jyc_types::task::TaskList::default());
+    app.chat.status_visible = status_visible;
     app.topic_detail
         .as_mut()
         .expect("the detail")
@@ -2109,6 +2248,7 @@ fn info_pane_draws_the_composition_bar_in_the_stacked_layout() {
         ],
         15,
         24,
+        true,
     );
 
     // 15 columns less the pane's left border leaves 14: the bar has the row
@@ -2117,13 +2257,17 @@ fn info_pane_draws_the_composition_bar_in_the_stacked_layout() {
     // The rows are checked by their prefix, not by a column index:
     // `str::find` answers in bytes and the border glyph `│` is three of
     // them, so it would report the bar at 3 where the pane draws it in
-    // column 1.
-    let bar_row = screen
-        .lines()
-        .find(|line| line.contains('▊'))
-        .expect("the bar");
-    assert!(bar_row.starts_with("│▊"), "the bar is flush left: {screen}");
-    assert_eq!(bar_row.matches('▊').count(), 12, "{screen}");
+    // column 1. The bar is found by its place, not its glyph: every bar of
+    // the pane is `─` now, so the token row's would answer for the
+    // composition's — the row under the title is the composition's.
+    let lines: Vec<&str> = screen.lines().collect();
+    let title = lines
+        .iter()
+        .position(|line| line.contains("Context:"))
+        .expect("the composition title");
+    let bar_row = lines[title + 1];
+    assert!(bar_row.starts_with("│─"), "the bar is flush left: {screen}");
+    assert_eq!(bar_row.matches('─').count(), 12, "{screen}");
     // The title stands alone on the row above it, its padding trimmed — the
     // stacked layout's shape for every label.
     assert!(screen.contains("Context:"), "{screen}");
@@ -2139,13 +2283,26 @@ fn info_pane_draws_the_composition_bar_in_the_stacked_layout() {
 }
 
 /// A pane narrower than the narrowest bar worth drawing refuses the bar and
-/// keeps the figures. `MIN_BAR_WIDTH` notes that only a column can reach
-/// it: the table layout always leaves the bar more than that, so this is a
-/// stacked pane of inner width 6 — 4 cells of bar.
+/// keeps the figures. `MIN_BAR_WIDTH` notes that only a pane of inner width
+/// under seven can reach it, so this is a stacked pane of inner width 6 —
+/// where every bar of the pane is refused, and where the title `Context:`
+/// is itself cut short by the width.
 ///
-/// The fixture's queue has no capacity, so it draws no blocks of its own
-/// (see `push_status_span`): the composition is the pane's only source of
-/// `▊`, and its absence is the refusal.
+/// The status block is switched off in this fixture. Its top border is the
+/// one rule of `─` the pane draws itself (see `render_topic_info_pane`),
+/// and it would otherwise be the only `─` on the screen, leaving the claim
+/// below a statement about a region rather than about the pane. Without it
+/// the pane draws no rule of `─` at all, so "no `─` anywhere" is the same
+/// claim as "no bar was drawn", read literally.
+///
+/// The bar cannot be separated from the pane's other bars at this width:
+/// they are refused together, since inner width 6 is under `MIN_BAR_WIDTH`
+/// for every one of them. A control pane without a composition has no `─`
+/// either, so that comparison would be `0 == 0`. Separating the composition
+/// bar from the rest is a unit claim, not a pane one — see
+/// `composition_bar_needs_the_minimum_width` in `token_render`. What this
+/// test pins is the integration: the section still renders, and it comes
+/// back with its figures.
 #[test]
 fn info_pane_keeps_the_composition_figures_when_the_bar_is_refused() {
     use jyc_types::{ContextRegion, ContextRegionInfo};
@@ -2166,13 +2323,18 @@ fn info_pane_keeps_the_composition_figures_when_the_bar_is_refused() {
             },
         ],
         7,
-        24,
+        40,
+        false,
     );
 
-    // The weights are not zero, so the bar is refused for its width alone.
-    assert!(!screen.contains('▊'), "the bar is refused: {screen}");
-    // The figures are still there, the shares with them: a truncated pane
-    // cuts the row short, it does not drop it.
+    // The weights are not zero, so the bar is refused for its width alone:
+    // it draws no rule of `─`, and with the status block off nothing else
+    // in the pane draws one.
+    assert!(!screen.contains('─'), "no bar of any kind: {screen}");
+    // The figures are still there, the shares with them: a refused bar does
+    // not take the legend with it. They wrap at this width — the share onto
+    // the row below — but they are not dropped. Read after the bar claim,
+    // so it cannot pass on an empty screen.
     assert!(screen.contains("~600"), "{screen}");
 }
 
@@ -2192,6 +2354,7 @@ fn info_pane_shows_a_zero_weight_composition_without_a_bar() {
         }],
         60,
         24,
+        true,
     );
 
     let header = screen
@@ -3343,11 +3506,13 @@ fn info_pane_renders_subagents_as_a_tree() {
     );
 }
 
-/// The bar the pane draws for a share: `filled` cells of `─`, the rest `·`,
-/// `width` cells in all. The width is pinned here on purpose, so a change
-/// to the bar's length has to show up in these tests.
-fn info_pane_bar(filled: usize, width: usize) -> String {
-    "─".repeat(filled) + &"·".repeat(width - filled)
+/// The bar the pane draws for a share: `width` cells of `─`, every one of
+/// them — the share is told by colour alone, so how much of the bar is
+/// filled is not readable from the glyphs. [`bar_fill`] reads that off the
+/// cells where a test needs it; these pin the bar's place and length, the
+/// width stated on purpose so a change to it shows up here.
+fn info_pane_bar(width: usize) -> String {
+    "─".repeat(width)
 }
 
 /// The width every label of the info pane is padded to — the length of
@@ -3414,8 +3579,10 @@ fn info_pane_draws_the_percentage_bars() {
         detail.total_cache_hit_tokens = Some(80_120);
     }
 
-    // Wide enough that neither row wraps.
-    let pane = info_pane_text(&mut app, 70, 30);
+    // Wide enough that neither row wraps. The buffer comes along because
+    // the two bars draw the same glyph now: only the colours say how far
+    // each one is filled, so the shares have to be read off the cells.
+    let (pane, buffer) = info_pane_screen(&mut app, 70, 30);
     let rows = info_pane_rows(&pane);
 
     // The pane's inner width is 69: the bar takes what the label's room
@@ -3423,13 +3590,12 @@ fn info_pane_draws_the_percentage_bars() {
     // 47% of the window, 88% of the input served from the cache.
     assert!(
         rows.iter()
-            .any(|r| { r == &format!("{}{}", info_pane_label("Tokens: "), info_pane_bar(25, 54)) }),
+            .any(|r| { r == &format!("{}{}", info_pane_label("Tokens: "), info_pane_bar(54)) }),
         "the tokens row must lead with its bar:\n{pane}"
     );
     assert!(
-        rows.iter().any(|r| {
-            r == &format!("{}{}", info_pane_label("Session: "), info_pane_bar(48, 54))
-        }),
+        rows.iter()
+            .any(|r| { r == &format!("{}{}", info_pane_label("Session: "), info_pane_bar(54)) }),
         "the cache row must lead with its bar:\n{pane}"
     );
     // The figures have a row of their own, in the value's column, under
@@ -3441,6 +3607,21 @@ fn info_pane_draws_the_percentage_bars() {
             "the figures must have a row of their own:\n{pane}"
         );
     }
+
+    // Where each bar stops being filled: one glyph draws both halves, so
+    // this is the only remaining proof that the two rows' shares differ —
+    // 47% and 88% of the same 54 cells. A bar that filled regardless of
+    // its share would show both rows full and fail here.
+    assert_eq!(
+        bar_fill(&buffer, &pane, "Tokens: ", 70),
+        (25, 54),
+        "47% of 54 cells:\n{pane}"
+    );
+    assert_eq!(
+        bar_fill(&buffer, &pane, "Session: ", 70),
+        (48, 54),
+        "88% of 54 cells:\n{pane}"
+    );
 }
 
 /// The turn's cache row is drawn before the turn's first call, at zero:
@@ -3457,7 +3638,7 @@ fn info_pane_shows_the_turn_cache_row_at_zero() {
 
     assert!(
         rows.iter()
-            .any(|r| { r == &format!("{}{}", info_pane_label("Turn: "), info_pane_bar(0, 54)) }),
+            .any(|r| { r == &format!("{}{}", info_pane_label("Turn: "), info_pane_bar(54)) }),
         "the turn's cache row must be there, at zero:\n{pane}"
     );
     // Its figures have a row of their own, under the bar.
@@ -3544,11 +3725,11 @@ fn info_pane_bar_fits_a_narrow_pane() {
     let pane = info_pane_text(&mut app, 30, 30);
     let rows = info_pane_rows(&pane);
     assert!(
-        info_pane_value_row(&rows, "Tokens:").starts_with(&info_pane_bar(13, 27)),
+        info_pane_value_row(&rows, "Tokens:").starts_with(&info_pane_bar(27)),
         "the bar must stay whole in a narrow pane:\n{pane}"
     );
     assert!(
-        info_pane_value_row(&rows, "Session:").starts_with(&info_pane_bar(24, 27)),
+        info_pane_value_row(&rows, "Session:").starts_with(&info_pane_bar(27)),
         "the bar must stay whole in a narrow pane:\n{pane}"
     );
 }

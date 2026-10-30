@@ -189,6 +189,47 @@ pub fn context_region_pct(region: &crate::inspect::ContextRegionInfo, total: u64
     ((tokens * 100 + total / 2) / total) as u32
 }
 
+/// The label of the legend's iteration row — the row that says how deep
+/// into the latest turn the loop is.
+///
+/// The figure under it is the turn's own count of measured LLM calls, one
+/// agent-loop call per iteration of the loop; see [`format_iteration_row`].
+pub const ITERATION_LABEL: &str = "Iteration";
+
+/// The legend's iteration row: `indent` spaces, [`ITERATION_LABEL`] padded
+/// to `label_width`, one space, then `iteration`.
+///
+/// The figure is the turn's `turn_call_count` — the latest turn's LLM calls
+/// that recorded a duration. One agent-loop call is one iteration of the
+/// loop, so the row states the turn's depth; the one case where the two
+/// part company is a call too fast to record a duration (a mock or a local
+/// provider answering in under a millisecond), which the turn's cache
+/// figures count but this one does not.
+///
+/// Printed only inside a composition legend, which is the bar the row hangs
+/// under: a turn that has no composition has no legend, and so no row —
+/// including a session file written before the composition was recorded,
+/// which reads back as an empty one until the turn's next call writes it.
+/// A turn that has not called yet has no depth to state, and a zero there
+/// would read as one.
+///
+/// It sits under the region shares and keeps their column: the label
+/// column is the one [`format_context_region_label`] builds, so the figure
+/// starts where the shares start.
+///
+/// One owner for the row's shape: `/info` prints it, and the TUI pushes it
+/// as a single plain span — both build it here, so the two surfaces cannot
+/// drift apart.
+pub fn format_iteration_row(iteration: u64, label_width: usize, indent: usize) -> String {
+    format!(
+        "{}{:<width$} {}",
+        " ".repeat(indent),
+        ITERATION_LABEL,
+        iteration,
+        width = label_width
+    )
+}
+
 /// A region's size and share in the compact form the legend prints,
 /// e.g. `"~17.77K · 52%"`. The region's label leads it, in its own column:
 /// the TUI colours it, `/info` indents it.
@@ -357,6 +398,20 @@ mod tests {
             format_context_region_share(&history, 100),
             "~52 · 52%".to_string()
         );
+    }
+
+    /// The iteration row keeps the legend's label column: the figure
+    /// starts where the shares start, and the indent is the caller's, the
+    /// same way the region labels take theirs.
+    #[test]
+    fn iteration_row_pads_to_the_legend_label_column() {
+        // `Current turn` is the widest region label, so it sets the column.
+        assert_eq!(format_iteration_row(56, 12, 0), "Iteration    56");
+        assert_eq!(format_iteration_row(56, 12, 2), "  Iteration    56");
+        // A column narrower than the label is not truncated — it pushes the
+        // figure out, the same rule the region labels follow.
+        assert_eq!(format_iteration_row(7, 1, 0), "Iteration 7");
+        assert_eq!(format_iteration_row(0, 12, 0), "Iteration    0");
     }
 
     #[test]

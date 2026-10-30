@@ -6,8 +6,7 @@
 //! writer, one reader — no consumer computes a status of its own.
 //!
 //! The values mirror what the topic's events say: a turn in flight is
-//! `Processing`, a turn that failed — or a tool that failed during it and
-//! was never retried successfully — is `Error`, anything else is `Idle`.
+//! `Processing`, a turn that failed is `Error`, anything else is `Idle`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,8 +35,10 @@ fn queue_depth<T>(tx: &tokio::sync::mpsc::Sender<T>) -> usize {
 pub struct LiveStatus {
     /// A turn is in flight.
     pub is_processing: bool,
-    /// The last turn failed, or a tool failed during it and the model did
-    /// not recover from it.
+    /// The last turn failed.
+    ///
+    /// A tool that failed during the turn is not this: the model carries on
+    /// around it, and what the turn left behind is what this reports.
     ///
     /// Cleared when the next turn starts — a topic that failed once and
     /// then took a new message is working again, not still broken.
@@ -184,8 +185,7 @@ impl LiveStatusStore {
     }
 
     /// The turn ended. A turn that did not succeed leaves the topic in
-    /// error; one that did keeps the error an unrecovered tool failure left
-    /// behind, so the topic still reports what went wrong.
+    /// error; one that did leaves it clean.
     ///
     /// The write follows the "if known" rule: a topic that was closed
     /// mid-turn has no entry any more — the close clears it — and
@@ -199,19 +199,6 @@ impl LiveStatusStore {
             if !success {
                 entry.has_error = true;
             }
-        }
-    }
-
-    /// A tool failed during the turn and the model did not recover from it.
-    ///
-    /// The write follows the "if known" rule: a topic that was closed
-    /// mid-turn has no entry any more — the close clears it — and
-    /// re-creating it here would report a closed topic as failed, and a
-    /// name reused later would inherit that failure.
-    pub fn set_tool_error_if_known(&self, topic: &str) {
-        let mut statuses = self.statuses();
-        if let Some(entry) = statuses.get_mut(topic) {
-            entry.has_error = true;
         }
     }
 
@@ -258,15 +245,6 @@ impl TopicManager {
     /// left alone: the turn's end says nothing about a topic that is gone.
     pub fn end_topic_turn_if_known(&self, topic_name: &str, success: bool) {
         self.live_status.end_turn_if_known(topic_name, success);
-    }
-
-    /// A tool failed during the topic's turn and the model did not recover
-    /// from it.
-    ///
-    /// A topic the store does not know — one that was closed mid-turn — is
-    /// left alone: the report says nothing about a topic that is gone.
-    pub fn set_topic_tool_error_if_known(&self, topic_name: &str) {
-        self.live_status.set_tool_error_if_known(topic_name);
     }
 
     /// The backlog of every topic of this channel, read under one lock.

@@ -8,6 +8,12 @@
 
 - Every bar of the TUI is one rule of `─`: the unfilled part of the token and cache bars used `·` and the context composition drew its regions with `▊`, so a filled share, an unfilled one and a context region were three different glyphs. All three now use `─` and the share is told by colour alone — bold yellow against dim gray for the percentage bars, the region colours for the composition, which are laid end to end and so still say what a cell is part of. In a rendering without colour every bar is therefore one flat rule and no share is visible in it; the figures on the row under it still state the share. The queue blocks are unchanged: they count messages rather than draw a share, and their quarter-cell gap is what keeps them reading as blocks
 
+### Fixed
+
+- A tool call that failed and was never retried no longer leaves the topic in `Error`. The turn's status follows the turn's own outcome, so a turn that stumbled on a step and reached the answer another way ends `Idle` — the failure is the activity feed's `Tool: <name> (FAILED, …)` line and one `jyc.log` WARN, not the turn's conclusion. Before, "recovered" meant the same tool was called again and worked, so a model that took a different route (dropped `read_image`, answered in prose) left the topic in `Error` and the info pane said "Processing failed" over a turn that had done what it was asked; the state stuck until the next message arrived. The end-of-turn report now only logs, and `TopicManager::set_topic_tool_error_if_known` / `LiveStatus::set_tool_error_if_known` are gone with it. A turn that actually failed still ends in `Error`, and the next turn still starts clean.
+
+- `read_image` takes `path` when both `path` and `url` are given instead of refusing the call: a model that fills in every field it can see is being thorough, not making an error, and the refusal cost it a round trip. Before, the call came back as `Provide either \`path\` or \`url\`, not both` — the most common way a turn stumbled into a tool failure that then stuck to its status. The description now says `path` wins.
+
 ## [0.8.0] - 2026-10-30
 
 ### Added

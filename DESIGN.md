@@ -3381,17 +3381,19 @@ start and end — the agent loop when it publishes `ProcessingStarted` /
 that value. No consumer computes a status of its own, so "the topic is
 working" cannot be true in one view and false in another.
 
-A tool that fails mid-turn counts only when the model does not recover from
-it. The agent loop keeps the tools whose last call failed
-(`jyc_agent::agent_loop::tool_failures`) and reports them to the manager
-once, at the end of the turn: a tool that works again leaves no mark, so a
-turn that stumbled and carried on ends as a turn that worked. The recovery
-is counted per tool, not per call — another call of the same tool that
-works counts too, because the model may have given up on the call that
-failed — and a failure that stands still leaves the topic in error until
-the next turn starts.
+A tool that fails mid-turn does not reach the status at all. The status is
+the turn's own outcome, and a failed call is a step on the way: the model
+may fix the call and carry on, or give up on that tool and reach the answer
+another way, and either way the turn did what it was asked. The agent loop
+keeps the tools whose last call failed
+(`jyc_agent::agent_loop::tool_failures`) and logs them once, at the end of
+the turn — one WARN line; the call's own failure is already in the activity
+feed where it happened. The recovery is counted per tool, not per call —
+another call of the same tool that works counts too, because the model may
+have given up on the call that failed — so a retry that goes through leaves
+no line at all.
 
-Both writes — the report and the turn's end — follow the "if known" rule: a
+The turn's end follows the "if known" rule: a
 topic closed mid-turn has no status entry any more, and re-creating one
 would report a topic that is gone as failed, and a name reused later would
 inherit that failure. The guard that closes a turn's "processing" flag does

@@ -38,12 +38,15 @@
 //! but emitting a unified shape (textual confirmation as the tool result,
 //! images as the next user turn) keeps both providers identical.
 //!
-//! ## Inputs (one of `path` / `url` is required)
+//! ## Inputs (one of `path` / `url` is required; `path` wins if both are given)
 //!
 //! - `path` (string): absolute path to a local image file. Boundary-checked
 //!   against `working_dir` and any roots in `additional_read_roots`.
 //! - `url` (string): http or https URL. Fetched server-side and base64-encoded.
 //!
+//! Both at once is not an error: a model that fills in every field it can see
+//! is being thorough, and refusing the call would cost a round trip. `path`
+//! wins — the caller named a file, and it is the one that can be checked.
 //! ## Output
 //!
 //! Mode 1 (image injection): a small JSON confirmation containing `loaded`,
@@ -109,8 +112,8 @@ impl Tool for ReadImageTool {
 
     fn description(&self) -> &str {
         "Load an image into the next user turn so the model can see it, or (for \
-         text-only models) analyze it via a vision model and return text. Provide \
-         either `path` or `url`. Types: png, jpeg, gif, webp; max 10 MB. The image \
+         text-only models) analyze it via a vision model and return text. `path` wins \
+         if both are given. Types: png, jpeg, gif, webp; max 10 MB. The image \
          rides on the next user message; the result itself is a small JSON \
          confirmation."
     }
@@ -138,9 +141,11 @@ impl Tool for ReadImageTool {
         match (path, url) {
             (Some(p), None) => self.load_from_path(p, ctx).await,
             (None, Some(u)) => self.load_from_url(u, ctx).await,
-            (Some(_), Some(_)) => Ok(ToolOutput::error(
-                "Provide either `path` or `url`, not both",
-            )),
+            // Both: a model that fills in every field it can see is not
+            // making an error, and refusing the call only costs a round trip
+            // the turn never needed — the local file is the one the caller
+            // can be sure about, so it wins.
+            (Some(p), Some(_)) => self.load_from_path(p, ctx).await,
             (None, None) => Ok(ToolOutput::error(
                 "Missing required parameter: `path` or `url`",
             )),
@@ -343,4 +348,44 @@ fn push_pending(ctx: &ToolContext<'_>, src: ImageSource) {
         .lock()
         .expect("pending_images poisoned")
         .push(src);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Both inputs given is not an error: the local file wins.
+    ///
+    /// The URL points at a closed port, so a fetch would fail the call — the
+    /// success is proof the path was taken and the network was never touched.
+    #[tokio::test]
+    async fn both_inputs_given_takes_the_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("pic.png");
+        std::fs::write(&file, b"\x89PNG\r\n\x1a\nnot really a png").unwrap();
+        let file = file.to_str().unwrap();
+
+        let ctx = ToolContext::new(tmp.path());
+        let out = ReadImageTool::new(true, None)
+            .execute(
+                json!({ "path": file, "url": "https://127.0.0.1:1/pic.png" }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains(file),
+            "the local file is what was loaded: {}",
+            out.content
+        );
+
+        let pending = ctx.pending_images.lock().unwrap();
+        assert_eq!(pending.len(), 1, "one image queued, from the path");
+        match &pending[0] {
+            ImageSource::Base64 { media_type, .. } => assert_eq!(media_type, "image/png"),
+            other => panic!("the path's image should be queued, got {other:?}"),
+        }
+    }
 }

@@ -1784,30 +1784,17 @@ async fn topic_snapshots_report_the_live_status() {
     tm.set_topic_processing("live-status-topic");
     assert_eq!(status(&tm).await, jyc_types::TopicStatus::Processing);
 
-    // A failure the model recovered from leaves the topic as it was: the
-    // report never reached the status, and the turn ended fine.
+    // A turn that succeeded ends clean: a tool that failed along the way is
+    // a step on the way, not the turn failing, so the topic does not stay in
+    // error for it.
     tm.set_topic_processing("live-status-topic");
     tm.end_topic_turn_if_known("live-status-topic", true);
     assert_eq!(status(&tm).await, jyc_types::TopicStatus::Idle);
 
-    // A failure that stands is reported before the turn ends — the order
-    // the agent loop uses — and puts the topic in error even though the
-    // turn itself succeeded.
-    tm.set_topic_processing("live-status-topic");
-    tm.set_topic_tool_error_if_known("live-status-topic");
-    tm.end_topic_turn_if_known("live-status-topic", true);
-    assert_eq!(status(&tm).await, jyc_types::TopicStatus::Error);
-
-    // ...until the next turn starts.
-    tm.set_topic_processing("live-status-topic");
-    assert_eq!(status(&tm).await, jyc_types::TopicStatus::Processing);
-
-    // A topic closed mid-turn is not brought back by the report, nor by the
-    // turn's end: the close cleared it, and re-creating it would report a
-    // closed topic as failed — and a name reused later would inherit that
-    // failure.
+    // The end of a topic closed mid-turn is not written: the close cleared
+    // it, and re-creating it would report a closed topic as failed — and a
+    // name reused later would inherit that failure.
     tm.live_status.clear("live-status-topic");
-    tm.set_topic_tool_error_if_known("live-status-topic");
     tm.end_topic_turn_if_known("live-status-topic", false);
     assert!(
         !tm.topic_live_status("live-status-topic").has_error,

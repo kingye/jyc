@@ -42,11 +42,6 @@ const TODAY_ALL_LABEL: &str = "Today (all): ";
 /// raise it when a longer label arrives.
 pub(super) const LABEL_WIDTH: usize = TODAY_ALL_LABEL.len();
 
-/// The label that introduces the context-composition bar: the bar follows
-/// it on the same row, and the legend rows under it are indented to the
-/// column the bar starts in — this label's width.
-pub(super) const CONTEXT_COMPOSITION_LABEL: &str = "Context: ";
-
 /// The block the context-composition bar is drawn from: a three-quarter
 /// block, so the bar reads lighter than the token row's solid rule. One
 /// cell wide in every font, so a segment's width is its share of the bar.
@@ -62,20 +57,20 @@ fn context_region_color(region: ContextRegion) -> Color {
     }
 }
 
-/// A region's legend label: indented to the column the bar starts in,
-/// padded to `label_width` and followed by one space, so the shares line
-/// up in one column under the bar. Coloured to match the region's segment.
+/// A region's legend label: padded to `label_width` and followed by one
+/// space, so the shares line up in one column under the bar. Coloured to
+/// match the region's segment.
 ///
-/// The column itself is built by
-/// [`jyc_types::format_context_region_label`], shared with `/info`, so the
-/// two cannot pad or indent it differently.
+/// The label column itself is built by
+/// [`jyc_types::format_context_region_label`], shared with `/info`. The
+/// indent is the layout's — the pane's value column in the table layout,
+/// flush left in the stacked one — so the span carries none of its own.
 pub(super) fn context_region_label_span(
     region: ContextRegion,
-    indent: usize,
     label_width: usize,
 ) -> Span<'static> {
     Span::styled(
-        jyc_types::format_context_region_label(region, label_width, indent),
+        jyc_types::format_context_region_label(region, label_width, 0),
         Style::default()
             .fg(context_region_color(region))
             .add_modifier(Modifier::BOLD),
@@ -85,33 +80,30 @@ pub(super) fn context_region_label_span(
 /// Append the context-composition bar to `spans`: one coloured run of
 /// three-quarter blocks per region, sized by its estimated token share.
 ///
-/// `room` is the room the bar's row leaves it — the bar follows the
-/// section label, so the label's width is already gone. The bar uses all
-/// of it less [`BAR_EDGE_ROOM`], so its segments are as wide as the row
-/// allows. Every region with a non-zero estimate gets at least one cell
-/// when the bar is wide enough for them all; a narrower bar falls back to
+/// `bar_cells` is the pane's bar width — the same value the token row gets
+/// (see [`bar_width`]), so the two bars start and end in the same columns.
+/// Every region with a non-zero estimate gets at least one cell when the
+/// bar is wide enough for them all; a narrower bar falls back to
 /// proportional rounding.
 ///
 /// Returns `false` — and pushes nothing — when the composition has no
-/// estimated weight, or when the room left is below [`MIN_BAR_WIDTH`]: a
-/// bar that narrow would misreport the share, so the legend figures stand
+/// estimated weight, or when `bar_cells` is below [`MIN_BAR_WIDTH`]: a bar
+/// that narrow would misreport the share, so the legend figures stand
 /// alone, the same rule the token bar follows.
 ///
 /// The caller keeps the `Context:` label row either way — the legend rows
-/// below it still need their header, and the label costs no cells the bar
-/// could have used. `false` therefore reads as "no bar on this row", not
-/// "no row at all".
+/// below it still need their header. `false` therefore reads as "no bar on
+/// this row", not "no row at all".
 pub(super) fn push_context_composition_bar_spans(
     spans: &mut Vec<Span>,
     t: &TopicInfo,
-    room: usize,
+    bar_cells: usize,
 ) -> bool {
-    let width = room.saturating_sub(BAR_EDGE_ROOM);
     let total = jyc_types::context_composition_total(&t.context_composition);
-    if width < MIN_BAR_WIDTH || total == 0 {
+    if bar_cells < MIN_BAR_WIDTH || total == 0 {
         return false;
     }
-    let widths = composition_widths(&t.context_composition, total, width);
+    let widths = composition_widths(&t.context_composition, total, bar_cells);
     let mut drew = false;
     for (region, cells) in t.context_composition.iter().zip(widths) {
         if cells == 0 {
@@ -1437,14 +1429,14 @@ mod tests {
         assert!(!push_context_composition_bar_spans(
             &mut spans,
             &t,
-            MIN_BAR_WIDTH + BAR_EDGE_ROOM - 1
+            MIN_BAR_WIDTH - 1
         ));
         assert!(spans.is_empty());
 
         assert!(push_context_composition_bar_spans(
             &mut spans,
             &t,
-            MIN_BAR_WIDTH + BAR_EDGE_ROOM
+            MIN_BAR_WIDTH
         ));
         assert_eq!(
             spans

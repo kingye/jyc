@@ -2357,7 +2357,7 @@ JYC uses the following subset of the agent service API:
      head is what destroys the cross-turn prefix cache. The prefix is
      therefore append-only up to the end of the history block; within a
      turn only the recent suffix is re-encoded from one call to the next,
-     and the checkpoint changes at most once per checkpoint. A
+     and the checkpoint changes only when a new checkpoint folds. A
      cold start (fresh topic, reset, no anchor, or an anchor no longer on
      a turn boundary) reads the journal once from its head and drops the
      bad anchor; the next slide persists a fresh one.

@@ -159,8 +159,8 @@ there:
    turns. Each later checkpoint is wider by `checkpoint_interval /
    checkpoint_growth` steps (default 32 / 8 = 4), so the verbatim tail
    grows with the turn.
-   The boundary advances one checkpoint at a time, so the checkpoint
-   changes at most once per checkpoint.
+   The boundary is derived from the assistant-message count alone, so it
+   holds still between folds.
 3. **Recent current turn, verbatim** — from the first assistant step
    after the checkpoint to the end of `raw_context`, untouched, tool
    calls and results included, so the loop's `tool_use` ↔ `tool_result`

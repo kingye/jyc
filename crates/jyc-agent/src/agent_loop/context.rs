@@ -114,8 +114,8 @@ impl SendContextCache {
 ///      same text-only form. It appears once the turn has more than
 ///      [`ContextStrategyConfig::checkpoint_interval`] assistant messages
 ///      and then widens each fold by
-///      [`ContextStrategyConfig::checkpoint_growth`], so it changes at most
-///      once per checkpoint and a long turn keeps a growing verbatim tail.
+///      [`ContextStrategyConfig::checkpoint_growth`], so it holds still
+///      between folds and a long turn keeps a growing verbatim tail.
 ///      An interval of `0` disables it, leaving the whole turn verbatim.
 ///   3. The recent current-turn suffix (`raw_context[checkpoint_end..]`)
 ///      verbatim, so the latest tool calls / results stay coherent
@@ -935,9 +935,9 @@ mod render_raw_context_tests {
         // 0 is the off sentinel: the whole turn rides verbatim, bounded only
         // by turn_tool_result_cap. The guard matters — `interval` is also the
         // divisor, so an unguarded 0 would panic instead of disabling. The
-        // growth is set to the fastest widening (1 doubles per fold) to pin
-        // the precedence: widening cannot rescue an interval of 0, because
-        // the off check runs first and never consults growth.
+        // growth is set to the fastest widening (1 adds a full interval per
+        // fold) to pin the precedence: widening cannot rescue an interval of
+        // 0, because the off check runs first and never consults growth.
         let ctx = current_with_interactions(40, "secret");
         let cfg = ContextStrategyConfig {
             checkpoint_interval: 0,
@@ -1049,8 +1049,8 @@ mod render_raw_context_tests {
         assert_eq!(folded_assistant_count(65, 32, 0), 64);
         assert_eq!(folded_assistant_count(69, 32, 0), 64);
 
-        // growth 1 doubles per fold: 32 then 64 wide, so the second boundary
-        // is at 97 rather than 69.
+        // growth 1 adds a full interval per fold: 32 then 64 wide, so the
+        // second boundary is at 97 rather than 69.
         assert_eq!(folded_assistant_count(96, 32, 1), 32);
         assert_eq!(folded_assistant_count(97, 32, 1), 96);
 

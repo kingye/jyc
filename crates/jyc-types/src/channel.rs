@@ -822,8 +822,8 @@ pub const DEFAULT_CHECKPOINT_INTERVAL: usize = 32;
 /// 32, 36, 40, 44 … The late part of a long turn therefore keeps a larger
 /// and larger verbatim tail, which is where the model's live working set
 /// has moved to by then. 8 is a deliberately slow widening — a faster one
-/// (1 doubles per fold: 32, 64, 96 …) reaches "unbounded" so quickly that
-/// the checkpoint stops bounding anything.
+/// (1 adds a full interval per fold: 32, 64, 96 …) reaches "unbounded" so
+/// quickly that the checkpoint stops bounding anything.
 pub const DEFAULT_CHECKPOINT_GROWTH: usize = 8;
 
 /// The current-turn result cap actually applied for a configured value.
@@ -949,9 +949,9 @@ pub struct ContextStrategyConfig {
     /// turn's live working set is the recent part.
     ///
     /// `0` keeps the interval fixed, which is the behaviour before this
-    /// field existed. A small non-zero value widens fast: `1` doubles the
-    /// interval per fold (32, 64, 96 …), which quickly makes the checkpoint
-    /// bound nothing.
+    /// field existed. A small non-zero value widens fast: `1` adds a full
+    /// interval per fold (32, 64, 96, 128 …), which quickly makes the
+    /// checkpoint bound nothing.
     ///
     /// Only meaningful when `mode = "sliding_window"` and
     /// [`Self::checkpoint_interval`] is non-zero. Always serialized for the

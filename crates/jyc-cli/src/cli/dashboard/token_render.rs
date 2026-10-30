@@ -42,12 +42,19 @@ const TODAY_ALL_LABEL: &str = "Today (all): ";
 /// raise it when a longer label arrives.
 pub(super) const LABEL_WIDTH: usize = TODAY_ALL_LABEL.len();
 
-/// The glyph the context-composition bar is drawn from: the same `─` the
-/// token row's bar uses, so every bar of the pane is one rule of cells.
-/// The regions keep their own colours and are laid end to end, so the
-/// colour still says which region a cell belongs to. One cell wide in
-/// every font, so a segment's width is exactly its share of the bar.
-const CONTEXT_BLOCK: &str = "─";
+/// The glyph a bar draws where it has something to show: the heavy rule.
+/// Every filled part of the pane's bars uses it — the share of a percentage
+/// bar, and every cell of the context composition, whose cells are all a
+/// region of the context. One cell wide in every font, so a segment's width
+/// is exactly its share of the bar.
+const BAR_FULL: &str = "━";
+
+/// The glyph a bar draws where it has nothing to show: the light rule, the
+/// same line as [`BAR_FULL`] one weight down, so a bar reads as one rule
+/// whose filled part is heavier. Only a percentage bar draws it — the part
+/// of the bar the share does not reach. The context composition has no such
+/// part: every cell of it is a region.
+const BAR_EMPTY: &str = "─";
 
 /// The colour of a context region, shared by its bar segment and its legend
 /// label so the two identify the same part of the context.
@@ -80,9 +87,10 @@ pub(super) fn context_region_label_span(
 }
 
 /// Append the context-composition bar to `spans`: one coloured run of
-/// [`CONTEXT_BLOCK`] cells per region, sized by its estimated token share —
-/// the same glyph the token row's bar uses, so the pane's bars read alike
-/// and the region colours alone say which part of the context a cell is.
+/// [`BAR_FULL`] cells per region, sized by its estimated token share — the
+/// glyph every filled part of the pane's bars is drawn from, so a bar's
+/// weight says whether a cell carries something and only the region colours
+/// say which part of the context a cell is.
 ///
 /// `bar_cells` is the pane's bar width — the same value the token row gets
 /// (see [`bar_width`]), so the two bars start and end in the same columns.
@@ -114,7 +122,7 @@ pub(super) fn push_context_composition_bar_spans(
             continue;
         }
         spans.push(Span::styled(
-            CONTEXT_BLOCK.repeat(cells),
+            BAR_FULL.repeat(cells),
             Style::default().fg(context_region_color(region.region)),
         ));
         drew = true;
@@ -264,13 +272,14 @@ pub(super) fn label_span(label: &str) -> Span<'static> {
     )
 }
 
-/// Append a `width`-cell bar for `pct` (0..=100): `─` bold yellow for the
-/// filled part, `─` dim gray for the rest. One glyph for both halves, so
-/// the bar reads as a single rule and the share is told by colour alone;
-/// the halves stay separate spans, so the colour changes exactly where the
-/// share does. The filled part rounds to the nearest cell, so the bar
-/// claims at most half a cell of share it does not have. A zero width
-/// draws no bar at all.
+/// Append a `width`-cell bar for `pct` (0..=100): [`BAR_FULL`] bold yellow
+/// for the filled part, [`BAR_EMPTY`] dim gray for the rest. The two glyphs
+/// are one line at two weights, so the bar reads as a single rule and the
+/// share is told by both the weight and the colour — a rendering without
+/// colour still shows how far the bar is filled. The halves stay separate
+/// spans, so the colour changes exactly where the share does. The filled
+/// part rounds to the nearest cell, so the bar claims at most half a cell
+/// of share it does not have. A zero width draws no bar at all.
 fn push_bar_spans(spans: &mut Vec<Span>, pct: u32, width: usize) {
     if width == 0 {
         return;
@@ -278,7 +287,7 @@ fn push_bar_spans(spans: &mut Vec<Span>, pct: u32, width: usize) {
     let filled = (((pct.min(100) as usize) * width) + 50) / 100;
     if filled > 0 {
         spans.push(Span::styled(
-            "─".repeat(filled),
+            BAR_FULL.repeat(filled),
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -286,7 +295,7 @@ fn push_bar_spans(spans: &mut Vec<Span>, pct: u32, width: usize) {
     }
     if filled < width {
         spans.push(Span::styled(
-            "─".repeat(width - filled),
+            BAR_EMPTY.repeat(width - filled),
             Style::default().fg(Color::DarkGray),
         ));
     }
@@ -800,7 +809,7 @@ mod tests {
         // The label is padded to the pane's label width, so the bar
         // starts in the column every other value starts in.
         assert_eq!(spans[0].content, padded(TOKENS_LABEL));
-        assert_eq!(spans[1].content, "─".repeat(9));
+        assert_eq!(spans[1].content, "━".repeat(9));
         assert_eq!(spans[2].content, "─".repeat(11));
         // The figures have a row of their own, under the bar.
         assert_eq!(figures.unwrap().content, "4.64K / 9.77K (47%)");
@@ -1052,9 +1061,10 @@ mod tests {
         assert_eq!(layout_for(0), PaneLayout::Stacked);
     }
 
-    /// The bar rounds to the nearest cell and the filled part is the bold
-    /// yellow one. A share too small to fill a cell draws no filled part
-    /// at all: the bar never claims more than the share it stands for.
+    /// The bar rounds to the nearest cell, and its filled part is the heavier
+    /// glyph in bold yellow while the rest keeps the light one in dim gray. A
+    /// share too small to fill a cell draws no filled part at all: the bar
+    /// never claims more than the share it stands for.
     #[test]
     fn push_bar_spans_fills_and_pads() {
         let mut spans = Vec::new();
@@ -1064,7 +1074,7 @@ mod tests {
 
         let mut spans = Vec::new();
         push_bar_spans(&mut spans, 5, BAR);
-        assert_eq!(spans[0].content, "─");
+        assert_eq!(spans[0].content, "━");
         assert_eq!(spans[1].content, "─".repeat(BAR - 1));
         assert_eq!(spans[0].style.fg, Some(Color::Yellow));
         assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));
@@ -1072,20 +1082,20 @@ mod tests {
 
         let mut spans = Vec::new();
         push_bar_spans(&mut spans, 50, BAR);
-        assert_eq!(spans[0].content, "─".repeat(BAR / 2));
+        assert_eq!(spans[0].content, "━".repeat(BAR / 2));
         assert_eq!(spans[1].content, "─".repeat(BAR / 2));
 
         // A full bar has no padding left to draw.
         let mut spans = Vec::new();
         push_bar_spans(&mut spans, 100, BAR);
         assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].content, "─".repeat(BAR));
+        assert_eq!(spans[0].content, "━".repeat(BAR));
 
         // Above 100% fills the bar without overflowing it.
         let mut spans = Vec::new();
         push_bar_spans(&mut spans, 140, BAR);
         assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].content, "─".repeat(BAR));
+        assert_eq!(spans[0].content, "━".repeat(BAR));
 
         // A share too small for a cell draws no filled part: the bar stays
         // empty rather than overstating the share.
@@ -1178,7 +1188,7 @@ mod tests {
         let figures = push_session_cache_span(&mut spans, &t, BAR);
         assert_eq!(spans.len(), 3);
         assert_eq!(spans[0].content, padded(CACHE_SESSION_LABEL));
-        assert_eq!(spans[1].content, "─".repeat(18));
+        assert_eq!(spans[1].content, "━".repeat(18));
         assert_eq!(spans[2].content, "─".repeat(2));
         assert_eq!(figures.unwrap().content, "640 / 720 (88%)");
     }
@@ -1233,8 +1243,9 @@ mod tests {
         t.turn_input_tokens = Some(1000);
         let mut spans = Vec::new();
         let figures = push_turn_cache_span(&mut spans, &t, BAR);
-        // Two spans: the label and the bar (at 0% it is all dots, with no
-        // filled part). The figures have a row of their own.
+        // Two spans: the label and the bar (at 0% there is no filled part,
+        // so the whole bar keeps the light glyph). The figures have a row of
+        // their own.
         assert_eq!(spans.len(), 2, "the row is drawn at zero: {spans:?}");
         assert_eq!(spans[0].content, padded(CACHE_TURN_LABEL));
         assert_eq!(spans[1].content, "─".repeat(BAR));

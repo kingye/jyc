@@ -294,9 +294,9 @@ pub async fn run(
     let mut consecutive_empty_tool_iterations: u32 = 0;
 
     // The tool calls of this turn that failed and were not retried
-    // successfully. They decide the turn's outcome: a failure the model
-    // recovered from leaves the topic as it was, a failure that stands
-    // leaves it in error.
+    // successfully. They are a log line at the end of the turn, not the
+    // turn's outcome: a model that gives up on a tool and reaches the
+    // answer another way still did what it was asked.
     let mut tool_failures = ToolFailures::default();
 
     // Wall time split reported at the end of the turn: how much of it the
@@ -528,9 +528,10 @@ pub async fn run(
                 break;
             }
             Err(e) => {
-                // The turn dies here, so the failures that stand are
-                // reported now — the turn's end is this path's to write.
-                report_standing_failures(status.as_ref(), topic_name, &tool_failures);
+                // The turn dies here: the tools that failed along the way are
+                // logged so the log reads in order, and the failure goes back
+                // to the caller, whose error path writes the status.
+                log_standing_failures(topic_name, &tool_failures);
                 // The reply requests that arrived mid-turn die with the
                 // turn: they go back with the error, so the caller can tell
                 // whoever asked that the turn failed.
@@ -771,9 +772,9 @@ pub async fn run(
             }
 
             let duration = start_time.elapsed();
-            // The turn's outcome: the tool failures that stand put the topic
-            // in error, the ones the model recovered from say nothing. The
-            // status is settled before the turn's end is announced.
+            // The turn's outcome: the status follows the turn itself, and the
+            // tool calls that failed along the way are a log line. The status
+            // is settled before the turn's end is announced.
             finish_turn(
                 status.as_ref(),
                 topic_name,
@@ -829,9 +830,9 @@ pub async fn run(
                     consecutive = consecutive_empty_tool_iterations,
                     "Model repeatedly generated tool calls with empty arguments, aborting loop"
                 );
-                // The turn is over: report the failures that stand before
-                // it ends, so the topic's status says what happened.
-                report_standing_failures(status.as_ref(), topic_name, &tool_failures);
+                // The turn is over: log the tool calls that never worked
+                // before the turn's own failure goes back to the caller.
+                log_standing_failures(topic_name, &tool_failures);
                 // The reply requests that arrived mid-turn die with the
                 // turn: they go back with the error, so the caller can tell
                 // whoever asked that the turn failed.
@@ -1571,8 +1572,9 @@ mod ticker_tests;
 /// The tool failures of a turn, and the ones the model recovered from.
 mod tool_failures;
 
-/// Regression tests for the tool-failure bookkeeping: a failure the model
-/// recovers from must not leave the turn's status in error.
+/// Regression tests for the tool-failure bookkeeping: a tool that failed
+/// along the way must not leave the turn's status in error, whether the
+/// model retried it or reached the answer another way.
 #[cfg(test)]
 mod tool_failures_tests;
 
@@ -1591,6 +1593,6 @@ mod embedded_ask;
 mod response;
 mod retry;
 
-use tool_failures::{ManagerStatus, ToolFailures, finish_turn, report_standing_failures};
+use tool_failures::{ManagerStatus, ToolFailures, finish_turn, log_standing_failures};
 
 use retry::{SSE_RETRY_BACKOFF_MS, complete_with_retry};

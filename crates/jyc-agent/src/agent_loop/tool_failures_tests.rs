@@ -3,9 +3,7 @@ use std::rc::Rc;
 
 use crate::tools::ToolOutput;
 
-use super::tool_failures::{
-    ToolFailures, TurnStatus, finish_turn, report_standing_failures, settle_turn,
-};
+use super::tool_failures::{ToolFailures, TurnStatus, finish_turn, settle_turn};
 
 #[test]
 fn a_failed_tool_stands() {
@@ -62,10 +60,6 @@ struct Recorded {
 }
 
 impl TurnStatus for Recorded {
-    fn tool_error(&self, topic: &str) {
-        self.calls.borrow_mut().push(format!("tool_error({topic})"));
-    }
-
     fn turn_ended(&self, topic: &str, success: bool) {
         self.calls
             .borrow_mut()
@@ -95,8 +89,11 @@ fn a_recovered_failure_never_reaches_the_status() {
     );
 }
 
+/// A tool that failed and was never retried is not the turn failing: the
+/// model may have reached the answer another way, so the status hears the
+/// turn's own outcome and nothing else.
 #[test]
-fn a_standing_failure_is_reported_before_the_turn_ends() {
+fn a_standing_failure_writes_only_the_turns_end() {
     let mut failures = ToolFailures::default();
     failures.record("edit", &ToolOutput::error("oldString not found"));
 
@@ -105,34 +102,15 @@ fn a_standing_failure_is_reported_before_the_turn_ends() {
 
     assert_eq!(
         status.calls(),
-        vec![
-            "tool_error(t)".to_string(),
-            "turn_ended(t, true)".to_string()
-        ],
-        "the failure is reported first, then the turn ends"
-    );
-}
-
-#[test]
-fn the_failure_is_reported_even_when_the_turn_dies() {
-    let mut failures = ToolFailures::default();
-    failures.record("edit", &ToolOutput::error("oldString not found"));
-
-    let status = Recorded::default();
-    report_standing_failures(Some(&status), "t", &failures);
-
-    assert_eq!(
-        status.calls(),
-        vec!["tool_error(t)".to_string()],
-        "the report stands on its own when the turn's end is not this path's to write"
+        vec!["turn_ended(t, true)".to_string()],
+        "a tool that failed along the way does not put the topic in error"
     );
 }
 
 /// The turn is settled before it is announced.
 ///
 /// The inspect server publishes the live status when it sees the turn's
-/// end, so a failure that landed after it would reach the dashboard one
-/// event too late.
+/// end, so the status has to be written before that event leaves.
 #[tokio::test]
 async fn the_turn_is_settled_before_it_is_announced() {
     let mut failures = ToolFailures::default();
@@ -147,11 +125,7 @@ async fn the_turn_is_settled_before_it_is_announced() {
 
     assert_eq!(
         status.calls(),
-        vec![
-            "tool_error(t)".to_string(),
-            "turn_ended(t, true)".to_string(),
-            "announced".to_string(),
-        ],
+        vec!["turn_ended(t, true)".to_string(), "announced".to_string()],
         "the status is settled first, then the turn's end is announced"
     );
 }

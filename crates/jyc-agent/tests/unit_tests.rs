@@ -210,6 +210,21 @@ mod session {
         }
     }
 
+    /// Compare a money amount that came back from the session file.
+    ///
+    /// Costs are `f64` sums of per-call charges, so an exact `==` only holds
+    /// by luck: `0.10 + 0.20` lands on `0.30000000000000004`, not `0.3`.
+    /// The epsilon is far below a cent, so a genuine discrepancy still fails.
+    fn assert_cost(actual: Option<f64>, expected: f64, what: &str) {
+        let Some(actual) = actual else {
+            panic!("{what}: nothing recorded, want {expected}");
+        };
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "{what}: got {actual}, want {expected}"
+        );
+    }
+
     #[tokio::test]
     async fn load_context_returns_empty_when_no_session_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1319,8 +1334,8 @@ mod session {
             .await;
         }
         let figures = jyc_core::session_state::read_cost_figures(topic, path).await;
-        assert_eq!(figures.session, Some(0.30));
-        assert_eq!(figures.turn, Some(0.30), "one turn so far: the two agree");
+        assert_cost(figures.session, 0.30, "session");
+        assert_cost(figures.turn, 0.30, "one turn so far: the two agree");
 
         jyc_agent::session::begin_turn_counters(topic, path).await;
         for cost in [0.02, 0.10] {
@@ -1356,12 +1371,12 @@ mod session {
         )
         .await;
         let figures = jyc_core::session_state::read_cost_figures(topic, path).await;
-        assert_eq!(figures.turn, Some(0.40));
+        assert_cost(figures.turn, 0.40, "turn");
 
         jyc_agent::session::begin_turn_counters(topic, path).await;
         let figures = jyc_core::session_state::read_cost_figures(topic, path).await;
         assert_eq!(figures.turn, None, "the new turn has spent nothing yet");
-        assert_eq!(figures.session, Some(0.40), "the session total survives");
+        assert_cost(figures.session, 0.40, "the session total survives");
     }
 
     /// A zero `call_cost` (unpriced model) leaves `session_cost` untouched

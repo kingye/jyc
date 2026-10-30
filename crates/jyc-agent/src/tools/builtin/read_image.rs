@@ -47,6 +47,7 @@
 //! Both at once is not an error: a model that fills in every field it can see
 //! is being thorough, and refusing the call would cost a round trip. `path`
 //! wins — the caller named a file, and it is the one that can be checked.
+//!
 //! ## Output
 //!
 //! Mode 1 (image injection): a small JSON confirmation containing `loaded`,

@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-30
+
 ### Added
 
 - `checkpoint_growth` makes the current-turn checkpoint interval widen as a `sliding_window` turn folds: the first fold still fires at `checkpoint_interval`, then each fold adds `checkpoint_interval / growth` to the next interval, so with the defaults (32 and 8) the checkpoints are 32, 36, 40 … assistant steps wide and a long turn's verbatim tail grows with it instead of staying a fixed size. `0` keeps the interval fixed, `1` adds a full interval per fold, and `checkpoint_interval = 0` still disables folding outright. Exposed as `context_strategy.checkpoint_growth` and as the sixth positional of `/context sliding` (`[N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH]`) (#1033)
@@ -11,7 +13,7 @@
 ### Changed
 
 - The current-turn checkpoint interval widens as a turn folds (new `checkpoint_growth`, default 8) instead of staying fixed. The first fold still happens at the same place; the difference shows in a long turn, where each later checkpoint is 4 steps wider (with the defaults) and more of the recent turn rides verbatim. This is a default behaviour change — late in a long turn the payload is larger and folds are further apart — and it is on by default because a fixed interval keeps the verbatim tail the same size at step 200 as at step 40, while the model's live working set has moved. `checkpoint_growth = 0` restores the fixed interval (#1033)
-- The verbatim replay of a long `sliding_window` turn is now bounded: once it passes 32 assistant steps, the older ones fold into a text-only checkpoint (same representation as prior-turn history) while the recent suffix stays verbatim, so older reasoning and tool results stop riding every remaining call. The folded checkpoint text still grows with visible assistant text and retained user messages; what is bounded is the verbatim suffix, not the total prompt. The boundary advances one group of 32 at a time, making it byte-stable between advances, and `full` mode is unchanged. The wire dump marks the new region `3` and `LLM call started` logs `checkpoint_rebuilt`. The journal is untouched (#1023, #1024)
+- The verbatim replay of a long `sliding_window` turn is now bounded: once it passes 32 assistant steps, the older ones fold into a text-only checkpoint (same representation as prior-turn history) while the recent suffix stays verbatim, so older reasoning and tool results stop riding every remaining call. The folded checkpoint text still grows with visible assistant text and retained user messages; what is bounded is the verbatim suffix, not the total prompt. The boundary advances one checkpoint interval at a time, making it byte-stable between advances, and `full` mode is unchanged. The wire dump marks the new region `3` and `LLM call started` logs `checkpoint_rebuilt`. The journal is untouched (#1023, #1024)
 - The text-only transcript (prior-turn history, checkpoints and `context_browse`) keeps an assistant's visible reply only: a leading inline block is stripped only when it exactly duplicates `reasoning_content`, so reasoning is no longer replayed as assistant text in history while a block-shaped reply without that field is preserved. Active raw current-turn messages still carry whatever their provider needs (#1023)
 
 ## [0.7.3] - 2026-10-28

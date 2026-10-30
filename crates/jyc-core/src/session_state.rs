@@ -1930,6 +1930,14 @@ mode = "agent"
             jyc_types::channel::DEFAULT_CHECKPOINT_INTERVAL
         );
         assert_eq!(cfg.checkpoint_interval, 32);
+        // Same rule for the widening knob added after it: an override written
+        // before `checkpoint_growth` existed must read as 8, not 0 — 0 means
+        // "fixed interval", which would silently drop the widening.
+        assert_eq!(
+            cfg.checkpoint_growth,
+            jyc_types::channel::DEFAULT_CHECKPOINT_GROWTH
+        );
+        assert_eq!(cfg.checkpoint_growth, 8);
     }
 
     // ── task list ─────────────────────────────────────────────────────

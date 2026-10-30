@@ -1,10 +1,12 @@
 //! The tool failures of a turn, and the ones the model recovered from.
 //!
-//! A tool that fails leaves the turn's outcome in doubt: the model may fix
-//! the call and carry on — a wrong argument, a path that was not there — and
-//! then the turn did what it was asked to do. Only a failure that *stands*
-//! is worth reporting, so the topic's status follows what the turn left
-//! behind instead of every stumble on the way.
+//! A tool call that fails is a step on the way, not the turn's outcome: the
+//! model may fix the call and carry on — a wrong argument, a path that was
+//! not there — or give up on that tool and reach the answer another way.
+//! Either way the turn did what it was asked to do, so a tool failure never
+//! writes the topic's status: the status follows the turn's own outcome, and
+//! the failures that stand are a log line and the activity feed the tool
+//! already left behind.
 //!
 //! A failure is recovered when the same tool is called again and works: the
 //! model adjusted the call and the retry went through. Another tool's
@@ -26,12 +28,11 @@ use crate::tools::ToolOutput;
 
 /// Where a turn's outcome is written.
 ///
-/// The agent loop settles a turn through this, so which tool failures reach
-/// the status at all — and in which order the status is touched — can be
-/// pinned without a whole topic manager.
+/// The agent loop settles a turn through this, so what the status is told —
+/// and in which order it is told — can be pinned without a whole topic
+/// manager. The turn's own outcome is the only thing it carries: a tool that
+/// failed along the way is not the turn failing.
 pub(super) trait TurnStatus {
-    /// A tool failed and the model did not recover from it.
-    fn tool_error(&self, topic: &str);
     /// The turn ended.
     fn turn_ended(&self, topic: &str, success: bool);
 }
@@ -40,10 +41,6 @@ pub(super) trait TurnStatus {
 pub(super) struct ManagerStatus<'a>(pub(super) &'a TopicManager);
 
 impl TurnStatus for ManagerStatus<'_> {
-    fn tool_error(&self, topic: &str) {
-        self.0.set_topic_tool_error_if_known(topic);
-    }
-
     fn turn_ended(&self, topic: &str, success: bool) {
         self.0.end_topic_turn_if_known(topic, success);
     }
@@ -75,15 +72,14 @@ impl ToolFailures {
     }
 }
 
-/// Tell the status about the tool failures that stand.
+/// Log the tool failures that stand.
 ///
-/// A failure the model recovered from never reaches the status: the topic
-/// is left as it was, and only the activity feed keeps the stumble.
-pub(super) fn report_standing_failures(
-    status: Option<&impl TurnStatus>,
-    topic: &str,
-    failures: &ToolFailures,
-) {
+/// The failures the model recovered from are already gone; the ones that
+/// stand say a call never worked, which is worth a line in the log — the
+/// tool's own failure is in the activity feed once, where it happened. The
+/// topic's status is not told: it follows the turn, not the tools the turn
+/// went through.
+pub(super) fn log_standing_failures(topic: &str, failures: &ToolFailures) {
     let standing = failures.unrecovered();
     if standing.is_empty() {
         return;
@@ -91,26 +87,21 @@ pub(super) fn report_standing_failures(
     tracing::warn!(
         topic = %topic,
         tools = ?standing,
-        "tool errors the turn did not recover from"
+        "tool calls failed and were not retried successfully"
     );
-    if let Some(status) = status {
-        status.tool_error(topic);
-    }
 }
 
-/// Settle the turn: the failures that stand are reported, then the turn
-/// ends.
+/// Settle the turn: the failures that stand are logged, then the turn ends.
 ///
-/// The report comes first: the inspect server publishes the live status
-/// when it sees the turn's end, so a failure that landed after it would
-/// reach the dashboard one event too late.
+/// The log comes first so the line lands before the turn's own end: reading
+/// the log, the stumble is above the outcome it belongs to.
 pub(super) fn settle_turn(
     status: Option<&impl TurnStatus>,
     topic: &str,
     failures: &ToolFailures,
     success: bool,
 ) {
-    report_standing_failures(status, topic, failures);
+    log_standing_failures(topic, failures);
     if let Some(status) = status {
         status.turn_ended(topic, success);
     }

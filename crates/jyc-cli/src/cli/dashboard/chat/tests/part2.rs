@@ -1953,9 +1953,9 @@ fn info_pane_app(tasks: jyc_types::task::TaskList) -> App {
     app
 }
 
-/// The info pane draws the last call's context composition as one stacked
-/// bar behind the section's `Context:` label, and a legend row per region
-/// under it, indented to the column the bar starts in. The bar's segments
+/// The info pane draws the last call's context composition in the pane's
+/// value column — the column `Tokens:`'s bar starts in — with a legend row
+/// per region under it, indented to that same column. The bar's segments
 /// carry each region's colour, and the rows carry the same estimated size
 /// and share `/info` prints — estimated tokens only, no wire bytes.
 #[test]
@@ -1965,10 +1965,12 @@ fn info_pane_draws_context_composition_bar_and_legend() {
     use ratatui::backend::TestBackend;
 
     let mut app = info_pane_app(jyc_types::task::TaskList::default());
-    app.topic_detail
-        .as_mut()
-        .expect("the detail")
-        .context_composition = vec![
+    let detail = app.topic_detail.as_mut().expect("the detail");
+    // A context window, so the token row draws its bar: the composition's
+    // bar has to start in the same column as it.
+    detail.context_input_tokens = Some(10_000);
+    detail.max_tokens = Some(100_000);
+    detail.context_composition = vec![
         ContextRegionInfo {
             region: ContextRegion::History,
             messages: 31,
@@ -2006,26 +2008,35 @@ fn info_pane_draws_context_composition_bar_and_legend() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    // The bar shares the title's row: the label introduces it, the cells
-    // follow it. The section is titled `Context:` — nothing more.
+    // The bar starts in the value column, on the `Context:` row: the label
+    // introduces it, the cells follow. The section is titled `Context:` —
+    // nothing more.
     let title_row = screen
         .lines()
         .find(|line| line.contains("Context:"))
         .expect("the composition title");
     assert!(title_row.contains('▊'), "{screen}");
     assert!(!screen.contains("(estimated)"), "{screen}");
-    // The legend rows are indented to the bar's first cell and share one
-    // column of figures: no colon after a label, no byte count anywhere.
+    // The two bars share their first cell: the composition's sits in the
+    // pane's value column, not after its own short label.
+    let tokens_row = screen
+        .lines()
+        .find(|line| line.contains("Tokens:"))
+        .expect("the token row");
+    assert_eq!(tokens_row.find(['─', '·']), title_row.find('▊'), "{screen}");
+    // The legend rows are indented to that column — `LABEL_WIDTH` past the
+    // left border — and share one column of figures: no colon after a
+    // label, no byte count anywhere.
     assert!(
-        screen.contains("         History      ~17.58K · 60%"),
+        screen.contains("             History      ~17.58K · 60%"),
         "{screen}"
     );
     assert!(
-        screen.contains("         Checkpoint   ~3.91K · 13%"),
+        screen.contains("             Checkpoint   ~3.91K · 13%"),
         "{screen}"
     );
     assert!(
-        screen.contains("         Current turn ~7.81K · 27%"),
+        screen.contains("             Current turn ~7.81K · 27%"),
         "{screen}"
     );
     assert!(!screen.contains("messages"), "{screen}");
@@ -2073,18 +2084,14 @@ fn info_pane_screen_with_composition(
         .join("\n")
 }
 
-/// A pane too narrow for the bar keeps the section header and drops only
-/// the bar: below `MIN_BAR_WIDTH` a cell would carry too much of the share
-/// to be honest, so the bar is refused rather than drawn. The header row
-/// survives with nothing behind it — the bar helper's `false` means "no
-/// bar on this row", not "no row at all".
+/// A pane too narrow for a value column stacks the section the way it
+/// stacks every other row: the label takes a row of its own, and the bar
+/// follows flush left with the whole row to itself instead of indenting to
+/// a column the pane does not have.
 #[test]
-fn info_pane_keeps_the_context_header_when_the_bar_is_refused() {
+fn info_pane_draws_the_composition_bar_in_the_stacked_layout() {
     use jyc_types::{ContextRegion, ContextRegionInfo};
 
-    // 15 columns less the pane's left border leaves 14: `Context: ` takes
-    // 9, leaving 5, and `BAR_EDGE_ROOM` takes 2 of those — 3 cells, under
-    // `MIN_BAR_WIDTH` (5).
     let screen = info_pane_screen_with_composition(
         vec![
             ContextRegionInfo {
@@ -2104,17 +2111,23 @@ fn info_pane_keeps_the_context_header_when_the_bar_is_refused() {
         24,
     );
 
-    // The bar shares the header row, so a header with nothing behind it is
-    // exactly a refused bar; a bar drawn here would follow the label. The
-    // pane's left border leads every row, so it comes off before comparing.
-    let header = screen
+    // 15 columns less the pane's left border leaves 14: the bar has the row
+    // to itself, keeps `BAR_EDGE_ROOM` (2) of it and draws 12 cells.
+    let bar_row = screen
         .lines()
-        .find(|line| line.contains("Context:"))
-        .expect("the composition header");
-    let header = header
-        .trim_matches(|c: char| c == '│' || c.is_whitespace())
-        .to_string();
-    assert_eq!(header, "Context:", "{screen}");
+        .find(|line| line.contains('▊'))
+        .expect("the bar");
+    assert_eq!(bar_row.find('▊'), Some(1), "{screen}");
+    assert_eq!(bar_row.matches('▊').count(), 12, "{screen}");
+    // The title stands alone on the row above it, its padding trimmed — the
+    // stacked layout's shape for every label.
+    assert!(screen.contains("Context:"), "{screen}");
+    // The legend is flush left too, in the column the bar starts in.
+    let legend_row = screen
+        .lines()
+        .find(|line| line.contains("History"))
+        .expect("the legend");
+    assert_eq!(legend_row.find("History"), Some(1), "{screen}");
 }
 
 /// A composition whose estimates are all zero has no weight to split: the
@@ -2145,7 +2158,8 @@ fn info_pane_shows_a_zero_weight_composition_without_a_bar() {
     assert_eq!(header, "Context:", "{screen}");
     // One region sets the label column to its own width (`History`, 7), not
     // to the widest of all four — see `composition_label_column_is_the_widest`.
-    assert!(screen.contains("         History ~0 · 0%"), "{screen}");
+    // The row still starts in the pane's value column.
+    assert!(screen.contains("             History ~0 · 0%"), "{screen}");
 }
 
 /// The status row carries the topic's backlog: the blocks say how much of
@@ -3624,7 +3638,7 @@ fn info_pane_puts_the_bar_rows_figures_in_the_value_column() {
 /// the stacked one the pane's first column.
 #[test]
 fn info_pane_puts_a_bars_figures_in_the_value_column() {
-    let figures = || InfoRow::Value(Span::raw("46.39K / 97.66K (47%)"));
+    let figures = || InfoRow::Value(vec![Span::raw("46.39K / 97.66K (47%)")]);
 
     // The table layout: the value's column, the one the bar starts in.
     let lines = layout_info_rows(vec![figures()], PaneLayout::Table, 45);

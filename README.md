@@ -713,13 +713,25 @@ directly to `cache_read_tokens * cache_hit_per_million` and
 `cache_creation_tokens * cache_creation_per_million` in the cost formula.
 
 The dashboard and chat **Topic Info** panes then show
-`Cost: ¥1.3057 today · ¥0.0521 session`:
+`Cost: ¥0.0031 turn · ¥0.05 today · ¥1.31 session` — smallest scope first:
 
+- **turn** -- the latest turn so far, in the same session file as
+  **session** and zeroed at every turn start. It climbs as the turn runs:
+  a turn of many iterations makes many calls, and each one lands here, so
+  "this turn has spent $1.80 and is still going" is readable mid-turn.
 - **today** -- durable UTC-day total, appended per call to
   the state dir's `bill-YYYY-MM-DD.jsonl` and never reset or truncated. Each
   line records the token counts alongside the cost, so the ledger stays
   auditable and a corrected rate can be replayed over past usage.
-- **session** -- resets when the agent session resets (`/reset`).
+- **session** -- resets when the agent session resets (`/reset`), and
+  outlives a day, so it is normally the largest of the three. The order is
+  by scope, not a guarantee: a session reset mid-day leaves the day's
+  ledger total larger than the fresh session's.
+
+Money reads to the cent; only an amount too small to show one (`< 0.01`)
+escalates to four decimals, so a turn that has just started shows
+`$0.0031` rather than a `$0.00` that would read as nothing spent, while a
+long turn shows `$3.20`.
 
 Summarization overhead is billed too -- the cycle-boundary progress summary
 and the context-compression call on session reset each summarize the whole

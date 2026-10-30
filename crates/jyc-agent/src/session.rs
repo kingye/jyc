@@ -200,8 +200,8 @@ pub struct SessionState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_offset: Option<u64>,
     /// Accumulated cost of this session, in the currency configured for
-    /// the model(s) used. **One of this struct's three accumulating
-    /// fields** — with `total_call_duration_ms` and `call_count`, which a
+    /// the model(s) used. **One of this struct's accumulating fields** —
+    /// with `total_call_duration_ms`, `call_count` and `turn_cost`, which a
     /// call increments as it happens — whereas every other field is
     /// assigned from the caller's running total (see `persist_tokens`).
     ///
@@ -211,6 +211,15 @@ pub struct SessionState {
     /// (see `jyc_core::billing_log_store`), which no reset touches.
     #[serde(default)]
     pub session_cost: f64,
+    /// Accumulated cost of the LLM calls in the latest turn — the
+    /// turn-scoped twin of `session_cost`, and never larger than it. Each
+    /// call's own cost is added via `+=` as the call completes, so a turn
+    /// that runs many iterations climbs while it is still running rather
+    /// than only at the end. Zeroed by [`begin_turn_counters`] at every
+    /// turn start. `serde(default)` so session files written before the
+    /// field existed deserialize as `0`.
+    #[serde(default)]
+    pub turn_cost: f64,
 }
 
 // ─── Conversation Persistence ────────────────────────────────────────
@@ -747,7 +756,7 @@ pub async fn ensure_session_file(topic_name: &str, topic_path: &Path, context_wi
 /// clear.
 ///
 /// Zeroes the turn-scoped counters — the latency pair, the cache pair,
-/// the output and reasoning figures — and nothing else. The session-wide counters
+/// the output, reasoning and cost figures — and nothing else. The session-wide counters
 /// (`total_call_duration_ms` / `call_count`, the session's token totals)
 /// answer a different question and outlive the turn. Session reset does
 /// clear them as a side effect of rebuilding the file — a reset session
@@ -762,6 +771,7 @@ pub async fn begin_turn_counters(topic_name: &str, topic_path: &Path) {
         && state.turn_input_tokens == 0
         && state.turn_output_tokens == 0
         && state.turn_reasoning_tokens == 0
+        && state.turn_cost == 0.0
     {
         return;
     }
@@ -771,6 +781,7 @@ pub async fn begin_turn_counters(topic_name: &str, topic_path: &Path) {
     state.turn_input_tokens = 0;
     state.turn_output_tokens = 0;
     state.turn_reasoning_tokens = 0;
+    state.turn_cost = 0.0;
     save_session_state(topic_name, &session_path, &state).await;
 }
 
@@ -823,8 +834,9 @@ pub async fn session_token_totals(topic_name: &str, topic_path: &Path) -> TokenT
 /// caller (`agent_loop`), passed in as the current sum.
 ///
 /// `call_cost` is the cost of the single call that just completed and is
-/// **added** to `session_cost` (unlike every other field, which is
-/// assigned). Pass `0.0` when the model has no configured pricing.
+/// **added** to `session_cost` and `turn_cost` (unlike every other field,
+/// which is assigned). Pass `0.0` when the model has no configured
+/// pricing.
 ///
 /// `call_ms` is that same call's wall-clock time in milliseconds and is
 /// **added** to `total_call_duration_ms` and `turn_total_call_duration_ms`
@@ -972,8 +984,9 @@ async fn persist_tokens_and_composition(
     state.total_cache_creation_tokens = total_cache_creation_tokens;
     state.total_reasoning_tokens = total_reasoning_tokens;
     // The one accumulating field: each call's cost adds to the session
-    // total rather than replacing it.
+    // total rather than replacing it, and to the current turn's share.
     state.session_cost += call_cost;
+    state.turn_cost += call_cost;
     // Accumulated the same way, and for the same reason: the caller passes
     // one call's duration and the file keeps the running sum, so the
     // mid-loop persist and the post-loop write (which passes 0) both leave
@@ -1024,7 +1037,8 @@ async fn persist_tokens_and_composition(
 /// tokens are real spend but are not part of the main loop's context
 /// accounting — folding them into `total_input_tokens` would inflate the
 /// context usage shown to the user. The cost is still recorded so the
-/// displayed total is truthful.
+/// displayed total is truthful — in `turn_cost` as well, because such a
+/// call happens inside a turn and is that turn's spend.
 ///
 /// No-op when `cost` is zero (no pricing configured, or the call failed).
 pub async fn add_session_cost(topic_name: &str, topic_path: &Path, cost: f64) {
@@ -1034,6 +1048,7 @@ pub async fn add_session_cost(topic_name: &str, topic_path: &Path, cost: f64) {
     let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
     state.session_cost += cost;
+    state.turn_cost += cost;
     if state.created_at.is_empty() {
         state.created_at = chrono::Utc::now().to_rfc3339();
     }

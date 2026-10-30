@@ -2150,12 +2150,14 @@ fn info_pane_ends_the_composition_legend_with_the_iteration() {
     assert!(screen.contains("             Iteration    56"), "{screen}");
 
     // Plain: the row carries the pane's default colour, not a region's, so
-    // it cannot be read as part of the bar above it.
+    // it cannot be read as part of the bar above it. Column 0 is the pane's
+    // left border `│`, dim by design and no part of the row's text, so the
+    // row's own cells are the ones after it.
     let row = screen
         .lines()
         .position(|line| line.contains("Iteration"))
         .expect("the iteration row") as u16;
-    let coloured: Vec<(u16, Color)> = (0..width)
+    let coloured: Vec<(u16, Color)> = (1..width)
         .filter(|x| buffer[(*x, row)].symbol() != " ")
         .map(|x| (x, buffer[(x, row)].fg))
         .filter(|(_, fg)| *fg != Color::Reset)
@@ -2181,21 +2183,26 @@ fn info_pane_omits_the_iteration_row_without_a_count() {
         }],
         60,
         24,
+        true,
     );
     assert!(!screen.contains("Iteration"), "{screen}");
 }
 
 /// Render the info pane at `width` × `height` with `composition` on the
 /// detail, and return it as one string with a line per terminal row.
+/// `status_visible` decides whether the pane carries its status block —
+/// the one rule of `─` the pane draws itself, its sub-pane's top border.
 fn info_pane_screen_with_composition(
     composition: Vec<jyc_types::ContextRegionInfo>,
     width: u16,
     height: u16,
+    status_visible: bool,
 ) -> String {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
     let mut app = info_pane_app(jyc_types::task::TaskList::default());
+    app.chat.status_visible = status_visible;
     app.topic_detail
         .as_mut()
         .expect("the detail")
@@ -2241,6 +2248,7 @@ fn info_pane_draws_the_composition_bar_in_the_stacked_layout() {
         ],
         15,
         24,
+        true,
     );
 
     // 15 columns less the pane's left border leaves 14: the bar has the row
@@ -2280,11 +2288,21 @@ fn info_pane_draws_the_composition_bar_in_the_stacked_layout() {
 /// where every bar of the pane is refused, and where the title `Context:`
 /// is itself cut short by the width.
 ///
-/// So the refusal is read against a control: the same pane with no
-/// composition on the detail. The composition is the only thing that could
-/// add a rule of `─` to it, so a count of `─` that does not move is the bar
-/// that was not drawn. Neither the glyph nor the title can anchor this at
-/// that width — every other bar is `─` too, and the section's title wraps.
+/// The status block is switched off in this fixture. Its top border is the
+/// one rule of `─` the pane draws itself (see `render_topic_info_pane`),
+/// and it would otherwise be the only `─` on the screen, leaving the claim
+/// below a statement about a region rather than about the pane. Without it
+/// the pane draws no rule of `─` at all, so "no `─` anywhere" is the same
+/// claim as "no bar was drawn", read literally.
+///
+/// The bar cannot be separated from the pane's other bars at this width:
+/// they are refused together, since inner width 6 is under `MIN_BAR_WIDTH`
+/// for every one of them. A control pane without a composition has no `─`
+/// either, so that comparison would be `0 == 0`. Separating the composition
+/// bar from the rest is a unit claim, not a pane one — see
+/// `composition_bar_needs_the_minimum_width` in `token_render`. What this
+/// test pins is the integration: the section still renders, and it comes
+/// back with its figures.
 #[test]
 fn info_pane_keeps_the_composition_figures_when_the_bar_is_refused() {
     use jyc_types::{ContextRegion, ContextRegionInfo};
@@ -2305,24 +2323,18 @@ fn info_pane_keeps_the_composition_figures_when_the_bar_is_refused() {
             },
         ],
         7,
-        24,
+        40,
+        false,
     );
 
     // The weights are not zero, so the bar is refused for its width alone:
-    // it adds no rule of `─` — and this pane draws no bar of its own. The
-    // same pane without a composition is the control, since a composition
-    // is the only thing that could put a `─` there.
-    let without = info_pane_screen_with_composition(Vec::new(), 7, 24);
-    assert_eq!(
-        screen.matches('─').count(),
-        without.matches('─').count(),
-        "the bar is refused: {screen}"
-    );
-    // The same claim in its direct form: at this width the pane holds no
-    // rule of `─` at all, the refused composition's included.
+    // it draws no rule of `─`, and with the status block off nothing else
+    // in the pane draws one.
     assert!(!screen.contains('─'), "no bar of any kind: {screen}");
-    // The figures are still there, the shares with them: a truncated pane
-    // cuts the row short, it does not drop it.
+    // The figures are still there, the shares with them: a refused bar does
+    // not take the legend with it. They wrap at this width — the share onto
+    // the row below — but they are not dropped. Read after the bar claim,
+    // so it cannot pass on an empty screen.
     assert!(screen.contains("~600"), "{screen}");
 }
 
@@ -2342,6 +2354,7 @@ fn info_pane_shows_a_zero_weight_composition_without_a_bar() {
         }],
         60,
         24,
+        true,
     );
 
     let header = screen

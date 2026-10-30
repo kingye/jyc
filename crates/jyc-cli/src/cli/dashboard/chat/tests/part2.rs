@@ -2113,11 +2113,16 @@ fn info_pane_draws_the_composition_bar_in_the_stacked_layout() {
 
     // 15 columns less the pane's left border leaves 14: the bar has the row
     // to itself, keeps `BAR_EDGE_ROOM` (2) of it and draws 12 cells.
+    //
+    // The rows are checked by their prefix, not by a column index:
+    // `str::find` answers in bytes and the border glyph `│` is three of
+    // them, so it would report the bar at 3 where the pane draws it in
+    // column 1.
     let bar_row = screen
         .lines()
         .find(|line| line.contains('▊'))
         .expect("the bar");
-    assert_eq!(bar_row.find('▊'), Some(1), "{screen}");
+    assert!(bar_row.starts_with("│▊"), "the bar is flush left: {screen}");
     assert_eq!(bar_row.matches('▊').count(), 12, "{screen}");
     // The title stands alone on the row above it, its padding trimmed — the
     // stacked layout's shape for every label.
@@ -2127,7 +2132,48 @@ fn info_pane_draws_the_composition_bar_in_the_stacked_layout() {
         .lines()
         .find(|line| line.contains("History"))
         .expect("the legend");
-    assert_eq!(legend_row.find("History"), Some(1), "{screen}");
+    assert!(
+        legend_row.starts_with("│History"),
+        "the legend is flush left: {screen}"
+    );
+}
+
+/// A pane narrower than the narrowest bar worth drawing refuses the bar and
+/// keeps the figures. `MIN_BAR_WIDTH` notes that only a column can reach
+/// it: the table layout always leaves the bar more than that, so this is a
+/// stacked pane of inner width 6 — 4 cells of bar.
+///
+/// The fixture's queue has no capacity, so it draws no blocks of its own
+/// (see `push_status_span`): the composition is the pane's only source of
+/// `▊`, and its absence is the refusal.
+#[test]
+fn info_pane_keeps_the_composition_figures_when_the_bar_is_refused() {
+    use jyc_types::{ContextRegion, ContextRegionInfo};
+
+    let screen = info_pane_screen_with_composition(
+        vec![
+            ContextRegionInfo {
+                region: ContextRegion::History,
+                messages: 3,
+                bytes: 1_000,
+                estimated_tokens: 600,
+            },
+            ContextRegionInfo {
+                region: ContextRegion::Current,
+                messages: 1,
+                bytes: 200,
+                estimated_tokens: 400,
+            },
+        ],
+        7,
+        24,
+    );
+
+    // The weights are not zero, so the bar is refused for its width alone.
+    assert!(!screen.contains('▊'), "the bar is refused: {screen}");
+    // The figures are still there, the shares with them: a truncated pane
+    // cuts the row short, it does not drop it.
+    assert!(screen.contains("~600"), "{screen}");
 }
 
 /// A composition whose estimates are all zero has no weight to split: the

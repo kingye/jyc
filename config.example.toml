@@ -522,9 +522,17 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # only `turn_tool_result_cap` bounds it. Raise it for long, read-heavy
 # turns: too small an interval folds a read away before the model has used
 # it, and the turn degrades into read → drop → read again.
+# checkpoint_growth: how slowly that interval widens as a turn keeps folding,
+# as folds per widening step. The first fold still fires at
+# checkpoint_interval; each later checkpoint is checkpoint_interval / growth
+# steps wider (32 and 8 give 32, 36, 40 …), so a long turn's verbatim tail
+# grows instead of staying a fixed size. Default: 8. 0 keeps the interval
+# fixed (the behaviour before this knob existed); 1 adds a full interval per
+# fold (32, 64, 96 …), which quickly makes the checkpoint bound nothing.
 # context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5 }
 # context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5, max_history_tokens = 30000 }
 # context_strategy = { mode = "sliding_window", window = 10, checkpoint_interval = 64 }
+# context_strategy = { mode = "sliding_window", window = 10, checkpoint_growth = 0 }
 
 
 [ai.attachments]
@@ -1243,6 +1251,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #   # max_history_tokens = 40000  # second slide trigger, at the top of a cycle
 #   # turn_tool_result_cap   # unset = current turn uncapped; 0 = off
 #   # checkpoint_interval = 32  # assistant steps before in-turn folding; 0 = off
+#   # checkpoint_growth = 8     # folds per widening step; 0 = fixed interval
 #
 #   # Default: additive. Adds a topic-only MCP without dropping inherited ones.
 #   [[mcps]]

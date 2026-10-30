@@ -13,7 +13,7 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 /// Usage:
 ///   /context              Show current strategy
 ///   /context full         Switch to full context (send everything)
-///   /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT]
+///   /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH]
 ///     Switch to sliding window. Parameters are positional and all
 ///     optional:
 ///
@@ -23,6 +23,7 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///       TURNCAP     int     0, or 130..=1048576      0 (off)
 ///       MAXHIST     int     0..=4000000              0 (off)
 ///       CHECKPOINT  int     0 (off), else any        32
+///       GROWTH      int     0 (fixed), else any      8
 ///
 ///     N is the window's floor in turns: it keeps N turns after a slide.
 ///     EXT is the extension rate: the window grows from N up to
@@ -44,6 +45,12 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///     disables in-turn folding so the whole current turn rides verbatim.
 ///     Raise it when a long read-heavy turn keeps re-reading what it just
 ///     read; lower it when a long turn's verbatim replay costs too much.
+///     GROWTH is how slowly that interval widens as the turn folds: the
+///     first fold still fires at CHECKPOINT, then each fold adds
+///     CHECKPOINT / GROWTH to the next interval (32 and 8 give 32, 36,
+///     40 …), so a long turn keeps a growing verbatim tail. 0 keeps the
+///     interval fixed. A small non-zero value widens fast — 1 adds a full
+///     interval per fold (32, 64, 96 …).
 ///
 ///     The slots moved when `note_window` was removed (it was the old 4th
 ///     slot, between EXT and TURNCAP), so a command carrying more
@@ -166,6 +173,7 @@ impl CommandHandler for ContextCommandHandler {
                         turn_tool_result_cap: configured.turn_tool_result_cap,
                         max_history_tokens: configured.max_history_tokens,
                         checkpoint_interval: configured.checkpoint_interval,
+                        checkpoint_growth: configured.checkpoint_growth,
                     },
                 )
                 .await?;
@@ -181,11 +189,11 @@ impl CommandHandler for ContextCommandHandler {
                 // 4th slot). A command copied from an older build can
                 // therefore carry one trailing argument too many; refuse it
                 // rather than silently dropping it.
-                if let Some(extra) = context.args.get(6) {
+                if let Some(extra) = context.args.get(7) {
                     return Ok(CommandResult {
                         success: false,
                         message: format!(
-                            "/context: unexpected argument '{extra}' (usage: /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT])"
+                            "/context: unexpected argument '{extra}' (usage: /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH])"
                         ),
                         error: None,
                         append_body: None,
@@ -352,6 +360,30 @@ impl CommandHandler for ContextCommandHandler {
                 };
                 let checkpoint_interval =
                     checkpoint_interval.unwrap_or(configured.checkpoint_interval);
+                // Optional checkpoint widening GROWTH (args[6]): folds per
+                // widening step, so the next interval is CHECKPOINT /
+                // GROWTH wider than this one. 0 is the explicit "fixed"
+                // sentinel — the behaviour before the slot existed — and
+                // absent = keep the configured value, which defaults to
+                // `DEFAULT_CHECKPOINT_GROWTH`.
+                let checkpoint_growth = if let Some(arg) = context.args.get(6) {
+                    match arg.parse::<usize>() {
+                        Ok(g) => Some(g),
+                        Err(_) => {
+                            return Ok(CommandResult {
+                                success: false,
+                                message: format!(
+                                    "/context: invalid checkpoint_growth '{arg}', expected a non-negative integer"
+                                ),
+                                error: None,
+                                append_body: None,
+                            });
+                        }
+                    }
+                } else {
+                    None
+                };
+                let checkpoint_growth = checkpoint_growth.unwrap_or(configured.checkpoint_growth);
                 let cfg = ContextStrategyConfig {
                     mode: ContextStrategy::SlidingWindow,
                     window,
@@ -359,6 +391,7 @@ impl CommandHandler for ContextCommandHandler {
                     turn_tool_result_cap,
                     max_history_tokens,
                     checkpoint_interval,
+                    checkpoint_growth,
                 };
                 write_override(&state_dir, &override_path, cfg.clone()).await?;
                 Ok(CommandResult {
@@ -372,7 +405,7 @@ impl CommandHandler for ContextCommandHandler {
             other => Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/context: unknown argument '{other}'. Use: /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] | full | reset | dump [on|off]"
+                    "/context: unknown argument '{other}'. Use: /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH] | full | reset | dump [on|off]"
                 ),
                 error: None,
                 append_body: None,
@@ -480,6 +513,14 @@ fn describe_strategy(cfg: &ContextStrategyConfig) -> String {
                     ", checkpoint_interval={}",
                     cfg.checkpoint_interval
                 ));
+                // Only meaningful while folding is on, so it is echoed only
+                // then: `growth=8` next to `interval=0 (off)` would suggest a
+                // widening that never happens.
+                if cfg.checkpoint_growth == 0 {
+                    s.push_str(", checkpoint_growth=0 (fixed)");
+                } else {
+                    s.push_str(&format!(", checkpoint_growth={}", cfg.checkpoint_growth));
+                }
             }
             s.push(')');
             s
@@ -490,7 +531,7 @@ fn describe_strategy(cfg: &ContextStrategyConfig) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jyc_types::channel::DEFAULT_CHECKPOINT_INTERVAL;
+    use jyc_types::channel::{DEFAULT_CHECKPOINT_GROWTH, DEFAULT_CHECKPOINT_INTERVAL};
     use std::path::Path;
 
     fn test_context(topic_name: &str, topic_path: &Path) -> CommandContext {
@@ -767,10 +808,11 @@ mod tests {
             "60000".into(),
             "3".into(),
             "7".into(),
+            "9".into(),
         ];
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
-        assert!(result.message.contains("unexpected argument '7'"));
+        assert!(result.message.contains("unexpected argument '9'"));
         assert!(!tmp.path().join(".jyc/context-strategy.json").exists());
     }
 
@@ -1150,6 +1192,114 @@ mod tests {
             result.message
         );
         assert!(!tmp.path().join(".jyc/context-strategy.json").exists());
+    }
+
+    #[tokio::test]
+    async fn test_sliding_checkpoint_growth_slot() {
+        // GROWTH is the sixth positional: 0 keeps the interval fixed, an
+        // absent slot keeps the configured value, and a non-zero value widens
+        // each checkpoint by CHECKPOINT / GROWTH.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_checkpoint_growth_slot";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let handler = ContextCommandHandler;
+
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec![
+            "sliding".into(),
+            "10".into(),
+            "0.5".into(),
+            "0".into(),
+            "0".into(),
+            "32".into(),
+            "0".into(),
+        ];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success, "message: {}", result.message);
+        assert!(
+            result.message.contains("checkpoint_growth=0 (fixed)"),
+            "message: {}",
+            result.message
+        );
+        let v: serde_json::Value = serde_json::from_str(
+            &tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(v["checkpoint_growth"], 0);
+
+        // Absent slot → the configured value, which defaults to
+        // `DEFAULT_CHECKPOINT_GROWTH`.
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec!["sliding".into(), "10".into()];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success, "message: {}", result.message);
+        assert!(
+            result
+                .message
+                .contains(&format!("checkpoint_growth={DEFAULT_CHECKPOINT_GROWTH}")),
+            "message: {}",
+            result.message
+        );
+        let v: serde_json::Value = serde_json::from_str(
+            &tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(v["checkpoint_growth"], DEFAULT_CHECKPOINT_GROWTH);
+    }
+
+    #[tokio::test]
+    async fn test_sliding_checkpoint_growth_invalid_and_hidden_when_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_checkpoint_growth_invalid_and_hidden_when_off";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let handler = ContextCommandHandler;
+
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec![
+            "sliding".into(),
+            "10".into(),
+            "0.5".into(),
+            "0".into(),
+            "0".into(),
+            "32".into(),
+            "abc".into(),
+        ];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(!result.success);
+        assert!(
+            result.message.contains("invalid checkpoint_growth 'abc'"),
+            "message: {}",
+            result.message
+        );
+        assert!(!tmp.path().join(".jyc/context-strategy.json").exists());
+
+        // With folding off the widening never happens, so the echo must not
+        // imply that it does.
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec![
+            "sliding".into(),
+            "10".into(),
+            "0.5".into(),
+            "0".into(),
+            "0".into(),
+            "0".into(),
+        ];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success, "message: {}", result.message);
+        assert!(
+            result.message.contains("checkpoint_interval=0 (off)"),
+            "message: {}",
+            result.message
+        );
+        assert!(
+            !result.message.contains("checkpoint_growth"),
+            "message: {}",
+            result.message
+        );
     }
 
     #[tokio::test]

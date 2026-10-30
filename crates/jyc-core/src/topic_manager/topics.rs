@@ -619,7 +619,7 @@ impl TopicManager {
     /// The body of [`Self::list_topics`], over every topic or — with `only` —
     /// just the one of that name.
     async fn list_topics_inner(&self, include_git: bool, only: Option<&str>) -> Vec<TopicInfo> {
-        use crate::session_state::read_session_cost;
+        use crate::session_state::{CostFigures, read_cost_figures};
 
         let topic_names = self.list_topic_names().await;
 
@@ -715,13 +715,14 @@ impl TopicManager {
                     Err(_) => None,
                 };
 
-            // Resolve accumulated cost: session-scoped from the session
-            // file, today's durable total from the central billing
-            // ledger. Both are absent when the model has no configured
-            // pricing, in which case `cost` stays `None` and the
-            // dashboard omits the row.
+            // Resolve accumulated cost: the latest turn's and the
+            // session's from one read of the session file, today's
+            // durable total from the central billing ledger. The
+            // session figure and today's are both absent when the model
+            // has no configured pricing, in which case `cost` stays
+            // `None` and the dashboard omits the row.
             let cost = {
-                let session = read_session_cost(name, &topic_path).await;
+                let CostFigures { session, turn } = read_cost_figures(name, &topic_path).await;
                 let today = today_totals.as_ref().and_then(|totals| {
                     let label =
                         crate::billing_log_store::BillingLogStore::label_for(name, &topic_path);
@@ -758,6 +759,7 @@ impl TopicManager {
                                 .unwrap_or_else(|| jyc_types::DEFAULT_CURRENCY.to_string())
                         };
                         Some(TopicCost {
+                            turn,
                             session: session.unwrap_or(0.0),
                             today: today.map(|(amount, _)| amount).unwrap_or(0.0),
                             currency,

@@ -210,6 +210,21 @@ mod session {
         }
     }
 
+    /// Compare a money amount that came back from the session file.
+    ///
+    /// Costs are `f64` sums of per-call charges, so an exact `==` only holds
+    /// by luck: `0.10 + 0.20` lands on `0.30000000000000004`, not `0.3`.
+    /// The epsilon is far below a cent, so a genuine discrepancy still fails.
+    fn assert_cost(actual: Option<f64>, expected: f64, what: &str) {
+        let Some(actual) = actual else {
+            panic!("{what}: nothing recorded, want {expected}");
+        };
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "{what}: got {actual}, want {expected}"
+        );
+    }
+
     #[tokio::test]
     async fn load_context_returns_empty_when_no_session_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1218,9 +1233,9 @@ mod session {
         assert_eq!(state["total_output_tokens"], 330);
     }
 
-    /// `session_cost` is the ONE accumulating field: unlike the token
-    /// fields (which are assigned from the caller's running total), each
-    /// call's cost is added to the previous value.
+    /// `session_cost` is an accumulating field: unlike the token fields
+    /// (which are assigned from the caller's running total), each call's
+    /// cost is added to the previous value.
     #[tokio::test]
     async fn session_cost_accumulates_across_calls() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1293,6 +1308,75 @@ mod session {
         // 0.25 + 0.10 + 0.05 = 0.40 (accumulated, not replaced by 0.05)
         let cost = state["session_cost"].as_f64().unwrap();
         assert!((cost - 0.40).abs() < 1e-9, "got {cost}");
+        // Nothing has started a new turn, so the turn's share is the whole
+        // session so far.
+        let turn = state["turn_cost"].as_f64().unwrap();
+        assert!((turn - 0.40).abs() < 1e-9, "got {turn}");
+    }
+
+    /// A turn of many iterations keeps adding to the turn's own cost, and
+    /// the dashboard reader hands back both scopes from one read of the
+    /// session file. The nesting invariant — a turn's spend is part of its
+    /// session's — is what makes "turn ≤ session" safe to show.
+    #[tokio::test]
+    async fn turn_cost_accumulates_and_never_exceeds_session_cost() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "turn_cost_accumulates_and_never_exceeds_session_cost";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let path = tmp.path();
+
+        // Two turns' worth of calls: the first turn spends 0.30, then the
+        // counters reset and the second spends 0.12.
+        for cost in [0.10, 0.20] {
+            session::persist_tokens(
+                topic, path, 1000, 0, 1000, 100, 0, 0, 0, None, cost, 0, 0, 0, 0, 0,
+            )
+            .await;
+        }
+        let figures = jyc_core::session_state::read_cost_figures(topic, path).await;
+        assert_cost(figures.session, 0.30, "session");
+        assert_cost(figures.turn, 0.30, "one turn so far: the two agree");
+
+        jyc_agent::session::begin_turn_counters(topic, path).await;
+        for cost in [0.02, 0.10] {
+            session::persist_tokens(
+                topic, path, 1000, 0, 1000, 100, 0, 0, 0, None, cost, 0, 0, 0, 0, 0,
+            )
+            .await;
+        }
+
+        let figures = jyc_core::session_state::read_cost_figures(topic, path).await;
+        let session = figures.session.unwrap();
+        let turn = figures.turn.unwrap();
+        assert!((session - 0.42).abs() < 1e-9, "got {session}");
+        assert!((turn - 0.12).abs() < 1e-9, "got {turn}");
+        assert!(
+            turn <= session,
+            "the turn's spend is part of the session's: {turn} > {session}"
+        );
+    }
+
+    /// A new turn clears the turn's cost the way it clears the latency
+    /// pair, while the session's total survives — "this turn" never points
+    /// at a turn that already ended.
+    #[tokio::test]
+    async fn begin_turn_counters_clears_turn_cost_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "begin_turn_counters_clears_turn_cost_only";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let path = tmp.path();
+
+        session::persist_tokens(
+            topic, path, 1000, 0, 1000, 100, 0, 0, 0, None, 0.40, 0, 0, 0, 0, 0,
+        )
+        .await;
+        let figures = jyc_core::session_state::read_cost_figures(topic, path).await;
+        assert_cost(figures.turn, 0.40, "turn");
+
+        jyc_agent::session::begin_turn_counters(topic, path).await;
+        let figures = jyc_core::session_state::read_cost_figures(topic, path).await;
+        assert_eq!(figures.turn, None, "the new turn has spent nothing yet");
+        assert_cost(figures.session, 0.40, "the session total survives");
     }
 
     /// A zero `call_cost` (unpriced model) leaves `session_cost` untouched
@@ -2674,7 +2758,8 @@ mod billing_integration {
     /// `add_session_cost` must not disturb the token counters -- summary
     /// tokens are real spend but are NOT part of the main loop's context
     /// accounting, and folding them in would inflate the context usage
-    /// shown to the user.
+    /// shown to the user. The cost, however, is the real spend of a call
+    /// that happens inside the turn, so it lands in both cost scopes.
     #[tokio::test]
     async fn add_session_cost_leaves_token_counters_untouched() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2709,9 +2794,15 @@ mod billing_integration {
             assert_eq!(before[field], after[field], "{field} must not change");
         }
 
-        let delta =
-            after["session_cost"].as_f64().unwrap() - before["session_cost"].as_f64().unwrap();
-        assert!((delta - 0.25).abs() < 1e-9, "only session_cost moves");
+        // Both cost fields move: a summary call happens inside the turn,
+        // so its spend is the turn's too.
+        for field in ["session_cost", "turn_cost"] {
+            let delta = after[field].as_f64().unwrap() - before[field].as_f64().unwrap();
+            assert!(
+                (delta - 0.25).abs() < 1e-9,
+                "{field} moves by the call cost"
+            );
+        }
     }
 
     /// A zero / failed summary call must not write a ledger line.

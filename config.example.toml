@@ -346,7 +346,8 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 #
 # When a model (or its provider) has `pricing` set, jyc computes the cost
 # of every LLM call and shows it in the dashboard and chat Topic Info
-# panes as "Cost: ¥Y today · ¥X session" ($ for USD-priced models).
+# panes as "Cost: ¥Z turn · ¥Y today · ¥X session" ($ for USD-priced
+# models), smallest scope first.
 # With no `pricing` configured,
 # no cost is computed and the row is hidden.
 #

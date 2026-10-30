@@ -113,9 +113,10 @@ impl SendContextCache {
 ///   2. A checkpoint for the older part of a long current turn, in the
 ///      same text-only form. It appears once the turn has more than
 ///      [`ContextStrategyConfig::checkpoint_interval`] assistant messages
-///      and advances in whole intervals, so it changes at most once per
-///      interval. An interval of `0` disables it, leaving the whole turn
-///      verbatim.
+///      and then widens each fold by
+///      [`ContextStrategyConfig::checkpoint_growth`], so it changes at most
+///      once per checkpoint and a long turn keeps a growing verbatim tail.
+///      An interval of `0` disables it, leaving the whole turn verbatim.
 ///   3. The recent current-turn suffix (`raw_context[checkpoint_end..]`)
 ///      verbatim, so the latest tool calls / results stay coherent
 ///      mid-loop and provider-specific replay fields survive there.
@@ -186,8 +187,12 @@ pub(crate) fn build_send_context_cached<'a>(
                 cache.rebuilt = Some(false);
             }
 
-            let checkpoint_end = current_turn_checkpoint_end(current, strategy.checkpoint_interval)
-                .map(|idx| boundary + idx);
+            let checkpoint_end = current_turn_checkpoint_end(
+                current,
+                strategy.checkpoint_interval,
+                strategy.checkpoint_growth,
+            )
+            .map(|idx| boundary + idx);
             match checkpoint_end {
                 Some(end) if cache.checkpoint_end != Some(end) => {
                     cache.checkpoint =
@@ -301,19 +306,24 @@ pub(crate) const TURN_CHECKPOINT_MARKER_TEXT: &str = "[Current-turn checkpoint] 
 ///
 /// `interval` is [`ContextStrategyConfig::checkpoint_interval`], defaulting to
 /// [`jyc_types::channel::DEFAULT_CHECKPOINT_INTERVAL`]; `0` disables the
-/// in-turn checkpoint and always returns `None`.
+/// in-turn checkpoint and always returns `None`. `growth` is
+/// [`ContextStrategyConfig::checkpoint_growth`]: the first fold fires at
+/// `interval` and each later one widens the next interval by
+/// `interval / growth`, so the verbatim tail grows with the turn. `0` keeps
+/// every interval at `interval`.
 ///
-/// With `n` completed assistant messages, fold every whole interval but
-/// leave the latest interaction raw:
-///
-/// ```text
-/// folded = floor((n - 1) / interval) × interval
-/// ```
+/// With `n` completed assistant messages, fold the widest whole run of
+/// checkpoints that still leaves the latest interaction raw — see
+/// [`folded_assistant_count`].
 ///
 /// The boundary is derived from the slice alone, so a cold build and a warm
-/// cache produce the same payload. It advances only when `n` crosses an
-/// interval, which keeps the folded prefix byte-stable in between.
-fn current_turn_checkpoint_end(current: &[serde_json::Value], interval: usize) -> Option<usize> {
+/// cache produce the same payload. It advances only when `n` crosses the
+/// next checkpoint, which keeps the folded prefix byte-stable in between.
+fn current_turn_checkpoint_end(
+    current: &[serde_json::Value],
+    interval: usize,
+    growth: usize,
+) -> Option<usize> {
     // 0 is the off sentinel: no in-turn checkpoint, so the whole current turn
     // rides verbatim. Guarded here because `interval` is also the divisor.
     if interval == 0 {
@@ -326,13 +336,65 @@ fn current_turn_checkpoint_end(current: &[serde_json::Value], interval: usize) -
     if assistant_count <= interval {
         return None;
     }
-    let folded = ((assistant_count - 1) / interval) * interval;
+    let folded = folded_assistant_count(assistant_count, interval, growth);
     current
         .iter()
         .enumerate()
         .filter(|(_, msg)| msg.get("role").and_then(|r| r.as_str()) == Some("assistant"))
         .nth(folded)
         .map(|(idx, _)| idx)
+}
+
+/// How many leading assistant messages fold, given `n` of them in the
+/// current turn.
+///
+/// The checkpoints partition the turn: checkpoint `k` (1-based) is `width_k`
+/// assistant messages wide, and it folds once the turn has passed the sum of
+/// the widths before it plus one — the trailing interaction always stays
+/// raw.
+///
+/// ```text
+/// width_k = interval × (growth + k - 1) / growth        (growth > 0)
+/// width_k = interval                                    (growth = 0)
+/// folded  = Σ width_k, the widest such sum ≤ n - 1
+/// ```
+///
+/// With `growth = 0` every width is `interval`, so the sum is
+/// `floor((n - 1) / interval) × interval` — the fixed interval this replaces.
+///
+/// Each width is at least `interval` (the first factor is never below
+/// `growth`), so the walk advances by at least one assistant message per
+/// step and terminates in at most `n / interval` iterations.
+fn folded_assistant_count(n: usize, interval: usize, growth: usize) -> usize {
+    // The walk tests `n - 1`, so an empty turn needs its own exit: with
+    // `n == 0` a release build wraps that subtraction to `usize::MAX` and
+    // the loop below never terminates. The only caller already implies
+    // `n > interval >= 1`; this keeps the helper total for any caller.
+    if n == 0 || interval == 0 {
+        return 0;
+    }
+    let mut folded = 0usize;
+    let mut completed = 0usize;
+    loop {
+        let width = if growth == 0 {
+            interval
+        } else {
+            // `interval × (growth + completed) / growth`, written as
+            // `interval + interval × completed / growth` so the fraction
+            // keeps its value at both ends: an absurdly large `growth` (the
+            // "never widen" intent expressed as a number rather than as 0)
+            // would otherwise saturate the product to `usize::MAX` and
+            // divide back down to 1, folding the whole turn.
+            let extra = interval.saturating_mul(completed).saturating_div(growth);
+            interval.saturating_add(extra)
+        };
+        let next = folded.saturating_add(width);
+        if next > n - 1 {
+            return folded;
+        }
+        folded = next;
+        completed += 1;
+    }
 }
 
 /// Build the text-only history block from the prior window: the history
@@ -872,10 +934,14 @@ mod render_raw_context_tests {
     fn zero_interval_disables_the_current_turn_checkpoint() {
         // 0 is the off sentinel: the whole turn rides verbatim, bounded only
         // by turn_tool_result_cap. The guard matters — `interval` is also the
-        // divisor, so an unguarded 0 would panic instead of disabling.
+        // divisor, so an unguarded 0 would panic instead of disabling. The
+        // growth is set to the fastest widening (1 doubles per fold) to pin
+        // the precedence: widening cannot rescue an interval of 0, because
+        // the off check runs first and never consults growth.
         let ctx = current_with_interactions(40, "secret");
         let cfg = ContextStrategyConfig {
             checkpoint_interval: 0,
+            checkpoint_growth: 1,
             ..sliding_cfg()
         };
         let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, 0, &cfg);
@@ -946,12 +1012,60 @@ mod render_raw_context_tests {
         assert_eq!(cache.checkpoint, first);
         assert_eq!(cache.checkpoint_rebuilt(), Some(false));
 
+        // The second interval is wider than the first (default growth 8:
+        // 32 then 36), so the boundary that the fixed interval put at 65 now
+        // sits at 69.
         for i in 34..65 {
             push_interaction(&mut ctx, i, "secret");
         }
         let _ = build_send_context_cached(&prov(), &ctx, 0, &sliding_cfg(), &mut cache);
-        assert_ne!(cache.checkpoint, first, "65 interactions advance once");
+        assert_eq!(
+            cache.checkpoint, first,
+            "65 interactions do not reach the widened second interval"
+        );
+        assert_eq!(cache.checkpoint_rebuilt(), Some(false));
+
+        for i in 65..69 {
+            push_interaction(&mut ctx, i, "secret");
+        }
+        let _ = build_send_context_cached(&prov(), &ctx, 0, &sliding_cfg(), &mut cache);
+        assert_ne!(cache.checkpoint, first, "69 interactions advance once");
         assert_eq!(cache.checkpoint_rebuilt(), Some(true));
+    }
+
+    #[test]
+    fn checkpoint_growth_widens_each_interval() {
+        // Default base 32 with growth 8 widens by 32/8 = 4 per fold, so the
+        // checkpoints are 32 and 36 wide and the boundaries land on 33 and
+        // 69 completed assistant messages.
+        assert_eq!(folded_assistant_count(33, 32, 8), 32);
+        assert_eq!(folded_assistant_count(65, 32, 8), 32);
+        assert_eq!(folded_assistant_count(68, 32, 8), 32);
+        assert_eq!(folded_assistant_count(69, 32, 8), 68);
+
+        // growth 0 is the fixed interval this replaced — the second boundary
+        // stays at 65, which is exactly what the widening above moves.
+        assert_eq!(folded_assistant_count(33, 32, 0), 32);
+        assert_eq!(folded_assistant_count(65, 32, 0), 64);
+        assert_eq!(folded_assistant_count(69, 32, 0), 64);
+
+        // growth 1 doubles per fold: 32 then 64 wide, so the second boundary
+        // is at 97 rather than 69.
+        assert_eq!(folded_assistant_count(96, 32, 1), 32);
+        assert_eq!(folded_assistant_count(97, 32, 1), 96);
+
+        // An interval wider than growth never floors to a narrower step: the
+        // first checkpoint is always exactly `interval` wide.
+        assert_eq!(folded_assistant_count(3, 2, 8), 2);
+        assert_eq!(folded_assistant_count(4, 2, 8), 2);
+
+        // A huge growth is "never widen" expressed as a number. It must stay
+        // at the base width — saturating the product and dividing back down
+        // would give a width of 1 and fold the whole turn.
+        assert_eq!(folded_assistant_count(100, 32, usize::MAX), 96);
+
+        // The empty turn exits instead of underflowing `n - 1`.
+        assert_eq!(folded_assistant_count(0, 32, 8), 0);
     }
 
     #[test]

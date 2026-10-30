@@ -2335,12 +2335,17 @@ JYC uses the following subset of the agent service API:
      retained turn begins, and each load reads the journal forward from
      there. The wire payload is the history block — the prior turns as
      text-only pairs, append-only, never trimmed — followed by the
-     current turn in two parts: once it passes 32 assistant steps, the
-     older steps fold into a text-only checkpoint (same representation as
-     history, so their reasoning and tool results leave the wire), and
-     the recent suffix stays verbatim with structured tool calls and
-     results intact. The checkpoint boundary advances one group of 32 at
-     a time, so it is byte-stable between advances and a cold build equals
+     current turn in two parts: once it passes `checkpoint_interval`
+     assistant steps (32 by default), the older steps fold into a
+     text-only checkpoint (same representation as history, so their
+     reasoning and tool results leave the wire), and the recent suffix
+     stays verbatim with structured tool calls and results intact. Each
+     later checkpoint is `checkpoint_interval / checkpoint_growth` steps
+     wider — 32, 36, 40 … with the defaults (32 and 8) — so a long turn's
+     verbatim tail grows instead of staying a fixed size; `0` keeps the
+     interval fixed, and `checkpoint_interval = 0` disables folding
+     outright. The boundary advances only at a checkpoint, so it is
+     byte-stable between advances and a cold build equals
      a cached one. The window
      grows by append until it holds more than `max_window = window +
      round(extend_rate × window)` turns — or has reached that bound and
@@ -2352,7 +2357,7 @@ JYC uses the following subset of the agent service API:
      head is what destroys the cross-turn prefix cache. The prefix is
      therefore append-only up to the end of the history block; within a
      turn only the recent suffix is re-encoded from one call to the next,
-     and the checkpoint changes at most once per 32 assistant steps. A
+     and the checkpoint changes at most once per checkpoint. A
      cold start (fresh topic, reset, no anchor, or an anchor no longer on
      a turn boundary) reads the journal once from its head and drops the
      bad anchor; the next slide persists a fresh one.
@@ -2391,7 +2396,8 @@ JYC uses the following subset of the agent service API:
    `max_window` it never fires, because a window whose `window` turns
    alone exceed the budget cannot get under it. The current turn is
    excluded: the turn in flight has `turn_tool_result_cap` for a single
-   result and the 32-assistant-step checkpoint for older steps. The estimate is a
+   result and the assistant-step checkpoint (`checkpoint_interval`, 32 by
+   default and widening as the turn folds) for older steps. The estimate is a
    heuristic, not a tokenizer — CJK characters ×1, other bytes ÷4, plus a
    small per-message constant — because a tokenizer dependency would buy
    precision this knob does not need. Unset by default.
@@ -2564,8 +2570,8 @@ tokens ↓
 │  当前轮            0 → 增长                      │
 │  ├ user: <runtime-state> 参考块 ~300B ★易变★     │ ★新位置★
 │  │        + 入站消息(含 <mode> 块) + 附件          │
-│  ├ 每 32 个 assistant 步: 旧步折叠为 text-only    │ ★checkpoint★
-│  │     checkpoint (reasoning/tool result 丢弃)    │   每32步一次
+│  ├ 每个 checkpoint: 旧步折叠为 text-only          │ ★checkpoint★
+│  │     checkpoint (reasoning/tool result 丢弃)    │   32步起递增
 │  ├ recent suffix: assistant/tool 原样             │ ◇断点3 (n-3)
 │  ├ tool: result                                 │ ◇断点4 (n-2)
 │  │     默认原样携带 ★turn_tool_result_cap★       │  ★置了则 ≤ N 字节:

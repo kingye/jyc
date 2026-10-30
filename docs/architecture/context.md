@@ -71,7 +71,10 @@ assistant's intermediate steps, tool calls, tool results — is the
 **current turn**. Its most recent interaction is sent verbatim so
 tool_use/tool_result pairing stays valid mid-loop; once a turn passes
 `checkpoint_interval` assistant steps (default 32), the older part folds
-into a text-only checkpoint, the same shape as prior-turn history.
+into a text-only checkpoint, the same shape as prior-turn history. Each
+further checkpoint is wider than the last (`checkpoint_growth`, default 8:
+32, 36, 40 … assistant steps), so a long turn keeps a growing verbatim
+tail.
 
 ### Reading the prior back
 
@@ -149,13 +152,15 @@ there:
    and their calls back, without results).
    This block only ever **grows**: nothing trims its head.
 2. **Current-turn checkpoint, text-only** — after `checkpoint_interval`
-   assistant steps (default 32), every whole group of that many older
-   steps folds into one checkpoint in that same text-only shape, with a
-   marker. It contains the turn's opening user message and the folded
-   assistant conclusions; older reasoning and tool results leave the wire
-   exactly as they do for prior turns.
-   The boundary advances one group at a time, so the checkpoint changes
-   at most once per interval.
+   assistant steps (default 32), the older steps fold into one checkpoint
+   in that same text-only shape, with a marker. It contains the turn's
+   opening user message and the folded assistant conclusions; older
+   reasoning and tool results leave the wire exactly as they do for prior
+   turns. Each later checkpoint is wider by `checkpoint_interval /
+   checkpoint_growth` steps (default 32 / 8 = 4), so the verbatim tail
+   grows with the turn.
+   The boundary advances one checkpoint at a time, so the checkpoint
+   changes at most once per checkpoint.
 3. **Recent current turn, verbatim** — from the first assistant step
    after the checkpoint to the end of `raw_context`, untouched, tool
    calls and results included, so the loop's `tool_use` ↔ `tool_result`
@@ -289,7 +294,8 @@ call rebuilt it (`rebuilt`), reused it (`reused`), or built nothing at all
 The current-turn checkpoint is cached the same way, keyed on its absolute
 end index. Its boundary is derived from the number of assistant messages,
 so a cold build and a warm cache produce the same payload. It advances
-once every `checkpoint_interval` assistant steps; between advances the
+once per checkpoint — `checkpoint_interval` steps for the first, then each
+wider by `checkpoint_interval / checkpoint_growth`; between advances the
 log's `checkpoint_rebuilt` says `reused`, and at a boundary it says
 `rebuilt` (`-` means no checkpoint is active).
 
@@ -431,7 +437,8 @@ which is what keeps the wire prefix byte-stable and the provider cache
 alive. The current turn has its own two bounds — `turn_tool_result_cap`
 per result, and a checkpoint every `checkpoint_interval` assistant steps
 (default 32) that folds older steps into the text-only form — but neither
-moves the history head.
+moves the history head, and the checkpoint intervals widen
+(`checkpoint_growth`), so the current turn's bound grows with the turn.
 `full` mode grows verbatim until the provider's own limit; it has no
 checkpoint and no history window. A session reset (`/reset`) clears the
 context outright; it does not summarize or compact it.
@@ -454,8 +461,9 @@ context_strategy = { mode = "full" }
 ```
 
 `mode` accepts `full` or `sliding_window` (alias `sliding`; default).
-The window fields count **turns**; `checkpoint_interval` counts
-**assistant messages** (see its row):
+The window fields count **turns**; `checkpoint_interval` and
+`checkpoint_growth` count **assistant messages and folds** (see their
+rows):
 
 | Field | Default | Meaning |
 |-------|---------|---------|
@@ -464,6 +472,7 @@ The window fields count **turns**; `checkpoint_interval` counts
 | `turn_tool_result_cap` | unset | Per-result byte cap on the recent current-turn suffix — see below |
 | `max_history_tokens` | unset | Second slide trigger, at the top of the extension cycle — see below |
 | `checkpoint_interval` | `32` | Completed assistant messages before the current turn's older steps fold into a text-only checkpoint; `0` disables folding — see below |
+| `checkpoint_growth` | `8` | Folds per widening step: each checkpoint is `checkpoint_interval / checkpoint_growth` steps wider than the last, so a long turn keeps a growing verbatim tail; `0` keeps the interval fixed — see below |
 
 ## `turn_tool_result_cap` — bounding the current turn
 
@@ -528,12 +537,24 @@ is not a hard bound on the whole payload: the folded text still grows
 with the turn's visible assistant text and retained user messages, but
 older reasoning and tool-result payloads stop riding every call.
 
-With `n` completed assistant messages in the current turn and the
-configured `checkpoint_interval` (default 32; `0` disables folding):
+With `n` completed assistant messages in the current turn, the configured
+`checkpoint_interval` (default 32; `0` disables folding) and
+`checkpoint_growth` (default 8; `0` keeps the interval fixed), the
+checkpoints partition the turn — checkpoint `k` is
+`interval × (growth + k − 1) / growth` steps wide, and the widest whole run
+that still leaves the latest interaction raw is folded:
 
 ```text
-folded = floor((n - 1) / checkpoint_interval) × checkpoint_interval
+width_k = interval × (growth + k − 1) / growth     (growth > 0)
+width_k = interval                                 (growth = 0)
+folded  = Σ width_k, the widest sum ≤ n − 1
 ```
+
+With `growth = 0` this is the fixed
+`floor((n − 1) / interval) × interval` it replaces. With the defaults the
+folds are 32, 36, 40 … steps wide, so a long turn's verbatim tail keeps
+growing instead of staying 32 steps. The first checkpoint is always exactly
+`interval` steps: widening only applies to the ones after it.
 
 When `folded` is 0 the turn is sent exactly as before (no checkpoint).
 Otherwise the first `folded` steps — from the turn's opening user message
@@ -547,9 +568,10 @@ The checkpoint is derived from message roles alone, which makes it
 cache-aware:
 
 - A cold build and a warm cache produce byte-identical output.
-- The boundary advances at `interval + 1`, `2 × interval + 1`, … assistant
-  messages, not every call; between advances the checkpoint is reused
-  byte-for-byte.
+- The boundary advances at `interval + 1`, then each widened interval
+  later, not every call; between advances the checkpoint is reused
+  byte-for-byte. Widening only changes when the *next* advance happens —
+  the folded prefix never shrinks.
 - Full mode does not checkpoint.
 
 What the folded part keeps is the opening user message and assistant
@@ -617,7 +639,7 @@ bounds how much history survives before the next slide.
 3. Matched pattern's `context_strategy` (or synthesized `[agents.<name>]`)
 4. First pattern fallback
 5. Global `[ai].context_strategy`
-6. Built-in default: `sliding_window` / `window = 10` / `extend_rate = 0.5` / `max_history_tokens` unset / `checkpoint_interval = 32`
+6. Built-in default: `sliding_window` / `window = 10` / `extend_rate = 0.5` / `max_history_tokens` unset / `checkpoint_interval = 32` / `checkpoint_growth = 8`
 
 **Runtime commands:**
 
@@ -625,7 +647,7 @@ bounds how much history survives before the next slide.
 |---------|--------|
 | `/context` | Show current strategy and its source (`override` / `default`) |
 | `/context full` | Send the full context |
-| `/context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT]` | Sliding window, N turns (default 10, max 200); EXT = extend rate (0..10, default 0.5); TURNCAP = per-result byte cap on the current turn (`0`, or 130 B..1 MiB; unset by default); MAXHIST = weight trigger for a slide (0..4M, unset by default); CHECKPOINT = completed assistant messages before the current turn's older steps fold into a text-only checkpoint (`0` disables folding; default 32). A sixth positional (a command written before a slot was added) is refused; an absent slot falls back to the configured value; `0` switches a cap off |
+| `/context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH]` | Sliding window, N turns (default 10, max 200); EXT = extend rate (0..10, default 0.5); TURNCAP = per-result byte cap on the current turn (`0`, or 130 B..1 MiB; unset by default); MAXHIST = weight trigger for a slide (0..4M, unset by default); CHECKPOINT = completed assistant messages before the current turn's older steps fold into a text-only checkpoint (`0` disables folding; default 32); GROWTH = folds per widening step, each checkpoint `CHECKPOINT / GROWTH` steps wider (`0` keeps it fixed; default 8). A seventh positional (a command written before a slot was added) is refused; an absent slot falls back to the configured value; `0` switches a cap off |
 | `/context reset` | Remove the runtime override, revert to configured default |
 
 ## Code map

@@ -813,6 +813,19 @@ pub const MIN_EDGE_KEEPING_CAP: usize = MARKER_RESERVE + 2;
 /// read → drop → read again. 32 leaves a normal read→act→observe cycle intact.
 pub const DEFAULT_CHECKPOINT_INTERVAL: usize = 32;
 
+/// Folds per widening step of
+/// [`ContextStrategyConfig::checkpoint_growth`] — the default for that
+/// field.
+///
+/// A turn starts at [`DEFAULT_CHECKPOINT_INTERVAL`] and every fold widens
+/// the next interval by `interval / 8`: with a base of 32 the folds come at
+/// 32, 36, 40, 44 … The late part of a long turn therefore keeps a larger
+/// and larger verbatim tail, which is where the model's live working set
+/// has moved to by then. 8 is a deliberately slow widening — a faster one
+/// (1 doubles per fold: 32, 64, 96 …) reaches "unbounded" so quickly that
+/// the checkpoint stops bounding anything.
+pub const DEFAULT_CHECKPOINT_GROWTH: usize = 8;
+
 /// The current-turn result cap actually applied for a configured value.
 ///
 /// `None` and `Some(0)` both mean off and come back as `0`; any other value
@@ -924,6 +937,28 @@ pub struct ContextStrategyConfig {
     /// non-off default: a reader that omitted it gets 32, not "off".
     #[serde(default = "default_checkpoint_interval")]
     pub checkpoint_interval: usize,
+    /// How slowly the checkpoint interval widens as a turn folds
+    /// (`sliding_window` mode), as folds per widening step. Default:
+    /// [`DEFAULT_CHECKPOINT_GROWTH`] (8).
+    ///
+    /// The first fold still fires at [`Self::checkpoint_interval`]; from
+    /// then on each fold adds `checkpoint_interval / checkpoint_growth` to
+    /// the next interval. With the defaults (32 and 8) the folds come after
+    /// 32, 36, 40, 44 … assistant messages, so the verbatim tail a turn
+    /// keeps grows with the turn instead of staying a fixed size — a long
+    /// turn's live working set is the recent part.
+    ///
+    /// `0` keeps the interval fixed, which is the behaviour before this
+    /// field existed. A small non-zero value widens fast: `1` doubles the
+    /// interval per fold (32, 64, 96 …), which quickly makes the checkpoint
+    /// bound nothing.
+    ///
+    /// Only meaningful when `mode = "sliding_window"` and
+    /// [`Self::checkpoint_interval`] is non-zero. Always serialized for the
+    /// same reason as `checkpoint_interval`: it has a non-off default, so an
+    /// omitted value must read as 8, not 0.
+    #[serde(default = "default_checkpoint_growth")]
+    pub checkpoint_growth: usize,
 }
 
 impl ContextStrategyConfig {
@@ -955,12 +990,17 @@ impl Default for ContextStrategyConfig {
             // history is the more surprising default.
             max_history_tokens: None,
             checkpoint_interval: default_checkpoint_interval(),
+            checkpoint_growth: default_checkpoint_growth(),
         }
     }
 }
 
 fn default_checkpoint_interval() -> usize {
     DEFAULT_CHECKPOINT_INTERVAL
+}
+
+fn default_checkpoint_growth() -> usize {
+    DEFAULT_CHECKPOINT_GROWTH
 }
 
 fn default_context_window_size() -> usize {
@@ -1430,6 +1470,22 @@ topic_path = "~/projects/jyc"
                 "checkpoint_interval = {DEFAULT_CHECKPOINT_INTERVAL}"
             )),
             "the interval has a non-off default and must serialize: {serialized}"
+        );
+
+        // The widening knob follows the same rule: default 8, and an omitted
+        // value must read as the default rather than as 0 ("fixed") — which
+        // is a real behaviour, so reading it would quietly stop a long turn's
+        // tail from growing.
+        assert_eq!(
+            ContextStrategyConfig::default().checkpoint_growth,
+            DEFAULT_CHECKPOINT_GROWTH
+        );
+        let cfg: ContextStrategyConfig =
+            toml::from_str("mode = \"sliding_window\"\nwindow = 10\n").unwrap();
+        assert_eq!(cfg.checkpoint_growth, DEFAULT_CHECKPOINT_GROWTH);
+        assert!(
+            serialized.contains(&format!("checkpoint_growth = {DEFAULT_CHECKPOINT_GROWTH}")),
+            "the growth has a non-off default and must serialize: {serialized}"
         );
     }
 

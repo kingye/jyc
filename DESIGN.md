@@ -3426,12 +3426,12 @@ Not connected: connection refused
                                                                                            │ Branch:      feat/issue-42           
                                                                                            │ Status:      Processing · queue ▊▊▊▊▊
                                                                                            │              2 / 10
-                                                                                           │ Tokens:      ────────··············  
+                                                                                           │ Tokens:      ──────────────────────  
                                                                                            │              44.17K / 117.19K (38%)  
                                                                                            │ Cache:                               
-                                                                                           │ Turn:        ──────────────────····  
+                                                                                           │ Turn:        ──────────────────────  
                                                                                            │              12.00K / 15.00K (80%)   
-                                                                                           │ Session:     ───────────────────···  
+                                                                                           │ Session:     ──────────────────────  
                                                                                            │              78.24K / 88.19K (88%)   
                                                                                            │ Files (2):                           
                                                                                            │   crates/…/mod.rs                    
@@ -3467,13 +3467,23 @@ Not connected: connection refused
   length of the longest label (`Today (all): `) — so, in the table layout,
   every value starts in the same column and the pane reads as one table
   rather than a ragged list. The percentage rows draw their share as a bar
-  — `─` for the filled part (bold yellow), `·` for the rest (dim gray):
-  the bar has the label's row to itself and the figures follow on the
+  — one rule of `─`, bold yellow for the filled part and dim gray for the
+  rest, so the share is told by colour alone and every bar of the pane is
+  the same glyph: the token row, both cache rows and the context
+  composition, whose regions keep their own colours and are laid end to
+  end, so colour still says which part of the context a cell is. The bar
+  has the label's row to itself and the figures follow on the
   next one, in the same column —
-  `Tokens:      ────────··············` with `44.17K / 117.19K (38%)` under
-  it, and `Session:   ───────────────────···` with
+  `Tokens:      ──────────────────────` with `44.17K / 117.19K (38%)` under
+  it, and `Session:   ──────────────────────` with
   `78.24K / 88.19K (88%)` under it; the bars start in that column too, so the
-  shares can be compared by eye. The figures have a row of their own so
+  shares can be compared by eye. The context composition's legend ends
+  with the turn's depth — `Iteration    56` under the shares, in their
+  label column and without a colour, since it is no region of the bar. It
+  says how many LLM calls the latest turn has made, one per iteration of
+  the agent loop, and it is the same `TopicInfo` figure `/info` prints:
+  one formatter builds the row, so the pane and the command cannot drift.
+  The figures have a row of their own so
   that the bar can reach for the edge: the bar is as wide as the column
   allows — what the label's room leaves, less the two cells it keeps to
   the pane's edge — and the wrapping never cuts it in half: a narrow

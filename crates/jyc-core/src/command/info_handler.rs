@@ -114,6 +114,16 @@ fn format_topic_info(t: &TopicInfo) -> String {
                 jyc_types::format_context_region_share(region, total),
             ));
         }
+        // The turn's depth in its own legend: how many LLM calls it has
+        // made, one per iteration of the agent loop. The same field the
+        // pane reads, from the same `TopicInfo`.
+        if let Some(iteration) = t.turn_call_count {
+            lines.push(jyc_types::format_iteration_row(
+                iteration,
+                label_width,
+                INFO_CONTEXT_LEGEND_INDENT,
+            ));
+        }
     }
     if let Some(figures) = jyc_types::format_output_pair(t.output_tokens, t.turn_output_tokens) {
         lines.push(format!("Output: {figures}"));
@@ -455,10 +465,34 @@ Files (2):
             },
         ];
         let text = format_topic_info(&t);
-        let section = "Context:\n  History      ~60 · 60%\n  Current turn ~40 · 40%\n";
+        let section = concat!(
+            "Context:\n",
+            "  History      ~60 · 60%\n",
+            "  Current turn ~40 · 40%\n",
+            "  Iteration    3\n",
+        );
         let composition = text.find(section).expect("the composition section");
         let output = text.find("Output:").expect("the output row");
         assert!(composition < output, "{text}");
+    }
+
+    /// The legend's last row is the turn's depth, and it is `TopicInfo`'s
+    /// own figure — the same one the pane reads, so the two cannot report
+    /// different counts. Without it the row is absent rather than zero: a
+    /// turn that has not called yet has no depth to state.
+    #[test]
+    fn formats_the_iteration_row_from_the_turn_call_count() {
+        let mut t = full_info();
+        t.context_composition = vec![jyc_types::ContextRegionInfo {
+            region: jyc_types::ContextRegion::History,
+            messages: 3,
+            bytes: 512,
+            estimated_tokens: 60,
+        }];
+        assert!(format_topic_info(&t).contains("\n  Iteration 3\n"));
+
+        t.turn_call_count = None;
+        assert!(!format_topic_info(&t).contains("Iteration"));
     }
 
     #[test]

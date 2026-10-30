@@ -1857,9 +1857,11 @@ fn info_pane_text(app: &mut App, width: u16, height: u16) -> String {
     info_pane_screen(app, width, height).0
 }
 
-/// The same rendering, with the buffer kept: the pane's bars are one glyph
-/// now, so a test that has to know how much of a bar is filled reads the
-/// colours off the cells rather than the text.
+/// The same rendering, with the buffer kept: how far a bar is filled is
+/// readable from its glyphs — `━` for the share, `─` for the room it does
+/// not reach — and a test that has to know exactly where the share stops
+/// reads the colours off the cells as well, so the two readings have to
+/// agree.
 fn info_pane_screen(app: &mut App, width: u16, height: u16) -> (String, ratatui::buffer::Buffer) {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -1880,11 +1882,10 @@ fn info_pane_screen(app: &mut App, width: u16, height: u16) -> (String, ratatui:
     (screen, buffer)
 }
 
-/// How much of a row's bar is filled: the number of cells that are the
-/// filled part's colour, and the bar's whole length. The pane's own rendering
-/// is the only place this can be read — both halves of a bar are a bar cell,
-/// the filled one a heavier rule than the empty one — so it is what keeps the
-/// two percentage rows distinguishable from each other.
+/// How much of a row's bar is filled: the number of cells the filled part's
+/// colour reaches, and the bar's whole length. The glyphs state the same
+/// thing — `━` for the share, `─` for the room left — so a test that reads
+/// the cells and the text is checking one against the other.
 fn bar_fill(
     buffer: &ratatui::buffer::Buffer,
     screen: &str,
@@ -2049,17 +2050,33 @@ fn info_pane_draws_context_composition_bar_and_legend() {
         .lines()
         .find(|line| line.contains("Context:"))
         .expect("the composition title");
-    // The bar is one rule of `─`, the same glyph the token row draws, so it
-    // is found the way that row's bar is: the first cell after the label.
-    let bar_start = title_row.find('─').expect("the composition bar");
+    // The bar is the first rule after the label — either weight, since the
+    // composition's cells are all `━` and a percentage row's bar carries
+    // `─` where it is not filled.
+    let bar_start = title_row.find(['━', '─']).expect("the composition bar");
     assert!(!screen.contains("(estimated)"), "{screen}");
+    // Every cell of the composition is a region of the context, so the bar
+    // has no unfilled part to mark: it is `━` from its first cell to its
+    // last, the pane's own bar width — the same width the token row's bar
+    // covers, coloured rather than proportioned.
+    let composition = title_row[bar_start..].trim_end();
+    assert!(
+        !composition.is_empty() && composition.chars().all(|c| c == '━'),
+        "the composition bar is `━` throughout: {composition:?}\n{screen}"
+    );
     // The two bars share their first cell: the composition's sits in the
     // pane's value column, not after its own short label.
     let tokens_row = screen
         .lines()
         .find(|line| line.contains("Tokens:"))
         .expect("the token row");
-    assert_eq!(tokens_row.find('─'), Some(bar_start), "{screen}");
+    assert_eq!(tokens_row.find(['━', '─']), Some(bar_start), "{screen}");
+    let (_, bar_len) = bar_fill(&buffer, &screen, "Tokens: ", width);
+    assert_eq!(
+        composition.chars().count(),
+        bar_len,
+        "the two bars of the pane are the same width:\n{screen}"
+    );
     // The legend rows are indented to that column — `LABEL_WIDTH` past the
     // left border — and share one column of figures: no colon after a
     // label, no byte count anywhere.
@@ -2077,10 +2094,11 @@ fn info_pane_draws_context_composition_bar_and_legend() {
     );
     assert!(!screen.contains("messages"), "{screen}");
 
-    // The regions are told apart by colour alone now that one glyph draws
-    // every bar, so the colours are read off the composition's own row —
-    // the title row — rather than the whole screen, where the token and
-    // cache bars would answer for it.
+    // The regions are told apart by colour: every cell of the composition is
+    // `━`, so only the colour says where one region ends and the next
+    // begins. They are read off the composition's own row — the title row —
+    // rather than the whole screen, where the token and cache bars answer
+    // with their own colours.
     let title_y = screen
         .lines()
         .position(|line| line.contains("Context:"))
@@ -2088,7 +2106,7 @@ fn info_pane_draws_context_composition_bar_and_legend() {
     let bar_colors: Vec<Color> = (0..width)
         .filter_map(|x| {
             let cell = &buffer[(x, title_y)];
-            (cell.symbol() == "─").then_some(cell.fg)
+            (cell.symbol() == "━").then_some(cell.fg)
         })
         .collect();
     assert!(bar_colors.contains(&Color::Green), "{screen}");
@@ -2257,17 +2275,23 @@ fn info_pane_draws_the_composition_bar_in_the_stacked_layout() {
     // The rows are checked by their prefix, not by a column index:
     // `str::find` answers in bytes and the border glyph `│` is three of
     // them, so it would report the bar at 3 where the pane draws it in
-    // column 1. The bar is found by its place, not its glyph: every bar of
-    // the pane is `─` now, so the token row's would answer for the
-    // composition's — the row under the title is the composition's.
+    // column 1. The bar is found by its place — the row under the title is
+    // the composition's — and its glyph is one of the claims: every cell of
+    // the composition is a region, so the whole bar is `━`, while the
+    // `Turn:` row's bar below is `─` (its share is zero).
     let lines: Vec<&str> = screen.lines().collect();
     let title = lines
         .iter()
         .position(|line| line.contains("Context:"))
         .expect("the composition title");
     let bar_row = lines[title + 1];
-    assert!(bar_row.starts_with("│─"), "the bar is flush left: {screen}");
-    assert_eq!(bar_row.matches('─').count(), 12, "{screen}");
+    assert!(bar_row.starts_with("│━"), "the bar is flush left: {screen}");
+    assert_eq!(bar_row.matches('━').count(), 12, "{screen}");
+    // Every heavy cell of the pane is on that row: the other bar it draws
+    // here is at zero, so it is `─` throughout and cannot answer for the
+    // composition's cells. This is what keeps the row above from being the
+    // status block's top border, or the `Turn:` row's bar.
+    assert_eq!(screen.matches('━').count(), 12, "{screen}");
     // The title stands alone on the row above it, its padding trimmed — the
     // stacked layout's shape for every label.
     assert!(screen.contains("Context:"), "{screen}");
@@ -2292,14 +2316,14 @@ fn info_pane_draws_the_composition_bar_in_the_stacked_layout() {
 /// one rule of `─` the pane draws itself (see `render_topic_info_pane`),
 /// and it would otherwise be the only `─` on the screen, leaving the claim
 /// below a statement about a region rather than about the pane. Without it
-/// the pane draws no rule of `─` at all, so "no `─` anywhere" is the same
-/// claim as "no bar was drawn", read literally.
+/// the pane draws no rule of either weight, so "no bar anywhere" is the
+/// same claim as "no bar was drawn", read literally.
 ///
 /// The bar cannot be separated from the pane's other bars at this width:
 /// they are refused together, since inner width 6 is under `MIN_BAR_WIDTH`
-/// for every one of them. A control pane without a composition has no `─`
-/// either, so that comparison would be `0 == 0`. Separating the composition
-/// bar from the rest is a unit claim, not a pane one — see
+/// for every one of them. A control pane without a composition draws no
+/// bar either, so that comparison would be `0 == 0`. Separating the
+/// composition bar from the rest is a unit claim, not a pane one — see
 /// `composition_bar_needs_the_minimum_width` in `token_render`. What this
 /// test pins is the integration: the section still renders, and it comes
 /// back with its figures.
@@ -2328,9 +2352,12 @@ fn info_pane_keeps_the_composition_figures_when_the_bar_is_refused() {
     );
 
     // The weights are not zero, so the bar is refused for its width alone:
-    // it draws no rule of `─`, and with the status block off nothing else
-    // in the pane draws one.
-    assert!(!screen.contains('─'), "no bar of any kind: {screen}");
+    // it draws no rule of either weight, and with the status block off
+    // nothing else in the pane draws one.
+    assert!(
+        !screen.contains('─') && !screen.contains('━'),
+        "no bar of any kind: {screen}"
+    );
     // The figures are still there, the shares with them: a refused bar does
     // not take the legend with it. They wrap at this width — the share onto
     // the row below — but they are not dropped. Read after the bar claim,
@@ -3608,10 +3635,12 @@ fn info_pane_draws_the_percentage_bars() {
         );
     }
 
-    // Where each bar stops being filled: one glyph draws both halves, so
-    // this is the only remaining proof that the two rows' shares differ —
-    // 47% and 88% of the same 54 cells. A bar that filled regardless of
-    // its share would show both rows full and fail here.
+    // Where each bar stops being filled. The whole-row assertions above
+    // read that off the glyphs — `━` for the share, `─` for the room left —
+    // and these read the same boundary off the cells' colour, so the two
+    // readings check each other: 47% and 88% of the same 54 cells. A bar
+    // that filled or coloured itself round rather than by its share would
+    // show both rows full and fail here.
     assert_eq!(
         bar_fill(&buffer, &pane, "Tokens: ", 70),
         (25, 54),
@@ -3759,7 +3788,7 @@ fn info_pane_draws_no_bar_in_a_too_narrow_pane() {
     // so the cache hit rate's figure would be cut off by a short one.
     let pane = info_pane_text(&mut app, 5, 80);
     assert!(
-        !pane.contains('─'),
+        !pane.contains('─') && !pane.contains('━'),
         "a pane too narrow for an honest bar must draw none:\n{pane}"
     );
     // The figures are still there — wrapped across the rows of a pane

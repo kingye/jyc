@@ -2,7 +2,8 @@
 
 ### Fixed
 
-- Gitee mirroring no longer loses a sync to a transient network error, and a version release no longer cancels a nightly sync that is still running. `Sync to Gitee` retries its push five times with backoff instead of failing the whole mirror on the first `Recv failure: Connection reset by peer`, and `Sync Release to Gitee` groups its concurrency by tag name so a `vX.Y.Z` release — whose job is skipped — cannot cancel the nightly sync that is mid-flight waiting for the mirror to catch up. Both surfaced together on the 0.8.1 release: the push failure left the Gitee `nightly` tag a commit behind with no failing run to show for it, because the version release's completion cancelled the sync that was retrying
+- `Sync to Gitee` retries its push five times with backoff instead of failing the whole mirror on the first transient network error (`Recv failure: Connection reset by peer`, one failure in ~20 runs). Mirror pushes are also serialized, so a slow retry cannot land an older commit after a newer push
+- `Sync Release to Gitee` groups its concurrency by tag name, so a `vX.Y.Z` release — whose job the `if` skips — can no longer cancel a nightly sync that is mid-flight waiting for the mirror to catch up. Both surfaced on the 0.8.1 release: the push failure left the Gitee `nightly` tag a commit behind, and publishing the version release cancelled the nightly sync waiting for it
 
 ## [0.8.1] - 2026-10-30
 

@@ -4,6 +4,14 @@ on:
   push:
     branches: [main]
 
+# Serialize mirror pushes. Every run has the same ref (`refs/heads/main`), so a
+# newer push cancels an older run still retrying — without this, a slow retry
+# could land an older commit *after* a newer push and leave Gitee behind until
+# the next push, with no failing run to show for it.
+concurrency:
+  group: sync-to-gitee-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   sync:
     runs-on: ubuntu-latest

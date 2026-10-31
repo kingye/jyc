@@ -13,6 +13,23 @@ jobs:
           fetch-depth: 0
 
       - name: Push to Gitee
+        # Gitee pushes have failed with a transient `Recv failure: Connection
+        # reset by peer` (observed 2026-10-30, first failure in ~20 runs); one
+        # attempt used to fail the whole mirror. Retry with backoff.
         run: |
+          set -uo pipefail
           git remote add gitee https://${{ secrets.GITEE_USERNAME }}:${{ secrets.GITEE_TOKEN }}@gitee.com/jin1ye/jyc.git
-          git push gitee main --force
+          for i in 1 2 3 4 5; do
+            echo "Push attempt ${i}/5 ..."
+            if git push gitee main --force; then
+              echo "Pushed to Gitee on attempt ${i}"
+              exit 0
+            fi
+            if [ "${i}" -lt 5 ]; then
+              delay=$((i * 10))
+              echo "Attempt ${i} failed; retrying in ${delay}s"
+              sleep "${delay}"
+            fi
+          done
+          echo "Push to Gitee failed after 5 attempts"
+          exit 1

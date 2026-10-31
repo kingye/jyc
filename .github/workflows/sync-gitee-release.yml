@@ -4,9 +4,15 @@ on:
   release:
     types: [published]
 
-# Only the latest nightly matters; cancel stale syncs still in progress.
+# Only the latest nightly matters; cancel stale nightly syncs still in progress.
+# Group by tag name: workflow-level concurrency applies before the job's `if`,
+# so with one shared group a version release — whose job is skipped below —
+# would still cancel a nightly sync that is mid-flight. Observed 2026-10-30:
+# publishing v0.8.1 cancelled the nightly sync, which then left nightly a
+# commit behind with no failing run to show for it. `github.ref_type` cannot
+# separate them here: every `release` event reports `tag`.
 concurrency:
-  group: sync-gitee-release
+  group: sync-gitee-release-${{ github.event.release.tag_name }}
   cancel-in-progress: true
 
 jobs:

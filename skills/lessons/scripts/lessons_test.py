@@ -125,6 +125,19 @@ class LessonsTest(unittest.TestCase):
         self.assertFalse((self.session / "report.md").exists(), "a stale draft must not survive")
         self.assertEqual(self.session_json()["lessons"]["count"], 3)
 
+    def test_snapshot_force_keeps_the_old_session_when_the_new_input_is_bad(self) -> None:
+        self.lessons.write_text(TWO, encoding="utf-8")
+        self.snapshot()
+        (self.session / "report.md").write_text("draft", encoding="utf-8")
+
+        self.lessons.write_text(HEADER + "\n", encoding="utf-8")
+        result = self.snapshot("--force")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no lessons", result.stderr)
+        self.assertTrue((self.session / "session.json").exists())
+        self.assertEqual((self.session / "report.md").read_text(encoding="utf-8"), "draft")
+
     # ── status ────────────────────────────────────────────────────────
 
     def test_status_says_nothing_is_pending(self) -> None:
@@ -253,6 +266,38 @@ class LessonsTest(unittest.TestCase):
         self.assertEqual(
             self.lessons.read_text(encoding="utf-8"),
             HEADER + "\n\n- 2026-10-02 — second rule\n",
+        )
+
+    def test_apply_refuses_a_kept_line_that_is_not_in_the_snapshot(self) -> None:
+        self.lessons.write_text(TWO, encoding="utf-8")
+        self.snapshot()
+        (self.session / "keep.md").write_text(
+            "- 2026-10-02 — second rule\n- 2026-10-09 — invented rule\n", encoding="utf-8"
+        )
+
+        result = self.apply()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("not in the snapshot", result.stderr)
+        self.assertIn("invented rule", result.stderr)
+        self.assertEqual(self.lessons.read_text(encoding="utf-8"), TWO)
+        self.assertTrue((self.session / "session.json").exists())
+
+    def test_apply_writes_a_repeated_kept_line_once(self) -> None:
+        self.lessons.write_text(TWO, encoding="utf-8")
+        self.snapshot()
+        (self.session / "keep.md").write_text(
+            "- 2026-10-02 — second rule\n- 2026-10-01 — first rule\n"
+            "- 2026-10-02 — second rule\n",
+            encoding="utf-8",
+        )
+
+        result = self.apply()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.lessons.read_text(encoding="utf-8"),
+            HEADER + "\n\n- 2026-10-02 — second rule\n- 2026-10-01 — first rule\n",
         )
 
     def test_apply_refuses_an_empty_agents_md_new(self) -> None:

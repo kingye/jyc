@@ -125,9 +125,8 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
             f"in {sdir} — review it with `status`, finish it with `apply`, drop it with "
             f"`cancel`, or replace it with `snapshot --force`"
         )
-    if sdir.exists():
-        shutil.rmtree(sdir)
-
+    # Validate the new snapshot before touching the old session: `--force`
+    # must never destroy a pending compaction it then fails to replace.
     lessons_path = state_dir(args) / LESSONS_FILE
     lessons = read_text(lessons_path)
     if lessons is None:
@@ -138,6 +137,9 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
 
     agents = agents_path(args)
     agents_text = read_text(agents)
+
+    if sdir.exists():
+        shutil.rmtree(sdir)
 
     sdir.mkdir(parents=True)
     # The frozen copy is what the agent classifies: it is complete, while the
@@ -203,10 +205,15 @@ def input_changes(session: dict) -> "list[str]":
 
 def report_status(session: dict, sdir: Path) -> None:
     recorded = session["lessons"]
-    print(
-        f"lessons: {recorded['count']} in {recorded['path']} "
-        f"({recorded['bytes']} bytes at snapshot time)"
-    )
+    live = read_text(Path(recorded["path"]))
+    if live is None:
+        print(f"lessons: {recorded['count']} at snapshot time; {recorded['path']} is gone")
+    else:
+        print(
+            f"lessons: {recorded['count']} at snapshot time, "
+            f"{lesson_count(live)} now in {recorded['path']} "
+            f"({len(live.encode('utf-8'))} bytes)"
+        )
     print(f"compact: pending since {session.get('created_at', 'unknown')}")
     for name, label in (
         (REPORT_FILE, "report"),
@@ -266,8 +273,21 @@ def cmd_apply(args: argparse.Namespace) -> None:
 
     keep = read_text(sdir / KEEP_FILE)
     kept = lesson_lines(keep) if keep else []
+    # A kept line must be a lesson the snapshot actually holds: `apply` is the
+    # only writer of the live file, so a line invented or copied twice here
+    # would land in `lessons.md` with nothing to check it against.
+    source = set(lesson_lines(read_text(sdir / INPUT_FILE) or ""))
+    foreign = [line for line in kept if line not in source]
+    if foreign:
+        fail(
+            f"{sdir / KEEP_FILE} holds lines that are not in the snapshot:\n  - "
+            + "\n  - ".join(sorted(set(foreign)))
+            + "\ncopy the kept lines verbatim from input.md"
+        )
+    deduped = list(dict.fromkeys(kept))
+    dropped = len(kept) - len(deduped)
+    kept = deduped
 
-    archived = None
     if new_agents is not None:
         write_atomic(agents_file, new_agents)
 
@@ -293,12 +313,14 @@ def cmd_apply(args: argparse.Namespace) -> None:
         print("  agents   unchanged (no agents.md.new)")
     print(f"  archived {archived} ({session['lessons']['count']} lessons)")
     print(f"  lessons  {lessons_path} reset, {len(kept)} kept live")
+    if dropped:
+        print(f"  ({dropped} duplicate line(s) in {KEEP_FILE} written once)")
 
 
 def cmd_cancel(args: argparse.Namespace) -> None:
     sdir = session_dir(args)
     if not sdir.exists():
-        print("compact: nothing to cancel")
+        print("cancelled: nothing to cancel")
         return
     shutil.rmtree(sdir)
     print(f"cancelled: {sdir} removed; lessons and AGENTS.md untouched")

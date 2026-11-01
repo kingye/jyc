@@ -42,8 +42,10 @@ Correct as a lesson, not ready as a rule:
 - a preference of this user that has not been settled;
 - something the user asked to keep.
 
-Put the exact `- ` lines into `keep.md`. They survive `apply`; everything else
-in the old file does not.
+Put the exact `- ` lines into `keep.md`, copied from `input.md` — `apply`
+refuses a line the snapshot does not hold, so a reworded or invented one stops
+the whole compaction instead of slipping into the live file. They survive
+`apply`; everything else in the old file does not.
 
 ### 4. Discard — archived, not promoted, not kept
 
@@ -103,7 +105,9 @@ Sections touched: … · one paragraph per change, or the diff summary.
 Then show the diff:
 
 ```bash
-diff -u "<state_dir>/lesson-compact/agents.md.orig" "<state_dir>/lesson-compact/agents.md.new"
+orig="<state_dir>/lesson-compact/agents.md.orig"
+[ -f "$orig" ] || orig=/dev/null   # AGENTS.md did not exist at snapshot time
+diff -u "$orig" "<state_dir>/lesson-compact/agents.md.new"
 ```
 
 ## What this is not

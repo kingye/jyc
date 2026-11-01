@@ -1,9 +1,9 @@
 ---
 name: lessons
 description: |
-  Compact a topic's lessons into AGENTS.md and restart the collection — subcommands
-  compact, status, apply, cancel. Use when: compact/consolidate/clean/reset lessons,
-  promote lessons to AGENTS.md, review what this topic has learned.
+  Compact a topic's lessons into AGENTS.md and start the file over. Use when:
+  compact/consolidate/clean/reset lessons, promote lessons to AGENTS.md, review
+  what this topic has learned.
 ---
 
 ## What this skill does
@@ -74,7 +74,8 @@ cd <skill dir> && python3 scripts/lessons.py <subcommand> ...
    rules and the report format. Read it before classifying.
 
 4. Show the user `report.md` and the actual diff
-   (`diff -u agents.md.orig agents.md.new`), then **stop**. Say plainly which
+   (`diff -u agents.md.orig agents.md.new`, or against `/dev/null` when
+   `agents.md.orig` is missing), then **stop**. Say plainly which
    lessons would be promoted, which stay live, which are archived for good, and
    what you are unsure about. The user can argue with any of it — revise the
    files and show the diff again.
@@ -85,9 +86,10 @@ cd <skill dir> && python3 scripts/lessons.py <subcommand> ...
 python3 scripts/lessons.py status --state-dir "<state_dir>"
 ```
 
-Prints the live file's size and count, whether a compaction is pending, which
-outputs exist, and whether `lessons.md` or `AGENTS.md` changed since the
-snapshot — a changed input means `apply` will refuse.
+Prints the lesson count — at snapshot time and now, with the live file's byte
+size — whether a compaction is pending, which outputs exist, and whether
+`lessons.md` or `AGENTS.md` changed since the snapshot: a changed input means
+`apply` will refuse.
 
 ## `apply`
 
@@ -101,7 +103,11 @@ edited) — then the right move is `compact` again, not `--force`. On success it
 writes `agents.md.new` to the `AGENTS.md` path atomically, archives the old
 lessons to `<state_dir>/lessons-archive/<timestamp>-<sha>.md` (with the report
 beside it as `<archive>.report.md`), rewrites `lessons.md` as the header plus
-the lines in `keep.md`, and drops the session.
+the lines in `keep.md`, and drops the session. A `keep.md` line that is not in
+`input.md` verbatim is refused — the kept set is checked against the snapshot,
+not trusted — and a repeated line is written once. The hash re-check and the
+writes are separate steps, so `apply` assumes it is the only writer: do not run
+it while another agent may be editing `AGENTS.md`.
 
 ## `cancel`
 

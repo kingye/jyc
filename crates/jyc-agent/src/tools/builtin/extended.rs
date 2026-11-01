@@ -47,6 +47,13 @@ pub const LOAD_EXTENDED_TOOLS: &str = "load_extended_tools";
 /// not registered in a given registry (e.g. `jyc_spawn_subagent`, which only
 /// exists on the synthesized `agents` channel) is left out of the index
 /// rather than advertised as something the call would fail on.
+///
+/// `task_list`'s one-liner carries the nudge to check what is still open, and
+/// it belongs here rather than in the prompt: a description rides the request's
+/// `tools` array, which is rebuilt from the live registry on every call, so the
+/// nudge outlives the message window — the `task_create` result that first
+/// announced the list does not, and once history has slid past it nothing else
+/// brings the list back.
 pub const EXTENDED_TOOLS: &[(&str, &str)] = &[
     ("jyc_spawn_subagent", "delegate a task to a subagent topic"),
     ("jyc_send_to_topic", "message another topic"),
@@ -57,7 +64,7 @@ pub const EXTENDED_TOOLS: &[(&str, &str)] = &[
     ("context_browse", "browse earlier turns"),
     ("lesson_add", "record a reusable lesson"),
     ("lesson_read", "read earlier recorded lessons"),
-    ("task_list", "read the plan"),
+    ("task_list", "read the plan; check what is still open"),
     ("task_create", "write a new plan"),
     ("task_update", "set an item's status"),
 ];
@@ -453,7 +460,7 @@ mod tests {
             loader.description
         );
         for entry in [
-            "task_list (read the plan)",
+            "task_list (read the plan; check what is still open)",
             "task_create (write a new plan)",
             "task_update (set an item's status)",
         ] {
@@ -523,7 +530,9 @@ mod tests {
             loader.description
         );
         assert!(
-            !loader.description.contains("task_list (read the plan)")
+            !loader
+                .description
+                .contains("task_list (read the plan; check what is still open)")
                 && !loader
                     .description
                     .contains("task_create (write a new plan)"),

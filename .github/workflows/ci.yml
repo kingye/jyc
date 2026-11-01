@@ -45,6 +45,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Test the lessons skill scripts
+        # The skill's file operations are stdlib-only Python with their own
+        # suite; nothing else in the workspace runs it, so without this step
+        # "the tests pass" would be unverified. Seconds, and it needs no
+        # toolchain — hence the place right after checkout.
+        run: python3 skills/lessons/scripts/lessons_test.py
+
       - uses: Swatinem/rust-cache@v2
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1

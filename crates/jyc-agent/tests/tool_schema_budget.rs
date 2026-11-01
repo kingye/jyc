@@ -110,7 +110,7 @@ const BUDGETS: &[(&str, usize, usize)] = &[
     ("lesson_add", 220, 0),
     ("lesson_read", 114, 0),
     ("list_topics", 240, 0),
-    ("load_extended_tools", 760, 0),
+    ("load_extended_tools", 775, 0),
     ("task_list", 278, 0),
     ("task_create", 345, 46),
     ("task_update", 305, 81),
@@ -142,7 +142,16 @@ const BUDGETS: &[(&str, usize, usize)] = &[
 /// paying for their schemas. The ceiling is raised by 100 rather than made
 /// exact: the next index entry needs room, but the advertised set below is
 /// where the saving shows.
-const TOTAL_BUDGET: usize = 7_900;
+///
+/// The 2026-11-01 task nudge spent the last of that room and more: the
+/// `task_list` line became `read the plan; mark finished items before
+/// reporting done`, +17 characters to 7,916. It is raised to 7,930 for the
+/// reason this file has raised it before — the alternative was to cut the
+/// line until it stopped naming the moment it guards, and the failure it
+/// guards is a topic that marks nothing before reporting the work done. The
+/// ceiling exists to catch growth nobody stated, not to forbid growth with a
+/// stated reason.
+const TOTAL_BUDGET: usize = 7_930;
 
 /// The advertised set — the core tools plus the loader's index — in
 /// characters. This is the standing per-call cost after the extended group

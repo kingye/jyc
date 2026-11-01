@@ -7,7 +7,7 @@
 
 ### Changed
 
-- The `load_extended_tools` index line for `task_list` reads `read the plan; mark items you finished before reporting done`, so the nudge to close out finished items rides a tool description rather than the prompt. Descriptions are rebuilt into every request's `tools` array from the live registry, so the nudge outlives the message window — the `task_create` result that first announced the list does not, and a topic could report work done with items still open in a list it could no longer see
+- The `load_extended_tools` index line for `task_list` reads `read the plan; mark finished items before reporting done`, so the nudge to close out finished items rides a tool description rather than the prompt. Descriptions are rebuilt into every request's `tools` array from the live registry, so the nudge outlives the message window — the `task_create` result that first announced the list does not, and a topic could report work done with items still open in a list it could no longer see. The line costs 17 characters of standing schema text; `tool_schema_budget.rs` records the corresponding ceiling raise
 
 ### Fixed
 

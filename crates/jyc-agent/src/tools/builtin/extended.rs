@@ -68,7 +68,7 @@ pub const EXTENDED_TOOLS: &[(&str, &str)] = &[
     ("lesson_read", "read earlier recorded lessons"),
     (
         "task_list",
-        "read the plan; mark items you finished before reporting done",
+        "read the plan; mark finished items before reporting done",
     ),
     ("task_create", "write a new plan"),
     ("task_update", "set an item's status"),
@@ -465,7 +465,7 @@ mod tests {
             loader.description
         );
         for entry in [
-            "task_list (read the plan; mark items you finished before reporting done)",
+            "task_list (read the plan; mark finished items before reporting done)",
             "task_create (write a new plan)",
             "task_update (set an item's status)",
         ] {
@@ -535,11 +535,12 @@ mod tests {
             loader.description
         );
         assert!(
-            !loader.description.contains(
-                "task_list (read the plan; mark items you finished before reporting done)"
-            ) && !loader
+            !loader
                 .description
-                .contains("task_create (write a new plan)"),
+                .contains("task_list (read the plan; mark finished items before reporting done)")
+                && !loader
+                    .description
+                    .contains("task_create (write a new plan)"),
             "the loader must not index task tools this registry does not have: {}",
             loader.description
         );

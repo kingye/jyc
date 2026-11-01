@@ -2435,6 +2435,15 @@ JYC uses the following subset of the agent service API:
    because whether work needs a plan is a project convention, not a
    framework-wide cost; the loader points multi-step work at them, and that
    sentence is omitted when `disabled_tools` removes every task tool. The
+   index's `task_list` line also carries the nudge to close out the items
+   already finished before reporting the work done, and a tool description is
+   the right carrier for it: descriptions are rebuilt into the request's
+   `tools` array from the live registry on every call, while the message
+   window that first announced the list is what compaction slides away — so
+   the nudge outlives the result it refers to. That costs 17 characters of
+   schema text on every request, which
+   `crates/jyc-agent/tests/tool_schema_budget.rs` records as a deliberate
+   raise of its ceiling rather than absorbing silently. The
    loader names both groups explicitly. The flag lives in the registry, which
    is cached per topic, so a load sticks for the rest of that topic's registry
    lifetime (a config reload rebuilds it and starts over). Only

@@ -2,6 +2,7 @@
 
 ### Added
 
+- The `lessons` skill (`skills/lessons/`) compacts a topic's `lessons.md` into `AGENTS.md` and starts the file over. `compact` freezes a complete snapshot in the topic's state dir — the system prompt carries only its newest 2 KiB and `lesson_read` the next 16 KiB — has the agent classify every lesson as promote, merge, keep or discard, and write a report plus a proposed `AGENTS.md`; `apply` refuses when either input changed since the snapshot, then writes the `AGENTS.md`, archives the old lessons to `lessons-archive/<timestamp>-<sha>.md` and resets the live file to the header plus the lines kept; `status` and `cancel` show and drop a pending compaction without touching either file. The script does only the deterministic part; the classification rules live in `references/workflow.md` (#1040)
 - The `/skill:<name>` synthesized prompt now carries the topic's already-resolved `topic_name`, `topic_path` and `state_dir` as plain facts. Skills that persist per-topic state can read those facts instead of guessing paths or re-implementing the state-dir resolution rule. The state dir comes from the same `jyc_types::state_dir::resolve_state_dir` function the rest of the worker uses, so the value a skill sees is exactly the value the framework writes to
 
 ### Fixed

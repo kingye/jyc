@@ -48,8 +48,10 @@ pub const LOAD_EXTENDED_TOOLS: &str = "load_extended_tools";
 /// exists on the synthesized `agents` channel) is left out of the index
 /// rather than advertised as something the call would fail on.
 ///
-/// `task_list`'s one-liner carries the nudge to check what is still open, and
-/// it belongs here rather than in the prompt: a description rides the request's
+/// `task_list`'s one-liner carries the nudge to close out the items already
+/// finished before reporting the work done — the failure it guards against is
+/// marking nothing while the list has fallen out of sight. It belongs here
+/// rather than in the prompt: a description rides the request's
 /// `tools` array, which is rebuilt from the live registry on every call, so the
 /// nudge outlives the message window — the `task_create` result that first
 /// announced the list does not, and once history has slid past it nothing else
@@ -64,7 +66,10 @@ pub const EXTENDED_TOOLS: &[(&str, &str)] = &[
     ("context_browse", "browse earlier turns"),
     ("lesson_add", "record a reusable lesson"),
     ("lesson_read", "read earlier recorded lessons"),
-    ("task_list", "read the plan; check what is still open"),
+    (
+        "task_list",
+        "read the plan; mark items you finished before reporting done",
+    ),
     ("task_create", "write a new plan"),
     ("task_update", "set an item's status"),
 ];
@@ -460,7 +465,7 @@ mod tests {
             loader.description
         );
         for entry in [
-            "task_list (read the plan; check what is still open)",
+            "task_list (read the plan; mark items you finished before reporting done)",
             "task_create (write a new plan)",
             "task_update (set an item's status)",
         ] {
@@ -530,12 +535,11 @@ mod tests {
             loader.description
         );
         assert!(
-            !loader
+            !loader.description.contains(
+                "task_list (read the plan; mark items you finished before reporting done)"
+            ) && !loader
                 .description
-                .contains("task_list (read the plan; check what is still open)")
-                && !loader
-                    .description
-                    .contains("task_create (write a new plan)"),
+                .contains("task_create (write a new plan)"),
             "the loader must not index task tools this registry does not have: {}",
             loader.description
         );

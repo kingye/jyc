@@ -23,7 +23,7 @@ and uses an in-process AI agent to generate replies.
 - 禁止用 `.ok()` / `unwrap_or_default()` 抹掉错误路径：它把「读取失败」变成「没有」，在下游表现成同形的 401/空值——遇到「凭据没错却被拒」先查错误是否被吞
 - 禁止造第二条真相：工具/技能的可用性从活注册表与活对象读（`source()` 返回提供方），不要另存构造时的 name→组快照，也不要让同一份过滤列表同时决定「提示里列什么」与「能调用什么」
 - 废弃一个语义时必须同轮改名或删除：文档、渲染路径、提示词三者中任一在描述已经不可能发生的行为 ⇒ 该字段删掉或改名，不能只改语义
-- 工具注册：`disabled_tools` 必须在 `register_extended_tools()` 之后再套一遍（注册顺序决定排除是否生效）；MCP 暴露保留名（内置 loader 名）时在加载循环里跳过并 warn
+- 工具注册：主体排除须在 `register_extended_tools()` **之前**（deferred group 要反映排除结果）；仅 `load_extended_tools` / `load_mcp_schema` 两个 loader 需在注册后单独再套一遍（主体排除跑时它们还不存在）；MCP 暴露保留名（内置 loader 名）时在加载循环里跳过并 warn
 
 ## 路径命名（统一术语）
 
@@ -65,7 +65,7 @@ and uses an in-process AI agent to generate replies.
 - TUI 断言要 scope 到目标 pane：`Borders::LEFT` 让每行以 `│` 开头（用 `trim_matches` / `starts_with`；`str::find` 返回字节偏移，`│` 占 3 字节），宽度用 `UnicodeWidthStr::width()`，图例列宽取当前 composition 的最大标签长；能由 widget flag 关掉的 chrome 就在 fixture 里关掉
 - 改 prompt/schema 的「合成形状」后，用旧形状的特征串全仓 `rg`，连同断言它的用例一起改——旧断言照常编译，红只能由 CI 发现
 - 涉及 state dir 的测试先 `register_if_absent(name, path)`、结尾 `unregister` + `clear_closed`：`resolve_state_dir` 对未注册的 topic 是 panic
-- 验证「某能力仍保留」要沿 producer→consumer 走完整链路：转发层还在不等于端到端还通（如 `send_reply` 支持附件，但调用处恒传 `None`）
+- 验证「某能力仍保留」要沿 producer→consumer 走完整链路：转发层还在不等于端到端还通（如 `send_reply` 在 `pending_delivery` 里传真实附件，但 agent 最终回复路径 `deliver_reply` 恒传 `None`）
 
 ## 工作流约定
 
@@ -129,7 +129,7 @@ and uses an in-process AI agent to generate replies.
 ## Agent Behavior Rules
 
 ### Plan Mode
-- plan mode 只是提示词约束（没有工具级禁用）：获批也不等于可以动手，只有 mode 切走才能写文件/提交/推送；它的 MAY ONLY 是穷举清单，清单外的工具（`task_create`、`lesson_add`）同样被排除
+- plan mode 只是提示词约束（没有工具级禁用）：获批也不等于可以动手，只有 mode 切走才能写文件/提交/推送；它的 MAY ONLY 是穷举清单，但显式把 task tools（`task_create`/`task_update`/`task_list`）与 `lesson_add` 列为例外——它们是自己的记录，不是对项目的改动
 
 ### Subagents
 - 术语以 `DESIGN.md` 的 **Terminology** 为准：`topic_path` = 工作目录（agent 在哪跑、父被授权读写哪），state dir = 该 topic 的 `.jyc`（恒在 agents dir 下、按名字定位）
@@ -148,7 +148,7 @@ and uses an in-process AI agent to generate replies.
 - **禁止**读写子 agent 的 state dir（`.jyc`——那是它自己的状态）；只操作它的 `topic_path` 里的普通文件
 - 子 agent 可以再派子 agent，层级不限；一个 topic 能建多少子 agent 也不设上限。任务为异步：发完即结束本轮，**禁止**轮询等待结果，结果会作为新消息回到本 topic
 - 父 topic 关闭（含上游 auto-close）会连同整棵子树一起关闭（子、孙……各自的 `<agents dir>/<child>` 一并清理）：禁止假设子 agent 能活过父；共享目录的子 agent 关闭时只删自己的 state，父的目录由父决定
-- 关闭子 agent 后必须确认 `<agents dir>/<name>` 真的消失：在它自己正在跑的那一轮里执行 `/close --force`，turn 结束时 `save_raw_context` 会重建 `.jyc`，留下一个没有 parent/角色的幽灵 topic 并被 `list_topic_names` 当作正常 topic 列出
+- 关闭子 agent 后必须确认 `<agents dir>/<name>` 真的消失：在它自己正在跑的那一轮里执行 `/close --force`，然后确认目录已删；close 路径先用 `mark_closed` 冻结 state（`close_one_topic_under`），后续记账写入会被丢弃而非重建 `.jyc`——若仍见幽灵 topic，查 `mark_closed` 是否先于删除调用
 - 改 `<config dir>/subagents/<type>/config.toml` 只动被要求的字段：整份重写会顺手丢 `[ai]` model、`disabled_tools`、`[context_strategy]`，仓库的契约测试会当场抓住
 - 「不用任何技能」写 `skills = []`，但它不是绝对关闭：topic 状态里遗留的 `/skill on X` 会把空列表重新撑开，要绝对关闭得先 `/skill reset`
 

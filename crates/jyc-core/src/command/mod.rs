@@ -410,16 +410,26 @@ mod tests {
     /// uses everywhere else.
     #[test]
     fn test_skill_commands_appends_topic_context_when_given() {
+        // `resolve_state_dir` is a closed-set lookup that panics on unknown
+        // topics (#825), so register first. Use the `closed-set-` test naming
+        // convention from `state_dir.rs` to keep the registry isolated.
+        let topic_name = "closed-set-skill-cmd-mytopic";
         let topic_path = std::path::PathBuf::from("/tmp/topic-work");
-        let cmds = skill_commands(&[skill("lessons")], Some(("mytopic", &topic_path)));
+        let state_dir = topic_path.join(".data/.jyc");
+        jyc_types::state_dir::register(topic_name, &state_dir);
+        let cmds = skill_commands(&[skill("lessons")], Some((topic_name, &topic_path)));
         assert_eq!(cmds.len(), 1);
         let directive = cmds[0].user_prompt.as_deref().unwrap_or_default();
-        assert!(directive.contains("topic_name: mytopic"), "{directive}");
+        assert!(
+            directive.contains(&format!("topic_name: {topic_name}")),
+            "{directive}"
+        );
         assert!(
             directive.contains("topic_path (working dir): /tmp/topic-work"),
             "{directive}"
         );
-        let expected_state = jyc_types::state_dir::resolve_state_dir("mytopic", &topic_path);
+        let expected_state = jyc_types::state_dir::resolve_state_dir(topic_name, &topic_path);
+        assert_eq!(expected_state, state_dir);
         assert!(
             directive.contains(&format!(
                 "state_dir (this topic's private state dir): {}",

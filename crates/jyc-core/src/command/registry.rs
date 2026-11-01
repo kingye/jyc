@@ -317,7 +317,7 @@ mod tests {
             source_path: std::path::PathBuf::from("/skills/ponytail"),
         };
         let mut registry = CommandRegistry::new();
-        for cmd in crate::command::skill_commands(&[meta]) {
+        for cmd in crate::command::skill_commands(&[meta], None) {
             let key = crate::command::custom_handler::CustomCommandHandler::command_key(&cmd);
             registry.register(
                 &key,

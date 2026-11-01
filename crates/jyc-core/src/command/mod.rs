@@ -72,7 +72,7 @@ pub fn all_commands_with(
     // Skill rows go in before the config entries so an explicit
     // `[[commands]] name = "skill:<name>"` wins the name, as everywhere else
     // in this function.
-    for c in &skill_commands(skills) {
+    for c in &skill_commands(skills, None) {
         let info = custom_to_info(c);
         by_name.insert(info.name.clone(), info);
     }
@@ -102,21 +102,55 @@ pub fn all_commands_with(
 ///
 /// [`CommandRegistry`]: registry::CommandRegistry
 /// [`custom_handler::CustomCommandHandler`]: custom_handler::CustomCommandHandler
-pub fn skill_commands(skills: &[jyc_types::SkillMeta]) -> Vec<CustomCommand> {
+/// Synthesize one `/skill:<name>` command per skill. Not a runtime toggle like
+/// `/skill`: it hands the model this skill's absolute `SKILL.md` path and a read
+/// directive, whose response becomes a topic task, so a topic has to exist
+/// already (see `skill_read_messages`). `user_prompt` carries the path instead
+/// of the SKILL.md body: the expanded text is what both `session.rs` turns into
+/// the auto-queued message and the worker takes as `{{args}}`, so a body would
+/// make a single skill line in config replay instructions at full size.
+///
+/// When `topic` is `Some((topic_name, topic_path))`, append two path facts to
+/// the synthesized prompt so the agent does not have to guess where the topic
+/// lives: its working directory and its state dir (the latter resolved via
+/// [`jyc_types::state_dir::resolve_state_dir`], the single source of truth).
+/// Skills that need to persist per-topic state can reference those facts
+/// instead of hard-coding paths or re-deriving the state dir from a naming
+/// convention. Pass `None` from callers that only enumerate commands for the
+/// `/` popup (no real topic in scope).
+pub fn skill_commands(
+    skills: &[jyc_types::SkillMeta],
+    topic: Option<(&str, &std::path::Path)>,
+) -> Vec<CustomCommand> {
     skills
         .iter()
-        .map(|s| CustomCommand {
-            name: format!("skill:{}", s.name),
-            description: s.description.clone(),
-            mode: None,
-            // The skill's name, path and description plus the instruction to
-            // read its SKILL.md — the path is what makes a skill the topic's
-            // prompt does not list still reachable. `CustomCommandHandler`
-            // puts same-line args first, then this block.
-            user_prompt: Some(jyc_types::skill::format_skill_section(s)),
-            skills: None,
-            shell: None,
-            timeout: None,
+        .map(|s| {
+            let mut user_prompt = jyc_types::skill::format_skill_section(s);
+            if let Some((topic_name, topic_path)) = topic {
+                let state_dir = jyc_types::state_dir::resolve_state_dir(topic_name, topic_path);
+                user_prompt.push_str(&format!(
+                    "\n\nTopic context (already resolved by the framework — do not re-derive):\n\
+                     - topic_name: {topic_name}\n\
+                     - topic_path (working dir): {topic_path}\n\
+                     - state_dir (this topic's private state dir): {state_dir}\n",
+                    topic_name = topic_name,
+                    topic_path = topic_path.display(),
+                    state_dir = state_dir.display(),
+                ));
+            }
+            CustomCommand {
+                name: format!("skill:{}", s.name),
+                description: s.description.clone(),
+                mode: None,
+                // The skill's name, path and description plus the instruction to
+                // read its SKILL.md — the path is what makes a skill the topic's
+                // prompt does not list still reachable. `CustomCommandHandler`
+                // puts same-line args first, then this block.
+                user_prompt: Some(user_prompt),
+                skills: None,
+                shell: None,
+                timeout: None,
+            }
         })
         .collect()
 }
@@ -349,7 +383,7 @@ mod tests {
     /// call, so a skill never appears in one without the other.
     #[test]
     fn test_skill_commands_shape() {
-        let cmds = skill_commands(&[skill("pr-review")]);
+        let cmds = skill_commands(&[skill("pr-review")], None);
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].name, "skill:pr-review");
         assert!(
@@ -361,8 +395,48 @@ mod tests {
         assert!(directive.contains("pr-review"), "{directive}");
         assert!(directive.contains("/skills/pr-review"), "{directive}");
         assert!(directive.contains("SKILL.md"), "{directive}");
+        assert!(
+            !directive.contains("state_dir"),
+            "popup path must not leak topic facts: {directive}"
+        );
         assert!(cmds[0].shell.is_none(), "never a shell command");
         assert!(cmds[0].mode.is_none(), "must not touch the topic's mode");
+    }
+
+    /// When a real topic is in scope, the synthesized prompt carries the
+    /// already-resolved topic_path and state_dir so a skill never has to
+    /// guess where to write its per-topic state. The state dir comes from
+    /// `jyc_types::state_dir::resolve_state_dir` — same function the worker
+    /// uses everywhere else.
+    #[test]
+    fn test_skill_commands_appends_topic_context_when_given() {
+        // `resolve_state_dir` is a closed-set lookup that panics on unknown
+        // topics (#825), so register first. Use the `closed-set-` test naming
+        // convention from `state_dir.rs` to keep the registry isolated.
+        let topic_name = "closed-set-skill-cmd-mytopic";
+        let topic_path = std::path::PathBuf::from("/tmp/topic-work");
+        let state_dir = topic_path.join(".data/.jyc");
+        jyc_types::state_dir::register(topic_name, &state_dir);
+        let cmds = skill_commands(&[skill("lessons")], Some((topic_name, &topic_path)));
+        assert_eq!(cmds.len(), 1);
+        let directive = cmds[0].user_prompt.as_deref().unwrap_or_default();
+        assert!(
+            directive.contains(&format!("topic_name: {topic_name}")),
+            "{directive}"
+        );
+        assert!(
+            directive.contains("topic_path (working dir): /tmp/topic-work"),
+            "{directive}"
+        );
+        let expected_state = jyc_types::state_dir::resolve_state_dir(topic_name, &topic_path);
+        assert_eq!(expected_state, state_dir);
+        assert!(
+            directive.contains(&format!(
+                "state_dir (this topic's private state dir): {}",
+                expected_state.display()
+            )),
+            "{directive}"
+        );
     }
 
     /// Shell custom commands reply synchronously with stdout/stderr and

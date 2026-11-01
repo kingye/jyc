@@ -429,7 +429,7 @@ mod tests {
             description: "Review pull requests".into(),
             source_path: tmp.path().join("pr-review"),
         };
-        let synthesized = crate::command::skill_commands(&[meta]).pop().unwrap();
+        let synthesized = crate::command::skill_commands(&[meta], None).pop().unwrap();
         assert_eq!(synthesized.name, "skill:pr-review");
         let handler = CustomCommandHandler::new(synthesized);
 

@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Added
+
+- The `/skill:<name>` synthesized prompt now carries the topic's already-resolved `topic_name`, `topic_path` and `state_dir` as plain facts. Skills that persist per-topic state can read those facts instead of guessing paths or re-implementing the state-dir resolution rule. The state dir comes from the same `jyc_types::state_dir::resolve_state_dir` function the rest of the worker uses, so the value a skill sees is exactly the value the framework writes to
+
 ### Fixed
 
 - `Sync to Gitee` retries its push five times with backoff instead of failing the whole mirror on the first transient network error (`Recv failure: Connection reset by peer`, one failure in ~20 runs). Mirror pushes are also serialized, so a slow retry cannot land an older commit after a newer push

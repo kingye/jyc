@@ -4,6 +4,12 @@ JYC is a channel-agnostic AI agent framework written in Rust.
 It monitors inbound channels (email via IMAP), routes messages to topics,
 and uses an in-process AI agent to generate replies.
 
+## 诚实与证据
+
+- 任何外部状态结论（分支、commit、PR、CI、文件是否存在、命令是否执行）只能来自**本轮真实的工具返回**：报 commit 前 `git rev-parse HEAD`，报 PR 前 `gh pr view <n> --json state,headRefOid`，报推送看 push 输出的 `<old>..<new>` 行
+- 禁止把「预期会打印什么」写进回复：没有工具结果块支撑的输出一律算没发生。被指出编造时立刻补一次可验证的调用并贴真实返回，不许辩解、不许让用户查日志自证
+- 报「完成 / 仅文档改动 / 新增 N 个测试」之前用外部事实核对：`git show --stat HEAD`、逐个 test binary 的计数、`gh pr view --json state,mergedAt`；「没有 X」与「X 是 Y」同样需要证据（先确认搜索路径，必要时 `rg --hidden --no-ignore`）
+
 ## Tech Stack
 - Rust, tokio async runtime
 - IMAP/SMTP for email channels
@@ -14,6 +20,10 @@ and uses an in-process AI agent to generate replies.
 - Use `tracing` for all logging (never `println!`)
 - Error handling: propagate with `?`, use `.context()` for meaningful errors
 - All public functions must have doc comments
+- 禁止用 `.ok()` / `unwrap_or_default()` 抹掉错误路径：它把「读取失败」变成「没有」，在下游表现成同形的 401/空值——遇到「凭据没错却被拒」先查错误是否被吞
+- 禁止造第二条真相：工具/技能的可用性从活注册表与活对象读（`source()` 返回提供方），不要另存构造时的 name→组快照，也不要让同一份过滤列表同时决定「提示里列什么」与「能调用什么」
+- 废弃一个语义时必须同轮改名或删除：文档、渲染路径、提示词三者中任一在描述已经不可能发生的行为 ⇒ 该字段删掉或改名，不能只改语义
+- 工具注册：主体排除须在 `register_extended_tools()` **之前**（deferred group 要反映排除结果）；仅 `load_extended_tools` / `load_mcp_schema` 两个 loader 需在注册后单独再套一遍（主体排除跑时它们还不存在）；MCP 暴露保留名（内置 loader 名）时在加载循环里跳过并 warn
 
 ## 路径命名（统一术语）
 
@@ -32,6 +42,9 @@ and uses an in-process AI agent to generate replies.
 ## Git Rules
 - NEVER run `git config user.name` or `git config user.email` (local or global)
 - NEVER run `git config --global` for any setting
+- 禁止 `git add -A` / `git add .`：工作区里有未跟踪产物（根目录的旧 `jyc_back` 二进制、框架落盘的 jsonl），一律 `git add <显式路径>`；推送前用 `git diff --name-only <base>..HEAD | grep -vE '\.(rs|md|toml)$'` 查杂物
+- 提交信息与多行文本先写文件再 `-F <文件>`，禁止内联进 bash：反引号会被命令替换（信息静默残缺），含 `/` 开头的片段会被沙箱判为越界路径
+- 发布只推 `git push origin main vX.Y.Z`，禁止 `--tags`：它连带推 `nightly`，non-fast-forward 会让整条 push 报错退出（main 与 tag 其实已推成功，退出码骗人）
 
 ## 测试要求
 
@@ -44,6 +57,15 @@ and uses an in-process AI agent to generate replies.
 - `cargo test --workspace` 默认并行模式必须稳定通过
 - 测试间不得共享可变状态；如必须串行，使用 `#[serial]` 标记并在 CI 中串行执行
 - 资源泄漏（如端口占用）的测试必须实现 `Drop` 或使用 `TempDir` 自动清理
+
+### 断言
+
+- 期望值必须由**该用例自己的** fixture 推出：字面量、宽度、列宽都不要从别的用例复制；批量替换断言行前先数命中并确认该值是显式传入还是默认回落
+- 断言「payload 含/不含 X」「两个区域不同」之前先确认 fixture 真能区分：不同区域用不同标记，需要两区域不同就放进会被压缩的内容（如 `tool_calls`）；比较序列化 payload 用消息级前缀（值相等 ⇒ 字节前缀相等），禁止对 JSON 数组用 `starts_with`
+- TUI 断言要 scope 到目标 pane：`Borders::LEFT` 让每行以 `│` 开头（用 `trim_matches` / `starts_with`；`str::find` 返回字节偏移，`│` 占 3 字节），宽度用 `UnicodeWidthStr::width()`，图例列宽取当前 composition 的最大标签长；能由 widget flag 关掉的 chrome 就在 fixture 里关掉
+- 改 prompt/schema 的「合成形状」后，用旧形状的特征串全仓 `rg`，连同断言它的用例一起改——旧断言照常编译，红只能由 CI 发现
+- 涉及 state dir 的测试先 `register_if_absent(name, path)`、结尾 `unregister` + `clear_closed`：`resolve_state_dir` 对未注册的 topic 是 panic
+- 验证「某能力仍保留」要沿 producer→consumer 走完整链路：转发层还在不等于端到端还通（如 `send_reply` 在 `pending_delivery` 里传真实附件，但 agent 最终回复路径 `deliver_reply` 恒传 `None`）
 
 ## 工作流约定
 
@@ -67,13 +89,15 @@ and uses an in-process AI agent to generate replies.
 - CI（`.github/workflows/ci.yml`）自动执行：fmt、clippy -D warnings、llvm-cov（60% 阈值）
 - 改依赖时提交 `cargo check -p <crate>` 顺带刷新的 `Cargo.lock`
 - 按「文档约定」检查是否需更新相关文档
+- 本地不跑 clippy，所以提交前按 clippy 默认 lint 自查：`collapsible_if` 写成 `if cond && let Some(x) = …`（edition 2024）、`len() == 0` → `is_empty()`、`iter().any(|x| x == y)` → `contains(&y)`、函数参数别超 7 个、只借用的 `vec!` 改数组、`&[x.clone()]` 改 `std::slice::from_ref(&x)`、format 用内联 `{name}`
 - 非平凡改动（跨文件、改逻辑，尤其本地跑不了测试时）：push / 开 PR 前或同时派一次评审——`jyc_spawn_subagent(name="review-<what>", type="review")`，再用 `jyc_send_to_topic(..., require_reply=true)` 派任务（任务模板见 `dev-workflow` 技能），范围给 `git diff <base>..HEAD`（`<base>` = `git merge-base origin/main HEAD`，含刚提交的改动）；它异步运行、不阻塞 push，报告作为同一个 PR 的 follow-up commit
 
 ### CI 等待规则
-- CI 结果**必须**回收：每次 push / 开 PR 都安排一次异步等待，把结果带回本 topic——**默认**派 `ci-watch` 子 agent（`jyc_spawn_subagent(name="ci-watch-<pr>", type="ci-watch")` 建出角色，再用 `jyc_send_to_topic(..., require_reply=true)` 派任务；只发消息不 spawn 会自建一个没有角色的普通 topic、名字还被占；步骤见 `dev-workflow`）
+- CI 结果**必须**回收：每次 push / 开 PR 都安排一次异步等待，把结果带回本 topic——**默认**派 `ci-watch` 子 agent（`jyc_spawn_subagent(name="ci-watch-<pr>", type="ci-watch")` 建出角色，再用 `jyc_send_to_topic(..., require_reply=true)` 派任务；只发消息不 spawn 会直接报错（那个名字没有 topic 拥有，send 从不创建 topic）；步骤见 `dev-workflow`）
 - 等待**只安排一次**，针对本轮结束时留下的那个 head：中途还会再 push 时，不为将被取代的 head 派等待者。同一 PR 出了新 head，优先复用同一个 watcher（再派一次任务＝它的一轮新 turn），它已回报过或确实没了才新派
 - **禁止**由自己等待：不得在轮内轮询 `gh pr checks` / `gh run watch`，不得用 `sleep` 重试，不得因为「CI 还没跑完」而推迟提交或推迟回复——安排完**立即结束本轮**并把链接交给用户；结果作为新消息回到本 topic，红 CI 在那一轮里修
 - 唯一例外：结论**已经出来**且马上要用它做决定（如合并前）——允许单查一次（`gh pr checks <branch>`），拿到输出立刻返回，不重复查询；结论还没出时回到第 1 条
+- 判读 CI：`gh run list` 必须带 `--workflow CI`（main 上还有 Gitee / Bloat / Docker 工作流）；`gh run view` 要 run id 而非 job id，无 checkout 的目录要加 `--repo`；修 CI 前先按 `headRefOid` 对齐当前 head 再读 `--log-failed`；force-push 后必须告知正在等待的 watcher 旧 head 作废
 
 ### 提交信息格式
 遵循 [Conventional Commits](https://www.conventionalcommits.org/)：`feat:` / `fix:` / `refactor:` / `docs:` / `test:` / `chore:`（示例：`feat: add IMAP idle support for real-time email monitoring`）
@@ -104,6 +128,9 @@ and uses an in-process AI agent to generate replies.
 
 ## Agent Behavior Rules
 
+### Plan Mode
+- plan mode 只是提示词约束（没有工具级禁用）：获批也不等于可以动手，只有 mode 切走才能写文件/提交/推送；它的 MAY ONLY 是穷举清单，但显式把 task tools（`task_create`/`task_update`/`task_list`）与 `lesson_add` 列为例外——它们是自己的记录，不是对项目的改动
+
 ### Subagents
 - 术语以 `DESIGN.md` 的 **Terminology** 为准：`topic_path` = 工作目录（agent 在哪跑、父被授权读写哪），state dir = 该 topic 的 `.jyc`（恒在 agents dir 下、按名字定位）
 - 委派前必须先看系统提示里的子 agent 列表；已有能用的子 agent 就用 `jyc_send_to_topic`（`require_reply=true`）追加任务，**禁止**重复创建
@@ -121,6 +148,9 @@ and uses an in-process AI agent to generate replies.
 - **禁止**读写子 agent 的 state dir（`.jyc`——那是它自己的状态）；只操作它的 `topic_path` 里的普通文件
 - 子 agent 可以再派子 agent，层级不限；一个 topic 能建多少子 agent 也不设上限。任务为异步：发完即结束本轮，**禁止**轮询等待结果，结果会作为新消息回到本 topic
 - 父 topic 关闭（含上游 auto-close）会连同整棵子树一起关闭（子、孙……各自的 `<agents dir>/<child>` 一并清理）：禁止假设子 agent 能活过父；共享目录的子 agent 关闭时只删自己的 state，父的目录由父决定
+- 关闭子 agent 后必须确认 `<agents dir>/<name>` 真的消失：在它自己正在跑的那一轮里执行 `/close --force`，然后确认目录已删；close 路径先用 `mark_closed` 冻结 state（`close_one_topic_under`），后续记账写入会被丢弃而非重建 `.jyc`——若仍见幽灵 topic，查 `mark_closed` 是否先于删除调用
+- 改 `<config dir>/subagents/<type>/config.toml` 只动被要求的字段：整份重写会顺手丢 `[ai]` model、`disabled_tools`、`[context_strategy]`，仓库的契约测试会当场抓住
+- 「不用任何技能」写 `skills = []`，但它不是绝对关闭：topic 状态里遗留的 `/skill on X` 会把空列表重新撑开，要绝对关闭得先 `/skill reset`
 
 ### Reply vs. SendMessage
 - The agent's final message at the end of a turn carries an ordinary text reply; no reply tool exists.
@@ -133,6 +163,7 @@ and uses an in-process AI agent to generate replies.
 - Mark an item `in_progress` when picking it up and `completed` with `task_update` as soon as it is genuinely done — never ahead of the work, never with validation still failing.
 - Re-plan with a new `task_create` (it replaces the list and renumbers ids) rather than patching a stale one item by item.
 - After a context reset, call `task_list` for the ids and current progress; never guess ids from memory.
+- 报告一轮完成前用 `task_list` 对账外部事实（`gh pr view <n> --json state,mergedAt`、main 上的合并提交），再标 completed；列表状态不能凭记忆推断
 
 ## References
 - See DESIGN.md for architecture

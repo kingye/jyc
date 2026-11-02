@@ -156,6 +156,9 @@ and uses an in-process AI agent to generate replies.
 - The agent's final message at the end of a turn carries an ordinary text reply; no reply tool exists.
 - Use `jyc_send_message` for proactive alerts, cross-channel messages, or a reply that carries attachments; never use it to spam users.
 - Use `jyc_send_to_topic` to send a message to another topic for agent processing.
+- **禁止**借 `jyc_send_to_topic` / `/send` / 回复转发注入 `/grant`、`/ungrant`：它们是授权命令，服务端在入队前与 dispatch 两处都拒绝来自 agent 的消息（`CommandSpec::authorization`）。agent 扩大边界只有一条路——调 `request_access` 问用户，由用户在服务端执行命令
+- 调 `request_access` 后本轮结束，授权在用户回复后**下一轮**生效：禁止在同一轮内声称「已获授权」或重试越界工具；也不要替用户执行 `/grant`（做不到，且那是绕过）
+- 边界拒绝消息里的 `resolved: /abs/path` 才是可授权的形式：`request_access` 只接受绝对路径，相对路径不构成 grant
 
 ### Task List
 - The task tools are in the extended group: in a fresh registry, call `load_extended_tools` before the first `task_create`; the loader description points multi-step work at them.

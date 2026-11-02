@@ -109,6 +109,8 @@ impl Tool for SendToThreadTool {
             attachments: &attachments,
             recipient,
             require_reply,
+            // An agent's own send: it may not carry an authorization command.
+            origin: jyc_core::command::handler::CommandOrigin::Agent,
         };
 
         match send_to_topic_with_target(managers, source, req).await {

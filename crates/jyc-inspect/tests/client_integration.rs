@@ -431,6 +431,7 @@ async fn send_returns_429_when_the_queue_is_full() {
             attachments: &[],
             recipient: None,
             require_reply: false,
+            origin: jyc_core::command::handler::CommandOrigin::User,
         },
     )
     .await;

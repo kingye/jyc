@@ -7,11 +7,39 @@ use jyc_types::config::HookEvent;
 use jyc_types::{AppConfig, CustomCommand};
 use jyc_utils::hooks::{HookCtx, HookSet};
 
+/// Who wrote the message a command line arrived on.
+///
+/// The registry refuses [`CommandSpec::authorization`] commands for
+/// [`Self::Agent`]: `/grant` widens the agent's own filesystem boundary, so an
+/// agent that could run it would be granting itself access and the boundary
+/// would be advisory. This is the dispatch-side half of the guard;
+/// `send_handler` refuses such a message earlier, before it is even queued.
+///
+/// Deliberately not `Default`: a default of [`Self::User`] would be fail-open —
+/// any future injection path that reached for `..Default::default()` would be
+/// treated as the user and could run `/grant`. Every construction names its
+/// origin, and [`CommandContext::default`] picks [`Self::Agent`] for the same
+/// reason.
+///
+/// [`CommandSpec::authorization`]: super::builtin::CommandSpec::authorization
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandOrigin {
+    /// A message the user wrote.
+    User,
+    /// A message another topic's agent injected: `jyc_send_to_topic`, `/send`,
+    /// or a turn reply forwarded back to its requester.
+    Agent,
+}
+
 /// Context passed to a command handler during execution.
 #[derive(Clone)]
 pub struct CommandContext {
     /// Command arguments (everything after the command name)
     pub args: Vec<String>,
+    /// Who wrote the message carrying this command line — the user, or another
+    /// topic's agent. Read by the registry to refuse authorization commands
+    /// from the latter.
+    pub origin: CommandOrigin,
     /// Path to the topic directory
     pub topic_path: PathBuf,
     /// Topic name — the identity that state-dir resolution keys on
@@ -48,9 +76,15 @@ impl Default for CommandContext {
     /// `CommandContext` can spread `..Default::default()` and only fill
     /// the fields under test. Production code constructs one explicitly
     /// in `topic_manager::worker::process_message`.
+    ///
+    /// `origin` defaults to [`CommandOrigin::Agent`], not `User`: this default
+    /// exists for tests, and a test that spreads it must not thereby hold the
+    /// user's power to run `/grant`. Tests that exercise an authorization
+    /// command say so by naming [`CommandOrigin::User`].
     fn default() -> Self {
         Self {
             args: vec![],
+            origin: CommandOrigin::Agent,
             topic_path: PathBuf::new(),
             topic_name: String::new(),
             config: Arc::new(AppConfig::default()),

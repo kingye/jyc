@@ -79,6 +79,18 @@ pub struct CommandSpec {
     ///
     /// [`registry::CommandOutput`]: super::registry::CommandOutput
     pub continues_to_agent: bool,
+    /// Whether this command changes the agent's filesystem boundary — the
+    /// commands only a user may run.
+    ///
+    /// Read by the two guards that keep an agent from granting itself access:
+    /// [`super::send_handler::send_to_topic_with_target`] refuses to inject a
+    /// message carrying one, and
+    /// [`super::registry::CommandRegistry::process_commands`] refuses to run
+    /// one in a message an agent sent ([`super::handler::CommandOrigin`]).
+    /// Declared here for the same reason `continues_to_agent` is: the two
+    /// guards and the `/` popup must read one table, or a new granting command
+    /// ships ungated.
+    pub authorization: bool,
     /// How the command's arguments are shaped: what [`spec::parse`] reads the
     /// line through, and what the popup's argument level and [`Self::usage`]
     /// are built from. Written here, on the command's one row.
@@ -150,6 +162,18 @@ macro_rules! usage_words_or_empty {
 /// rows do not repeat a `false`. Kept module-local (no `#[macro_export]`):
 /// it is only ever invoked from `builtin_commands!` below, in this module.
 macro_rules! continues_or_false {
+    () => {
+        false
+    };
+    ($v:expr) => {
+        $v
+    };
+}
+
+/// `authorization` for a table row — omitted means the common case (a command
+/// that touches no filesystem boundary), so only the two granting commands
+/// say `true`.
+macro_rules! authorization_or_false {
     () => {
         false
     };
@@ -237,6 +261,20 @@ pub fn usage_of(name: &str) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
+/// Whether `name` is an authorization command — one that changes the agent's
+/// filesystem boundary, and so may only be run by the user.
+///
+/// Matched case-insensitively because the registry lowercases the incoming
+/// line before dispatching while the caller scanning a body may not have.
+/// A name with no row is not an authorization command: an unknown `/grant`-like
+/// name dispatches to nothing, so there is nothing to refuse.
+pub fn is_authorization_command(name: &str) -> bool {
+    BUILTIN_COMMANDS
+        .iter()
+        .find(|spec| spec.name.eq_ignore_ascii_case(name))
+        .is_some_and(|spec| spec.authorization)
+}
+
 /// Declare the built-in commands: the spec table, the name list, and the
 /// registry, all from one list.
 ///
@@ -252,6 +290,7 @@ macro_rules! builtin_commands {
     ( $( $name:literal => {
             desc: $desc:literal,
             $( continues: $cont:expr, )?
+            $( authorization: $auth:expr, )?
             $( shape: $shape:expr, )?
             $( args: $args:expr, )?
             $( usage_words: $words:expr, )?
@@ -266,6 +305,7 @@ macro_rules! builtin_commands {
                 name: $name,
                 description: $desc,
                 continues_to_agent: continues_or_false!( $( $cont )? ),
+                authorization: authorization_or_false!( $( $auth )? ),
                 shape: shape_or_none!( $( $shape )? ),
                 args: args_or_empty!( $( $args )? ),
                 usage_words: usage_words_or_empty!( $( $words )? ),
@@ -357,6 +397,7 @@ builtin_commands! {
     },
     "/grant" => {
         desc: "Grant agent access to a path (read-only, until restart)",
+        authorization: true,
         shape: Shape::Args { labels: &["path"] },
         flags: super::flags::grant_specs,
         make: |_| Arc::new(GrantCommandHandler)
@@ -437,6 +478,7 @@ builtin_commands! {
     },
     "/ungrant" => {
         desc: "Revoke a runtime access grant",
+        authorization: true,
         shape: Shape::Args { labels: &["path"] },
         make: |_| Arc::new(UngrantCommandHandler)
     },

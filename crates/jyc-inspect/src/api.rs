@@ -531,6 +531,9 @@ pub async fn post_send(
             attachments: &[],
             recipient: None,
             require_reply: false,
+            // `POST /api/send` is a user-facing endpoint: the operator is the
+            // one granting, so an authorization command is let through.
+            origin: jyc_core::command::handler::CommandOrigin::User,
         },
     )
     .await

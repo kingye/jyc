@@ -60,6 +60,10 @@ pub const EXTENDED_TOOLS: &[(&str, &str)] = &[
     ("jyc_spawn_subagent", "delegate a task to a subagent topic"),
     ("jyc_send_to_topic", "message another topic"),
     ("list_topics", "list the channels and their active topics"),
+    (
+        "request_access",
+        "ask the user to allow a path outside the working directory",
+    ),
     ("jyc_publish_file", "publish a file as a download link"),
     ("read_image", "view an image"),
     ("webfetch", "fetch a URL as text"),

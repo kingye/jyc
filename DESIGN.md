@@ -2877,6 +2877,46 @@ Topic A receives results
 
 **`TopicManagers`**: the process's running managers, in one place. `ChannelOrchestrator` owns the single instance — it is the only thing that creates managers — and publishes the current set on every channel change; each manager holds a `Weak` back-pointer to it (a strong one would be an `Arc` cycle), so a command handler, built with only its own manager, resolves an addressee through `manager.managers()`. `ToolContext` and `InspectContext` carry the same `Arc<TopicManagers>`, and the tool carries `current_channel` / `current_topic` for the source metadata. Before this, the same information existed twice: a channel-keyed `HashMap` derived in the CLI for the agent layer, and ad-hoc `channel_name()` scans in the inspect server.
 
+**The authorization-command guard**: an injected message is a command channel. Whatever string `jyc_send_to_topic` puts in the target's queue goes through `process_commands` like the user's own typing, so before this guard an agent could widen its own filesystem boundary by sending itself `/grant /etc -w` — the boundary would have been advisory, enforced only by the model's own restraint. Authorization commands (`/grant`, `/ungrant` — the ones that move that boundary) are therefore refused when the message came from an agent, in two layers:
+
+- **At the send path**, before the message is queued: `send_to_topic_with_target` scans the body's leading command block and bails. This covers every agent-side entry — the `jyc_send_to_topic` tool, the `/send` command, and the reply guard forwarding a turn's last words back to its requester — because all three call that one function. The model gets an error it can read and the message never enters the queue.
+- **At dispatch**, for anything that reaches a queue another way: `CommandContext` carries a `CommandOrigin` (`User` / `Agent`), and the registry refuses an authorization command from `Agent` before the handler runs. This is the same shape as the freeze guard beside it (`is_closed`), and for the same reason: refusing in one place rather than trusting each handler to check keeps a newly added injection path from silently reopening the hole.
+
+Both layers read the same table: `CommandSpec::authorization` (default false, set on `/grant` and `/ungrant`) is the single declaration of which commands are authorization commands, and `builtin::is_authorization_command` answers for the caller. A name with no row is not one — an unknown `/grant`-like line dispatches to nothing, so there is nothing to refuse. The scan (`registry::leading_command_names`) mirrors `process_commands` exactly — skip blank lines, a run of `/`-leading lines is the command block, the first line that is not one ends it — because a scanner with its own idea of where commands stop would refuse prose mentioning `/grant` or let a `/grant` placed after a line of text through. A consistency test asserts the two agree on a set of bodies.
+
+`CommandOrigin` is explicit, never defaulted at a construction site that could be an agent's: the compiler forces each one to say which it is. The `/send` and `/close` handlers pass their own context's origin through, so a user driving them from the dashboard or the inspect API keeps a user's rights instead of being refused along with the agent. Forwarded responses (`CommandOrigin::Agent`) are the case that started this: a turn that ends its reply with `/grant …` under `require_reply` had those words delivered into the asking topic and executed there.
+
+The guard bounds *what an agent can say*, not *who can reach the process*: a websocket client can still set any metadata it likes, so `source_topic` is spoofable by a client. Spoofing it only restricts the spoofer, and an agent would need `bash` to forge one — outside the boundary's own best-effort scope, which is stated below.
+
+### Built-in Tool: `request_access`
+
+Asks the user to allow a path outside the working directory. The tool **asks; it never grants** — that split is the whole design.
+
+The earlier shape had the model read the user's answer and then call back with a grant mode. It could not be trusted: nothing in that path verifies what the user actually said, so a model could skip the question, misread a refusal, or name a wider path than was offered. Handing the decision to the command layer takes the model out of the authorization path entirely.
+
+Every option is a **command the user runs**, and the answer travels back as that command verbatim:
+
+```
+/grant /data/invoices -once     →  grant_once: the turn the answer starts
+/grant /data/invoices           →  in force until restart
+I do not grant access to /data/invoices.   →  refusal, plain text
+```
+
+With `write: true` the grant lines carry `-w`. The refusal is deliberately not a command: an answer line with no `/` stays message text, so the model reads a refusal instead of the server running something. Both grant lines are built by the tool, and every byte of them comes from the path that was actually denied — a model that could write the option text could offer a wider path than it was refused.
+
+`answer_as = command` on the question tells the channel how the pick becomes a message. The TUI sends the chosen line verbatim instead of composing `Q1: 2) …`; a channel without a question box renders the same command lines in its numbered plain-text fallback, so the user copies one rather than mapping a number to an option. `Text` is the default, so a channel that predates the field keeps answering the old way.
+
+The follow-up line (`Continue.`) is appended after the command because a message holding only commands runs no agent turn: without it the grant would be written and the turn that asked for it would never resume, which looks exactly like the grant having failed.
+
+The turn ends when the questions are handed over, exactly like `ask_user` — the tool has no way to wait. That is not a limitation but the ordering the grant needs: commands run before the turn's `ToolContext` is built, so the retry starts with the grant in force. In practice the model calls `request_access`, the turn ends, the user picks an option, the pick arrives as a command plus `Continue.`, the command dispatcher writes the grant, and the turn that `Continue.` starts retries the tool that was denied.
+
+Two properties worth stating plainly:
+
+- **`-once` is a separate entry, not a shortened permanent one.** `access_grants::grant_once` inserts an entry flagged `once`, and `clear_once` drops every such entry for the topic once the turn it was made for has finished. The until-restart `grant()` looks for an entry to update and skips `once` ones, so `/grant -once /dir` followed by `/grant /dir` leaves two records — the second is a decision the user made, not a promotion of the first, and an expired one-shot can never stand in for it. Both kinds are read back by `resolve_additional_read_roots` / `resolve_additional_write_roots`, which is what makes a one-turn grant usable at all.
+- **This raises auditability, not a sandbox.** `bash`'s boundary check scans absolute path tokens outside quotes, so a command that builds a path at runtime gets past it. `request_access` makes the default deny and the exception visible and attributable; it does not make the boundary airtight, and `DESIGN.md` should not claim otherwise.
+
+`request_access` sits in the **extended** tool group: a permission request is a rare event and does not deserve a line in every prompt's cached prefix. The access-denied message names it (`call load_extended_tools and then request_access with that absolute path`) and quotes the resolved absolute path, because that is the form a grant has to name — a relative path cannot be granted, and an error the model cannot act on is where the work stops.
+
 ### Historical Message Quoting (Topic Trail)
 
 `build_full_reply_text()` builds the reply with quoted history from the topic's `chat_history_*.jsonl` files.

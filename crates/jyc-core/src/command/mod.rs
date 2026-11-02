@@ -12,6 +12,7 @@ pub mod grant_handler;
 pub mod handler;
 pub mod help_handler;
 pub mod info_handler;
+pub mod line;
 pub mod mode_handler;
 pub mod model_handler;
 pub mod new_handler;

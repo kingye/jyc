@@ -4352,10 +4352,17 @@ impl CommandRegistry {
                     continue; // Skip blank lines in command block
                 }
                 if trimmed.starts_with('/') {
-                    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                    // One splitter for the whole process (command/line.rs).
+                    let parts = match line::split(trimmed) {
+                        Ok(parts) => parts,
+                        Err(error) => {
+                            results.push(CommandResult::refusal(error.to_string()));
+                            continue;
+                        }
+                    };
                     let cmd_name = parts[0].to_lowercase();
                     if let Some(handler) = self.handlers.get(&cmd_name) {
-                        let args = parts[1..].iter().map(|s| s.to_string()).collect();
+                        let args = parts[1..].to_vec();
                         let ctx = CommandContext { args, ..context.clone() };
                         let result = handler.execute(ctx).await?;
                         results.push(result);
@@ -4405,6 +4412,35 @@ message.content.text = Some(output.cleaned_body);
 - **Single pass**: Commands are parsed, executed, and stripped in one scan of the body.
 - **Single responsibility**: All command-related logic (parsing, executing, stripping) lives in `CommandRegistry`. `TopicManager` only checks `body_empty` and `results`.
 - **Testable**: One function in, one struct out. Easy to unit test without mocking TopicManager.
+
+### Command Line Words (`command/line.rs`)
+
+A line is split into words **once**, before any parser sees it, and the two
+readers of that result share it: dispatch (`process_commands`) and the scan
+that refuses an agent's own `/grant` (`leading_command_names`). A spelling
+dispatch reads as `/grant` while the scan reads nothing is a message the model
+can use to widen its own boundary, so the two must not each split on whitespace
+their own way — one function, called twice.
+
+- **Quoting is global.** `"` and `'` both quote; inside a quote every character
+  is literal, including the other quote, `#`, `\` and a newline. Adjacent runs
+  join into one word (`ab"c d"e` → `abc de`), and a line that ends inside a
+  quote is refused — a silently kept `"` would run the command with a word
+  nobody typed. Because the quote is consumed here, a message that *is* a quote
+  is spelled by quoting the other kind (`'"'`); there is no escape character.
+- **Smaller than POSIX, on purpose.** `#` is not a comment and `\` is not an
+  escape: a POSIX shell reads `/send bob ping #1045` as three words (dropping
+  the issue number) and `C:\tmp` as `C:tmp`, both silent changes to a message.
+  `shlex` is kept as a **dev-dependency oracle** — the tests assert the two
+  agree wherever the syntax overlaps and pin the two places they must not.
+- **`spell` is the inverse.** Anything that writes a word into a command line
+  (`request_access`'s grant options) spells it through the same module, so an
+  option the user is handed is one the dispatcher reads back as the same word.
+  A path holding whitespace needs quotes and gets them; only a word holding both
+  quote kinds is unspellable.
+- **Two behaviours changed with quoting.** A quoted dash is no longer a way past
+  the flag check (`/send joe "-x"` is now `/send joe -- -x`), and a quoted run is
+  one word rather than several (`/backlog push "a  b"` keeps both spaces).
 
 ### Command Argument Values (`command/args.rs`)
 

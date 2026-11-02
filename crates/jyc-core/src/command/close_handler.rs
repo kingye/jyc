@@ -58,6 +58,10 @@ impl CloseCommandHandler {
                 attachments: &[],
                 recipient: None,
                 require_reply: false,
+                // The closing instruction travels on the same terms as the
+                // `/close` that produced it: a user's close stays a user's,
+                // an agent's stays an agent's.
+                origin: context.origin,
             },
         )
         .await

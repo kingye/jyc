@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use super::handler::{CommandContext, CommandHandler, CommandOutput, CommandResult};
+use super::handler::{CommandContext, CommandHandler, CommandOrigin, CommandOutput, CommandResult};
 
 /// Registry of command handlers with unified parse-execute-strip processing.
 ///
@@ -107,6 +107,27 @@ impl CommandRegistry {
                             );
                             results.push(CommandResult::refusal(format!(
                                 "/{cmd_name}: this topic was just closed; the command was skipped"
+                            )));
+                            continue;
+                        }
+
+                        // An authorization command widens or narrows the
+                        // filesystem boundary, so only the user may run one. The
+                        // send path refuses such a message before it is queued;
+                        // this is the dispatch-side half, for every other way a
+                        // message can carry a command it did not get from the
+                        // user (a turn reply forwarded to its requester, a future
+                        // injection path). `send_handler` is not trusted to be
+                        // the only one.
+                        if context.origin == CommandOrigin::Agent
+                            && super::builtin::is_authorization_command(&cmd_name)
+                        {
+                            tracing::warn!(
+                                command = %cmd_name,
+                                "Refusing an authorization command from an agent-sent message"
+                            );
+                            results.push(CommandResult::refusal(format!(
+                                "{cmd_name}: only the user may run this; it changes filesystem access"
                             )));
                             continue;
                         }
@@ -242,6 +263,47 @@ impl CommandRegistry {
             body_empty,
         })
     }
+}
+
+/// The command names in `body`'s leading command block, lowercased.
+///
+/// Mirrors the block scan [`CommandRegistry::process_commands`] performs — the
+/// block starts at the first non-blank line and ends at the first line that is
+/// not `/`-prefixed — but stops at the names: it reports what is shaped like a
+/// command without running anything.
+///
+/// Deliberately an over-approximation. `process_commands` also ends the block at
+/// an unknown command, and at a command that swallows the rest of the message as
+/// arguments (`collect_subsequent_lines`), so this can name a command that would
+/// never actually run. Over-naming is the safe direction for its one caller —
+/// the send path refuses a message carrying an authorization command — while
+/// the exact check is the dispatch-side guard inside
+/// [`CommandRegistry::process_commands`], which sees the real handler table.
+pub fn leading_command_names(body: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !trimmed.starts_with('/') {
+            break;
+        }
+        if let Some(name) = trimmed.split_whitespace().next() {
+            names.push(name.to_lowercase());
+        }
+    }
+    names
+}
+
+/// Whether `body`'s leading command block carries a command only the user may
+/// run — an [`CommandSpec::authorization`] command such as `/grant`.
+///
+/// [`CommandSpec::authorization`]: super::builtin::CommandSpec::authorization
+pub fn carries_authorization_command(body: &str) -> bool {
+    leading_command_names(body)
+        .iter()
+        .any(|name| super::builtin::is_authorization_command(name))
 }
 
 impl Default for CommandRegistry {
@@ -757,5 +819,124 @@ focus on error handling",
             output.results[0].message,
             r#"args=["push", "first line", "second line", "third line"]"#
         );
+    }
+    // ---- authorization commands: the table, and the dispatch-side guard ----
+
+    /// The leading command block is what dispatch reads, so the send-path scan
+    /// must name exactly the lines dispatch would treat as commands — and stop
+    /// at the first line that is not one.
+    #[test]
+    fn leading_command_names_reads_only_the_leading_block() {
+        assert_eq!(
+            leading_command_names("/grant /data -w\n/ungrant /data\n继续"),
+            vec!["/grant", "/ungrant"]
+        );
+        assert_eq!(
+            leading_command_names("\n\n/grant /data\n"),
+            vec!["/grant"],
+            "blank lines are skipped, as dispatch skips them"
+        );
+        assert!(
+            leading_command_names("请看 /grant 的说明\n/grant /data").is_empty(),
+            "a body line ends the block; a later /grant is body text"
+        );
+        assert!(leading_command_names("").is_empty());
+    }
+
+    /// The table is the one place that says which commands change the boundary.
+    #[test]
+    fn the_table_names_the_authorization_commands() {
+        assert!(carries_authorization_command("/grant /data"));
+        assert!(carries_authorization_command("/ungrant /data"));
+        assert!(
+            carries_authorization_command("/GRANT /data"),
+            "dispatch lowercases before matching, so the scan must too"
+        );
+        assert!(!carries_authorization_command("/model gpt-4"));
+        assert!(
+            !carries_authorization_command("/help\n/grant /data"),
+            "only the leading block is dispatchable"
+        );
+    }
+
+    /// Every name the scan reports as authorization is one dispatch actually
+    /// refuses from an agent — one table, read by both guards.
+    #[test]
+    fn the_scan_and_the_table_agree_on_every_authorization_command() {
+        let authorization: Vec<&str> = super::super::builtin::BUILTIN_COMMANDS
+            .iter()
+            .filter(|spec| spec.authorization)
+            .map(|spec| spec.name)
+            .collect();
+        assert_eq!(
+            authorization,
+            vec!["/grant", "/ungrant"],
+            "the two commands that change filesystem access"
+        );
+        for name in authorization {
+            assert!(
+                carries_authorization_command(&format!("{name} /data")),
+                "{name} must be caught by the send-path scan"
+            );
+        }
+    }
+
+    /// The scan is deliberately an over-approximation: dispatch stops the block
+    /// at an unknown command, while the scan keeps reading. Over-naming refuses
+    /// a harmless message, which is the safe direction — recorded here so the
+    /// divergence is a decision, not a surprise.
+    #[test]
+    fn the_scan_over_approximates_where_dispatch_stops_at_an_unknown_command() {
+        let body = "/not-a-command\n/grant /data";
+        assert_eq!(
+            leading_command_names(body),
+            vec!["/not-a-command", "/grant"],
+            "the scan does not know the handler table"
+        );
+        assert!(carries_authorization_command(body));
+    }
+
+    /// The dispatch-side half: a message an agent sent cannot run `/grant`,
+    /// even if it got past the send path by some other route.
+    #[tokio::test]
+    async fn an_agent_sent_message_cannot_run_an_authorization_command() {
+        let mut registry = CommandRegistry::new();
+        registry.register("/grant", Arc::new(TestHandler));
+
+        let mut context = test_context();
+        context.origin = CommandOrigin::Agent;
+
+        let output = registry
+            .process_commands("/grant /data -w", &context)
+            .await
+            .unwrap();
+
+        assert_eq!(output.results.len(), 1);
+        assert!(!output.results[0].success);
+        assert!(
+            output.results[0]
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("only the user")),
+            "{:?}",
+            output.results
+        );
+    }
+
+    /// The user's own message runs it: the guard keys on origin, not on the
+    /// command name alone.
+    #[tokio::test]
+    async fn a_user_sent_message_can_run_an_authorization_command() {
+        let mut registry = CommandRegistry::new();
+        registry.register("/grant", Arc::new(TestHandler));
+
+        let output = registry
+            .process_commands("/grant /data -w", &test_context())
+            .await
+            .unwrap();
+
+        assert_eq!(output.results.len(), 1);
+        assert!(output.results[0].success, "{:?}", output.results[0].error);
+        assert!(output.results[0].message.contains("/data"));
     }
 }

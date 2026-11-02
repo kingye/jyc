@@ -301,6 +301,8 @@ pub enum GrantFlag {
     Write,
     /// `-p`/`--persist`.
     Persist,
+    /// `-o`/`--once`: for the turn this message starts, then dropped.
+    Once,
 }
 
 /// `/grant`'s flags.
@@ -316,6 +318,14 @@ pub const GRANT_FLAGS: &[(GrantFlag, FlagSpec)] = &[
     (
         GrantFlag::Persist,
         flag("persist", Some('p'), "Also write the path into config.toml"),
+    ),
+    (
+        GrantFlag::Once,
+        flag(
+            "once",
+            Some('o'),
+            "Until the turn this message starts ends, then dropped",
+        ),
     ),
 ];
 

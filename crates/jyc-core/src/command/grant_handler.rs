@@ -41,6 +41,8 @@ struct GrantArgs {
     write: bool,
     /// `-p`/`--persist`: also write the path into config.toml.
     persist: bool,
+    /// `-o`/`--once`: in force for the turn this message starts, then dropped.
+    once: bool,
 }
 
 /// Parse `/grant` args: one optional path plus `-w`/`--write` and
@@ -55,6 +57,7 @@ fn parse_grant_args(args: &[String]) -> Result<GrantArgs> {
         path: parsed.positionals.first().cloned(),
         write: parsed.has(GrantFlag::Write),
         persist: parsed.has(GrantFlag::Persist),
+        once: parsed.has(GrantFlag::Once),
     })
 }
 
@@ -202,17 +205,33 @@ impl CommandHandler for GrantCommandHandler {
                 ..Default::default()
             });
         };
+        if parsed.once && parsed.persist {
+            return Ok(failure(
+                "-p and -once contradict each other: a persisted grant outlives the turn, \
+                 a one-turn grant is dropped when it ends"
+                    .to_string(),
+            ));
+        }
         let path = normalize_path(&raw_path, &context.topic_path);
-        jyc_types::access_grants::grant(&context.topic_name, path.clone(), parsed.write);
         let mode = if parsed.write {
             "read+write"
         } else {
             "read-only"
         };
-        let mut msg = format!(
-            "Granted {mode} access to `{}` for this topic (until restart or /ungrant).",
-            path.display()
-        );
+        let mut msg = if parsed.once {
+            jyc_types::access_grants::grant_once(&context.topic_name, path.clone(), parsed.write);
+            format!(
+                "Granted {mode} access to `{}` for the next turn only; it is dropped when \
+                 that turn ends.",
+                path.display()
+            )
+        } else {
+            jyc_types::access_grants::grant(&context.topic_name, path.clone(), parsed.write);
+            format!(
+                "Granted {mode} access to `{}` for this topic (until restart or /ungrant).",
+                path.display()
+            )
+        };
         if parsed.persist {
             match persist_grant(&context, &path, parsed.write) {
                 Ok(changed) => msg.push_str(&format!(

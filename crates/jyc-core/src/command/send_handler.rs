@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use jyc_types::{InboundMessage, MessageAttachment, MessageContent, PatternMatch};
 
 use super::flags::{SEND_FLAGS, SendFlag};
-use super::handler::{CommandContext, CommandHandler, CommandResult};
+use super::handler::{CommandContext, CommandHandler, CommandOrigin, CommandResult};
 use super::spec;
 use crate::topic_manager::{TopicManager, TopicManagers};
 use crate::topic_path::{topic_home, topic_work_dir};
@@ -62,6 +62,13 @@ pub struct SendRequest<'a> {
     pub recipient: Option<&'a str>,
     /// Mark the message as expecting a reply from the target agent.
     pub require_reply: bool,
+    /// Who is sending: the user, or another topic's agent.
+    ///
+    /// Decides whether the message may carry an authorization command, and
+    /// stamps the routed message so dispatch knows the same thing. Callers must
+    /// pass their own origin through rather than defaulting it — an agent that
+    /// could relabel its send as a user's would have the guard it bypasses.
+    pub origin: CommandOrigin,
 }
 
 /// Where a message landed, and what the sender is told about it.
@@ -109,6 +116,28 @@ pub async fn send_to_topic_with_target(
     }
     if req.message.trim().is_empty() {
         bail!("Message cannot be empty");
+    }
+
+    // An authorization command changes the agent's own filesystem boundary, so
+    // only the user may run one. A message an agent sends is the one path that
+    // would let it grant itself access — and this function is the single entry
+    // point every agent-triggered send funnels through (`/send`, the
+    // `jyc_send_to_topic` tool, and a turn reply forwarded to its requester), so
+    // the refusal belongs here rather than in each trigger. The dispatch side
+    // refuses the same commands again, for any future path that queues a message
+    // without passing through here.
+    //
+    // A user's send is unaffected: `/send` and the inspect API carry the caller's
+    // own origin through, so an operator can still grant from the dashboard.
+    if req.origin == CommandOrigin::Agent
+        && let Some(name) = super::registry::leading_command_names(req.message)
+            .into_iter()
+            .find(|name| super::builtin::is_authorization_command(name))
+    {
+        bail!(
+            "Refusing to send `{name}`: it changes filesystem access, so only the \
+             user may run it. Ask the user to run it in their own message."
+        );
     }
     let (topic_name, named_topic) = match req.topic {
         Some(topic) if !topic.trim().is_empty() => (topic, Some(topic)),
@@ -173,6 +202,23 @@ pub async fn send_to_topic_with_target(
                 "require_reply".to_string(),
                 serde_json::Value::Bool(req.require_reply),
             );
+            // The structural marker for "an agent wrote this message", read by
+            // the worker to build a [`CommandOrigin`]. Deliberately not the
+            // `sender` field above: that is a platform display name (a feishu
+            // user may be called anything), so a decision about who may run
+            // `/grant` must not key on it.
+            //
+            // Written only for an agent's send: an absent marker means the user,
+            // which keeps a user's message payload byte-identical to what it was
+            // before this guard existed.
+            //
+            // [`CommandOrigin`]: super::handler::CommandOrigin
+            if req.origin == CommandOrigin::Agent {
+                m.insert(
+                    "origin".to_string(),
+                    serde_json::Value::String("agent".to_string()),
+                );
+            }
             m
         },
         matched_pattern: None,
@@ -640,6 +686,7 @@ impl CommandHandler for SendCommandHandler {
             attachments: &parsed.attachments,
             recipient: parsed.recipient.as_deref(),
             require_reply: parsed.require_reply,
+            origin: context.origin,
         };
 
         match send_to_topic(&managers, source, req).await {
@@ -780,6 +827,21 @@ mod tests {
             attachments: &[],
             recipient: None,
             require_reply: false,
+            // The routing tests below are about where a message lands, not who
+            // may send what: the neutral origin keeps them off the guard.
+            origin: CommandOrigin::User,
+        }
+    }
+
+    /// The same request from an agent, for the authorization-command guard.
+    fn agent_request<'a>(
+        agent: &'a str,
+        topic: Option<&'a str>,
+        message: &'a str,
+    ) -> SendRequest<'a> {
+        SendRequest {
+            origin: CommandOrigin::Agent,
+            ..request(agent, topic, message)
         }
     }
 
@@ -1461,5 +1523,64 @@ mode = "agent"
             metrics,
             None,
         ))
+    }
+
+    /// The send path is the one entry point every agent-triggered send funnels
+    /// through, so an agent's message cannot carry `/grant` into a topic — the
+    /// command that would widen its own filesystem boundary.
+    #[tokio::test]
+    async fn refuses_an_agents_grant_command_before_it_is_queued() {
+        let managers = TopicManagers::new();
+
+        let err = send_to_topic(
+            &managers,
+            source(std::path::Path::new("/tmp")),
+            agent_request("some-agent", None, "/grant /data -w"),
+        )
+        .await
+        .expect_err("an agent may not grant itself access");
+
+        assert!(err.to_string().contains("only the user"), "{err}");
+    }
+
+    /// The guard reads the command block, not the words: a message that merely
+    /// discusses `/grant` is allowed through to the normal topic lookup, so the
+    /// error names the missing agent rather than the guard.
+    #[tokio::test]
+    async fn lets_an_agents_message_mention_grant_as_body_text() {
+        let managers = TopicManagers::new();
+
+        let err = send_to_topic(
+            &managers,
+            source(std::path::Path::new("/tmp")),
+            agent_request("some-agent", None, "请看 /grant 的用法说明"),
+        )
+        .await
+        .expect_err("no manager serves this agent");
+
+        assert!(
+            !err.to_string().contains("only the user"),
+            "the guard must not fire on body text: {err}"
+        );
+    }
+
+    /// The same line from the user is the whole point of the command: it is
+    /// let past the guard (`/send` carries the caller's own origin through).
+    #[tokio::test]
+    async fn lets_a_users_grant_command_past_the_guard() {
+        let managers = TopicManagers::new();
+
+        let err = send_to_topic(
+            &managers,
+            source(std::path::Path::new("/tmp")),
+            request("some-agent", None, "/grant /data -w"),
+        )
+        .await
+        .expect_err("no manager serves this agent");
+
+        assert!(
+            !err.to_string().contains("only the user"),
+            "a user's send must not be refused by the agent guard: {err}"
+        );
     }
 }

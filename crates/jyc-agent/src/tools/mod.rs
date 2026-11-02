@@ -388,10 +388,26 @@ impl<'a> ToolContext<'a> {
             return Ok(());
         }
 
-        Err(format!(
-            "Access denied: path '{}' is outside the working directory",
-            display_path
-        ))
+        Err(Self::boundary_denial(display_path, &canonical, false))
+    }
+
+    /// The refusal both boundary checks return.
+    ///
+    /// It names the path twice on purpose: the caller's own spelling, so the
+    /// user recognises what was asked, and the resolved absolute path, because
+    /// that is the form a grant has to quote — `display_path` may be relative
+    /// and a relative path cannot be granted. It also names the one tool that
+    /// can ask for the grant: an error the model cannot act on is where the
+    /// work stops.
+    fn boundary_denial(display_path: &str, canonical: &Path, write: bool) -> String {
+        let access = if write { "write" } else { "read" };
+        format!(
+            "Access denied: path '{}' is outside the working directory (resolved: {}). \
+             {access} access is not granted for it. If the user might allow it, call \
+             load_extended_tools and then request_access with that absolute path.",
+            display_path,
+            canonical.display()
+        )
     }
 
     /// Check that `resolved` is within `working_dir`, `additional_read_roots`,
@@ -420,10 +436,7 @@ impl<'a> ToolContext<'a> {
                 return Ok(());
             }
         }
-        Err(format!(
-            "Access denied: path '{}' is outside the working directory",
-            display_path
-        ))
+        Err(Self::boundary_denial(display_path, &canonical, true))
     }
 }
 

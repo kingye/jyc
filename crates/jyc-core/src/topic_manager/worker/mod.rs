@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::AgentService;
 use crate::command::builtin::builtin_registry;
 use crate::command::custom_handler::CustomCommandHandler;
-use crate::command::handler::CommandContext;
+use crate::command::handler::{CommandContext, CommandOrigin};
 use crate::command::per_agent_commands;
 use crate::command::registry::CommandRegistry;
 use crate::command::skill_commands;
@@ -58,6 +58,20 @@ fn is_injectable(item: &QueueItem, topic_path: &Path, workspace: &Path) -> bool 
             .text
             .as_deref()
             .is_some_and(|t| !t.trim().is_empty())
+}
+
+/// Who wrote the message a command line arrived on.
+///
+/// Keyed on the `origin` marker [`crate::command::send_handler`] writes, not on
+/// the message's `sender`: that field is a platform display name, and a decision
+/// about who may run `/grant` must not depend on what a user happens to be
+/// called. A message without the marker came in from the channel, which means
+/// the user.
+fn command_origin(message: &jyc_types::InboundMessage) -> CommandOrigin {
+    match message.metadata.get("origin").and_then(|v| v.as_str()) {
+        Some("agent") => CommandOrigin::Agent,
+        _ => CommandOrigin::User,
+    }
 }
 
 /// Ends the turn's injection count when the turn ends — the messages the
@@ -277,6 +291,7 @@ pub(crate) async fn process_message(
     let cmd_context = CommandContext {
         topic_name: topic_name.to_string(),
         args: vec![],
+        origin: command_origin(message),
         topic_path: store_result.topic_path.clone(),
         config: config.load_full(),
         channel: message.channel.clone(),
@@ -530,6 +545,7 @@ pub(crate) async fn process_message(
                             let cmd_ctx = CommandContext {
                                 args: vec![],
                                 topic_name: topic_name.to_string(),
+                                origin: command_origin(&qi.message),
                                 topic_path: store_result.topic_path.clone(),
                                 config: config.load_full(),
                                 channel: qi.message.channel.clone(),
@@ -678,7 +694,15 @@ pub(crate) async fn process_message(
         }
     };
 
-    // The agent is done. Messages still queued in the injection channel
+    // The agent is done, so the turn a `/grant -once` was made for is over:
+    // drop it here, before anything else, rather than letting "just this
+    // time" quietly become access until restart.
+    let dropped = jyc_types::access_grants::clear_once(topic_name);
+    if dropped > 0 {
+        tracing::debug!(topic = %topic_name, dropped, "Dropped one-turn access grants");
+    }
+
+    // Messages still queued in the injection channel
     // were never folded into the conversation — the turn ended before its
     // next drain point. Re-enqueue them so they are processed as turns of
     // their own instead of being lost.

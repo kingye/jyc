@@ -73,6 +73,10 @@ pub(super) struct PendingQuestion {
     /// Marked option indices, in multi mode; single mode answers with the
     /// cursor directly.
     pub marked: Vec<usize>,
+    /// How this question's picks become a message (the daemon's `answer_as`).
+    /// A permission request sends its options as the commands they are, so the
+    /// server — not the model — performs the grant.
+    pub answer_as: jyc_types::channel::AnswerStyle,
 }
 
 /// A single message in the chat conversation.
@@ -2295,6 +2299,11 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App, body
     // inner rows are measured (`question_chrome_rows`) - a row spent here
     // inside would cost an option row.
     let total = app.chat.questions.len();
+    // A command-mode question (a permission request) sends the option text as a
+    // command, so the user has to know they are authorising something rather
+    // than answering the model. The border carries it: a row inside the box
+    // would cost an option row.
+    let runs = matches!(q.answer_as, jyc_types::channel::AnswerStyle::Command { .. });
     let title = if total > 1 {
         format!(
             " Question {}/{} \u{b7} \u{2190}/\u{2192} \u{b7} ",
@@ -2303,6 +2312,11 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App, body
         )
     } else {
         " Question ".to_string()
+    };
+    let title = if runs {
+        format!("{title}\u{b7} Enter runs the highlighted command ")
+    } else {
+        title
     };
     let block = Block::default()
         .title(title)
@@ -3653,13 +3667,28 @@ impl ChatState {
         self.question_index = 0;
         self.question_typing = false;
         let mut lines = Vec::with_capacity(questions.len());
+        // Command-mode questions answer with the option text itself, so the
+        // message the user sends *is* the command — the server runs it, and the
+        // model never sees an answer it could act on by itself.
+        let mut followup: Option<String> = None;
         for (number, q) in questions.iter().enumerate() {
+            let command = match &q.answer_as {
+                jyc_types::channel::AnswerStyle::Command { followup } => followup.clone().into(),
+                jyc_types::channel::AnswerStyle::Text => None::<String>,
+            };
             // `d` wins over a draft the user later backed out of: it is the
             // more recent and more explicit "no answer".
             if !q.skipped
                 && let Some(text) = q.typed.as_deref().filter(|text| !text.trim().is_empty())
             {
-                lines.push(format!("Q{}: {text}", number + 1));
+                // In command mode the typed row is the user writing their own
+                // command, so it goes out verbatim for the same reason a pick
+                // does.
+                lines.push(match command {
+                    Some(_) => text.to_string(),
+                    None => format!("Q{}: {text}", number + 1),
+                });
+                followup = followup.or(command);
                 continue;
             }
             let picks: Vec<(usize, String)> = if q.skipped {
@@ -3681,11 +3710,24 @@ impl ChatState {
                 lines.push(format!("Q{}: (skipped)", number + 1));
                 continue;
             }
+            if command.is_some() {
+                // Verbatim, one per line: a command is the whole answer, so it
+                // carries no question number and no option number.
+                lines.extend(picks.into_iter().map(|(_, text)| text));
+                followup = followup.or(command);
+                continue;
+            }
             let picked: Vec<String> = picks
                 .iter()
                 .map(|(i, text)| format!("{}) {}", i + 1, text))
                 .collect();
             lines.push(format!("Q{}: {}", number + 1, picked.join(", ")));
+        }
+        // A message holding only commands runs no agent turn, so the turn that
+        // asked would never resume. The follow-up line is what starts it — and
+        // it is the reason the grant is visible to that turn at all.
+        if let Some(followup) = followup {
+            lines.push(followup);
         }
         self.send_message_inner(lines.join("\n"));
     }
@@ -3764,6 +3806,10 @@ impl ChatState {
             typed: None,
             selected: 0,
             marked: Vec::new(),
+            answer_as: parsed
+                .get("answer_as")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default(),
         });
     }
 

@@ -36,6 +36,14 @@ pub struct Grant {
     /// grant rather than from the last path component. `/grant` makes access
     /// grants, not lineage ones, and names nobody.
     pub subagent: Option<String>,
+    /// Whether the grant covers one turn only and is then dropped.
+    ///
+    /// `/grant -once` is the "just this time" answer to a permission request:
+    /// it is in force for the turn the answer starts, and [`clear_once`]
+    /// removes it when that turn ends, so a later turn that needs the path
+    /// asks again. `false` for the ordinary until-restart grant — the two
+    /// differ in how long the access lasts, not in what it allows.
+    pub once: bool,
 }
 
 static REGISTRY: OnceLock<RwLock<HashMap<String, Vec<Grant>>>> = OnceLock::new();
@@ -52,7 +60,10 @@ pub fn grant(topic: &str, path: PathBuf, write: bool) -> bool {
     let grants = map.entry(topic.to_string()).or_default();
     match grants
         .iter_mut()
-        .find(|g| g.path == path && g.subagent.is_none())
+        // A one-turn grant is not this one: `/grant -once` followed by
+        // `/grant` on the same path is a promotion to permanent, not a
+        // duplicate.
+        .find(|g| g.path == path && g.subagent.is_none() && !g.once)
     {
         Some(existing) => {
             if write && !existing.write {
@@ -67,6 +78,7 @@ pub fn grant(topic: &str, path: PathBuf, write: bool) -> bool {
                 path,
                 write,
                 subagent: None,
+                once: false,
             });
             true
         }
@@ -94,8 +106,58 @@ pub fn grant_subagent(parent: &str, child: &str, path: PathBuf) -> bool {
         path,
         write: true,
         subagent: Some(child.to_string()),
+        once: false,
     });
     true
+}
+
+/// Grant `path` to `topic` for the turn about to run, and no longer.
+///
+/// Same registry and same lookup as [`grant`]; the entry carries
+/// [`Grant::once`] and the turn loop drops it through [`clear_once`] when that
+/// turn ends, so "just this time" cannot silently become the until-restart
+/// grant the user did not ask for.
+pub fn grant_once(topic: &str, path: PathBuf, write: bool) -> bool {
+    let mut map = registry().write().unwrap();
+    let grants = map.entry(topic.to_string()).or_default();
+    match grants.iter_mut().find(|g| g.path == path && g.once) {
+        Some(existing) => {
+            if write && !existing.write {
+                existing.write = true;
+                true
+            } else {
+                false
+            }
+        }
+        None => {
+            grants.push(Grant {
+                path,
+                write,
+                subagent: None,
+                once: true,
+            });
+            true
+        }
+    }
+}
+
+/// Drop every one-turn grant for `topic`, returning how many were removed.
+///
+/// Called once the turn that the grant was made for has finished: that turn
+/// is what the user allowed, and leaving the entry behind would make it
+/// ordinary access until restart.
+pub fn clear_once(topic: &str) -> usize {
+    let mut map = registry().write().unwrap();
+    let Some(grants) = map.get_mut(topic) else {
+        return 0;
+    };
+    let before = grants.len();
+    grants.retain(|g| !g.once);
+    let removed = before - grants.len();
+    if grants.is_empty() {
+        map.remove(topic);
+    }
+    removed
 }
 
 /// Revoke every grant for `path` on `topic` (read and write alike, a
@@ -167,7 +229,8 @@ mod tests {
             vec![Grant {
                 path: PathBuf::from("/a"),
                 write: true,
-                subagent: None
+                subagent: None,
+                once: false,
             }]
         );
         assert!(!grant(topic, PathBuf::from("/a"), true)); // already write
@@ -227,5 +290,56 @@ mod tests {
         assert_eq!(grants_for(a).len(), 1);
         assert!(grants_for(b).is_empty());
         clear(a);
+    }
+
+    /// The two answers to a permission request differ in duration, so they are
+    /// two entries: `/grant -once` then `/grant` on the same dir must leave a
+    /// permanent grant, not a one-turn entry that the next turn drops.
+    #[test]
+    fn once_grants_are_separate_entries_from_permanent_ones() {
+        let topic = "grant-test-once";
+        clear(topic);
+        let dir = PathBuf::from("/data/invoices");
+
+        assert!(grant_once(topic, dir.clone(), false));
+        assert!(!grant_once(topic, dir.clone(), false), "duplicate");
+        assert!(grant_once(topic, dir.clone(), true), "upgrade to write");
+        assert_eq!(grants_for(topic).len(), 1);
+
+        // The permanent grant is its own entry and implies write on its own.
+        assert!(grant(topic, dir.clone(), false));
+        assert_eq!(grants_for(topic).len(), 2);
+        assert_eq!(
+            grants_for(topic).iter().filter(|g| g.once).count(),
+            1,
+            "exactly one of the two is the one-turn grant"
+        );
+
+        // Ending the turn drops the one-turn entry and nothing else.
+        assert_eq!(clear_once(topic), 1);
+        assert_eq!(clear_once(topic), 0, "already dropped");
+        assert_eq!(
+            grants_for(topic),
+            vec![Grant {
+                path: dir,
+                write: false,
+                subagent: None,
+                once: false,
+            }],
+            "the permanent grant survives the turn boundary"
+        );
+        clear(topic);
+    }
+
+    /// A one-turn grant is dropped even when it is the only entry — the topic
+    /// key must not be left behind empty.
+    #[test]
+    fn clear_once_removes_the_topic_when_nothing_remains() {
+        let topic = "grant-test-once-only";
+        clear(topic);
+        assert!(grant_once(topic, PathBuf::from("/tmp-only"), false));
+        assert_eq!(clear_once(topic), 1);
+        assert!(grants_for(topic).is_empty());
+        clear(topic);
     }
 }

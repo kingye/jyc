@@ -104,13 +104,14 @@ const BUDGETS: &[(&str, usize, usize)] = &[
     ("jyc_publish_file", 211, 224),
     ("read", 121, 199),
     ("read_image", 327, 196),
+    ("request_access", 350, 225),
     ("jyc_send_message", 131, 430),
     ("jyc_send_to_topic", 230, 562),
     ("jyc_spawn_subagent", 1173, 380),
     ("lesson_add", 220, 0),
     ("lesson_read", 114, 0),
     ("list_topics", 240, 0),
-    ("load_extended_tools", 775, 0),
+    ("load_extended_tools", 852, 0),
     ("task_list", 278, 0),
     ("task_create", 345, 46),
     ("task_update", 305, 81),
@@ -151,7 +152,18 @@ const BUDGETS: &[(&str, usize, usize)] = &[
 /// guards is a topic that marks nothing before reporting the work done. The
 /// ceiling exists to catch growth nobody stated, not to forbid growth with a
 /// stated reason.
-const TOTAL_BUDGET: usize = 7_930;
+///
+/// The `request_access` tool raised it again, and this one is worth spelling
+/// out because the amount is the whole argument: +632, of which +555 is the
+/// new tool's schema (`request_access` is in the extended group, so a request
+/// only pays it after the model loads the group) and +77 is the loader index
+/// gaining its one-liner (766 → 843, recomputed from `EXTENDED_TOOLS` and
+/// the template in `description_for`). Raising by exactly the delta is
+/// deliberate: it leaves whatever room the ceiling had, no more. There is no
+/// way to fit this one by trimming — the tool *is* the new text, and the
+/// alternative to the tool is an agent that cannot ask about a path it was
+/// refused at all.
+const TOTAL_BUDGET: usize = 8_562;
 
 /// The advertised set — the core tools plus the loader's index — in
 /// characters. This is the standing per-call cost after the extended group
@@ -165,7 +177,12 @@ const TOTAL_BUDGET: usize = 7_930;
 /// A topic that never delegates, never publishes, never fetches a URL, never
 /// browses its transcript, never records a lesson and never needs a plan pays
 /// this and not the whole registry.
-const ADVERTISED_TOTAL_BUDGET: usize = 3_050;
+///
+/// `request_access` does not move this number's *contents*: it is in the
+/// extended group, so an ordinary request never carries its schema. What it
+/// does cost is one more one-liner in the loader's index, +77 characters —
+/// and that line is in the advertised set. The ceiling moves by exactly that.
+const ADVERTISED_TOTAL_BUDGET: usize = 3_127;
 
 /// `jyc_spawn_subagent`'s `type` description ends with the catalog of roles
 /// configured *on this machine*, so its length is configuration rather than
@@ -285,6 +302,7 @@ fn low_frequency_tools_are_hidden_but_indexed() {
         "context_browse",
         "lesson_add",
         "lesson_read",
+        "request_access",
         "task_list",
         "task_create",
         "task_update",

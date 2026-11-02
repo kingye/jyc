@@ -433,11 +433,9 @@ mod tests {
     ///
     /// The fixture must sit outside both the working directory **and**
     /// [`std::env::temp_dir`], which the boundary always accepts as scratch
-    /// space, and no ancestor of it may be a symlink either — that exemption
-    /// skips the check as well. Both are invisible properties of the machine,
-    /// so the fixture names a root that cannot exist: nothing on disk can make
-    /// it exempt, and the assert below fails loudly if some future exemption
-    /// starts accepting it.
+    /// space. Neither is visible from the test, so the fixture names a root
+    /// that cannot exist: nothing on disk can make it exempt, and the assert
+    /// below fails loudly if some future exemption starts accepting it.
     #[tokio::test]
     async fn a_refused_path_with_whitespace_is_offered_quoted() {
         use jyc_core::command::line;

@@ -533,6 +533,13 @@ pub async fn post_send(
             require_reply: false,
             // `POST /api/send` is a user-facing endpoint: the operator is the
             // one granting, so an authorization command is let through.
+            //
+            // This is an assertion, not a derivation — the endpoint cannot tell
+            // an operator from a process that reached it. What makes it safe is
+            // the bearer gate: `/api/send` sits behind `require_bearer`, and
+            // `serve` starts the server with a token read from a `0o600` file
+            // outside the agent's `topic_path`. Keep that dependency in mind if
+            // `[inspect]` is ever configured without a token.
             origin: jyc_core::command::handler::CommandOrigin::User,
         },
     )

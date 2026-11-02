@@ -1000,11 +1000,12 @@ focus on error handling",
         let mut registry = CommandRegistry::new();
         registry.register("/grant", Arc::new(TestHandler));
 
-        for line in [r#"/gra"nt" /data"#, r#"'/grant' /data"#] {
+        for line in [r#"/gra"nt" /data"#, r#"/g'ra"'nt' /data"#] {
             let output = registry
                 .process_commands(line, &test_context())
                 .await
                 .unwrap();
+            assert_eq!(output.results.len(), 1, "{line}: one command must run");
             assert!(
                 output.results[0].success,
                 "{line}: dispatch must read it as /grant — {:?}",
@@ -1013,6 +1014,33 @@ focus on error handling",
             assert!(
                 carries_authorization_command(line),
                 "{line}: the scan must name the command dispatch ran"
+            );
+        }
+    }
+
+    /// A quote before the leading `/` puts the line outside the command block
+    /// for both readers alike: the `/` check runs before any splitting, so a
+    /// quote cannot smuggle a command in — or out. The two agree it is not a
+    /// command, which is why neither reader runs nor names one.
+    #[tokio::test]
+    async fn a_quote_before_the_slash_is_no_command_to_either_reader() {
+        let mut registry = CommandRegistry::new();
+        registry.register("/grant", Arc::new(TestHandler));
+
+        for line in [r#"'/grant' /data"#, r#""/grant" /data"#] {
+            let output = registry
+                .process_commands(line, &test_context())
+                .await
+                .unwrap();
+            assert!(
+                output.results.is_empty(),
+                "{line}: no command must run — {:?}",
+                output.results
+            );
+            assert_eq!(output.cleaned_body, line, "{line}: the line is body text");
+            assert!(
+                !carries_authorization_command(line),
+                "{line}: the scan must not name a command either"
             );
         }
     }

@@ -27,7 +27,7 @@ Execute shell commands in the working directory.
 - `command` (string, required): The bash command to execute
 - `timeout` (integer, optional): Timeout in seconds (default: 120)
 
-**Security:** Path boundary check on every path the command *names* — words are split the way `bash` splits them (so a quoted path with spaces is one word), a word counts when it holds `/`, starts with `~`, or is a `cd` or redirection target, and relative words resolve against the directory the command will run in, moved along by the `cd` targets it spells out at command position (a glued separator, a newline, or a keyword all count). Each is verified against `working_dir`, the system temp dir, or configured read/write roots (`access.read` / `access.write`). This is a lexical check, not a sandbox: a path that only exists at run time (`$VAR`, `$(...)`, a path inside another program's string) is invisible to it. Full isolation requires OS-level containment — see issue #1047.
+**Security:** Path boundary check on every path the command *names* — words are split the way `bash` splits them (so a quoted path with spaces is one word), a word counts when it holds `/`, starts with `~`, or is a `cd` or redirection target, and relative words resolve against the directory the command will run in, moved along by the `cd` targets it spells out at command position (a glued separator, a newline, or a keyword all count), except inside `( … )`, where a `cd` runs in a subshell. Each is verified against `working_dir`, the system temp dir, or configured read/write roots (`access.read` / `access.write`). A `NAME=value` word assigns rather than reads (`X=/usr; echo hi` runs), but its value is remembered and judged where a later `$NAME` / `${NAME}` uses it (`X=/usr; cd $X` is refused). This is a lexical check, not a sandbox: a path that only exists at run time (a `$VAR` the command does not assign itself, `$(...)`, a path inside another program's string) is invisible to it. Full isolation requires OS-level containment — see issue #1047.
 
 **Limits:** Output truncated at 128 KB.
 
@@ -601,7 +601,7 @@ disabled_mcps = ["*"]  # Disables all external MCP servers
 
 | Tool | Boundary Check | Notes |
 |------|---------------|-------|
-| `bash` | `check_write_boundary()` — every path the command names: quoted words, `~`, `cd`/redirection targets, relative words resolved against the tracked directory | Not a sandbox; run-time-built paths (`$VAR`, `$(...)`) and paths inside other programs' strings get past it — see issue #1047 |
+| `bash` | `check_write_boundary()` — every path the command names: quoted words, `~`, `cd`/redirection targets, relative words resolved against the tracked directory, a literal `NAME=value` expanded where a later `$NAME` uses it | Not a sandbox; run-time-built paths (a `$VAR` the command does not assign itself, `$(...)`) and paths inside other programs' strings get past it — see issue #1047 |
 | `read` | `check_path_boundary()` working_dir + temp dir + read_roots + write_roots | Symlinks judged at their target; `/dev/null` always allowed |
 | `write` | `check_write_boundary()` working_dir + temp dir + write_roots | Creates parent dirs automatically |
 | `edit` | `check_write_boundary()` working_dir + temp dir + write_roots | — |

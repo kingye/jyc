@@ -288,6 +288,26 @@ mod tests {
         }
     }
 
+    /// A path holding both quote kinds has no spelling, so the tool refuses to
+    /// ask: any line it offered would hand the splitter back a different word
+    /// than the path the user read. The spaced path next to it is the case that
+    /// quoting exists for, and it survives as one word.
+    #[test]
+    fn a_path_holding_both_quote_kinds_yields_no_option() {
+        assert!(
+            options_for("/srv/a\"b'c", false).is_none(),
+            "no single pair of quotes can carry both kinds"
+        );
+        assert_eq!(
+            options_for("/srv/a b", false).unwrap(),
+            vec![
+                "/grant \"/srv/a b\" --once".to_string(),
+                "/grant \"/srv/a b\"".to_string(),
+                "I do not grant access to /srv/a b.".to_string(),
+            ]
+        );
+    }
+
     /// Only the grant options are commands. A refusal line starting with `/`
     /// would be dispatched instead of read, so the user's "no" would run
     /// something.

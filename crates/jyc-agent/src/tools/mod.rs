@@ -351,16 +351,19 @@ impl<'a> ToolContext<'a> {
     /// `additional_read_roots`). Returns `Ok(())` when the path is inside
     /// the boundary, or an `Err` with a user-facing access-denied message.
     ///
-    /// **Symlink exemption**: when any ancestor component of `resolved`
-    /// above `working_dir` is a symlink (e.g. `repo/ -> /other/path`), the
-    /// check is skipped. This lets the agent work with symlinked repos
-    /// without false positives.
+    /// The path is judged by what it resolves to: symlinks are followed before
+    /// the comparison, so a link inside the working directory that points out of
+    /// it is refused at its target, and `..` cannot climb out. A checkout the
+    /// operator wants reachable through a link outside the working directory is
+    /// granted with `access.read`.
     ///
-    /// **Temp-dir exemption**: paths under `std::env::temp_dir()` are always
-    /// accepted, so tools have scratch space without per-pattern `access`
-    /// config. Note this makes the shared system temp dir readable. A
-    /// degenerate temp dir (the filesystem root) is ignored — see
-    /// [`is_within_temp_dir`].
+    /// **Exemptions**: the null device and paths under
+    /// `std::env::temp_dir()` are always accepted. The null device carries
+    /// nothing across the boundary (writes are discarded, reads are empty) and
+    /// is named by nearly every `cmd >/dev/null 2>&1`. The temp dir is scratch
+    /// space tools need without per-pattern `access` config; note this makes the
+    /// shared system temp dir readable. A degenerate temp dir (the filesystem
+    /// root) is ignored — see [`is_within_temp_dir`].
     pub fn check_path_boundary(
         &self,
         display_path: &str,
@@ -383,20 +386,9 @@ impl<'a> ToolContext<'a> {
     /// otherwise a model could turn any path into a granted ask simply by
     /// asking twice.
     ///
-    /// Applies the symlink and temp-dir exemptions described on
+    /// Applies the null-device and temp-dir exemptions described on
     /// [`Self::check_path_boundary`].
     fn read_boundary_verdict(&self, resolved: &Path) -> std::result::Result<(), PathBuf> {
-        // Symlink exemption: skip the boundary check when a symlink
-        // component is found above working_dir (e.g. working_dir/repo
-        // symlinked to a clone elsewhere).
-        let has_symlink = resolved
-            .ancestors()
-            .any(|ancestor| ancestor != self.working_dir && ancestor.is_symlink());
-
-        if has_symlink {
-            return Ok(());
-        }
-
         let canonical = resolved
             .canonicalize()
             .unwrap_or_else(|_| resolved.to_path_buf());
@@ -404,6 +396,13 @@ impl<'a> ToolContext<'a> {
             .working_dir
             .canonicalize()
             .unwrap_or_else(|_| self.working_dir.to_path_buf());
+
+        // The null device is always in-boundary: writes are discarded and reads
+        // are empty, so nothing crosses the boundary through it, and nearly
+        // every `cmd >/dev/null 2>&1` names it.
+        if canonical == Path::new("/dev/null") {
+            return Ok(());
+        }
 
         if canonical.starts_with(&working_canonical) {
             return Ok(());
@@ -648,6 +647,54 @@ mod tests {
         let outside = Path::new("/etc/passwd");
         assert!(ctx.check_path_boundary("passwd", outside).is_err());
         assert!(ctx.check_write_boundary("passwd", outside).is_err());
+    }
+
+    /// The null device is in-boundary for both access kinds: writes are
+    /// discarded and reads are empty, so it leads nowhere else, and every
+    /// `cmd >/dev/null 2>&1` names it.
+    #[test]
+    fn the_null_device_is_within_both_boundaries() {
+        let working = tempfile::tempdir().expect("create working dir");
+        let ctx = ToolContext::new(working.path());
+
+        assert!(
+            ctx.check_path_boundary("null", Path::new("/dev/null"))
+                .is_ok(),
+            "reading the null device is always empty"
+        );
+        assert!(
+            ctx.check_write_boundary("null", Path::new("/dev/null"))
+                .is_ok(),
+            "writing the null device discards"
+        );
+    }
+
+    /// A symlink is judged at its target. An exemption for any symlinked
+    /// ancestor let a link the agent made in its own directory (`ln -s /etc e;
+    /// cat e/shadow`) carry a read straight out of the boundary, which is the
+    /// same escape the quoted-path scan used to miss.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_judged_at_its_target() {
+        let working = tempfile::tempdir().expect("create working dir");
+        let ctx = ToolContext::new(working.path());
+
+        let inside = working.path().join("target.txt");
+        std::fs::write(&inside, "inside").expect("write inside target");
+        let inner_link = working.path().join("inner");
+        std::os::unix::fs::symlink(&inside, &inner_link).expect("create inner symlink");
+        assert!(
+            ctx.check_path_boundary("inner", &inner_link).is_ok(),
+            "a link that stays inside the working directory is fine"
+        );
+
+        let outer_link = working.path().join("outer");
+        std::os::unix::fs::symlink("/etc", &outer_link).expect("create outer symlink");
+        let escape = outer_link.join("passwd");
+        assert!(
+            ctx.check_path_boundary("outer/passwd", &escape).is_err(),
+            "a link out of the working directory is refused at its target"
+        );
     }
 
     /// A refusal is remembered, and it bounds what `request_access` may ask

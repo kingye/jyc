@@ -54,40 +54,30 @@ fn quoted(raw: &str) -> &str {
     if trimmed.is_empty() { raw } else { trimmed }
 }
 
-/// The deepest directory above `path` whose name a `/grant` line can carry.
-///
-/// Only meaningful when `path` itself contains whitespace — that is the one
-/// thing `/grant` cannot spell, because the dispatcher splits the line on
-/// whitespace before the parser sees it and `Shape::Args` takes exactly one
-/// token (no `--` escape either: that one only ends flags for shapes that keep
-/// text). `None` when nothing below `/` qualifies: naming `/` as the substitute
-/// would swap one unusable question for a grant over the whole filesystem, which
-/// is not a suggestion worth making.
-fn ancestor_without_whitespace(path: &str) -> Option<String> {
-    std::path::Path::new(path)
-        .ancestors()
-        .skip(1)
-        .map(|ancestor| ancestor.to_string_lossy().into_owned())
-        .find(|ancestor| ancestor != "/" && !ancestor.contains(char::is_whitespace))
-}
-
 /// The options a permission request offers, narrowest first and the refusal
 /// last.
 ///
 /// Both grant options are built here rather than by the model: option text
 /// written by the model could smuggle an unrelated command into a question
-/// about something else. `quoted` names the path the model asked about, and
+/// about something else. `path` names the path the model asked about, and
 /// `was_denied` has already tied that path to a refusal from this turn.
-fn options_for(path: &str, write: bool) -> Vec<String> {
+///
+/// The path is spelled by [`jyc_core::command::line::spell`], the same splitter
+/// the dispatcher will read the line with — so a path holding a space is
+/// written `"/srv/My Files"` and arrives back as one word. `None` when no line
+/// can carry it (a path holding both quote kinds), which the caller refuses
+/// rather than offering an option that cannot work.
+fn options_for(path: &str, write: bool) -> Option<Vec<String>> {
     // The long spellings, not `-o`/`-w`: `flags::rows` is what the popup in-
     // serts and it inserts the long one, so a user who later types `/grant ` and
     // completes it sees the same spelling this option carried.
     let flag = if write { "--write " } else { "" };
-    vec![
-        format!("/grant {flag}{path} --once"),
-        format!("/grant {flag}{path}"),
+    let spelled = jyc_core::command::line::spell(path)?;
+    Some(vec![
+        format!("/grant {flag}{spelled} --once"),
+        format!("/grant {flag}{spelled}"),
         decline(path),
-    ]
+    ])
 }
 
 /// Tool for asking the user to allow a path.
@@ -181,33 +171,23 @@ impl Tool for RequestAccessTool {
             )));
         }
 
-        // A path `/grant` cannot spell is not worth asking about. The line is
-        // split on whitespace before the parser sees it, and the path is a
-        // single token, so a path with a space in it yields "expected one
-        // argument" for every option the user could pick — the same silent
-        // failure an unknown flag caused, one layer down.
-        let quoted = quoted(raw);
-        if quoted.contains(char::is_whitespace) {
-            let instead = match ancestor_without_whitespace(quoted) {
-                Some(ancestor) => format!(
-                    " Ask for '{ancestor}' instead — it is a wider directory that \
-                     contains it; say so when you ask."
-                ),
-                None => String::new(),
-            };
-            return Ok(ToolOutput::error(format!(
-                "'{quoted}' contains whitespace, which `/grant` cannot express: the \
-                 command's path is read as a single word, so every grant option offered \
-                 for it would fail for the user whichever one they pick.{instead}"
-            )));
-        }
-
         // The options are built here, not by the model: option text written by
         // the model could smuggle an unrelated command into a question about
         // something else. The path they quote is the one the model asked
         // about, which `was_denied` has just tied to a refusal this turn — the
         // user reads that path in the question and decides on it.
-        let options = options_for(quoted, write);
+        //
+        // A path no line can spell is not worth asking about: every option the
+        // user could pick would name a different path, so the grant would not
+        // be the one they read.
+        let quoted = quoted(raw);
+        let Some(options) = options_for(quoted, write) else {
+            return Ok(ToolOutput::error(format!(
+                "'{quoted}' holds both `\"` and `'`, so no `/grant` line can name it: \
+                 quoting takes one pair of either kind, and the path is a single word. \
+                 Ask for a directory above it that a line can spell."
+            )));
+        };
         let question = match reason {
             Some(reason) => format!("Allow access to {quoted}? {reason}"),
             None => format!("Allow access to {quoted}?"),
@@ -243,7 +223,7 @@ mod tests {
     #[test]
     fn read_options_are_commands_naming_the_path() {
         assert_eq!(
-            options_for("/srv/data", false),
+            options_for("/srv/data", false).unwrap(),
             vec![
                 "/grant /srv/data --once".to_string(),
                 "/grant /srv/data".to_string(),
@@ -257,7 +237,7 @@ mod tests {
     #[test]
     fn write_options_carry_the_write_flag() {
         assert_eq!(
-            options_for("/srv/data", true),
+            options_for("/srv/data", true).unwrap(),
             vec![
                 "/grant --write /srv/data --once".to_string(),
                 "/grant --write /srv/data".to_string(),
@@ -272,32 +252,38 @@ mod tests {
     /// function still emits the same string — not that the string is legal. It
     /// was not: the options read `-once`, which is neither `--once` nor `-o`, so
     /// the user's pick died with "unknown flag -once" and the grant never
-    /// landed. This test hands the generated text to the real parser instead of
-    /// trusting a copy of it.
+    /// landed. This test hands the generated text to the real splitter and the
+    /// real parser instead of trusting a copy of it.
     #[test]
     fn every_grant_option_parses_as_a_grant() {
         use jyc_core::command::flags::GRANT_FLAGS;
+        use jyc_core::command::line;
         use jyc_core::command::spec::parse_command;
 
-        for write in [false, true] {
-            for option in options_for("/srv/data", write) {
-                let argv: Vec<String> = option.split_whitespace().map(Into::into).collect();
-                if argv.first().map(String::as_str) != Some("/grant") {
-                    continue;
+        // The spaced path is the case that needs quoting: handed over as one
+        // word it is a path, split on whitespace it would be two.
+        for path in ["/srv/data", "/srv/My Files"] {
+            for write in [false, true] {
+                for option in options_for(path, write).unwrap() {
+                    let argv = line::split(&option)
+                        .unwrap_or_else(|e| panic!("{option:?} must be one readable line: {e}"));
+                    if argv.first().map(String::as_str) != Some("/grant") {
+                        continue;
+                    }
+                    let parsed = parse_command("/grant", GRANT_FLAGS, &argv[1..]);
+                    assert!(
+                        parsed.is_ok(),
+                        "the option the user is told to copy must be one `/grant` accepts: \
+                         {option:?} -> {parsed:?}"
+                    );
+                    let parsed = parsed.expect("checked above");
+                    assert_eq!(
+                        parsed.positionals,
+                        [path],
+                        "the path has to survive as the path, not be eaten as a flag value \
+                         or split into two: {option:?}"
+                    );
                 }
-                let parsed = parse_command("/grant", GRANT_FLAGS, &argv[1..]);
-                assert!(
-                    parsed.is_ok(),
-                    "the option the user is told to copy must be one `/grant` accepts: \
-                     {option:?} -> {parsed:?}"
-                );
-                let parsed = parsed.expect("checked above");
-                assert_eq!(
-                    parsed.positionals,
-                    ["/srv/data"],
-                    "the path has to survive as the path, not be eaten as a flag value: \
-                     {option:?}"
-                );
             }
         }
     }
@@ -307,7 +293,7 @@ mod tests {
     /// something.
     #[test]
     fn only_the_grant_options_are_commands() {
-        let options = options_for("/srv/data", false);
+        let options = options_for("/srv/data", false).unwrap();
         let commands = options.iter().filter(|o| o.starts_with('/')).count();
         assert_eq!(commands, 2, "exactly the two grants: {options:?}");
         assert!(
@@ -323,21 +309,27 @@ mod tests {
         assert_eq!(quoted("/srv/data/"), "/srv/data");
     }
 
-    /// A space in the path is the one thing `/grant` cannot carry, so the tool
-    /// has to name a directory above it that *can* be granted — and never `/`,
-    /// which would turn one unusable question into a grant over everything.
+    /// A space in the path is no longer a reason to refuse the question: the option
+    /// quotes it, and the splitter hands the quoted run back as one word. The
+    /// quoting is `line::spell`'s, so the option and the reader cannot disagree.
     #[test]
-    fn a_spaced_path_names_the_deepest_ancestor_that_can_be_granted() {
+    fn a_spaced_path_is_offered_quoted() {
         assert_eq!(
-            ancestor_without_whitespace("/home/user/My Files").as_deref(),
-            Some("/home/user")
+            options_for("/srv/My Files", false).unwrap(),
+            vec![
+                r#"/grant "/srv/My Files" --once"#.to_string(),
+                r#"/grant "/srv/My Files""#.to_string(),
+                "I do not grant access to /srv/My Files.".to_string(),
+            ]
         );
-        // The spaced directory itself is skipped when it is the one that blocks.
+        // A path holding the double quote is written with the single one, so the
+        // grant still names the path it read.
         assert_eq!(
-            ancestor_without_whitespace("/home/user/My Files/notes.txt").as_deref(),
-            Some("/home/user")
+            options_for(r#"/srv/a"b"#, false).unwrap()[0],
+            r#"/grant '/srv/a"b' --once"#
         );
-        assert_eq!(ancestor_without_whitespace("/My Files"), None);
+        // Both kinds at once is the one path no line can name.
+        assert_eq!(options_for(r#"/srv/a"b'c"#, false), None);
     }
 
     /// The root directory survives the trailing-slash rule: trimming it would
@@ -345,7 +337,7 @@ mod tests {
     #[test]
     fn the_root_path_survives_trimming() {
         assert_eq!(quoted("/"), "/");
-        assert_eq!(options_for(quoted("/"), false)[1], "/grant /");
+        assert_eq!(options_for(quoted("/"), false).unwrap()[1], "/grant /");
     }
 
     /// The follow-up line has to be message text: a message made only of
@@ -415,10 +407,9 @@ mod tests {
         );
     }
 
-    /// A refused path with a space in it is not askable: `/grant` reads its path
-    /// as one whitespace-split token, so the option would die on "expected one
-    /// argument" whichever one the user picked. The tool has to say so and point
-    /// at the deepest directory above it that a grant line *can* name.
+    /// A refused path with a space in it **is** askable: the option quotes it
+    /// and the splitter the dispatcher uses hands the quoted run back as one
+    /// word, so the grant names the same path the user read in the question.
     ///
     /// The fixture must sit outside both the working directory **and**
     /// [`std::env::temp_dir`], which the boundary always accepts as scratch
@@ -428,7 +419,9 @@ mod tests {
     /// it exempt, and the assert below fails loudly if some future exemption
     /// starts accepting it.
     #[tokio::test]
-    async fn a_refused_path_with_whitespace_is_refused_rather_than_offered() {
+    async fn a_refused_path_with_whitespace_is_offered_quoted() {
+        use jyc_core::command::line;
+
         let tmp = tempfile::tempdir().unwrap();
         let ctx = ToolContext::new(tmp.path());
 
@@ -442,17 +435,19 @@ mod tests {
             .execute(json!({ "path": spaced }), &ctx)
             .await
             .unwrap();
+        assert!(!out.is_error, "the question is askable: {}", out.content);
 
-        assert!(out.is_error, "no option here could work: {}", out.content);
+        let option = format!(r#"/grant "{spaced}" --once"#);
         assert!(
-            out.content.contains("contains whitespace"),
-            "the model has to learn why the path cannot be asked about: {}",
+            out.content.contains(&option),
+            "the option must quote the path so it survives as one word: {}",
             out.content
         );
-        assert!(
-            out.content.contains("'/jyc-no-such-root'"),
-            "the model needs a grantable ancestor to fall back on: {}",
-            out.content
+        // The option the user is shown has to read back as the path it names.
+        assert_eq!(
+            line::split(&option).unwrap(),
+            ["/grant", spaced, "--once"],
+            "the quoted option must split the way the dispatcher splits it"
         );
     }
 

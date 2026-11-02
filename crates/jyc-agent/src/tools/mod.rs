@@ -13,7 +13,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::types::{ImageSource, ToolDefinition};
@@ -278,6 +278,46 @@ fn is_within_temp_dir(canonical: &Path, tmp: &Path) -> bool {
     tmp_canonical.parent().is_some() && canonical.starts_with(&tmp_canonical)
 }
 
+/// `path` with `.` and `..` folded and its deepest existing ancestor resolved to
+/// the real path.
+///
+/// Folding alone leaves a path under a symlinked prefix (macOS `$TMPDIR`, whose
+/// `/var/…` spelling is `/private/var/…` in the filesystem) looking like it sits
+/// outside `working_dir`; canonicalizing alone fails for a path that does not
+/// exist yet — a file the command is about to create. Resolving the existing
+/// prefix and re-appending the rest keeps both sides of every boundary
+/// comparison in one namespace, which is why `write`/`edit` of a *new* file
+/// still lands inside a working directory reached through a symlink.
+pub(crate) fn normalize(path: &Path) -> PathBuf {
+    let mut folded = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                folded.pop();
+            }
+            other => folded.push(other.as_os_str()),
+        }
+    }
+
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut current = folded.as_path();
+    loop {
+        if let Ok(canonical) = current.canonicalize() {
+            let mut resolved = canonical;
+            for name in tail.iter().rev() {
+                resolved.push(name);
+            }
+            return resolved;
+        }
+        let (Some(name), Some(parent)) = (current.file_name(), current.parent()) else {
+            return folded;
+        };
+        tail.push(name.to_os_string());
+        current = parent;
+    }
+}
+
 impl<'a> ToolContext<'a> {
     /// Construct a context with no extra roots and an empty pending-images queue.
     pub fn new(working_dir: &'a Path) -> Self {
@@ -389,13 +429,13 @@ impl<'a> ToolContext<'a> {
     /// Applies the null-device and temp-dir exemptions described on
     /// [`Self::check_path_boundary`].
     fn read_boundary_verdict(&self, resolved: &Path) -> std::result::Result<(), PathBuf> {
-        let canonical = resolved
-            .canonicalize()
-            .unwrap_or_else(|_| resolved.to_path_buf());
-        let working_canonical = self
-            .working_dir
-            .canonicalize()
-            .unwrap_or_else(|_| self.working_dir.to_path_buf());
+        // A path that does not exist yet (`write` of a new file) cannot be
+        // canonicalized whole. Falling back to its raw spelling compares it
+        // against a canonicalized `working_dir`, which refuses a new file inside
+        // a working directory whose own spelling runs through a symlink —
+        // `normalize` resolves the existing prefix instead.
+        let canonical = normalize(resolved);
+        let working_canonical = normalize(self.working_dir);
 
         // The null device is always in-boundary: writes are discarded and reads
         // are empty, so nothing crosses the boundary through it, and nearly
@@ -411,8 +451,7 @@ impl<'a> ToolContext<'a> {
         // Also check additional_read_roots (e.g. configured attachment
         // save paths outside working_dir).
         for root in &self.additional_read_roots {
-            let root_canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
-            if canonical.starts_with(&root_canonical) {
+            if canonical.starts_with(normalize(root)) {
                 return Ok(());
             }
         }
@@ -435,8 +474,7 @@ impl<'a> ToolContext<'a> {
             Ok(()) => Ok(()),
             Err(canonical) => {
                 for root in &self.additional_write_roots {
-                    let root_canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
-                    if canonical.starts_with(&root_canonical) {
+                    if canonical.starts_with(normalize(root)) {
                         return Ok(());
                     }
                 }
@@ -695,6 +733,17 @@ mod tests {
             ctx.check_path_boundary("outer/passwd", &escape).is_err(),
             "a link out of the working directory is refused at its target"
         );
+
+        // The other direction: the *spelling* is outside, the target inside.
+        // Judging the spelling would refuse a path the command can only reach
+        // into the working directory with.
+        let elsewhere = tempfile::tempdir().expect("create outside dir");
+        let inward_link = elsewhere.path().join("inward");
+        std::os::unix::fs::symlink(&inside, &inward_link).expect("create inward symlink");
+        assert!(
+            ctx.check_path_boundary("inward", &inward_link).is_ok(),
+            "a link from outside that lands inside names an in-boundary file"
+        );
     }
 
     /// A refusal is remembered, and it bounds what `request_access` may ask
@@ -770,5 +819,61 @@ mod tests {
         let tmp = Path::new("/tmp");
         assert!(is_within_temp_dir(Path::new("/tmp/scratch.txt"), tmp));
         assert!(!is_within_temp_dir(Path::new("/tmpfoo/escape.txt"), tmp));
+    }
+
+    /// A new file under a working directory whose own spelling runs through a
+    /// symlink must still land inside it.
+    ///
+    /// `write`/`edit` pass the raw joined path, and a file that does not exist
+    /// yet cannot be canonicalized. Comparing that raw spelling against a
+    /// *canonicalized* `working_dir` loses on any layout where the working dir
+    /// is reached through a link — macOS `$TMPDIR` (`/var/…` is really
+    /// `/private/var/…`) or a symlinked agents dir — and refuses the write.
+    /// [`normalize`] resolves the existing prefix and re-appends the tail, so
+    /// both sides of the comparison share one spelling.
+    #[cfg(unix)]
+    #[test]
+    fn a_new_file_under_a_symlinked_working_dir_resolves_inside() {
+        let base = tempfile::tempdir().expect("create base");
+        let real = base.path().join("real");
+        std::fs::create_dir(&real).expect("create real");
+        let link = base.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("create link");
+
+        let new_file = link.join("not-yet-there");
+        assert!(!new_file.exists(), "the fixture must not exist yet");
+
+        assert_eq!(
+            normalize(&new_file),
+            normalize(&real).join("not-yet-there"),
+            "the missing tail is re-appended to the resolved prefix"
+        );
+        // The comparison the boundary actually makes.
+        assert!(
+            normalize(&new_file).starts_with(normalize(&link)),
+            "writing a new file inside the working dir is inside the boundary"
+        );
+        // The raw spelling is what used to lose that comparison.
+        assert!(!new_file.starts_with(normalize(&real)));
+
+        let ctx = ToolContext::new(&link);
+        assert!(
+            ctx.check_write_boundary("not-yet-there", &new_file).is_ok(),
+            "and the write is allowed, not just computed correctly"
+        );
+    }
+
+    /// `..` is folded before the existing prefix is resolved, so a path that
+    /// walks up and back down lands on the file it names.
+    #[test]
+    fn normalize_folds_parent_components() {
+        assert_eq!(
+            normalize(Path::new("/etc/../etc/passwd")),
+            normalize(Path::new("/etc/passwd"))
+        );
+        // A `..` the filesystem must resolve because the segment is a symlink.
+        // `/etc/../etc` is `/etc` either way, so this needs a link to differ —
+        // the point here is only that folding does not run off the root.
+        assert_eq!(normalize(Path::new("/../..")), Path::new("/"));
     }
 }

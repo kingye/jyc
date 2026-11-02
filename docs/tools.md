@@ -27,7 +27,7 @@ Execute shell commands in the working directory.
 - `command` (string, required): The bash command to execute
 - `timeout` (integer, optional): Timeout in seconds (default: 120)
 
-**Security:** Path boundary check on every path the command *names* — words are split the way `bash` splits them (so a quoted path with spaces is one word), a word counts when it holds `/`, starts with `~`, or is a `cd` or redirection target, and relative words resolve against the directory the command will run in, moved along by the `cd` targets it spells out. Each is verified against `working_dir`, the system temp dir, or configured read/write roots (`access.read` / `access.write`). This is a lexical check, not a sandbox: a path that only exists at run time (`$VAR`, `$(...)`, a path inside another program's string) is invisible to it. Full isolation requires OS-level containment — see issue #1047.
+**Security:** Path boundary check on every path the command *names* — words are split the way `bash` splits them (so a quoted path with spaces is one word), a word counts when it holds `/`, starts with `~`, or is a `cd` or redirection target, and relative words resolve against the directory the command will run in, moved along by the `cd` targets it spells out at command position (a glued separator, a newline, or a keyword all count). Each is verified against `working_dir`, the system temp dir, or configured read/write roots (`access.read` / `access.write`). This is a lexical check, not a sandbox: a path that only exists at run time (`$VAR`, `$(...)`, a path inside another program's string) is invisible to it. Full isolation requires OS-level containment — see issue #1047.
 
 **Limits:** Output truncated at 128 KB.
 

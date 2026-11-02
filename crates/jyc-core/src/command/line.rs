@@ -48,6 +48,23 @@ impl std::error::Error for LineError {}
 ///
 /// Returns [`LineError`] when the line ends inside a quote.
 pub fn split(line: &str) -> Result<Vec<String>, LineError> {
+    split_inner(line, false)
+}
+
+/// [`split`], with a newline outside quoting kept as a `;` glued to the word
+/// before it: `"cd a\ncat x"` gives `["cd", "a;", "cat", "x"]`.
+///
+/// A reader that tracks what the command *changes* has to know where one
+/// statement ends, and [`split`] folds a newline into the same whitespace that
+/// separates two words — so `cd a` on one line and `cd ..` on the next look
+/// like two arguments of one command. Only the boundary is recorded: the `;` is
+/// a separator a consumer already handles (`done;` carries one too), and no
+/// other character of any word changes.
+pub fn split_statements(line: &str) -> Result<Vec<String>, LineError> {
+    split_inner(line, true)
+}
+
+fn split_inner(line: &str, break_lines: bool) -> Result<Vec<String>, LineError> {
     let mut words = Vec::new();
     let mut word: Option<String> = None;
     let mut open: Option<char> = None;
@@ -61,6 +78,14 @@ pub fn split(line: &str) -> Result<Vec<String>, LineError> {
                 // `""` is an empty word, which `flush` then drops — opening the
                 // word here keeps `ab""cd` one word instead of two.
                 word.get_or_insert_with(String::new);
+            }
+            None if break_lines && ch == '\n' => {
+                // A trailing `;` on a word nobody typed yet (a blank line) is
+                // no word at all — bash reads it as whitespace too.
+                if word.as_ref().is_some_and(|word| !word.is_empty()) {
+                    push(&mut word, ';');
+                }
+                flush(&mut word, &mut words);
             }
             None if ch.is_whitespace() => flush(&mut word, &mut words),
             None => push(&mut word, ch),
@@ -133,6 +158,45 @@ mod tests {
         assert_eq!(words("  a\tb\nc  "), ["a", "b", "c"]);
         assert!(words("").is_empty());
         assert!(words("   ").is_empty());
+    }
+
+    /// A newline separates statements, and [`split`] hides that by folding it
+    /// into the whitespace between two words. [`split_statements`] keeps it as
+    /// the `;` a consumer already recognizes, without changing any word.
+    #[test]
+    fn split_statements_keeps_the_boundary_a_newline_draws() {
+        let statements = |line: &str| split_statements(line).unwrap();
+
+        assert_eq!(
+            statements("cd a\ncat x"),
+            ["cd", "a;", "cat", "x"],
+            "the newline becomes a `;` on the word before it"
+        );
+        assert_eq!(
+            statements("cmd\ncd b/c\ncat ../../x"),
+            ["cmd;", "cd", "b/c;", "cat", "../../x"]
+        );
+        // A blank line carries no word, so it adds no separator of its own.
+        assert_eq!(statements("a\n\n\nb"), ["a;", "b"]);
+        // Whitespace that is not a newline stays whitespace: two words.
+        assert_eq!(statements("a b"), ["a", "b"]);
+        // Inside a quote a newline is a literal character, as before.
+        assert_eq!(statements("a \"b\nc\" d"), ["a", "b\nc", "d"]);
+        assert_eq!(
+            split("cd a\ncat x").unwrap(),
+            ["cd", "a", "cat", "x"],
+            "`split` itself is unchanged"
+        );
+    }
+
+    /// A trailing newline is a statement end like any other, and an unclosed
+    /// quote is still the error it was.
+    #[test]
+    fn split_statements_edges() {
+        assert_eq!(split_statements("cd a\n").unwrap(), ["cd", "a;"]);
+        assert_eq!(split_statements("\n").unwrap(), Vec::<String>::new());
+        assert_eq!(split_statements("").unwrap(), Vec::<String>::new());
+        assert!(split_statements("a \"b\n").is_err());
     }
 
     /// The case quoting exists for: the path `/grant` used to refuse.

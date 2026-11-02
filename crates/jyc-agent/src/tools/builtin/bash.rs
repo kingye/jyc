@@ -229,6 +229,12 @@ struct NamedPath {
 /// `${NAME}` is judged as the value: `X=/usr; cd $X` is refused for the
 /// directory it really enters. An assignment-shaped word anywhere else is an
 /// argument the program reads (`dd if=/etc/passwd`), so it is judged as before.
+///
+/// Two shapes of "the shell does not do what the words look like" are honoured
+/// rather than guessed at: a `cd` inside `( … )` runs in a subshell and does not
+/// move the directory the rest of the line runs in, and a reserved word is one
+/// only as written — bash never re-reads an expansion as `then`, so `X=then; $X
+/// cd sub` runs a command named `then`.
 fn named_paths(command: &str, working_dir: &Path) -> Vec<NamedPath> {
     // An unclosed quote is a syntax error to bash too: a command bash refuses
     // to run needs no boundary check. Statements are split at newlines as well
@@ -256,12 +262,15 @@ fn named_paths(command: &str, working_dir: &Path) -> Vec<NamedPath> {
             continue;
         }
 
-        // `>`, `2>>`, `&>`: what follows is a file the command writes.
+        // `>`, `2>>`, `&>`: what follows is a file the command writes. A tail
+        // holding a variable is expanded like any other word — `cat x 2>$X`
+        // writes where `$X` points, and the spaced form (`2> $X`) already was.
         if let Some((_, tail)) = leading_redirection(word) {
+            let tail = expand_vars(tail, &vars);
             if tail.is_empty() {
                 redirect_target = true;
-            } else if looks_like_path(tail)
-                && let Some(path) = resolve_path(tail, cwd.as_deref())
+            } else if looks_like_path(&tail)
+                && let Some(path) = resolve_path(&tail, cwd.as_deref())
             {
                 paths.push(NamedPath {
                     path,
@@ -282,11 +291,12 @@ fn named_paths(command: &str, working_dir: &Path) -> Vec<NamedPath> {
             // bare `cd` goes to, which the line does not spell out, so later
             // relative words are not judged. The file is still a write.
             if let Some((_, tail)) = target.as_deref().and_then(leading_redirection) {
+                let tail = expand_vars(tail, &vars);
                 cwd = None;
                 if tail.is_empty() {
                     redirect_target = true;
-                } else if looks_like_path(tail)
-                    && let Some(path) = resolve_path(tail, None)
+                } else if looks_like_path(&tail)
+                    && let Some(path) = resolve_path(&tail, None)
                 {
                     paths.push(NamedPath {
                         path,
@@ -333,10 +343,15 @@ fn named_paths(command: &str, working_dir: &Path) -> Vec<NamedPath> {
             && let Some((name, value)) = assignment(word)
         {
             vars.insert(name.to_string(), value.to_string());
-            // `X=1 cmd` is still a command, so the word after the assignment is
-            // again at command position and a `cd` there stays a `cd` — the
-            // separator glued to it (`X=1; cd …`) ends the statement.
-            at_command_start |= starts_command(raw);
+            // The words after an assignment are still at command position: more
+            // assignments (`X=1 X=2 cmd`) and the command name that follows are
+            // all read the same way, and a separator glued to the value
+            // (`X=1; cd …`) opens a statement either way. A leading `(` does
+            // not: `(X=1 cd sub)` runs that `cd` in a subshell, which never
+            // moves the shell the rest of the line runs in — keeping command
+            // position there tracks a directory the command is not in, and
+            // judges what follows one level too shallow.
+            at_command_start = !raw.starts_with('(');
             continue;
         }
 
@@ -347,8 +362,13 @@ fn named_paths(command: &str, working_dir: &Path) -> Vec<NamedPath> {
         // directory the command does not enter — the one direction that fails
         // *open*.
         let was_command_start = at_command_start;
-        at_command_start =
-            starts_command(raw) || (was_command_start && COMMAND_KEYWORDS.contains(&word));
+        // Matched against the word the line spells, not the value a variable
+        // expands to: bash resolves reserved words before expansion, so
+        // `X=then; $X cd sub` runs a command named `then` and the `cd` beside it
+        // is an argument. Reading the expansion as `then` would move the tracked
+        // directory into `sub` and judge the words behind it too shallow.
+        at_command_start = starts_command(raw)
+            || (was_command_start && COMMAND_KEYWORDS.contains(&trim_shell_punctuation(raw)));
         if looks_like_path(word) {
             // `--path=/srv/x` separates a flag from the path it names. A word
             // that is itself a path keeps its `=`: `/tmp/a=b` is one file, and
@@ -459,6 +479,11 @@ fn assignment(word: &str) -> Option<(&str, &str)> {
 /// spell out for a directory or a file, while `a$X` and `${X%%…}` are left as
 /// they are — [`resolve_path`] then declines the word, which is the same answer
 /// this pass gave before it knew any variable at all.
+///
+/// Quoting is already gone when a word gets here, so `'$X'` expands too. The
+/// shell reads a literal `$X` there and this pass judges the assigned value
+/// instead — the wrong answer in the safe direction, and the same one it gives
+/// `cat '/etc/passwd'`, which is judged on purpose.
 fn expand_vars(word: &str, vars: &HashMap<String, String>) -> String {
     let mut rest = word;
     let mut expanded = String::new();
@@ -770,8 +795,11 @@ mod tests {
     #[test]
     fn an_assigned_value_is_judged_where_it_is_used() {
         let working = tempfile::tempdir().expect("create working dir");
+        // `./passwd` is what an ordinary word has to look like to be judged at
+        // all, and it resolves to `/etc/passwd` only because the tracked `cd`
+        // moved there — a plain `passwd` names no directory and is not a path.
         assert_eq!(
-            refused("X=/etc; cd $X; cat passwd", working.path()),
+            refused("X=/etc; cd $X; cat ./passwd", working.path()),
             [existing("/etc"), existing("/etc/passwd")]
         );
         assert_eq!(
@@ -806,6 +834,69 @@ mod tests {
                 sub.display().to_string(),
                 root.join("notes.txt").display().to_string()
             ]
+        );
+
+        // The command name right after an assignment is still at command
+        // position, so `X=1 cd sub` really does move the directory.
+        assert_eq!(
+            named("X=1 cd sub; cat ../notes.txt", working.path()),
+            [
+                sub.display().to_string(),
+                root.join("notes.txt").display().to_string()
+            ]
+        );
+    }
+
+    /// A chain of assignments before the command assigns every one of them:
+    /// `X=1 X=2 cmd` runs `cmd` with both set, so the second is not an argument
+    /// and `$X` names what it assigned.
+    #[test]
+    fn a_chain_of_assignments_all_assign() {
+        let working = tempfile::tempdir().expect("create working dir");
+        assert_eq!(
+            refused("X=1 X=/etc/passwd cat $X", working.path()),
+            [existing("/etc/passwd")]
+        );
+    }
+
+    /// Reserved words are recognized before expansion: bash never re-reads an
+    /// expanded word as a keyword, so `X=then; $X cd sub` runs a command named
+    /// `then` and the `cd` beside it is an argument. Tracking it would move the
+    /// directory into `sub` and judge `..` one level too shallow — the same
+    /// escape as `echo if cd sub`, reached through a variable.
+    #[test]
+    fn an_expanded_keyword_does_not_open_a_command() {
+        let working = tempfile::tempdir().expect("create working dir");
+        std::fs::create_dir(working.path().join("sub")).expect("create sub");
+
+        assert_eq!(
+            refused("X=then; $X cd sub; cat ../../etc/passwd", working.path()),
+            [existing("/etc/passwd")]
+        );
+    }
+
+    /// A `cd` inside a subshell does not move the shell the rest of the line
+    /// runs in, so the `(` that opened it does not leave command position
+    /// behind for the assignment to hand on.
+    #[test]
+    fn an_assignment_in_a_subshell_does_not_move_the_directory() {
+        let working = tempfile::tempdir().expect("create working dir");
+        std::fs::create_dir(working.path().join("sub")).expect("create sub");
+
+        assert_eq!(
+            refused("(X=1 cd sub); cat ../../etc/passwd", working.path()),
+            [existing("/etc/passwd")]
+        );
+    }
+
+    /// A variable glued to the operator is the redirection target just as the
+    /// spaced form is: `2>$X` writes where `$X` points.
+    #[test]
+    fn a_glued_redirection_target_is_expanded() {
+        let working = tempfile::tempdir().expect("create working dir");
+        assert_eq!(
+            refused("X=/etc/passwd; cat note 2>$X", working.path()),
+            [existing("/etc/passwd")]
         );
     }
 

@@ -16,15 +16,17 @@
 //! against the process's own.
 //!
 //! **Limitations**: this is a lexical check, not a sandbox. A path that only
-//! exists at run time is invisible to it — `$VAR`, `$(...)`, a path inside a
-//! string handed to another program (`python3 -c 'open(...)'`), a `cd` whose
-//! target is not a literal word — and so is a destination that creates its file
-//! unless a `>` or a `cd` names it by position. Closing that class needs
-//! OS-level enforcement (Landlock on Linux, seatbelt on macOS); see issue #1047.
+//! exists at run time is invisible to it — a `$VAR` whose value the command does
+//! not assign itself, `$(...)`, a path inside a string handed to another program
+//! (`python3 -c 'open(...)'`), a `cd` whose target is not a literal word — and so
+//! is a destination that creates its file unless a `>` or a `cd` names it by
+//! position. Closing that class needs OS-level enforcement (Landlock on Linux,
+//! seatbelt on macOS); see issue #1047.
 
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use tracing;
@@ -216,9 +218,17 @@ struct NamedPath {
 ///
 /// Relative words resolve against `working_dir`, moved along by each `cd` the
 /// command spells out. A `cd` whose target cannot be read as a literal path
-/// (`cd "$X"`, `cd ~user`, `cd -`, a bare `cd`) makes the directory unknown:
-/// absolute words are still checked after it, relative ones are not, because
-/// what they name is no longer visible here.
+/// (`cd "$X"` for a variable the command never assigned, `cd ~user`, `cd -`, a
+/// bare `cd`) makes the directory unknown: absolute words are still checked
+/// after it, relative ones are not, because what they name is no longer
+/// visible here.
+///
+/// A `NAME=value` word at command position assigns; it reads nothing, so the
+/// path its value spells out is not judged — `X=/usr; echo hi` runs. The value
+/// is remembered instead, and a later word that starts with `$NAME` or
+/// `${NAME}` is judged as the value: `X=/usr; cd $X` is refused for the
+/// directory it really enters. An assignment-shaped word anywhere else is an
+/// argument the program reads (`dd if=/etc/passwd`), so it is judged as before.
 fn named_paths(command: &str, working_dir: &Path) -> Vec<NamedPath> {
     // An unclosed quote is a syntax error to bash too: a command bash refuses
     // to run needs no boundary check. Statements are split at newlines as well
@@ -231,10 +241,14 @@ fn named_paths(command: &str, working_dir: &Path) -> Vec<NamedPath> {
     let mut cwd = Some(working_dir.to_path_buf());
     let mut at_command_start = true;
     let mut redirect_target = false;
+    // The literal assignments seen so far, so `X=…; cd $X` names the directory
+    // the command really enters.
+    let mut vars: HashMap<String, String> = HashMap::new();
     let mut words = words.iter();
 
     while let Some(raw) = words.next() {
-        let word = trim_shell_punctuation(raw);
+        let expanded = shell_word(raw, &vars);
+        let word = expanded.as_str();
         if word.is_empty() {
             // `&&`, `||`, `;`, `|`, `(` … — the next word starts a command.
             at_command_start = true;
@@ -262,12 +276,12 @@ fn named_paths(command: &str, working_dir: &Path) -> Vec<NamedPath> {
         // so its target is a path even when it holds no separator (`cd repo`).
         if at_command_start && word == "cd" {
             let raw_target = words.next();
-            let target = raw_target.map(|word| trim_shell_punctuation(word));
+            let target = raw_target.map(|word| shell_word(word, &vars));
 
             // `cd 2> err` sends stderr to a file: the directory is the one a
             // bare `cd` goes to, which the line does not spell out, so later
             // relative words are not judged. The file is still a write.
-            if let Some((_, tail)) = target.and_then(leading_redirection) {
+            if let Some((_, tail)) = target.as_deref().and_then(leading_redirection) {
                 cwd = None;
                 if tail.is_empty() {
                     redirect_target = true;
@@ -283,7 +297,7 @@ fn named_paths(command: &str, working_dir: &Path) -> Vec<NamedPath> {
                 continue;
             }
 
-            cwd = match target {
+            cwd = match target.as_deref() {
                 Some(target) if !target.is_empty() && target != "-" => {
                     resolve_path(target, cwd.as_deref())
                 }
@@ -301,6 +315,28 @@ fn named_paths(command: &str, working_dir: &Path) -> Vec<NamedPath> {
             // command position. Dropping that is an escape: the second `cd` goes
             // untracked and `..` is judged one directory too shallow.
             at_command_start = raw_target.map(String::as_str).is_none_or(starts_command);
+            continue;
+        }
+
+        // `NAME=value` at command position assigns; it reads nothing, so the
+        // path its value spells out is not judged — `X=/usr; echo hi` and
+        // `PATH=/usr/local/bin:$PATH cmd` run. Reading the value as a path was a
+        // false refusal, and one that only ever caught the spelling `X=/usr`,
+        // never `X=/u\sr`. The value is kept instead, so a later `$NAME` is
+        // judged as what it really names.
+        //
+        // Only at command position: anywhere else the word is an argument the
+        // program interprets, and `dd if=/etc/passwd` really reads that file —
+        // `if` is a shell name, so skipping it there would open the boundary.
+        if !by_position
+            && at_command_start
+            && let Some((name, value)) = assignment(word)
+        {
+            vars.insert(name.to_string(), value.to_string());
+            // `X=1 cmd` is still a command, so the word after the assignment is
+            // again at command position and a `cd` there stays a `cd` — the
+            // separator glued to it (`X=1; cd …`) ends the statement.
+            at_command_start |= starts_command(raw);
             continue;
         }
 
@@ -387,6 +423,64 @@ fn leading_redirection(word: &str) -> Option<(&str, &str)> {
 /// separator, or starts at the home directory.
 fn looks_like_path(word: &str) -> bool {
     word.contains('/') || word.starts_with('~')
+}
+
+/// One word the shell would run: `raw` with its leading variables expanded from
+/// `vars`, then the punctuation a separator or a grouping parenthesis glues to
+/// it trimmed off.
+///
+/// In that order, because `${X};` ends with a brace the trim would take for
+/// grouping punctuation — expanding first leaves the value, and the `;` after it
+/// is trimmed as any glued separator is.
+fn shell_word(raw: &str, vars: &HashMap<String, String>) -> String {
+    trim_shell_punctuation(&expand_vars(raw, vars)).to_string()
+}
+
+/// The `NAME=value` assignment `word` spells, if it is one.
+///
+/// The name has to be a shell name — a leading letter or `_`, then letters,
+/// digits, `_` — which is what tells `X=/usr` (an assignment) from
+/// `--path=/usr` (a flag carrying a path, which the program being run reads).
+fn assignment(word: &str) -> Option<(&str, &str)> {
+    let (name, value) = word.split_once('=')?;
+    let mut chars = name.chars();
+    let first = chars.next()?;
+    if !(first.is_ascii_alphabetic() || first == '_')
+        || !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return None;
+    }
+    Some((name, value))
+}
+
+/// `word` with a leading `$NAME` or `${NAME}` replaced by `vars`'s value for it.
+///
+/// Only the leading run is expanded: `$X/foo` and a whole `$X` are what commands
+/// spell out for a directory or a file, while `a$X` and `${X%%…}` are left as
+/// they are — [`resolve_path`] then declines the word, which is the same answer
+/// this pass gave before it knew any variable at all.
+fn expand_vars(word: &str, vars: &HashMap<String, String>) -> String {
+    let mut rest = word;
+    let mut expanded = String::new();
+    while let Some(after_dollar) = rest.strip_prefix('$') {
+        let (name, after) = match after_dollar.strip_prefix('{') {
+            Some(braced) => match braced.split_once('}') {
+                Some((name, after)) => (name, after),
+                None => break,
+            },
+            None => {
+                let end = after_dollar
+                    .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+                    .unwrap_or(after_dollar.len());
+                (&after_dollar[..end], &after_dollar[end..])
+            }
+        };
+        let Some(value) = vars.get(name) else { break };
+        expanded.push_str(value);
+        rest = after;
+    }
+    expanded.push_str(rest);
+    expanded
 }
 
 /// `word` as an absolute path, or `None` when it cannot be read as one.
@@ -636,6 +730,82 @@ mod tests {
         assert_eq!(
             refused("cmd --conf=/etc/passwd", working.path()),
             [existing("/etc/passwd")]
+        );
+    }
+
+    /// An assignment at command position reads nothing: `X=/usr` stores a
+    /// string, and the word after it is the command. Judging the value refused
+    /// both of these, and it only ever caught the spelling `X=/usr` —
+    /// `X=/u\sr; cd $X` walked out anyway.
+    #[test]
+    fn an_assignment_is_not_a_read() {
+        let working = tempfile::tempdir().expect("create working dir");
+        for command in [
+            "X=/usr; echo hi",
+            "PATH=/usr/local/bin:$PATH cmd",
+            "X=/usr printenv X",
+        ] {
+            assert_eq!(
+                refused(command, working.path()),
+                Vec::<String>::new(),
+                "{command}"
+            );
+        }
+    }
+
+    /// A `NAME=value` argument is not an assignment — the program reads it, and
+    /// `if` is a shell name, so skipping every such word would let
+    /// `dd if=/etc/passwd` read outside the boundary.
+    #[test]
+    fn an_assignment_shaped_argument_is_still_judged() {
+        let working = tempfile::tempdir().expect("create working dir");
+        assert_eq!(
+            refused("dd if=/etc/passwd of=/tmp/out", working.path()),
+            [existing("/etc/passwd")]
+        );
+    }
+
+    /// The value is judged where a later word uses it, so closing the assignment
+    /// hole does not open this one: `X=/usr; cd $X` still lands in `/usr`.
+    #[test]
+    fn an_assigned_value_is_judged_where_it_is_used() {
+        let working = tempfile::tempdir().expect("create working dir");
+        assert_eq!(
+            refused("X=/etc; cd $X; cat passwd", working.path()),
+            [existing("/etc"), existing("/etc/passwd")]
+        );
+        assert_eq!(
+            refused("X=/etc/passwd; cat $X", working.path()),
+            [existing("/etc/passwd")]
+        );
+        assert_eq!(
+            refused("X=/etc/passwd; cat \"$X\"", working.path()),
+            [existing("/etc/passwd")]
+        );
+        assert_eq!(
+            refused("X=/etc/passwd; cat ${X}", working.path()),
+            [existing("/etc/passwd")]
+        );
+    }
+
+    /// A tracked value moves the directory as a literal target would, so the
+    /// relative words after it are judged from where the command really is.
+    #[test]
+    fn a_tracked_cd_value_moves_the_directory() {
+        let working = tempfile::tempdir().expect("create working dir");
+        let root = working
+            .path()
+            .canonicalize()
+            .expect("canonical working dir");
+        let sub = root.join("sub");
+        std::fs::create_dir(&sub).expect("create sub");
+
+        assert_eq!(
+            named("X=sub; cd $X; cat ../notes.txt", working.path()),
+            [
+                sub.display().to_string(),
+                root.join("notes.txt").display().to_string()
+            ]
         );
     }
 

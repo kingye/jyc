@@ -1000,7 +1000,7 @@ focus on error handling",
         let mut registry = CommandRegistry::new();
         registry.register("/grant", Arc::new(TestHandler));
 
-        for line in [r#"/gra"nt" /data"#, r#"/g'ra"'nt' /data"#] {
+        for line in [r#"/gra"nt" /data"#, r#"/g"r"'a'nt /data"#] {
             let output = registry
                 .process_commands(line, &test_context())
                 .await
@@ -1016,6 +1016,44 @@ focus on error handling",
                 "{line}: the scan must name the command dispatch ran"
             );
         }
+    }
+
+    /// An unbalanced line runs nothing: dispatch refuses the whole line rather
+    /// than guessing at word boundaries nobody typed.
+    #[tokio::test]
+    async fn an_unbalanced_quote_is_refused_by_dispatch() {
+        let mut registry = CommandRegistry::new();
+        registry.register("/grant", Arc::new(TestHandler));
+
+        for line in [
+            r#"/gra"nt /data"#,
+            r#"/g'ra"'nt' /data"#,
+            r#"/grant /data "x"#,
+        ] {
+            let output = registry
+                .process_commands(line, &test_context())
+                .await
+                .unwrap();
+            assert_eq!(output.results.len(), 1, "{line}: a refusal, not silence");
+            assert!(
+                !output.results[0].success,
+                "{line}: an unbalanced line must not run"
+            );
+        }
+    }
+
+    /// Where the splitter refuses, the scan falls back to whitespace on the
+    /// same line. That can name `/grant` that dispatch never ran — over-naming,
+    /// the safe direction, since the message is refused before it is queued.
+    /// It cannot under-name a line dispatch *did* run: `split` succeeded there.
+    #[test]
+    fn an_unbalanced_quote_after_the_name_over_names_rather_than_under_names() {
+        // The unmatched quote sits after the command name, so the fallback's
+        // first word is still `/grant`.
+        assert!(carries_authorization_command(r#"/grant /data "x"#));
+        // Here the fallback word is the mangled `"/gra"nt` — not named. Nothing
+        // runs either, which is why this is not a hole.
+        assert!(!carries_authorization_command(r#"/gra"nt /data"#));
     }
 
     /// A quote before the leading `/` puts the line outside the command block

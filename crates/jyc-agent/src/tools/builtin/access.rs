@@ -3,7 +3,7 @@
 //!
 //! The tool asks; it never grants. Every option it offers is a **command** the
 //! user runs, and the answer travels back as that command verbatim
-//! ([`AnswerStyle::Command`]): `/grant /abs/path -once`. The server's command
+//! ([`AnswerStyle::Command`]): `/grant /abs/path --once`. The server's command
 //! dispatcher executes it, so the decision is carried by a surface the model
 //! cannot write to.
 //!
@@ -62,9 +62,12 @@ fn quoted(raw: &str) -> &str {
 /// about something else. `quoted` names the path the model asked about, and
 /// `was_denied` has already tied that path to a refusal from this turn.
 fn options_for(path: &str, write: bool) -> Vec<String> {
-    let flag = if write { "-w " } else { "" };
+    // The long spellings, not `-o`/`-w`: `flags::rows` is what the popup in-
+    // serts and it inserts the long one, so a user who later types `/grant ` and
+    // completes it sees the same spelling this option carried.
+    let flag = if write { "--write " } else { "" };
     vec![
-        format!("/grant {flag}{path} -once"),
+        format!("/grant {flag}{path} --once"),
         format!("/grant {flag}{path}"),
         decline(path),
     ]
@@ -198,14 +201,14 @@ mod tests {
     use std::path::Path;
 
     /// The options a permission request offers for a read: two grants quoting
-    /// the path that was denied, then a refusal. `-once` comes first because it
+    /// the path that was denied, then a refusal. `--once` comes first because it
     /// is the narrower promise — the one a cautious user reaches for.
     #[test]
     fn read_options_are_commands_naming_the_path() {
         assert_eq!(
             options_for("/srv/data", false),
             vec![
-                "/grant /srv/data -once".to_string(),
+                "/grant /srv/data --once".to_string(),
                 "/grant /srv/data".to_string(),
                 "I do not grant access to /srv/data.".to_string(),
             ]
@@ -219,11 +222,47 @@ mod tests {
         assert_eq!(
             options_for("/srv/data", true),
             vec![
-                "/grant -w /srv/data -once".to_string(),
-                "/grant -w /srv/data".to_string(),
+                "/grant --write /srv/data --once".to_string(),
+                "/grant --write /srv/data".to_string(),
                 "I do not grant access to /srv/data.".to_string(),
             ]
         );
+    }
+
+    /// Every command option has to be one `/grant` actually accepts.
+    ///
+    /// The literals above are hand-written, so on their own they only prove the
+    /// function still emits the same string — not that the string is legal. It
+    /// was not: the options read `-once`, which is neither `--once` nor `-o`, so
+    /// the user's pick died with "unknown flag -once" and the grant never
+    /// landed. This test hands the generated text to the real parser instead of
+    /// trusting a copy of it.
+    #[test]
+    fn every_grant_option_parses_as_a_grant() {
+        use jyc_core::command::flags::GRANT_FLAGS;
+        use jyc_core::command::spec::parse_command;
+
+        for write in [false, true] {
+            for option in options_for("/srv/data", write) {
+                let argv: Vec<String> = option.split_whitespace().map(Into::into).collect();
+                if argv.first().map(String::as_str) != Some("/grant") {
+                    continue;
+                }
+                let parsed = parse_command("/grant", GRANT_FLAGS, &argv[1..]);
+                assert!(
+                    parsed.is_ok(),
+                    "the option the user is told to copy must be one `/grant` accepts: \
+                     {option:?} -> {parsed:?}"
+                );
+                let parsed = parsed.expect("checked above");
+                assert_eq!(
+                    parsed.positionals,
+                    ["/srv/data"],
+                    "the path has to survive as the path, not be eaten as a flag value: \
+                     {option:?}"
+                );
+            }
+        }
     }
 
     /// Only the grant options are commands. A refusal line starting with `/`
@@ -309,7 +348,7 @@ mod tests {
 
         let text = &out.content;
         assert!(
-            text.contains("/grant /etc/passwd -once"),
+            text.contains("/grant /etc/passwd --once"),
             "the narrower grant must be offered verbatim: {text}"
         );
         assert!(

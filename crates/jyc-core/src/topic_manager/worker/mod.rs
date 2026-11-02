@@ -309,7 +309,7 @@ pub(crate) async fn process_message(
     let t_after_commands = std::time::Instant::now();
 
     // The one-turn grants this message's turn will spend: everything in force
-    // once this message's own commands have run, so a `/grant -once` in the
+    // once this message's own commands have run, so a `/grant --once` in the
     // answer is included and a grant made later, while the turn is running,
     // is not. Cleared when the turn ends, at the bottom of this function.
     let once_grants_before_turn = jyc_types::access_grants::once_snapshot(topic_name);
@@ -700,12 +700,12 @@ pub(crate) async fn process_message(
         }
     };
 
-    // The agent is done, so the turn a `/grant -once` was made for is over:
+    // The agent is done, so the turn a `/grant --once` was made for is over:
     // drop the grants this turn actually had in force, rather than letting
     // "just this time" quietly become access until restart.
     //
     // Only a message that ran a turn reaches this line. A bare
-    // `/grant -once <path>` (a command-only message) returns at the
+    // `/grant --once <path>` (a command-only message) returns at the
     // no-body short-circuit above, so it is never in any snapshot and is
     // never dropped here: it stays in force for the next turn that runs,
     // which is what "just this time" means when the command itself is the

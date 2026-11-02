@@ -3,7 +3,7 @@
 //!
 //! The tool asks; it never grants. Every option it offers is a **command** the
 //! user runs, and the answer travels back as that command verbatim
-//! ([`AnswerStyle::Command`]): `/grant /abs/path -once`. The server's command
+//! ([`AnswerStyle::Command`]): `/grant /abs/path --once`. The server's command
 //! dispatcher executes it, so the decision is carried by a surface the model
 //! cannot write to.
 //!
@@ -54,6 +54,23 @@ fn quoted(raw: &str) -> &str {
     if trimmed.is_empty() { raw } else { trimmed }
 }
 
+/// The deepest directory above `path` whose name a `/grant` line can carry.
+///
+/// Only meaningful when `path` itself contains whitespace — that is the one
+/// thing `/grant` cannot spell, because the dispatcher splits the line on
+/// whitespace before the parser sees it and `Shape::Args` takes exactly one
+/// token (no `--` escape either: that one only ends flags for shapes that keep
+/// text). `None` when nothing below `/` qualifies: naming `/` as the substitute
+/// would swap one unusable question for a grant over the whole filesystem, which
+/// is not a suggestion worth making.
+fn ancestor_without_whitespace(path: &str) -> Option<String> {
+    std::path::Path::new(path)
+        .ancestors()
+        .skip(1)
+        .map(|ancestor| ancestor.to_string_lossy().into_owned())
+        .find(|ancestor| ancestor != "/" && !ancestor.contains(char::is_whitespace))
+}
+
 /// The options a permission request offers, narrowest first and the refusal
 /// last.
 ///
@@ -62,9 +79,12 @@ fn quoted(raw: &str) -> &str {
 /// about something else. `quoted` names the path the model asked about, and
 /// `was_denied` has already tied that path to a refusal from this turn.
 fn options_for(path: &str, write: bool) -> Vec<String> {
-    let flag = if write { "-w " } else { "" };
+    // The long spellings, not `-o`/`-w`: `flags::rows` is what the popup in-
+    // serts and it inserts the long one, so a user who later types `/grant ` and
+    // completes it sees the same spelling this option carried.
+    let flag = if write { "--write " } else { "" };
     vec![
-        format!("/grant {flag}{path} -once"),
+        format!("/grant {flag}{path} --once"),
         format!("/grant {flag}{path}"),
         decline(path),
     ]
@@ -161,12 +181,32 @@ impl Tool for RequestAccessTool {
             )));
         }
 
+        // A path `/grant` cannot spell is not worth asking about. The line is
+        // split on whitespace before the parser sees it, and the path is a
+        // single token, so a path with a space in it yields "expected one
+        // argument" for every option the user could pick — the same silent
+        // failure an unknown flag caused, one layer down.
+        let quoted = quoted(raw);
+        if quoted.contains(char::is_whitespace) {
+            let instead = match ancestor_without_whitespace(quoted) {
+                Some(ancestor) => format!(
+                    " Ask for '{ancestor}' instead — it is a wider directory that \
+                     contains it; say so when you ask."
+                ),
+                None => String::new(),
+            };
+            return Ok(ToolOutput::error(format!(
+                "'{quoted}' contains whitespace, which `/grant` cannot express: the \
+                 command's path is read as a single word, so every grant option offered \
+                 for it would fail for the user whichever one they pick.{instead}"
+            )));
+        }
+
         // The options are built here, not by the model: option text written by
         // the model could smuggle an unrelated command into a question about
         // something else. The path they quote is the one the model asked
         // about, which `was_denied` has just tied to a refusal this turn — the
         // user reads that path in the question and decides on it.
-        let quoted = quoted(raw);
         let options = options_for(quoted, write);
         let question = match reason {
             Some(reason) => format!("Allow access to {quoted}? {reason}"),
@@ -198,14 +238,14 @@ mod tests {
     use std::path::Path;
 
     /// The options a permission request offers for a read: two grants quoting
-    /// the path that was denied, then a refusal. `-once` comes first because it
+    /// the path that was denied, then a refusal. `--once` comes first because it
     /// is the narrower promise — the one a cautious user reaches for.
     #[test]
     fn read_options_are_commands_naming_the_path() {
         assert_eq!(
             options_for("/srv/data", false),
             vec![
-                "/grant /srv/data -once".to_string(),
+                "/grant /srv/data --once".to_string(),
                 "/grant /srv/data".to_string(),
                 "I do not grant access to /srv/data.".to_string(),
             ]
@@ -219,11 +259,47 @@ mod tests {
         assert_eq!(
             options_for("/srv/data", true),
             vec![
-                "/grant -w /srv/data -once".to_string(),
-                "/grant -w /srv/data".to_string(),
+                "/grant --write /srv/data --once".to_string(),
+                "/grant --write /srv/data".to_string(),
                 "I do not grant access to /srv/data.".to_string(),
             ]
         );
+    }
+
+    /// Every command option has to be one `/grant` actually accepts.
+    ///
+    /// The literals above are hand-written, so on their own they only prove the
+    /// function still emits the same string — not that the string is legal. It
+    /// was not: the options read `-once`, which is neither `--once` nor `-o`, so
+    /// the user's pick died with "unknown flag -once" and the grant never
+    /// landed. This test hands the generated text to the real parser instead of
+    /// trusting a copy of it.
+    #[test]
+    fn every_grant_option_parses_as_a_grant() {
+        use jyc_core::command::flags::GRANT_FLAGS;
+        use jyc_core::command::spec::parse_command;
+
+        for write in [false, true] {
+            for option in options_for("/srv/data", write) {
+                let argv: Vec<String> = option.split_whitespace().map(Into::into).collect();
+                if argv.first().map(String::as_str) != Some("/grant") {
+                    continue;
+                }
+                let parsed = parse_command("/grant", GRANT_FLAGS, &argv[1..]);
+                assert!(
+                    parsed.is_ok(),
+                    "the option the user is told to copy must be one `/grant` accepts: \
+                     {option:?} -> {parsed:?}"
+                );
+                let parsed = parsed.expect("checked above");
+                assert_eq!(
+                    parsed.positionals,
+                    ["/srv/data"],
+                    "the path has to survive as the path, not be eaten as a flag value: \
+                     {option:?}"
+                );
+            }
+        }
     }
 
     /// Only the grant options are commands. A refusal line starting with `/`
@@ -245,6 +321,23 @@ mod tests {
     #[test]
     fn a_trailing_slash_is_dropped_from_the_quoted_path() {
         assert_eq!(quoted("/srv/data/"), "/srv/data");
+    }
+
+    /// A space in the path is the one thing `/grant` cannot carry, so the tool
+    /// has to name a directory above it that *can* be granted — and never `/`,
+    /// which would turn one unusable question into a grant over everything.
+    #[test]
+    fn a_spaced_path_names_the_deepest_ancestor_that_can_be_granted() {
+        assert_eq!(
+            ancestor_without_whitespace("/home/user/My Files").as_deref(),
+            Some("/home/user")
+        );
+        // The spaced directory itself is skipped when it is the one that blocks.
+        assert_eq!(
+            ancestor_without_whitespace("/home/user/My Files/notes.txt").as_deref(),
+            Some("/home/user")
+        );
+        assert_eq!(ancestor_without_whitespace("/My Files"), None);
     }
 
     /// The root directory survives the trailing-slash rule: trimming it would
@@ -309,7 +402,7 @@ mod tests {
 
         let text = &out.content;
         assert!(
-            text.contains("/grant /etc/passwd -once"),
+            text.contains("/grant /etc/passwd --once"),
             "the narrower grant must be offered verbatim: {text}"
         );
         assert!(
@@ -319,6 +412,47 @@ mod tests {
         assert!(
             text.contains("I do not grant access to /etc/passwd."),
             "the refusal must be readable, not a command: {text}"
+        );
+    }
+
+    /// A refused path with a space in it is not askable: `/grant` reads its path
+    /// as one whitespace-split token, so the option would die on "expected one
+    /// argument" whichever one the user picked. The tool has to say so and point
+    /// at the deepest directory above it that a grant line *can* name.
+    ///
+    /// The fixture must sit outside both the working directory **and**
+    /// [`std::env::temp_dir`], which the boundary always accepts as scratch
+    /// space, and no ancestor of it may be a symlink either — that exemption
+    /// skips the check as well. Both are invisible properties of the machine,
+    /// so the fixture names a root that cannot exist: nothing on disk can make
+    /// it exempt, and the assert below fails loudly if some future exemption
+    /// starts accepting it.
+    #[tokio::test]
+    async fn a_refused_path_with_whitespace_is_refused_rather_than_offered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+
+        let spaced = "/jyc-no-such-root/My Files/notes.txt";
+        assert!(
+            ctx.check_path_boundary(spaced, Path::new(spaced)).is_err(),
+            "the fixture has to be outside the boundary to be refusable"
+        );
+
+        let out = RequestAccessTool
+            .execute(json!({ "path": spaced }), &ctx)
+            .await
+            .unwrap();
+
+        assert!(out.is_error, "no option here could work: {}", out.content);
+        assert!(
+            out.content.contains("contains whitespace"),
+            "the model has to learn why the path cannot be asked about: {}",
+            out.content
+        );
+        assert!(
+            out.content.contains("'/jyc-no-such-root'"),
+            "the model needs a grantable ancestor to fall back on: {}",
+            out.content
         );
     }
 

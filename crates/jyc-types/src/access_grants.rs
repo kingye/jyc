@@ -38,14 +38,14 @@ pub struct Grant {
     pub subagent: Option<String>,
     /// Whether the grant covers one turn only and is then dropped.
     ///
-    /// `/grant -once` is the "just this time" answer to a permission request:
+    /// `/grant --once` is the "just this time" answer to a permission request:
     /// it is in force for the next turn that runs, and [`clear_once`] removes
     /// it when that turn ends, so a later turn that needs the path asks again.
     /// `false` for the ordinary until-restart grant — the two differ in how
     /// long the access lasts, not in what it allows.
     ///
     /// "The next turn that runs", not "the turn this command starts": a bare
-    /// `/grant -once <path>` is a command-only message and runs no turn, so the
+    /// `/grant --once <path>` is a command-only message and runs no turn, so the
     /// grant is not dropped at the end of that message. It waits for the first
     /// turn that can actually use it and is dropped when that turn ends — the
     /// meaning the user asked for ("the next thing I do"). Dropping it earlier
@@ -68,7 +68,7 @@ pub fn grant(topic: &str, path: PathBuf, write: bool) -> bool {
     let grants = map.entry(topic.to_string()).or_default();
     match grants
         .iter_mut()
-        // A one-turn grant is not this one: `/grant -once` followed by
+        // A one-turn grant is not this one: `/grant --once` followed by
         // `/grant` on the same path is a promotion to permanent, not a
         // duplicate.
         .find(|g| g.path == path && g.subagent.is_none() && !g.once)
@@ -175,12 +175,12 @@ pub fn once_snapshot(topic: &str) -> Vec<(PathBuf, bool)> {
 /// that turn is what the user allowed, and leaving the entry behind would make
 /// it ordinary access until restart.
 ///
-/// Grants made *after* the snapshot are deliberately kept. A `/grant -once`
+/// Grants made *after* the snapshot are deliberately kept. A `/grant --once`
 /// queued while a turn is already running is executed inside that turn, whose
 /// tools were built before the grant existed and therefore cannot use it;
 /// dropping it at that turn's end would spend the grant on a turn that never
 /// read it. Keeping it costs at most one more turn of access and lets the grant
-/// wait for a turn that can use it — the same rule a bare `/grant -once`
+/// wait for a turn that can use it — the same rule a bare `/grant --once`
 /// relies on, since a command-only message runs no turn and never reaches this
 /// call (see [`Grant::once`]).
 pub fn clear_once(topic: &str, snapshot: &[(PathBuf, bool)]) -> usize {
@@ -338,7 +338,7 @@ mod tests {
     }
 
     /// The two answers to a permission request differ in duration, so they are
-    /// two entries: `/grant -once` then `/grant` on the same dir must leave a
+    /// two entries: `/grant --once` then `/grant` on the same dir must leave a
     /// permanent grant, not a one-turn entry that the next turn drops.
     #[test]
     fn once_grants_are_separate_entries_from_permanent_ones() {
@@ -390,7 +390,7 @@ mod tests {
         clear(topic);
     }
 
-    /// A bare `/grant -once` runs no turn, so no snapshot ever holds it and it
+    /// A bare `/grant --once` runs no turn, so no snapshot ever holds it and it
     /// survives to be spent by the next turn that actually runs. This is the
     /// difference between "just this time" and "silently refused": dropping it
     /// before any tool could read it would turn an authorization into a denial.

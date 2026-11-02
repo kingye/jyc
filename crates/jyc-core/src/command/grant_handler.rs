@@ -207,7 +207,7 @@ impl CommandHandler for GrantCommandHandler {
         };
         if parsed.once && parsed.persist {
             return Ok(failure(
-                "-p and -once contradict each other: a persisted grant outlives the turn, \
+                "-p and --once contradict each other: a persisted grant outlives the turn, \
                  a one-turn grant is dropped when it ends"
                     .to_string(),
             ));

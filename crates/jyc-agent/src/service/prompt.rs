@@ -617,7 +617,7 @@ impl JycAgentService {
         if !state.starts_with(topic_path) {
             roots.push(state);
         }
-        // Runtime grants from /grant -w (temporary, topic-scoped).
+        // Runtime grants from /grant --write (temporary, topic-scoped).
         for g in jyc_types::access_grants::grants_for(&message.topic) {
             if g.write && !g.path.starts_with(topic_path) {
                 roots.push(g.path);

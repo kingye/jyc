@@ -2897,12 +2897,12 @@ The earlier shape had the model read the user's answer and then call back with a
 Every option is a **command the user runs**, and the answer travels back as that command verbatim:
 
 ```
-/grant /data/invoices -once     →  grant_once: the turn the answer starts
+/grant /data/invoices --once     →  grant_once: the turn the answer starts
 /grant /data/invoices           →  in force until restart
 I do not grant access to /data/invoices.   →  refusal, plain text
 ```
 
-With `write: true` the grant lines carry `-w`. The refusal is deliberately not a command: an answer line with no `/` stays message text, so the model reads a refusal instead of the server running something. Both grant lines are built by the tool rather than written by the model, so the option text cannot be used to smuggle an unrelated command into a question about something else.
+With `write: true` the grant lines carry `--write`. The refusal is deliberately not a command: an answer line with no `/` stays message text, so the model reads a refusal instead of the server running something. Both grant lines are built by the tool rather than written by the model, so the option text cannot be used to smuggle an unrelated command into a question about something else.
 
 The tool also refuses to speak for a path it was never refused: `request_access` fails unless a boundary check already rejected that exact path, or a directory above it, during the current turn. Without that rule a model could ask the user to grant `/` while the tool that actually failed wanted one file, and the prompt would give no sign that the two were unrelated. Naming an ancestor stays allowed — that is what makes "grant me the containing directory" answerable at all — so the scope the user sees may be wider than the single file that was denied. The user reads the path before picking; the tool's job is to make sure the question is about something that really happened.
 
@@ -2914,7 +2914,7 @@ The turn ends when the questions are handed over, exactly like `ask_user` — th
 
 Two properties worth stating plainly:
 
-- **`-once` is a separate entry, not a shortened permanent one.** `access_grants::grant_once` inserts an entry flagged `once`, and `clear_once` drops every such entry for the topic once the turn it was made for has finished. The until-restart `grant()` looks for an entry to update and skips `once` ones, so `/grant -once /dir` followed by `/grant /dir` leaves two records — the second is a decision the user made, not a promotion of the first, and an expired one-shot can never stand in for it. Both kinds are read back by `resolve_additional_read_roots` / `resolve_additional_write_roots`, which is what makes a one-turn grant usable at all.
+- **`--once` is a separate entry, not a shortened permanent one.** `access_grants::grant_once` inserts an entry flagged `once`, and `clear_once` drops every such entry for the topic once the turn it was made for has finished. The until-restart `grant()` looks for an entry to update and skips `once` ones, so `/grant --once /dir` followed by `/grant /dir` leaves two records — the second is a decision the user made, not a promotion of the first, and an expired one-shot can never stand in for it. Both kinds are read back by `resolve_additional_read_roots` / `resolve_additional_write_roots`, which is what makes a one-turn grant usable at all.
 - **This raises auditability, not a sandbox.** `bash`'s boundary check scans absolute path tokens outside quotes, so a command that builds a path at runtime gets past it. `request_access` makes the default deny and the exception visible and attributable; it does not make the boundary airtight, and `DESIGN.md` should not claim otherwise.
 
 `request_access` sits in the **extended** tool group: a permission request is a rare event and does not deserve a line in every prompt's cached prefix. The access-denied message names it (`call load_extended_tools and then request_access with that absolute path`) and quotes the resolved absolute path, because that is the form a grant has to name — a relative path cannot be granted, and an error the model cannot act on is where the work stops.

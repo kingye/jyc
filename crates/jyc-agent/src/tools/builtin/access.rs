@@ -419,12 +419,20 @@ mod tests {
     /// as one whitespace-split token, so the option would die on "expected one
     /// argument" whichever one the user picked. The tool has to say so and point
     /// at the deepest directory above it that a grant line *can* name.
+    ///
+    /// The fixture must sit outside both the working directory **and**
+    /// [`std::env::temp_dir`], which the boundary always accepts as scratch
+    /// space, and no ancestor of it may be a symlink either — that exemption
+    /// skips the check as well. Both are invisible properties of the machine,
+    /// so the fixture names a root that cannot exist: nothing on disk can make
+    /// it exempt, and the assert below fails loudly if some future exemption
+    /// starts accepting it.
     #[tokio::test]
     async fn a_refused_path_with_whitespace_is_refused_rather_than_offered() {
         let tmp = tempfile::tempdir().unwrap();
         let ctx = ToolContext::new(tmp.path());
 
-        let spaced = "/tmp/My Files/notes.txt";
+        let spaced = "/jyc-no-such-root/My Files/notes.txt";
         assert!(
             ctx.check_path_boundary(spaced, Path::new(spaced)).is_err(),
             "the fixture has to be outside the boundary to be refusable"
@@ -442,7 +450,7 @@ mod tests {
             out.content
         );
         assert!(
-            out.content.contains("'/tmp'"),
+            out.content.contains("'/jyc-no-such-root'"),
             "the model needs a grantable ancestor to fall back on: {}",
             out.content
         );

@@ -299,7 +299,7 @@ fn named_paths(command: &str, working_dir: &Path) -> Vec<NamedPath> {
 /// Whether the word after `raw` starts a new command — a separator can be glued
 /// to the end of a word (`done;`, `x&&`, `y|`).
 fn starts_command(raw: &str) -> bool {
-    raw.ends_with(|ch: char| matches!(ch, ';' | '&' | '|'))
+    raw.ends_with([';', '&', '|'])
 }
 
 /// `word` without the shell punctuation that can sit against it: a separator
@@ -309,7 +309,7 @@ fn starts_command(raw: &str) -> bool {
 /// Only the ends are trimmed, and redirection operators are left to
 /// [`leading_redirection`], which knows the target is a path.
 fn trim_shell_punctuation(word: &str) -> &str {
-    word.trim_matches(|ch| matches!(ch, '(' | ')' | '{' | '}' | ';' | '&' | '|' | '!'))
+    word.trim_matches(['(', ')', '{', '}', ';', '&', '|', '!'])
 }
 
 /// The redirection operator `word` leads with, and what follows it.

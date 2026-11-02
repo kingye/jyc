@@ -520,7 +520,7 @@ impl<'a> ToolContext<'a> {
     /// Check that `resolved` is within `working_dir`, `additional_read_roots`,
     /// or `additional_write_roots`. Write paths imply read access.
     ///
-    /// Inherits the symlink and temp-dir exemptions from
+    /// Inherits the null-device and temp-dir exemptions from
     /// [`Self::check_path_boundary`], which this delegates to first.
     ///
     /// Used by write/edit/bash tools to enforce the write boundary.

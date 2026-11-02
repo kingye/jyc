@@ -524,9 +524,13 @@ impl<'a> ToolContext<'a> {
     /// `write` requires a write refusal: read access was not what the tool
     /// that failed needed, so a read denial does not justify asking for more.
     pub fn was_denied(&self, resolved: &Path, write: bool) -> bool {
-        let canonical = resolved
-            .canonicalize()
-            .unwrap_or_else(|_| resolved.to_path_buf());
+        // The probe must name the path the way `record_denial` stored it, which
+        // is `normalize` — the same resolution both boundary verdicts apply.
+        // Canonicalizing whole and falling back to the raw spelling compares
+        // across two namespaces: a refusal of a not-yet-existing file under a
+        // symlinked prefix is stored resolved (`/private/var/…`) and probed raw
+        // (`/var/…`), so the ask is told it was never refused.
+        let canonical = normalize(resolved);
         self.denied_paths
             .lock()
             .unwrap()
@@ -743,6 +747,40 @@ mod tests {
         assert!(
             ctx.check_path_boundary("inward", &inward_link).is_ok(),
             "a link from outside that lands inside names an in-boundary file"
+        );
+    }
+
+    /// The refusal is recorded under the same name the probe asks with.
+    ///
+    /// A path that does not exist yet is resolved by [`normalize`] on both
+    /// sides, so a refusal reached through a symlinked prefix stays askable.
+    /// Canonicalizing whole is not the same question — it fails for a file that
+    /// is not there and falls back to the *spelling*, which for a link names a
+    /// different path than the one the refusal was recorded against. The model
+    /// would then be told it was never refused the path it was just refused.
+    #[cfg(unix)]
+    #[test]
+    fn a_refusal_through_a_symlink_stays_askable() {
+        let working = tempfile::tempdir().expect("create working dir");
+        let ctx = ToolContext::new(working.path());
+
+        // Points out of the boundary, so the tail is refused; the tail does not
+        // exist, so only `normalize` can name the path the refusal is about.
+        let link = working.path().join("outward");
+        std::os::unix::fs::symlink("/etc", &link).expect("create outward symlink");
+        let refused = link.join("jyc-not-here");
+
+        assert!(
+            ctx.check_path_boundary("outward/jyc-not-here", &refused)
+                .is_err()
+        );
+        assert!(
+            ctx.was_denied(&refused, false),
+            "the refused spelling must resolve to the name it was recorded under"
+        );
+        assert!(
+            ctx.was_denied(Path::new("/etc/jyc-not-here"), false),
+            "and so must the resolved spelling, which `/grant` quotes"
         );
     }
 

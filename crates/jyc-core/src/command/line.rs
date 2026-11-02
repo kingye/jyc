@@ -81,8 +81,15 @@ fn split_inner(line: &str, break_lines: bool) -> Result<Vec<String>, LineError> 
             }
             None if break_lines && ch == '\n' => {
                 // A trailing `;` on a word nobody typed yet (a blank line) is
-                // no word at all — bash reads it as whitespace too.
-                if word.as_ref().is_some_and(|word| !word.is_empty()) {
+                // no word at all — bash reads it as whitespace too. A word that
+                // already ends at a statement boundary (`cd a;` followed by a
+                // newline) keeps its own separator: appending a second one would
+                // make `a;;` where the command wrote `a;`, and a consumer doing
+                // suffix surgery could tell the two apart.
+                if word
+                    .as_ref()
+                    .is_some_and(|word| !word.is_empty() && !word.ends_with([';', '&', '|']))
+                {
                     push(&mut word, ';');
                 }
                 flush(&mut word, &mut words);
@@ -197,6 +204,22 @@ mod tests {
         assert_eq!(split_statements("\n").unwrap(), Vec::<String>::new());
         assert_eq!(split_statements("").unwrap(), Vec::<String>::new());
         assert!(split_statements("a \"b\n").is_err());
+    }
+
+    /// A word that already ends at a statement boundary keeps its own
+    /// separator. Appending a second one would produce `a;;` where the command
+    /// wrote `a;`, and any consumer trimming the word's suffix would read the
+    /// two spellings differently.
+    #[test]
+    fn split_statements_does_not_double_a_separator() {
+        assert_eq!(
+            split_statements("cd a;\ncd ..").unwrap(),
+            ["cd", "a;", "cd", ".."]
+        );
+        assert_eq!(split_statements("a&&\nb").unwrap(), ["a&&", "b"]);
+        assert_eq!(split_statements("a|\nb").unwrap(), ["a|", "b"]);
+        // A word with no separator still gets one.
+        assert_eq!(split_statements("a\nb").unwrap(), ["a;", "b"]);
     }
 
     /// The case quoting exists for: the path `/grant` used to refuse.

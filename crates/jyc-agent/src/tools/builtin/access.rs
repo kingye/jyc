@@ -54,6 +54,23 @@ fn quoted(raw: &str) -> &str {
     if trimmed.is_empty() { raw } else { trimmed }
 }
 
+/// The deepest directory above `path` whose name a `/grant` line can carry.
+///
+/// Only meaningful when `path` itself contains whitespace — that is the one
+/// thing `/grant` cannot spell, because the dispatcher splits the line on
+/// whitespace before the parser sees it and `Shape::Args` takes exactly one
+/// token (no `--` escape either: that one only ends flags for shapes that keep
+/// text). `None` when nothing below `/` qualifies: naming `/` as the substitute
+/// would swap one unusable question for a grant over the whole filesystem, which
+/// is not a suggestion worth making.
+fn ancestor_without_whitespace(path: &str) -> Option<String> {
+    std::path::Path::new(path)
+        .ancestors()
+        .skip(1)
+        .map(|ancestor| ancestor.to_string_lossy().into_owned())
+        .find(|ancestor| ancestor != "/" && !ancestor.contains(char::is_whitespace))
+}
+
 /// The options a permission request offers, narrowest first and the refusal
 /// last.
 ///
@@ -164,12 +181,32 @@ impl Tool for RequestAccessTool {
             )));
         }
 
+        // A path `/grant` cannot spell is not worth asking about. The line is
+        // split on whitespace before the parser sees it, and the path is a
+        // single token, so a path with a space in it yields "expected one
+        // argument" for every option the user could pick — the same silent
+        // failure an unknown flag caused, one layer down.
+        let quoted = quoted(raw);
+        if quoted.contains(char::is_whitespace) {
+            let instead = match ancestor_without_whitespace(quoted) {
+                Some(ancestor) => format!(
+                    " Ask for '{ancestor}' instead — it is a wider directory that \
+                     contains it; say so when you ask."
+                ),
+                None => String::new(),
+            };
+            return Ok(ToolOutput::error(format!(
+                "'{quoted}' contains whitespace, which `/grant` cannot express: the \
+                 command's path is read as a single word, so every grant option offered \
+                 for it would fail for the user whichever one they pick.{instead}"
+            )));
+        }
+
         // The options are built here, not by the model: option text written by
         // the model could smuggle an unrelated command into a question about
         // something else. The path they quote is the one the model asked
         // about, which `was_denied` has just tied to a refusal this turn — the
         // user reads that path in the question and decides on it.
-        let quoted = quoted(raw);
         let options = options_for(quoted, write);
         let question = match reason {
             Some(reason) => format!("Allow access to {quoted}? {reason}"),
@@ -286,6 +323,23 @@ mod tests {
         assert_eq!(quoted("/srv/data/"), "/srv/data");
     }
 
+    /// A space in the path is the one thing `/grant` cannot carry, so the tool
+    /// has to name a directory above it that *can* be granted — and never `/`,
+    /// which would turn one unusable question into a grant over everything.
+    #[test]
+    fn a_spaced_path_names_the_deepest_ancestor_that_can_be_granted() {
+        assert_eq!(
+            ancestor_without_whitespace("/home/user/My Files").as_deref(),
+            Some("/home/user")
+        );
+        // The spaced directory itself is skipped when it is the one that blocks.
+        assert_eq!(
+            ancestor_without_whitespace("/home/user/My Files/notes.txt").as_deref(),
+            Some("/home/user")
+        );
+        assert_eq!(ancestor_without_whitespace("/My Files"), None);
+    }
+
     /// The root directory survives the trailing-slash rule: trimming it would
     /// leave an empty path, and an empty path is not a grant.
     #[test]
@@ -358,6 +412,39 @@ mod tests {
         assert!(
             text.contains("I do not grant access to /etc/passwd."),
             "the refusal must be readable, not a command: {text}"
+        );
+    }
+
+    /// A refused path with a space in it is not askable: `/grant` reads its path
+    /// as one whitespace-split token, so the option would die on "expected one
+    /// argument" whichever one the user picked. The tool has to say so and point
+    /// at the deepest directory above it that a grant line *can* name.
+    #[tokio::test]
+    async fn a_refused_path_with_whitespace_is_refused_rather_than_offered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+
+        let spaced = "/tmp/My Files/notes.txt";
+        assert!(
+            ctx.check_path_boundary(spaced, Path::new(spaced)).is_err(),
+            "the fixture has to be outside the boundary to be refusable"
+        );
+
+        let out = RequestAccessTool
+            .execute(json!({ "path": spaced }), &ctx)
+            .await
+            .unwrap();
+
+        assert!(out.is_error, "no option here could work: {}", out.content);
+        assert!(
+            out.content.contains("contains whitespace"),
+            "the model has to learn why the path cannot be asked about: {}",
+            out.content
+        );
+        assert!(
+            out.content.contains("'/tmp'"),
+            "the model needs a grantable ancestor to fall back on: {}",
+            out.content
         );
     }
 

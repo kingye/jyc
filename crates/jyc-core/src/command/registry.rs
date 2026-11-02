@@ -854,8 +854,61 @@ focus on error handling",
         );
         assert!(!carries_authorization_command("/model gpt-4"));
         assert!(
-            !carries_authorization_command("/help\n/grant /data"),
-            "only the leading block is dispatchable"
+            carries_authorization_command("/grant /data\n/ungrant /data"),
+            "one command block can stack several commands"
+        );
+    }
+
+    /// The scan deliberately over-approximates. Dispatch ends the command
+    /// block at a line that is not a command — including an unknown `/` name,
+    /// whose line it drops — so a `/grant` after one is body text and never
+    /// runs. The scan reads past it and names the command anyway, so the send
+    /// path refuses a message dispatch would have run nothing in.
+    ///
+    /// Asserted against `process_commands` itself: the claim rests on the
+    /// dispatcher, not on a reading of it.
+    #[tokio::test]
+    async fn the_scan_refuses_more_than_dispatch_would_run() {
+        let mut registry = CommandRegistry::new();
+        registry.register("/model", Arc::new(TestHandler));
+        registry.register("/grant", Arc::new(TestHandler));
+
+        // A registered command keeps the block open, so dispatch really does
+        // reach the `/grant` after it.
+        let stacked = "/model gpt-4\n/grant /data";
+        let output = registry
+            .process_commands(stacked, &test_context())
+            .await
+            .unwrap();
+        assert_eq!(
+            output.results.len(),
+            2,
+            "both commands run: {:?}",
+            output.results
+        );
+        assert!(carries_authorization_command(stacked));
+
+        // An unknown name ends the block: the `/grant` becomes body text and
+        // never runs, yet the scan still refuses the message.
+        let after_unknown = "/no-such-command\n/grant /data";
+        let output = registry
+            .process_commands(after_unknown, &test_context())
+            .await
+            .unwrap();
+        assert_eq!(
+            output.results.len(),
+            1,
+            "only the unknown-command error: {:?}",
+            output.results
+        );
+        assert_eq!(
+            output.cleaned_body, "/grant /data",
+            "the `/grant` line survives as body text, unexecuted"
+        );
+        assert!(
+            carries_authorization_command(after_unknown),
+            "the scan refuses anyway — over-refusing is the safe direction for \
+             a guard on filesystem access"
         );
     }
 

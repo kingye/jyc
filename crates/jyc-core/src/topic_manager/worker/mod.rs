@@ -308,6 +308,12 @@ pub(crate) async fn process_message(
         .await?;
     let t_after_commands = std::time::Instant::now();
 
+    // The one-turn grants this message's turn will spend: everything in force
+    // once this message's own commands have run, so a `/grant -once` in the
+    // answer is included and a grant made later, while the turn is running,
+    // is not. Cleared when the turn ends, at the bottom of this function.
+    let once_grants_before_turn = jyc_types::access_grants::once_snapshot(topic_name);
+
     // ── 3. REPLY COMMAND RESULTS (always, if commands found) ──────────
     if !cmd_output.results.is_empty() {
         let summary = cmd_output.results_summary();
@@ -695,9 +701,23 @@ pub(crate) async fn process_message(
     };
 
     // The agent is done, so the turn a `/grant -once` was made for is over:
-    // drop it here, before anything else, rather than letting "just this
-    // time" quietly become access until restart.
-    let dropped = jyc_types::access_grants::clear_once(topic_name);
+    // drop the grants this turn actually had in force, rather than letting
+    // "just this time" quietly become access until restart.
+    //
+    // Only a message that ran a turn reaches this line. A bare
+    // `/grant -once <path>` (a command-only message) returns at the
+    // no-body short-circuit above, so it is never in any snapshot and is
+    // never dropped here: it stays in force for the next turn that runs,
+    // which is what "just this time" means when the command itself is the
+    // whole message. Clearing it at that short-circuit would delete the
+    // grant before any tool could read it, turning a usable authorization
+    // into a silent refusal.
+    //
+    // A `Drop` guard is not an option either: the release profile aborts on
+    // panic (`panic = "abort"`), so no destructor runs on the one path that
+    // could otherwise leak. The snapshot pair is what makes this correct —
+    // one turn spends exactly the grants that existed when it began.
+    let dropped = jyc_types::access_grants::clear_once(topic_name, &once_grants_before_turn);
     if dropped > 0 {
         tracing::debug!(topic = %topic_name, dropped, "Dropped one-turn access grants");
     }

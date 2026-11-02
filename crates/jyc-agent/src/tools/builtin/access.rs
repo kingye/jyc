@@ -13,7 +13,9 @@
 //! said, so a model could skip the question, misread "no", or grant itself a
 //! wider path than was offered. Handing the decision to the command layer
 //! removes the model from the authorisation path entirely — it can only ask,
-//! and the options it offers quote the exact path it was denied.
+//! and it may only ask about a path this turn was actually refused (or a
+//! directory above one), so the question always refers to something that
+//! happened rather than to a path the model picked on its own.
 //!
 //! The turn ends when the questions are handed over, exactly like `ask_user`:
 //! this tool has no way to wait, and the grant has to be in force *before* the
@@ -55,9 +57,10 @@ fn quoted(raw: &str) -> &str {
 /// The options a permission request offers, narrowest first and the refusal
 /// last.
 ///
-/// Both grant options are built here rather than by the model, and every byte
-/// of them comes from the path that was actually denied: a model that could
-/// write the option text could offer a wider path than it was refused.
+/// Both grant options are built here rather than by the model: option text
+/// written by the model could smuggle an unrelated command into a question
+/// about something else. `quoted` names the path the model asked about, and
+/// `was_denied` has already tied that path to a refusal from this turn.
 fn options_for(path: &str, write: bool) -> Vec<String> {
     let flag = if write { "-w " } else { "" };
     vec![
@@ -133,14 +136,12 @@ impl Tool for RequestAccessTool {
         }
 
         // Already reachable: asking would spend the user's attention on a
-        // decision that has no effect. Ask the same two functions the tools
-        // call, so this can never disagree with what access they get.
-        let check = if write {
-            ctx.check_write_boundary(raw, path)
-        } else {
-            ctx.check_path_boundary(raw, path)
-        };
-        if check.is_ok() {
+        // decision that has no effect. Ask the same boundary logic the tools
+        // use, so this can never disagree with what access they get — but
+        // through the non-recording probe, so this call does not itself count
+        // as the refusal that justifies asking.
+        let was_denied = ctx.was_denied(path, write);
+        if ctx.is_within_boundary(path, write) {
             let access = if write { "write" } else { "read" };
             return Ok(ToolOutput::success(format!(
                 "{raw} is already within your {access} boundary — go ahead and use it. \
@@ -148,8 +149,23 @@ impl Tool for RequestAccessTool {
             )));
         }
 
-        // The options are built here, not by the model, and every byte of the
-        // command comes from the path that was actually denied.
+        // Only a path this turn was actually refused may be asked about. The
+        // boundary checks record every refusal, so a model that hit the wall at
+        // `/srv/data/x` can ask for that path or a directory above it, but not
+        // for an unrelated path it never touched. This bounds the question, not
+        // the grant: the server still executes whatever the user picks.
+        if !was_denied {
+            return Ok(ToolOutput::error(format!(
+                "'{raw}' was not refused this turn. Ask only about the path an \
+                 access-denied message named, or a directory above it."
+            )));
+        }
+
+        // The options are built here, not by the model: option text written by
+        // the model could smuggle an unrelated command into a question about
+        // something else. The path they quote is the one the model asked
+        // about, which `was_denied` has just tied to a refusal this turn — the
+        // user reads that path in the question and decides on it.
         let quoted = quoted(raw);
         let options = options_for(quoted, write);
         let question = match reason {
@@ -179,6 +195,7 @@ impl Tool for RequestAccessTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     /// The options a permission request offers for a read: two grants quoting
     /// the path that was denied, then a refusal. `-once` comes first because it
@@ -245,6 +262,64 @@ mod tests {
     fn the_followup_line_is_not_a_command() {
         assert!(!FOLLOWUP.starts_with('/'));
         assert!(!FOLLOWUP.trim().is_empty());
+    }
+
+    /// A path this turn was never refused cannot be asked about. The failure
+    /// this prevents is the one the review named: a tool fails on
+    /// `/srv/data/x`, and the model turns around and asks the user to grant
+    /// `~/.ssh` — a question with no visible link to anything that happened.
+    #[tokio::test]
+    async fn a_path_never_refused_is_not_askable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+
+        let out = RequestAccessTool
+            .execute(json!({ "path": "/etc/passwd" }), &ctx)
+            .await
+            .unwrap();
+
+        assert!(
+            out.is_error,
+            "a made-up path must not become a question: {}",
+            out.content
+        );
+        assert!(
+            out.content.contains("was not refused this turn"),
+            "the model needs to be told why: {}",
+            out.content
+        );
+    }
+
+    /// The path an access-denied message named is askable, and the options
+    /// quote that path — the whole point of tying the question to a refusal.
+    #[tokio::test]
+    async fn a_refused_path_becomes_a_question_naming_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+
+        assert!(
+            ctx.check_path_boundary("passwd", Path::new("/etc/passwd"))
+                .is_err()
+        );
+
+        let out = RequestAccessTool
+            .execute(json!({ "path": "/etc/passwd" }), &ctx)
+            .await
+            .unwrap();
+
+        let text = &out.content;
+        assert!(
+            text.contains("/grant /etc/passwd -once"),
+            "the narrower grant must be offered verbatim: {text}"
+        );
+        assert!(
+            text.contains("/grant /etc/passwd"),
+            "the until-restart grant must be offered verbatim: {text}"
+        );
+        assert!(
+            text.contains("I do not grant access to /etc/passwd."),
+            "the refusal must be readable, not a command: {text}"
+        );
     }
 
     /// The description has to say the user decides. The model's failure mode

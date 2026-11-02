@@ -2902,9 +2902,11 @@ Every option is a **command the user runs**, and the answer travels back as that
 I do not grant access to /data/invoices.   →  refusal, plain text
 ```
 
-With `write: true` the grant lines carry `-w`. The refusal is deliberately not a command: an answer line with no `/` stays message text, so the model reads a refusal instead of the server running something. Both grant lines are built by the tool, and every byte of them comes from the path that was actually denied — a model that could write the option text could offer a wider path than it was refused.
+With `write: true` the grant lines carry `-w`. The refusal is deliberately not a command: an answer line with no `/` stays message text, so the model reads a refusal instead of the server running something. Both grant lines are built by the tool rather than written by the model, so the option text cannot be used to smuggle an unrelated command into a question about something else.
 
-`answer_as = command` on the question tells the channel how the pick becomes a message. The TUI sends the chosen line verbatim instead of composing `Q1: 2) …`; a channel without a question box renders the same command lines in its numbered plain-text fallback, so the user copies one rather than mapping a number to an option. `Text` is the default, so a channel that predates the field keeps answering the old way.
+The tool also refuses to speak for a path it was never refused: `request_access` fails unless a boundary check already rejected that exact path, or a directory above it, during the current turn. Without that rule a model could ask the user to grant `/` while the tool that actually failed wanted one file, and the prompt would give no sign that the two were unrelated. Naming an ancestor stays allowed — that is what makes "grant me the containing directory" answerable at all — so the scope the user sees may be wider than the single file that was denied. The user reads the path before picking; the tool's job is to make sure the question is about something that really happened.
+
+`answer_as = command` on the question tells the channel how the pick becomes a message. The TUI sends the chosen line verbatim instead of composing `Q1: 2) …`; a channel without a question box renders the same command lines in its verbatim plain-text fallback, so the user copies one rather than mapping a number to an option. `Text` is the default, so a channel that predates the field keeps answering the old way.
 
 The follow-up line (`Continue.`) is appended after the command because a message holding only commands runs no agent turn: without it the grant would be written and the turn that asked for it would never resume, which looks exactly like the grant having failed.
 

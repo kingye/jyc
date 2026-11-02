@@ -27,7 +27,7 @@ Execute shell commands in the working directory.
 - `command` (string, required): The bash command to execute
 - `timeout` (integer, optional): Timeout in seconds (default: 120)
 
-**Security:** Best-effort path boundary check — scans for absolute-path tokens (outside quoted strings) and verifies they are within `working_dir`, the system temp dir, or configured read/write roots (`access.read` / `access.write`). This is a heuristic, not a sandbox. Full isolation requires OS-level containment.
+**Security:** Path boundary check on every path the command *names* — words are split the way `bash` splits them (so a quoted path with spaces is one word), a word counts when it holds `/`, starts with `~`, or is a `cd` or redirection target, and relative words resolve against the directory the command will run in, moved along by the `cd` targets it spells out at command position (a glued separator, a newline, or a keyword all count). Each is verified against `working_dir`, the system temp dir, or configured read/write roots (`access.read` / `access.write`). This is a lexical check, not a sandbox: a path that only exists at run time (`$VAR`, `$(...)`, a path inside another program's string) is invisible to it. Full isolation requires OS-level containment — see issue #1047.
 
 **Limits:** Output truncated at 128 KB.
 
@@ -47,7 +47,7 @@ Read a file or directory listing.
 - `offset` (integer, optional): Line number to start from, 1-indexed (default: 1)
 - `limit` (integer, optional): Maximum lines to read (default: 2000)
 
-**Security:** Path must be within `working_dir`, the system temp dir, `additional_read_roots`, or `additional_write_roots`. Symlink exemption supported for symlinked repos (e.g. `topic/repo -> /other/path`).
+**Security:** Path must be within `working_dir`, the system temp dir, `additional_read_roots`, or `additional_write_roots`. A symlink is judged at its target, so a link out of the working directory is refused; grant the target with `access.read` to reach it.
 
 **Example:**
 ```json
@@ -601,8 +601,8 @@ disabled_mcps = ["*"]  # Disables all external MCP servers
 
 | Tool | Boundary Check | Notes |
 |------|---------------|-------|
-| `bash` | `check_write_boundary()` — scans unquoted absolute-path tokens | Not a sandbox; OS-level isolation recommended for untrusted input |
-| `read` | `check_path_boundary()` working_dir + temp dir + read_roots + write_roots | Symlink exemption for symlinked repos |
+| `bash` | `check_write_boundary()` — every path the command names: quoted words, `~`, `cd`/redirection targets, relative words resolved against the tracked directory | Not a sandbox; run-time-built paths (`$VAR`, `$(...)`) and paths inside other programs' strings get past it — see issue #1047 |
+| `read` | `check_path_boundary()` working_dir + temp dir + read_roots + write_roots | Symlinks judged at their target; `/dev/null` always allowed |
 | `write` | `check_write_boundary()` working_dir + temp dir + write_roots | Creates parent dirs automatically |
 | `edit` | `check_write_boundary()` working_dir + temp dir + write_roots | — |
 | `grep` | `check_path_boundary()` only when explicit `path` provided | Default working_dir is trusted |

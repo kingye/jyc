@@ -2,26 +2,34 @@
 //!
 //! ## Security boundary
 //!
-//! `bash` applies a **best-effort heuristic check** before execution: it
-//! scans the command string for absolute-path tokens (words starting with
-//! `/`). Each such token is resolved against `working_dir` and passed
-//! through `ToolContext::check_path_boundary`. This catches obvious escape
-//! attempts like `cat /etc/passwd`, `ls /root`, or `rm -rf /tmp/evil`.
+//! `bash` checks the paths a command names before running it. The command is
+//! split into words the way bash splits it —
+//! [`jyc_core::command::line::split_statements`], the same splitter the
+//! dispatcher uses (plus the statement boundary a newline draws), so
+//! `cat "/srv/My Files"` arrives as one word rather than three — each
+//! path-shaped word is turned into an absolute path, and every one of those goes
+//! through `ToolContext::check_write_boundary`. Relative words resolve against
+//! the directory the command starts in, moved along by the `cd` targets the
+//! command spells out at command position — `cd a; cd ..; cat x`, a `cd` on its
+//! own line, and `if cd a; then …` all count — so `cd repo && cat ../../secret`
+//! is judged against the directory it will actually read from rather than
+//! against the process's own.
 //!
-//! **Limitations**: this is a simple lexer heuristic, not a full sandbox.
-//! Bash is inherently capable of arbitrary system access via shell
-//! builtins (`cd /`, variable expansion, process substitution, etc.).
-//! A determined attacker can bypass it. Full sandboxing requires OS-level
-//! isolation (Linux namespaces, chroot, containers).
+//! **Limitations**: this is a lexical check, not a sandbox. A path that only
+//! exists at run time is invisible to it — `$VAR`, `$(...)`, a path inside a
+//! string handed to another program (`python3 -c 'open(...)'`), a `cd` whose
+//! target is not a literal word — and so is a destination that creates its file
+//! unless a `>` or a `cd` names it by position. Closing that class needs
+//! OS-level enforcement (Landlock on Linux, seatbelt on macOS); see issue #1047.
 
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use tracing;
 
-use super::super::{Tool, ToolContext, ToolOutput};
+use super::super::{Tool, ToolContext, ToolOutput, normalize};
 
 /// Maximum output size before truncation (128KB).
 const MAX_OUTPUT_SIZE: usize = 128 * 1024;
@@ -70,21 +78,11 @@ impl Tool for BashTool {
             .and_then(|t| t.as_u64())
             .unwrap_or(DEFAULT_TIMEOUT_SECS);
 
-        // Best-effort boundary check: scan for absolute-path tokens and
-        // verify each is within the working directory (or configured
-        // read/write roots). This catches obvious escape attempts
-        // (cat /etc/passwd) without fully sandboxing bash.
-        //
-        // Only tokens OUTSIDE of quoted strings are checked. This avoids
-        // false positives on path-like substrings inside data arguments
-        // (e.g., `//` in a markdown comment passed via `--body "..."`).
-        for token in unquoted_path_tokens(command) {
-            let candidate = std::path::Path::new(&token);
-            // Only check tokens that correspond to existing filesystem
-            // paths. This catches obvious escape attempts (e.g.
-            // `cat /etc/passwd`) while allowing flags like `-C`.
-            if candidate.exists()
-                && let Err(msg) = ctx.check_write_boundary(&token, candidate)
+        // Boundary check: every path the command names has to be inside the
+        // working directory, the configured read roots, or the write roots.
+        for named in judged_paths(command, ctx) {
+            if let Err(msg) =
+                ctx.check_write_boundary(&named.path.display().to_string(), &named.path)
             {
                 return Ok(ToolOutput::error(msg));
             }
@@ -197,167 +195,562 @@ fn git_ignore_env_in(data_dir: &Path) -> Vec<(&'static str, String)> {
     ]
 }
 
-/// Extract absolute-path tokens (starting with `/`) from the **unquoted**
-/// portions of a bash command string.
-///
-/// Bash quoting rules handled:
-/// - Single quotes `'...'`: everything inside is literal; the closing `'`
-///   is the next `'` character.
-/// - Double quotes `"..."`: everything inside is literal except `\"`
-///   (escaped quote) which does not close the string.
-/// - Backslash outside quotes: escapes the next character (e.g., `\"`
-///   produces a literal `"` without opening a quoted region).
-///
-/// Tokens inside quotes are **skipped** to avoid false positives on
-/// path-like substrings in data arguments (e.g., `//` in a markdown
-/// comment passed via `--body "..."`).
-fn unquoted_path_tokens(command: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut chars = command.chars().peekable();
+/// A path a command names, and how the command names it.
+struct NamedPath {
+    path: PathBuf,
+    /// Named by position — a `cd` target or a redirection target — so it is a
+    /// path even when nothing is there yet. An ordinary word has to resolve to
+    /// something on disk first, which is what keeps the `/etc/foo` inside
+    /// `--body "fix /etc/foo"` from being read as a path.
+    by_position: bool,
+}
 
-    while let Some(ch) = chars.next() {
-        if in_single {
-            // Inside single quotes: only `'` ends the region.
-            if ch == '\'' {
-                in_single = false;
+/// Every path `command` names, in the order they appear.
+///
+/// Words come from [`jyc_core::command::line::split`] — the splitter the
+/// dispatcher itself uses — so quoting is already resolved and a word holding a
+/// space arrives whole. A word names a path when it holds a `/`, starts with
+/// `~`, or is a `cd` or redirection target (a path by position); the `=` in
+/// `--path=/srv/x` separates a flag from a path, as it does for the program
+/// being run.
+///
+/// Relative words resolve against `working_dir`, moved along by each `cd` the
+/// command spells out. A `cd` whose target cannot be read as a literal path
+/// (`cd "$X"`, `cd ~user`, `cd -`, a bare `cd`) makes the directory unknown:
+/// absolute words are still checked after it, relative ones are not, because
+/// what they name is no longer visible here.
+fn named_paths(command: &str, working_dir: &Path) -> Vec<NamedPath> {
+    // An unclosed quote is a syntax error to bash too: a command bash refuses
+    // to run needs no boundary check. Statements are split at newlines as well
+    // as at `;`, so a `cd` at the start of a later line is seen as a `cd`.
+    let Ok(words) = jyc_core::command::line::split_statements(command) else {
+        return Vec::new();
+    };
+
+    let mut paths = Vec::new();
+    let mut cwd = Some(working_dir.to_path_buf());
+    let mut at_command_start = true;
+    let mut redirect_target = false;
+    let mut words = words.iter();
+
+    while let Some(raw) = words.next() {
+        let word = trim_shell_punctuation(raw);
+        if word.is_empty() {
+            // `&&`, `||`, `;`, `|`, `(` … — the next word starts a command.
+            at_command_start = true;
+            redirect_target = false;
+            continue;
+        }
+
+        // `>`, `2>>`, `&>`: what follows is a file the command writes.
+        if let Some((_, tail)) = leading_redirection(word) {
+            if tail.is_empty() {
+                redirect_target = true;
+            } else if looks_like_path(tail)
+                && let Some(path) = resolve_path(tail, cwd.as_deref())
+            {
+                paths.push(NamedPath {
+                    path,
+                    by_position: true,
+                });
             }
             continue;
         }
-        if in_double {
-            // Inside double quotes: `\"` is an escaped quote, everything
-            // else (including `\`) is literal until the closing `"`.
-            if ch == '\\' {
-                chars.next(); // skip escaped char
+        let by_position = std::mem::take(&mut redirect_target);
+
+        // `cd` moves the directory the rest of the command resolves against,
+        // so its target is a path even when it holds no separator (`cd repo`).
+        if at_command_start && word == "cd" {
+            let raw_target = words.next();
+            let target = raw_target.map(|word| trim_shell_punctuation(word));
+
+            // `cd 2> err` sends stderr to a file: the directory is the one a
+            // bare `cd` goes to, which the line does not spell out, so later
+            // relative words are not judged. The file is still a write.
+            if let Some((_, tail)) = target.and_then(leading_redirection) {
+                cwd = None;
+                if tail.is_empty() {
+                    redirect_target = true;
+                } else if looks_like_path(tail)
+                    && let Some(path) = resolve_path(tail, None)
+                {
+                    paths.push(NamedPath {
+                        path,
+                        by_position: true,
+                    });
+                }
+                at_command_start = raw_target.map(String::as_str).is_none_or(starts_command);
                 continue;
             }
-            if ch == '"' {
-                in_double = false;
+
+            cwd = match target {
+                Some(target) if !target.is_empty() && target != "-" => {
+                    resolve_path(target, cwd.as_deref())
+                }
+                // A bare `cd` goes to `$HOME`; `cd -` to wherever that was.
+                _ => None,
+            };
+            if let Some(path) = &cwd {
+                paths.push(NamedPath {
+                    path: path.clone(),
+                    by_position: true,
+                });
             }
+            // The target can end the statement itself — `cd a; cd ..` glues the
+            // separator to the target word — and then the next word is again at
+            // command position. Dropping that is an escape: the second `cd` goes
+            // untracked and `..` is judged one directory too shallow.
+            at_command_start = raw_target.map(String::as_str).is_none_or(starts_command);
             continue;
         }
-        // Outside quotes
-        match ch {
-            '\'' => {
-                // Flush current token before entering single-quote region
-                if !current.is_empty() {
-                    if current.starts_with('/') {
-                        tokens.push(std::mem::take(&mut current));
-                    } else {
-                        current.clear();
-                    }
-                }
-                in_single = true;
-            }
-            '"' => {
-                if !current.is_empty() {
-                    if current.starts_with('/') {
-                        tokens.push(std::mem::take(&mut current));
-                    } else {
-                        current.clear();
-                    }
-                }
-                in_double = true;
-            }
-            '\\' => {
-                // Escaped char outside quotes — skip next char
-                chars.next();
-            }
-            c if c.is_whitespace() => {
-                if !current.is_empty() {
-                    if current.starts_with('/') {
-                        tokens.push(std::mem::take(&mut current));
-                    } else {
-                        current.clear();
-                    }
-                }
-            }
-            _ => {
-                current.push(ch);
+
+        // A keyword opens a command position only where a command could start;
+        // `echo if cd sub` prints three words and `if` there is not the reserved
+        // word. Letting it through would read `cd sub` as a `cd` the shell never
+        // runs, shift the tracked directory, and judge what follows against a
+        // directory the command does not enter — the one direction that fails
+        // *open*.
+        let was_command_start = at_command_start;
+        at_command_start =
+            starts_command(raw) || (was_command_start && COMMAND_KEYWORDS.contains(&word));
+        if looks_like_path(word) {
+            // `--path=/srv/x` separates a flag from the path it names. A word
+            // that is itself a path keeps its `=`: `/tmp/a=b` is one file, and
+            // splitting it would check `/tmp/a` — a path the command never
+            // touches — while missing the one it does.
+            let named = match word.split_once('=') {
+                Some((flag, value)) if !looks_like_path(flag) => value,
+                _ => word,
+            };
+            if let Some(path) = resolve_path(named, cwd.as_deref()) {
+                paths.push(NamedPath { path, by_position });
             }
         }
     }
-    // Flush trailing token
-    if !current.is_empty() && current.starts_with('/') {
-        tokens.push(current);
+    paths
+}
+
+/// The paths `command` names that the boundary judges at all.
+///
+/// An ordinary word that names nothing on disk is not a path the command can
+/// reach: it is a flag value or data (`--body "fix /etc/foo"`). A target named
+/// by position (`cd /x`, `> /x`) is one whether or not it is there yet — the
+/// only way to catch a write that creates its file.
+///
+/// [`execute`] and the tests share this gate, so a test cannot keep passing on
+/// a rule the tool no longer applies.
+fn judged_paths(command: &str, ctx: &ToolContext<'_>) -> Vec<NamedPath> {
+    named_paths(command, ctx.working_dir)
+        .into_iter()
+        .filter(|named| named.by_position || named.path.exists())
+        .collect()
+}
+
+/// Words that put the next word at command position without being a command
+/// themselves, so `if cd a; then cat b; fi` tracks the `cd` like `cd a; cat b`
+/// does.
+const COMMAND_KEYWORDS: [&str; 7] = ["if", "while", "until", "then", "do", "elif", "else"];
+
+/// Whether the word after `raw` starts a new command — a separator can be glued
+/// to the end of a word (`done;`, `x&&`, `y|`).
+fn starts_command(raw: &str) -> bool {
+    raw.ends_with([';', '&', '|'])
+}
+
+/// `word` without the shell punctuation that can sit against it: a separator
+/// glued to a path (`cd /tmp;`, `cat x|head`) or a grouping parenthesis
+/// (`(cd /tmp)`).
+///
+/// Only the ends are trimmed, and redirection operators are left to
+/// [`leading_redirection`], which knows the target is a path.
+fn trim_shell_punctuation(word: &str) -> &str {
+    word.trim_matches(['(', ')', '{', '}', ';', '&', '|', '!'])
+}
+
+/// The redirection operator `word` leads with, and what follows it.
+///
+/// `>` and `2>` come back with an empty tail (the target is the next word),
+/// `>/tmp/f` with `/tmp/f`.
+fn leading_redirection(word: &str) -> Option<(&str, &str)> {
+    let prefix = word
+        .find(|ch: char| !ch.is_ascii_digit() && ch != '&')
+        .unwrap_or(word.len());
+    let rest = &word[prefix..];
+    let operator = ["<<<", "<<", ">>", "<>", ">|", ">", "<"]
+        .into_iter()
+        .find(|operator| rest.starts_with(operator))?;
+    let split = prefix + operator.len();
+    Some((&word[..split], &word[split..]))
+}
+
+/// Whether `word` names a path rather than a flag or data: it holds a
+/// separator, or starts at the home directory.
+fn looks_like_path(word: &str) -> bool {
+    word.contains('/') || word.starts_with('~')
+}
+
+/// `word` as an absolute path, or `None` when it cannot be read as one.
+fn resolve_path(word: &str, cwd: Option<&Path>) -> Option<PathBuf> {
+    // A word the shell still has to expand is not a path this pass can see.
+    if word.contains('$') || word.contains('`') {
+        return None;
     }
-    tokens
+    let expanded = expand_home(word)?;
+    let absolute = if expanded.is_absolute() {
+        expanded
+    } else {
+        cwd?.join(expanded)
+    };
+    let normalized = normalize(&absolute);
+    // A glob expands after this check: `cat /etc/shado*` names `/etc/shado*`
+    // here and `/etc/shadow` to bash. Judging the directory the pattern sits in
+    // is as close as a pass over the words can come.
+    match normalized.parent() {
+        Some(parent) if word.contains(['*', '?', '[']) => Some(parent.to_path_buf()),
+        _ => Some(normalized),
+    }
+}
+
+/// `word` with a leading `~` expanded. `None` for `~user`, whose home this pass
+/// cannot name.
+fn expand_home(word: &str) -> Option<PathBuf> {
+    if word == "~" {
+        return std::env::var_os("HOME").map(PathBuf::from);
+    }
+    match word.strip_prefix("~/") {
+        Some(rest) => Some(PathBuf::from(std::env::var_os("HOME")?).join(rest)),
+        None if word.starts_with('~') => None,
+        None => Some(PathBuf::from(word)),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The paths `command` names, as strings, when it runs in `working`.
+    fn named(command: &str, working: &Path) -> Vec<String> {
+        named_paths(command, working)
+            .iter()
+            .map(|named| named.path.display().to_string())
+            .collect()
+    }
+
+    /// The paths `command` names that the boundary refuses, after the same
+    /// existence gate `execute` applies (shared through [`judged_paths`]).
+    ///
+    /// A tempdir working directory is itself inside the always-allowed temp
+    /// root, so every refusal fixture has to sit outside it: `/etc/passwd`
+    /// exists, while `/jyc-no-such-root/…` cannot.
+    fn refused(command: &str, working: &Path) -> Vec<String> {
+        let ctx = ToolContext::new(working);
+        judged_paths(command, &ctx)
+            .into_iter()
+            .filter(|named| {
+                ctx.check_write_boundary(&named.path.display().to_string(), &named.path)
+                    .is_err()
+            })
+            .map(|named| named.path.display().to_string())
+            .collect()
+    }
+
+    /// `path` as the boundary sees it — canonical, so `/etc` is spelled the way
+    /// the platform spells it.
+    fn existing(path: &str) -> String {
+        Path::new(path)
+            .canonicalize()
+            .unwrap_or_else(|_| Path::new(path).to_path_buf())
+            .display()
+            .to_string()
+    }
+
     #[test]
     fn unquoted_absolute_path_detected() {
-        let tokens = unquoted_path_tokens("cat /etc/passwd");
-        assert_eq!(tokens, vec!["/etc/passwd"]);
-    }
-
-    #[test]
-    fn quoted_path_skipped() {
-        // Path inside double quotes should not be extracted
-        let tokens = unquoted_path_tokens(r#"echo "// comment""#);
-        assert!(tokens.is_empty(), "expected no tokens, got {:?}", tokens);
-    }
-
-    #[test]
-    fn single_quoted_path_skipped() {
-        let tokens = unquoted_path_tokens(r#"echo '// comment'"#);
-        assert!(tokens.is_empty(), "expected no tokens, got {:?}", tokens);
-    }
-
-    #[test]
-    fn markdown_body_with_double_slash_skipped() {
-        // Simulates: gh pr comment --body "Review\n\n### // comment\n..."
-        let cmd = r###"gh pr comment 273 --body "## Review\n\n### // comment\n\nDetails here.""###;
-        let tokens = unquoted_path_tokens(cmd);
-        assert!(
-            !tokens.contains(&"//".to_string()),
-            "double-slash inside quotes must not be extracted, got {:?}",
-            tokens
+        let working = tempfile::tempdir().expect("create working dir");
+        assert_eq!(
+            refused("cat /etc/passwd", working.path()),
+            [existing("/etc/passwd")]
         );
     }
 
+    /// The blind spot this change closes: a path inside quotes used to be
+    /// dropped, so `cat "/etc/passwd"` read it and `cat "/srv/My Files"` was
+    /// never judged at all. Both are words like any other now.
     #[test]
-    fn unquoted_path_after_quoted_string_detected() {
-        let tokens = unquoted_path_tokens(r#"echo "hello" /etc/passwd"#);
-        assert_eq!(tokens, vec!["/etc/passwd"]);
+    fn a_quoted_path_is_a_path() {
+        let working = tempfile::tempdir().expect("create working dir");
+        assert_eq!(
+            refused(r#"cat "/etc/passwd""#, working.path()),
+            [existing("/etc/passwd")]
+        );
+        assert_eq!(
+            refused("cat '/etc/passwd'", working.path()),
+            [existing("/etc/passwd")]
+        );
+
+        let spaced = "/jyc-no-such-root/My Files/notes.txt";
+        assert_eq!(
+            named(&format!(r#"cat "{spaced}""#), working.path()),
+            [spaced]
+        );
     }
 
+    /// A path-like string that is *data* is not a refusal: it resolves inside
+    /// the working directory, or it names nothing that exists.
     #[test]
-    fn escaped_quote_outside_does_not_open_region() {
-        // `\"` outside quotes is a literal quote, not a string opener
-        let tokens = unquoted_path_tokens(r#"echo \"hello\" /tmp"#);
-        assert!(tokens.contains(&"/tmp".to_string()), "got {:?}", tokens);
+    fn a_data_argument_is_not_a_path() {
+        let working = tempfile::tempdir().expect("create working dir");
+        for command in [
+            r#"echo "// comment""#,
+            r###"gh pr comment 273 --body "## Review\n\n### // comment\n\nDetails""###,
+            r#"git commit -m "fix: docs/a.md and //""#,
+            "cmd --note=/jyc-no-such-root/data",
+        ] {
+            assert_eq!(
+                refused(command, working.path()),
+                Vec::<String>::new(),
+                "{command}"
+            );
+        }
     }
 
+    /// A redirection target is a path by position: it counts whether or not
+    /// anything is there yet, which is the only way a write that creates its
+    /// file is caught. A descriptor and an operator (`2>/dev/null`, `2>&1`) are
+    /// not a path, and `/dev/null` sits in the boundary because discarding
+    /// output is not a way out of it.
     #[test]
-    fn escaped_quote_inside_double_quotes() {
-        // `\"` inside double quotes does not close the string
-        let tokens = unquoted_path_tokens(r#"echo "he said \"hi\"" /var/log"#);
-        assert_eq!(tokens, vec!["/var/log"]);
+    fn a_redirection_target_is_checked() {
+        let working = tempfile::tempdir().expect("create working dir");
+        for command in ["ls 2>/dev/null", "cat x >/dev/null", "cmd 2>&1"] {
+            assert_eq!(
+                refused(command, working.path()),
+                Vec::<String>::new(),
+                "{command}"
+            );
+        }
+        assert_eq!(
+            refused("cat x > /etc/passwd", working.path()),
+            [existing("/etc/passwd")]
+        );
+        assert_eq!(
+            refused("echo x > /jyc-no-such-root/new.txt", working.path()),
+            ["/jyc-no-such-root/new.txt"]
+        );
     }
 
+    /// A separator glued to a word (`/tmp;`, `x|head`) is punctuation, not part
+    /// of the path — otherwise every `cmd /path; next` would look outside.
     #[test]
-    fn multiple_unquoted_paths_detected() {
-        let tokens = unquoted_path_tokens("cp /etc/hosts /tmp/backup");
-        assert_eq!(tokens, vec!["/etc/hosts", "/tmp/backup"]);
+    fn a_glued_separator_is_not_part_of_the_path() {
+        let working = tempfile::tempdir().expect("create working dir");
+        assert_eq!(
+            refused("ls /tmp; echo done", working.path()),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            named("(cat /etc/passwd)", working.path()),
+            [existing("/etc/passwd")]
+        );
     }
 
+    /// A relative path is judged against the directory the command will run in,
+    /// not against the process's own — which is what makes `cd` matter.
     #[test]
-    fn relative_paths_ignored() {
-        let tokens = unquoted_path_tokens("cd repo && gh issue view 197");
-        assert!(tokens.is_empty());
+    fn a_relative_path_resolves_against_the_tracked_directory() {
+        let working = tempfile::tempdir().expect("create working dir");
+        let root = working
+            .path()
+            .canonicalize()
+            .expect("canonical working dir");
+        let sub = root.join("sub");
+        std::fs::create_dir(&sub).expect("create sub");
+
+        assert_eq!(
+            named("cd sub && cat ../notes.txt", working.path()),
+            [
+                sub.display().to_string(),
+                root.join("notes.txt").display().to_string()
+            ]
+        );
     }
 
+    /// `cd /` is refused, and the words after it are resolved where it pointed:
+    /// the command never runs, so the escape behind it is moot — but the check
+    /// names the path that would have been read.
     #[test]
-    fn mixed_quoted_and_unquoted() {
-        let cmd = r###"cd repo && gh pr comment 273 --body "see // here" && cat /etc/hostname"###;
-        let tokens = unquoted_path_tokens(cmd);
-        assert_eq!(tokens, vec!["/etc/hostname"]);
+    fn a_cd_target_is_checked() {
+        let working = tempfile::tempdir().expect("create working dir");
+        assert_eq!(
+            refused("cd / && cat etc/passwd", working.path()),
+            [existing("/"), existing("/etc/passwd")]
+        );
+        // The `cd` is what refuses this one: a bare word after it is only ever
+        // resolved in a directory the command cannot reach.
+        assert_eq!(
+            refused("cd /etc && cat passwd", working.path()),
+            [existing("/etc")]
+        );
+    }
+
+    /// `..` used to be invisible — a word not starting with `/` was never a
+    /// candidate — so `cat ../../.bashrc` read the real home directory.
+    #[test]
+    fn a_parent_escape_is_refused() {
+        let working = tempfile::tempdir().expect("create working dir");
+        assert_eq!(
+            refused("cat ../../../../../../etc/passwd", working.path()),
+            [existing("/etc/passwd")]
+        );
+    }
+
+    /// `~` is the home directory to bash, so it is one here too.
+    #[test]
+    fn a_tilde_path_is_the_home_directory() {
+        let working = tempfile::tempdir().expect("create working dir");
+        let home = std::env::var_os("HOME").expect("HOME is set for the test");
+        let home = PathBuf::from(home);
+        let home = home.canonicalize().unwrap_or(home);
+        assert_eq!(
+            named("cat ~/.bashrc", working.path()),
+            [home.join(".bashrc").display().to_string()]
+        );
+    }
+
+    /// A glob expands after the check, so the pattern is judged by the
+    /// directory it sits in: `cat /etc/shado*` reads `/etc/shadow` to bash.
+    #[test]
+    fn a_glob_is_judged_by_its_directory() {
+        let working = tempfile::tempdir().expect("create working dir");
+        assert_eq!(
+            refused("cat /etc/shado*", working.path()),
+            [existing("/etc")]
+        );
+    }
+
+    /// A flag can carry its path after `=`; the program being run sees a path
+    /// there, so this pass does too.
+    #[test]
+    fn a_path_after_an_equals_sign_is_a_path() {
+        let working = tempfile::tempdir().expect("create working dir");
+        assert_eq!(
+            refused("cmd --conf=/etc/passwd", working.path()),
+            [existing("/etc/passwd")]
+        );
+    }
+
+    /// A `cd` this pass cannot read (`$X`) leaves the directory unknown: the
+    /// relative word after it is not guessed at, while an absolute one is still
+    /// checked.
+    #[test]
+    fn an_unreadable_cd_leaves_only_absolute_words() {
+        let working = tempfile::tempdir().expect("create working dir");
+        assert_eq!(
+            named("cd $X && cat etc/passwd", working.path()),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            refused("cd $X && cat /etc/passwd", working.path()),
+            [existing("/etc/passwd")]
+        );
+    }
+
+    /// A `;` glued to the `cd` target ends the statement. Dropping that made
+    /// the second `cd` invisible, and `..` was then judged one directory too
+    /// shallow — an escape, because the word still resolved to somewhere the
+    /// boundary accepts.
+    #[test]
+    fn a_cd_chain_tracks_every_link() {
+        let working = tempfile::tempdir().expect("create working dir");
+        std::fs::create_dir(working.path().join("sub")).expect("create sub");
+
+        // `cd sub; cd ..` leaves the shell in `working`, so `../../etc/passwd`
+        // is `/etc/passwd`. Tracking only the first `cd` judges it from
+        // `working/sub`, one level shallower, where it lands in the temp root
+        // and is accepted.
+        assert_eq!(
+            refused("cd sub; cd ..; cat ../../etc/passwd", working.path()),
+            [existing("/etc/passwd")]
+        );
+    }
+
+    /// A newline separates statements exactly as `;` does, but [`line::split`]
+    /// folds it into the whitespace between words — so a `cd` at the start of a
+    /// later line used to be invisible, and the word after it was judged from
+    /// the directory the command started in.
+    #[test]
+    fn a_cd_on_a_later_line_moves_the_directory() {
+        let working = tempfile::tempdir().expect("create working dir");
+        let paths = named("cmd\ncd b/c\ncat ../../x", working.path());
+        assert_eq!(paths.len(), 2, "{paths:?}");
+        assert!(
+            Path::new(&paths[1]).starts_with(normalize(working.path())),
+            "two levels up from b/c is the working dir; judged from the \
+             directory the command started in it lands outside: {paths:?}"
+        );
+    }
+
+    /// A keyword puts the next word back at command position, so a `cd` inside
+    /// an `if` is still a `cd`.
+    #[test]
+    fn a_cd_after_a_keyword_is_tracked() {
+        let working = tempfile::tempdir().expect("create working dir");
+        let paths = named("if cd b/c; then cat ../../x; fi", working.path());
+        assert_eq!(paths.len(), 2, "{paths:?}");
+        assert!(
+            Path::new(&paths[1]).starts_with(normalize(working.path())),
+            "`../../x` from b/c is inside the working dir: {paths:?}"
+        );
+    }
+
+    /// A keyword opens a command position only where a command could start.
+    /// `echo if cd sub` prints three words; reading the `cd` there as a `cd`
+    /// moves the tracked directory into `sub`, and a `..` that really walks out
+    /// of the working dir then folds back inside it — the one direction a
+    /// wrong guess fails *open*.
+    #[test]
+    fn a_keyword_that_is_an_argument_does_not_move_the_directory() {
+        let working = tempfile::tempdir().expect("create working dir");
+        std::fs::create_dir(working.path().join("sub")).expect("create sub");
+
+        // Real bash runs `echo` and then `cat ../../etc/passwd` from `working`;
+        // two levels up from a temp dir is `/`, so the file is `/etc/passwd`.
+        // Tracked from `working/sub` instead, the same word lands in
+        // `/tmp/etc/passwd` — a path that does not exist, so the ordinary-word
+        // gate drops it and the command runs.
+        assert_eq!(
+            refused("echo if cd sub; cat ../../etc/passwd", working.path()),
+            [existing("/etc/passwd")]
+        );
+    }
+
+    /// A file name can hold `=`. Splitting on every one of them checked
+    /// `/tmp/a` — a path the command never touches — and never the path it does.
+    #[test]
+    fn an_equals_inside_a_path_does_not_split_it() {
+        let working = tempfile::tempdir().expect("create working dir");
+        assert_eq!(
+            named("cat /tmp/a=b", working.path()),
+            [normalize(Path::new("/tmp/a=b")).display().to_string()]
+        );
+        // The flag form still separates: that is what the split is for.
+        assert_eq!(
+            named("cmd --conf=/etc/passwd", working.path()),
+            [existing("/etc/passwd")]
+        );
+    }
+
+    /// `cd 2> err` redirects stderr and goes to `$HOME` — there is no directory
+    /// word. Reading `2>` as the target put the word after it inside a
+    /// directory the command never enters.
+    #[test]
+    fn a_redirect_after_cd_is_not_a_directory() {
+        let working = tempfile::tempdir().expect("create working dir");
+        assert_eq!(
+            named("cd 2> err; cat etc/passwd", working.path()),
+            Vec::<String>::new(),
+            "the directory is unknown, so the relative word is not guessed at"
+        );
     }
 
     #[test]

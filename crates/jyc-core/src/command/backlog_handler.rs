@@ -496,6 +496,7 @@ mode = "agent"
             config_path: None,
             per_agent_commands: vec![],
             hooks: Default::default(),
+            origin: crate::command::handler::CommandOrigin::User,
         }
     }
 

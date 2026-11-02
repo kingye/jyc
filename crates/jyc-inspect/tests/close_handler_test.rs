@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 
 use jyc_core::command::close_handler::CloseCommandHandler;
-use jyc_core::command::handler::{CommandContext, CommandHandler};
+use jyc_core::command::handler::{CommandContext, CommandHandler, CommandOrigin};
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::metrics::MetricsHandle;
 use jyc_core::static_agent::StaticAgentService;
@@ -89,6 +89,7 @@ fn test_context_with(
         config_path: None,
         per_agent_commands: vec![],
         hooks: Default::default(),
+        origin: CommandOrigin::User,
     }
 }
 
@@ -163,6 +164,7 @@ async fn test_close_command_empty_topic_name() {
         config_path: None,
         per_agent_commands: vec![],
         hooks: Default::default(),
+        origin: CommandOrigin::User,
     };
 
     let result = handler.execute(ctx).await.unwrap();

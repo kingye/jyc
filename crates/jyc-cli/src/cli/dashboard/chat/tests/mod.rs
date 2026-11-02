@@ -1156,6 +1156,7 @@ fn question_box_scrolls_to_keep_the_cursor_visible() {
         typed: None,
         selected: 19,
         marked: Vec::new(),
+        answer_as: Default::default(),
     }];
     let buffer = draw_80x24(&mut app);
 
@@ -1201,6 +1202,7 @@ fn question_box_numbers_the_batch_in_its_title() {
             typed: None,
             selected: 0,
             marked: Vec::new(),
+            answer_as: Default::default(),
         },
         PendingQuestion {
             topic: "jyc".to_string(),
@@ -1212,6 +1214,7 @@ fn question_box_numbers_the_batch_in_its_title() {
             typed: None,
             selected: 0,
             marked: Vec::new(),
+            answer_as: Default::default(),
         },
     ];
     app.chat.question_index = 1;
@@ -1250,6 +1253,7 @@ fn a_batch_hint_says_enter_only_moves_to_the_next() {
             typed: None,
             selected: 0,
             marked: Vec::new(),
+            answer_as: Default::default(),
         },
         PendingQuestion {
             topic: "jyc".to_string(),
@@ -1261,6 +1265,7 @@ fn a_batch_hint_says_enter_only_moves_to_the_next() {
             typed: None,
             selected: 0,
             marked: Vec::new(),
+            answer_as: Default::default(),
         },
     ];
     let buffer = draw_80x24(&mut app);
@@ -1305,6 +1310,7 @@ fn question_box_shows_marks_for_multi_select() {
         typed: None,
         selected: 0,
         marked: vec![1],
+        answer_as: Default::default(),
     }];
     let buffer = draw_80x24(&mut app);
 
@@ -1339,6 +1345,7 @@ fn question_box_shows_the_context_above_the_question() {
         typed: None,
         selected: 0,
         marked: Vec::new(),
+        answer_as: Default::default(),
     }];
     let buffer = draw_80x24(&mut app);
     let pane: String = (0..buffer.area.height)
@@ -1369,6 +1376,7 @@ fn app_with_question(context: Option<String>) -> App {
         typed: None,
         selected: 0,
         marked: Vec::new(),
+        answer_as: Default::default(),
     }];
     app
 }
@@ -1471,6 +1479,7 @@ fn question_box_marks_the_selected_option_with_an_arrow() {
         typed: None,
         selected: 1,
         marked: Vec::new(),
+        answer_as: Default::default(),
     }];
     let buffer = draw_80x24(&mut app);
 
@@ -1527,6 +1536,7 @@ fn question_box_offers_a_typed_answer_row() {
         typed: None,
         selected: 2,
         marked: Vec::new(),
+        answer_as: Default::default(),
     }];
     let buffer = draw_80x24(&mut app);
 
@@ -1609,6 +1619,7 @@ fn input_area_rows_reserves_the_bottom_rule() {
         typed: None,
         selected: 0,
         marked: Vec::new(),
+        answer_as: Default::default(),
     }];
     let q = app.chat.current_question().expect("question");
     let body = (question_chrome_rows(
@@ -3499,6 +3510,7 @@ fn question_box_keeps_the_slash_and_bracket_shortcuts_out() {
         typed: None,
         selected: 0,
         marked: Vec::new(),
+        answer_as: Default::default(),
     }];
     assert!(app.chat.active_question(), "the box must be on screen");
 

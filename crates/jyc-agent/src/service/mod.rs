@@ -223,6 +223,9 @@ impl JycAgentService {
                 attachments: &[],
                 recipient: None,
                 require_reply: false,
+                // A turn's reply forwarded to its requester: an agent's words,
+                // so it may not carry an authorization command either.
+                origin: jyc_core::command::handler::CommandOrigin::Agent,
             };
             match send_to_topic_with_target(managers, from, req).await {
                 Ok(outcome) => {

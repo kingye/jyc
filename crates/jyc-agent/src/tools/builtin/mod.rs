@@ -1,5 +1,6 @@
 //! Built-in tool implementations.
 
+pub mod access;
 pub mod ask_user;
 pub mod bash;
 pub mod context_browse;
@@ -27,6 +28,7 @@ pub fn create_builtin_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
 
     registry.register(Box::new(ask_user::AskUserTool));
+    registry.register(Box::new(access::RequestAccessTool));
     registry.register(Box::new(bash::BashTool));
     registry.register(Box::new(context_browse::ContextBrowseTool));
     registry.register(Box::new(read::ReadTool));

@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::AgentService;
 use crate::command::builtin::builtin_registry;
 use crate::command::custom_handler::CustomCommandHandler;
-use crate::command::handler::CommandContext;
+use crate::command::handler::{CommandContext, CommandOrigin};
 use crate::command::per_agent_commands;
 use crate::command::registry::CommandRegistry;
 use crate::command::skill_commands;
@@ -58,6 +58,20 @@ fn is_injectable(item: &QueueItem, topic_path: &Path, workspace: &Path) -> bool 
             .text
             .as_deref()
             .is_some_and(|t| !t.trim().is_empty())
+}
+
+/// Who wrote the message a command line arrived on.
+///
+/// Keyed on the `origin` marker [`crate::command::send_handler`] writes, not on
+/// the message's `sender`: that field is a platform display name, and a decision
+/// about who may run `/grant` must not depend on what a user happens to be
+/// called. A message without the marker came in from the channel, which means
+/// the user.
+fn command_origin(message: &jyc_types::InboundMessage) -> CommandOrigin {
+    match message.metadata.get("origin").and_then(|v| v.as_str()) {
+        Some("agent") => CommandOrigin::Agent,
+        _ => CommandOrigin::User,
+    }
 }
 
 /// Ends the turn's injection count when the turn ends — the messages the
@@ -277,6 +291,7 @@ pub(crate) async fn process_message(
     let cmd_context = CommandContext {
         topic_name: topic_name.to_string(),
         args: vec![],
+        origin: command_origin(message),
         topic_path: store_result.topic_path.clone(),
         config: config.load_full(),
         channel: message.channel.clone(),
@@ -292,6 +307,12 @@ pub(crate) async fn process_message(
         .process_commands(raw_body, &cmd_context)
         .await?;
     let t_after_commands = std::time::Instant::now();
+
+    // The one-turn grants this message's turn will spend: everything in force
+    // once this message's own commands have run, so a `/grant -once` in the
+    // answer is included and a grant made later, while the turn is running,
+    // is not. Cleared when the turn ends, at the bottom of this function.
+    let once_grants_before_turn = jyc_types::access_grants::once_snapshot(topic_name);
 
     // ── 3. REPLY COMMAND RESULTS (always, if commands found) ──────────
     if !cmd_output.results.is_empty() {
@@ -530,6 +551,7 @@ pub(crate) async fn process_message(
                             let cmd_ctx = CommandContext {
                                 args: vec![],
                                 topic_name: topic_name.to_string(),
+                                origin: command_origin(&qi.message),
                                 topic_path: store_result.topic_path.clone(),
                                 config: config.load_full(),
                                 channel: qi.message.channel.clone(),
@@ -678,7 +700,29 @@ pub(crate) async fn process_message(
         }
     };
 
-    // The agent is done. Messages still queued in the injection channel
+    // The agent is done, so the turn a `/grant -once` was made for is over:
+    // drop the grants this turn actually had in force, rather than letting
+    // "just this time" quietly become access until restart.
+    //
+    // Only a message that ran a turn reaches this line. A bare
+    // `/grant -once <path>` (a command-only message) returns at the
+    // no-body short-circuit above, so it is never in any snapshot and is
+    // never dropped here: it stays in force for the next turn that runs,
+    // which is what "just this time" means when the command itself is the
+    // whole message. Clearing it at that short-circuit would delete the
+    // grant before any tool could read it, turning a usable authorization
+    // into a silent refusal.
+    //
+    // A `Drop` guard is not an option either: the release profile aborts on
+    // panic (`panic = "abort"`), so no destructor runs on the one path that
+    // could otherwise leak. The snapshot pair is what makes this correct —
+    // one turn spends exactly the grants that existed when it began.
+    let dropped = jyc_types::access_grants::clear_once(topic_name, &once_grants_before_turn);
+    if dropped > 0 {
+        tracing::debug!(topic = %topic_name, dropped, "Dropped one-turn access grants");
+    }
+
+    // Messages still queued in the injection channel
     // were never folded into the conversation — the turn ended before its
     // next drain point. Re-enqueue them so they are processed as turns of
     // their own instead of being lost.

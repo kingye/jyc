@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 
 use jyc_core::command::exchange_handler::ExchangeCommandHandler;
-use jyc_core::command::handler::{CommandContext, CommandHandler};
+use jyc_core::command::handler::{CommandContext, CommandHandler, CommandOrigin};
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::metrics::MetricsHandle;
 use jyc_core::static_agent::StaticAgentService;
@@ -61,6 +61,7 @@ fn test_context(topic_name: &str, topic_path: &Path, args: &[&str]) -> CommandCo
         config_path: None,
         per_agent_commands: vec![],
         hooks: Default::default(),
+        origin: CommandOrigin::User,
     }
 }
 

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use arc_swap::ArcSwap;
 
-use crate::command::handler::CommandContext;
+use crate::command::handler::{CommandContext, CommandOrigin};
 use crate::message_storage::MessageStorage;
 use crate::metrics::MetricsCollector;
 use crate::static_agent::StaticAgentService;
@@ -146,5 +146,6 @@ pub(crate) fn test_context_with_config(
         config_path: None,
         per_agent_commands: vec![],
         hooks: Default::default(),
+        origin: CommandOrigin::User,
     }
 }

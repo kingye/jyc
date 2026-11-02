@@ -244,6 +244,19 @@ pub struct ToolContext<'a> {
     /// one that did not — the difference between "the requester has its
     /// answer" and "the requester is still waiting".
     pub outbound_targets: Mutex<Vec<(String, String)>>,
+    /// The paths this turn was refused, as `(resolved, write)` pairs.
+    ///
+    /// Recorded by the two boundary checks on refusal, read by
+    /// `request_access`. It narrows what the model may ask about: a request
+    /// must name a path it was actually refused (or an ancestor of one), so a
+    /// model that hit the boundary on `/srv/data/x` cannot turn around and ask
+    /// the user to grant `~/.ssh`. The grant itself is still the server's to
+    /// make — this only bounds the question.
+    ///
+    /// `Mutex<Vec<_>>` for the same reason as `pending_images`: the checks take
+    /// `&self`, and `Mutex` is poisoned only by an unwind, which cannot happen
+    /// under `panic = "abort"`.
+    pub denied_paths: Mutex<Vec<(PathBuf, bool)>>,
 }
 
 /// Whether `canonical` lies inside the system temp dir `tmp`.
@@ -284,6 +297,7 @@ impl<'a> ToolContext<'a> {
             question_context: None,
             reply_target: None,
             outbound_targets: Mutex::new(Vec::new()),
+            denied_paths: Mutex::new(Vec::new()),
         }
     }
 
@@ -305,6 +319,7 @@ impl<'a> ToolContext<'a> {
             question_context: None,
             reply_target: None,
             outbound_targets: Mutex::new(Vec::new()),
+            denied_paths: Mutex::new(Vec::new()),
         }
     }
 
@@ -351,6 +366,26 @@ impl<'a> ToolContext<'a> {
         display_path: &str,
         resolved: &Path,
     ) -> std::result::Result<(), String> {
+        match self.read_boundary_verdict(resolved) {
+            Ok(()) => Ok(()),
+            Err(canonical) => {
+                self.record_denial(&canonical, false);
+                Err(Self::boundary_denial(display_path, &canonical, false))
+            }
+        }
+    }
+
+    /// Where `resolved` falls relative to the read boundary, without recording
+    /// anything.
+    ///
+    /// Split from [`Self::check_path_boundary`] so `request_access` can ask
+    /// "would this be allowed?" without its own probe counting as a refusal —
+    /// otherwise a model could turn any path into a granted ask simply by
+    /// asking twice.
+    ///
+    /// Applies the symlink and temp-dir exemptions described on
+    /// [`Self::check_path_boundary`].
+    fn read_boundary_verdict(&self, resolved: &Path) -> std::result::Result<(), PathBuf> {
         // Symlink exemption: skip the boundary check when a symlink
         // component is found above working_dir (e.g. working_dir/repo
         // symlinked to a clone elsewhere).
@@ -388,10 +423,99 @@ impl<'a> ToolContext<'a> {
             return Ok(());
         }
 
-        Err(format!(
-            "Access denied: path '{}' is outside the working directory",
-            display_path
-        ))
+        Err(canonical)
+    }
+
+    /// Where `resolved` falls relative to the write boundary, without
+    /// recording anything.
+    ///
+    /// The write roots are checked after the read ones, on the same canonical
+    /// path, so the refusal names the path the read check already resolved.
+    fn write_boundary_verdict(&self, resolved: &Path) -> std::result::Result<(), PathBuf> {
+        match self.read_boundary_verdict(resolved) {
+            Ok(()) => Ok(()),
+            Err(canonical) => {
+                for root in &self.additional_write_roots {
+                    let root_canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
+                    if canonical.starts_with(&root_canonical) {
+                        return Ok(());
+                    }
+                }
+                Err(canonical)
+            }
+        }
+    }
+
+    /// Whether `resolved` is inside the boundary this turn would enforce for
+    /// `write`, asked without recording a refusal.
+    ///
+    /// The read-only probe `request_access` uses: a path already reachable
+    /// needs no grant, and asking would spend the user's attention on a
+    /// decision with no effect.
+    pub fn is_within_boundary(&self, resolved: &Path, write: bool) -> bool {
+        if write {
+            self.write_boundary_verdict(resolved).is_ok()
+        } else {
+            self.read_boundary_verdict(resolved).is_ok()
+        }
+    }
+
+    /// Remember a refusal, so `request_access` can tell a path the model was
+    /// actually refused from one it made up.
+    ///
+    /// Called only on the refusal path: an accepted path needs no entry, and a
+    /// repeated denial of the same path records once.
+    fn record_denial(&self, canonical: &Path, write: bool) {
+        let mut denied = self.denied_paths.lock().unwrap();
+        if !denied
+            .iter()
+            .any(|(path, w)| path == canonical && *w == write)
+        {
+            denied.push((canonical.to_path_buf(), write));
+        }
+    }
+
+    /// Whether this turn was refused `resolved` (or a path under it) for the
+    /// access `write` asks for.
+    ///
+    /// The relation is `denied.starts_with(canonical)`: the requested path must
+    /// contain the refused one, so a request is either the refused path itself
+    /// or a directory above it. Asking for a *child* is not covered — a model
+    /// refused `/srv/data` may ask for `/srv/data` but not for a directory it
+    /// never touched, and asking for a sibling never was refused either.
+    ///
+    /// `write` requires a write refusal: read access was not what the tool
+    /// that failed needed, so a read denial does not justify asking for more.
+    pub fn was_denied(&self, resolved: &Path, write: bool) -> bool {
+        let canonical = resolved
+            .canonicalize()
+            .unwrap_or_else(|_| resolved.to_path_buf());
+        self.denied_paths
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(denied, denied_write)| {
+                (!write || *denied_write) && denied.starts_with(&canonical)
+            })
+    }
+
+    /// The refusal both boundary checks return.
+    ///
+    /// It names the path twice on purpose: the caller's own spelling, so the
+    /// user recognises what was asked, and the resolved absolute path, because
+    /// that is the form a grant has to quote — `display_path` may be relative
+    /// and a relative path cannot be granted. It also names the one tool that
+    /// can ask for the grant: an error the model cannot act on is where the
+    /// work stops.
+    fn boundary_denial(display_path: &str, canonical: &Path, write: bool) -> String {
+        let access = if write { "write" } else { "read" };
+        format!(
+            "Access denied: path '{}' is outside the working directory (resolved: {}). \
+             {access} access is not granted for it. If the user might allow it, call \
+             load_extended_tools and then request_access with that absolute path.",
+            display_path,
+            canonical.display()
+        )
     }
 
     /// Check that `resolved` is within `working_dir`, `additional_read_roots`,
@@ -406,24 +530,13 @@ impl<'a> ToolContext<'a> {
         display_path: &str,
         resolved: &Path,
     ) -> std::result::Result<(), String> {
-        // First check read boundary (working_dir + read_roots)
-        if self.check_path_boundary(display_path, resolved).is_ok() {
-            return Ok(());
-        }
-        // Then check write roots
-        let canonical = resolved
-            .canonicalize()
-            .unwrap_or_else(|_| resolved.to_path_buf());
-        for root in &self.additional_write_roots {
-            let root_canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
-            if canonical.starts_with(&root_canonical) {
-                return Ok(());
+        match self.write_boundary_verdict(resolved) {
+            Ok(()) => Ok(()),
+            Err(canonical) => {
+                self.record_denial(&canonical, true);
+                Err(Self::boundary_denial(display_path, &canonical, true))
             }
         }
-        Err(format!(
-            "Access denied: path '{}' is outside the working directory",
-            display_path
-        ))
     }
 }
 
@@ -535,6 +648,62 @@ mod tests {
         let outside = Path::new("/etc/passwd");
         assert!(ctx.check_path_boundary("passwd", outside).is_err());
         assert!(ctx.check_write_boundary("passwd", outside).is_err());
+    }
+
+    /// A refusal is remembered, and it bounds what `request_access` may ask
+    /// about: the refused path itself and directories above it, never an
+    /// unrelated path and never a read refusal widened into a write ask.
+    #[test]
+    fn a_refusal_is_recorded_and_narrows_the_ask() {
+        let working = tempfile::tempdir().expect("create working dir");
+        let ctx = ToolContext::new(working.path());
+        let refused = Path::new("/etc/passwd");
+
+        assert!(ctx.check_path_boundary("passwd", refused).is_err());
+
+        assert!(ctx.was_denied(refused, false), "the refused path itself");
+        assert!(
+            ctx.was_denied(Path::new("/etc"), false),
+            "a directory above the refused path"
+        );
+        assert!(
+            !ctx.was_denied(Path::new("/home/nobody/.ssh/id_rsa"), false),
+            "a path this turn never touched must not become askable"
+        );
+        assert!(
+            !ctx.was_denied(refused, true),
+            "a read refusal does not justify asking for write"
+        );
+    }
+
+    /// Asking "would this be allowed?" must not count as the refusal that
+    /// justifies asking. If the probe recorded, a model could make any path
+    /// askable by calling `request_access` twice.
+    #[test]
+    fn a_probe_records_no_refusal() {
+        let working = tempfile::tempdir().expect("create working dir");
+        let ctx = ToolContext::new(working.path());
+        let outside = Path::new("/etc/passwd");
+
+        assert!(!ctx.is_within_boundary(outside, false));
+        assert!(!ctx.is_within_boundary(outside, true));
+        assert!(
+            !ctx.was_denied(outside, false),
+            "is_within_boundary is a query, not a refusal"
+        );
+    }
+
+    /// A write refusal is recorded as a write one and also answers a read
+    /// question, because write access implies read.
+    #[test]
+    fn a_write_refusal_answers_a_read_question_too() {
+        let working = tempfile::tempdir().expect("create working dir");
+        let ctx = ToolContext::new(working.path());
+        let outside = Path::new("/etc/passwd");
+
+        assert!(ctx.check_write_boundary("passwd", outside).is_err());
+        assert!(ctx.was_denied(outside, true));
+        assert!(ctx.was_denied(outside, false));
     }
 
     /// A temp dir of `/` must not be honored: every absolute path is inside

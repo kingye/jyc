@@ -411,6 +411,28 @@ pub trait OutboundAdapter: Send + Sync {
     }
 }
 
+/// How a channel turns the user's pick into the message that comes back.
+///
+/// A question has two uses and they answer differently. Most ask the user
+/// something the model reads; a permission request asks the user to *run*
+/// something, and the pick is a slash command the server has to dispatch — so
+/// it cannot be wrapped in a `Q1: 2) …` line the way an ordinary answer is.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum AnswerStyle {
+    /// The answer is text for the model: one `Q<n>: <pick>` line per question.
+    #[default]
+    Text,
+    /// The answer is a command the user is running: each pick goes out
+    /// verbatim, and `followup` follows it so the turn still starts — a
+    /// message holding only a command runs no agent turn, so the model would
+    /// never see the new grant.
+    Command {
+        /// Line appended after the picked command(s).
+        followup: String,
+    },
+}
+
 /// An interactive question pushed to a user through a channel.
 ///
 /// Serialized as the websocket `question` payload; a channel without a UI for
@@ -435,6 +457,10 @@ pub struct QuestionRequest {
     /// however many options were picked.
     #[serde(default)]
     pub allow_multiple: bool,
+    /// How the user's pick becomes a message. Defaults to [`AnswerStyle::Text`]
+    /// so a channel that predates this field keeps answering the old way.
+    #[serde(default)]
+    pub answer_as: AnswerStyle,
 }
 
 // --- Pattern Types ---

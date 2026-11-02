@@ -1630,10 +1630,10 @@ mod tool_registry {
     /// this list, so adding a tool means adding a name — not also
     /// remembering to bump a number somewhere else.
     ///
-    /// `list_topics` is in the builtin registry but belongs to the extended
-    /// group: it is registered here and kept out of the advertised list
-    /// until the model loads the group.
-    const EXPECTED_BUILTIN_TOOLS: [&str; 15] = [
+    /// `list_topics` and `request_access` are in the builtin registry but
+    /// belong to the extended group: they are registered here and kept out of
+    /// the advertised list until the model loads the group.
+    const EXPECTED_BUILTIN_TOOLS: [&str; 16] = [
         "bash",
         "read",
         "write",
@@ -1649,6 +1649,7 @@ mod tool_registry {
         "lesson_add",
         "lesson_read",
         "list_topics",
+        "request_access",
     ];
 
     #[test]

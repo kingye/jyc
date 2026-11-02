@@ -12,7 +12,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use jyc_types::channel::QuestionRequest;
+use jyc_types::channel::{AnswerStyle, QuestionRequest};
 
 use crate::tools::{Tool, ToolContext, ToolOutput};
 
@@ -29,10 +29,10 @@ const HANDED_OVER: &str = "The questions below are on their way to the user and 
 
 /// One question of a possibly multi-question call.
 #[derive(Debug)]
-struct Ask {
-    question: String,
-    options: Vec<String>,
-    allow_multiple: bool,
+pub(crate) struct Ask {
+    pub(crate) question: String,
+    pub(crate) options: Vec<String>,
+    pub(crate) allow_multiple: bool,
 }
 
 /// Render a question set as the plain text a channel without a question box
@@ -44,7 +44,27 @@ struct Ask {
 /// a lazy continuation of the last list item, gluing whole questions onto one
 /// line. A blank line between questions ends the list, which is what keeps the
 /// structure; the marker goes on the question's own line for the same reason.
-fn plain_text_block(asks: &[Ask]) -> String {
+///
+/// [`AnswerStyle::Command`] renders the options as the lines the user runs
+/// instead of as a numbered list: picking a number would have to be turned into
+/// a command by something, and the one thing that must never do that is the
+/// model.
+fn plain_text_block(asks: &[Ask], answer_as: &AnswerStyle) -> String {
+    if let AnswerStyle::Command { followup } = answer_as {
+        let mut out = String::new();
+        for (number, ask) in asks.iter().enumerate() {
+            out.push_str(&format!("Q{}: {}\n\n", number + 1, ask.question));
+            out.push_str("Reply with one of these lines, exactly as written:\n");
+            for text in &ask.options {
+                out.push_str(&format!("{text}\n"));
+            }
+            out.push('\n');
+        }
+        out.push_str(&format!(
+            "Then write one more line, any sentence (e.g. \"{followup}\"), so that I carry on."
+        ));
+        return out;
+    }
     let mut out = String::new();
     for (number, ask) in asks.iter().enumerate() {
         let marker = if ask.allow_multiple {
@@ -76,8 +96,8 @@ fn plain_text_block(asks: &[Ask]) -> String {
 /// sub-agents) there is no message to send: the model's reply is the only
 /// surface left, so the block goes to the model and the turn continues long
 /// enough for it to be delivered.
-fn ask_in_plain_text(ctx: &ToolContext<'_>, asks: &[Ask]) -> ToolOutput {
-    let block = plain_text_block(asks);
+fn ask_in_plain_text(ctx: &ToolContext<'_>, asks: &[Ask], answer_as: &AnswerStyle) -> ToolOutput {
+    let block = plain_text_block(asks, answer_as);
     if ctx.live_delivery().is_none() {
         tracing::debug!("ask_user: no live delivery target, the model must ask");
         return ToolOutput::success(format!(
@@ -242,73 +262,87 @@ impl Tool for AskUserTool {
             Ok(asks) => asks,
             Err(msg) => return Ok(ToolOutput::error(msg)),
         };
-
-        // A question belongs to the channel the user wrote on, not to
-        // whichever channel owns this topic: a turn piped in from feishu runs
-        // on the `agents` hub, and a box pushed there is invisible to the user
-        // while the plain text they can answer stays on the hub. The origin
-        // comes from the inbound message's metadata, stamped by the pipe
-        // retarget path just before it overwrites `InboundMessage::channel`, so
-        // a tool can still tell who it is really talking to. `None` (or this
-        // channel) means the message came from here directly.
-        let piped_from = ctx
-            .reply_target
-            .as_ref()
-            .and_then(|target| {
-                target
-                    .original
-                    .metadata
-                    .get(jyc_types::ORIGIN_CHANNEL_METADATA_KEY)
-                    .and_then(|value| value.as_str())
-            })
-            .filter(|origin| Some(*origin) != ctx.current_channel.as_deref());
-        let outbound = match piped_from {
-            Some(name) => match &ctx.outbounds {
-                Some(map) => map.lock().await.get(name).cloned(),
-                None => None,
-            },
-            None => ctx.outbound.clone(),
-        };
-        let Some(outbound) = outbound else {
-            if let Some(name) = piped_from {
-                // Which pipe channel is missing an adapter is the one thing a
-                // misconfiguration would need; the fallback text has no name.
-                tracing::debug!(
-                    channel = name,
-                    "ask_user: no adapter for the origin channel"
-                );
-            }
-            return Ok(ask_in_plain_text(ctx, &asks));
-        };
-
-        // Render the set on the channel's own surface and hand it over. One
-        // frame per question, oldest first: the user steps through the set in
-        // that order and answers the whole of it in one message.
-        let topic = ctx.current_topic.clone().unwrap_or_default();
-        for ask in &asks {
-            let request = QuestionRequest {
-                topic: topic.clone(),
-                context: ctx.question_context.clone(),
-                question: ask.question.clone(),
-                options: ask.options.clone(),
-                allow_multiple: ask.allow_multiple,
-            };
-            if let Err(e) = outbound.send_question(&request).await {
-                // ponytail: a push failing mid-batch leaves the earlier
-                // questions on screen while the plain text repeats the set. The
-                // upgrade is a cancel frame per pushed request here; no
-                // channel's `send_question` has ever failed after a success.
-                tracing::debug!(error = %e, "ask_user: the channel refused the question");
-                return Ok(ask_in_plain_text(ctx, &asks));
-            }
-        }
-        let block = plain_text_block(&asks);
-        tracing::debug!(
-            questions = asks.len(),
-            "ask_user: questions rendered on the channel's surface"
-        );
-        Ok(ToolOutput::success(format!("{HANDED_OVER}\n\n{block}")).ending_turn())
+        Ok(deliver_questions(ctx, &asks, &AnswerStyle::Text).await)
     }
+}
+
+/// Hand a question set to the user on whichever surface the channel they wrote
+/// on can show, and end the turn.
+///
+/// Shared with [`request_access`](super::access), which asks the same way and
+/// differs only in [`AnswerStyle`]: a permission request answers with commands,
+/// so the server — not the model — performs the grant.
+pub(crate) async fn deliver_questions(
+    ctx: &ToolContext<'_>,
+    asks: &[Ask],
+    answer_as: &AnswerStyle,
+) -> ToolOutput {
+    // A question belongs to the channel the user wrote on, not to
+    // whichever channel owns this topic: a turn piped in from feishu runs
+    // on the `agents` hub, and a box pushed there is invisible to the user
+    // while the plain text they can answer stays on the hub. The origin
+    // comes from the inbound message's metadata, stamped by the pipe
+    // retarget path just before it overwrites `InboundMessage::channel`, so
+    // a tool can still tell who it is really talking to. `None` (or this
+    // channel) means the message came from here directly.
+    let piped_from = ctx
+        .reply_target
+        .as_ref()
+        .and_then(|target| {
+            target
+                .original
+                .metadata
+                .get(jyc_types::ORIGIN_CHANNEL_METADATA_KEY)
+                .and_then(|value| value.as_str())
+        })
+        .filter(|origin| Some(*origin) != ctx.current_channel.as_deref());
+    let outbound = match piped_from {
+        Some(name) => match &ctx.outbounds {
+            Some(map) => map.lock().await.get(name).cloned(),
+            None => None,
+        },
+        None => ctx.outbound.clone(),
+    };
+    let Some(outbound) = outbound else {
+        if let Some(name) = piped_from {
+            // Which pipe channel is missing an adapter is the one thing a
+            // misconfiguration would need; the fallback text has no name.
+            tracing::debug!(
+                channel = name,
+                "ask_user: no adapter for the origin channel"
+            );
+        }
+        return ask_in_plain_text(ctx, asks, answer_as);
+    };
+
+    // Render the set on the channel's own surface and hand it over. One
+    // frame per question, oldest first: the user steps through the set in
+    // that order and answers the whole of it in one message.
+    let topic = ctx.current_topic.clone().unwrap_or_default();
+    for ask in asks {
+        let request = QuestionRequest {
+            topic: topic.clone(),
+            context: ctx.question_context.clone(),
+            question: ask.question.clone(),
+            options: ask.options.clone(),
+            allow_multiple: ask.allow_multiple,
+            answer_as: answer_as.clone(),
+        };
+        if let Err(e) = outbound.send_question(&request).await {
+            // ponytail: a push failing mid-batch leaves the earlier
+            // questions on screen while the plain text repeats the set. The
+            // upgrade is a cancel frame per pushed request here; no
+            // channel's `send_question` has ever failed after a success.
+            tracing::debug!(error = %e, "ask_user: the channel refused the question");
+            return ask_in_plain_text(ctx, asks, answer_as);
+        }
+    }
+    let block = plain_text_block(asks, answer_as);
+    tracing::debug!(
+        questions = asks.len(),
+        "ask_user: questions rendered on the channel's surface"
+    );
+    ToolOutput::success(format!("{HANDED_OVER}\n\n{block}")).ending_turn()
 }
 
 #[cfg(test)]
@@ -644,7 +678,7 @@ mod tests {
                 allow_multiple: true,
             },
         ];
-        let block = plain_text_block(&asks);
+        let block = plain_text_block(&asks, &AnswerStyle::Text);
         assert!(block.contains("Q1: 晚饭吃什么?"), "{block}");
         assert!(block.contains("   1) 米饭"), "{block}");
         assert!(block.contains("   2) 面条"), "{block}");
@@ -682,7 +716,7 @@ mod tests {
             asks[0].options,
             vec!["main".to_string(), "feature x".to_string()]
         );
-        let block = plain_text_block(&asks);
+        let block = plain_text_block(&asks, &AnswerStyle::Text);
         assert_eq!(
             block,
             "Q1: Which branch should I push?\n   1) main\n   2) feature x\n\n\

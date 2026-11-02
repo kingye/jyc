@@ -301,6 +301,7 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
             "question": request.question,
             "options": request.options,
             "allow_multiple": request.allow_multiple,
+            "answer_as": request.answer_as,
         });
         // Same no-receiver tolerance as `broadcast_reply`.
         let _ = self.broadcast_tx.send(payload.to_string());
@@ -330,6 +331,7 @@ mod tests {
             question: "Which?".to_string(),
             options: vec!["a".to_string(), "b".to_string()],
             allow_multiple: true,
+            answer_as: jyc_types::channel::AnswerStyle::Text,
         };
 
         adapter.send_question(&request).await.unwrap();
@@ -342,6 +344,43 @@ mod tests {
         assert!(
             frame.contains("\"context\":\"I compared the two options\""),
             "the question box cannot show what the question is about: {frame}"
+        );
+        assert!(
+            frame.contains("\"answer_as\":{\"mode\":\"text\"}"),
+            "a box that cannot see the style answers as text: {frame}"
+        );
+    }
+
+    /// The command style is the one a permission request uses: the box has to
+    /// emit the pick verbatim and append `followup`, and both parts travel in
+    /// the frame — a dropped `followup` leaves the grant applied but the turn
+    /// never restarted.
+    #[tokio::test]
+    async fn test_send_question_carries_a_command_answer_style() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let tmp = tempfile::TempDir::new().unwrap();
+        let storage = Arc::new(MessageStorage::new(tmp.path()));
+        let adapter = WebsocketOutboundAdapter::new(tx, storage);
+        let request = jyc_types::channel::QuestionRequest {
+            topic: "general".to_string(),
+            context: None,
+            question: "Allow read access to /data/invoices?".to_string(),
+            options: vec!["/grant /data/invoices -o".to_string(), "No".to_string()],
+            allow_multiple: false,
+            answer_as: jyc_types::channel::AnswerStyle::Command {
+                followup: "Continue.".to_string(),
+            },
+        };
+
+        adapter.send_question(&request).await.unwrap();
+
+        let frame = rx.recv().await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&frame).unwrap();
+        assert_eq!(parsed["answer_as"]["mode"], "command", "got: {frame}");
+        assert_eq!(parsed["answer_as"]["followup"], "Continue.", "got: {frame}");
+        assert_eq!(
+            parsed["options"][0], "/grant /data/invoices -o",
+            "the option the user picks is the command that runs: {frame}"
         );
     }
 

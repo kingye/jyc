@@ -83,7 +83,20 @@ impl CommandRegistry {
                 }
 
                 if trimmed.starts_with('/') {
-                    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                    // A line whose quotes do not close has no word boundaries
+                    // to read, so nothing on it can be run — the same shape as
+                    // an unknown command: report it, drop the line, and let the
+                    // rest of the message be body text.
+                    let parts = match super::line::split(trimmed) {
+                        Ok(parts) => parts,
+                        Err(error) => {
+                            results.push(CommandResult::refusal(format!(
+                                "{error}: the line was not run. Close the quote, or drop it."
+                            )));
+                            in_command_block = false;
+                            continue;
+                        }
+                    };
                     let cmd_name = parts[0].to_lowercase();
 
                     if let Some(handler) = self.handlers.get(&cmd_name) {
@@ -132,8 +145,7 @@ impl CommandRegistry {
                             continue;
                         }
 
-                        let mut args: Vec<String> =
-                            parts[1..].iter().map(|s| s.to_string()).collect();
+                        let mut args: Vec<String> = parts[1..].to_vec();
 
                         // Commands that opt into continuation lines (e.g.
                         // `/backlog push`) get every remaining line of the
@@ -289,7 +301,18 @@ pub fn leading_command_names(body: &str) -> Vec<String> {
         if !trimmed.starts_with('/') {
             break;
         }
-        if let Some(name) = trimmed.split_whitespace().next() {
+        // The splitter dispatch reads the line with, not a second reading of
+        // our own: a spelling dispatch sees as `/grant` has to be named here
+        // too, or a line like `/gra"nt" /data` would pass this guard and be
+        // run as a grant by the dispatcher — an agent granting itself a path.
+        // A line the splitter refuses runs nothing at all, so the plain
+        // whitespace split on that path can only over-name, which is this
+        // scan's safe direction.
+        let name = match super::line::split(trimmed) {
+            Ok(words) => words.into_iter().next(),
+            Err(_) => trimmed.split_whitespace().next().map(str::to_string),
+        };
+        if let Some(name) = name {
             names.push(name.to_lowercase());
         }
     }
@@ -947,6 +970,143 @@ focus on error handling",
             "the scan does not know the handler table"
         );
         assert!(carries_authorization_command(body));
+    }
+
+    /// Quoting reaches the handler: a quoted run is one argument, and a `#`
+    /// is a word rather than the start of a comment.
+    #[tokio::test]
+    async fn a_quoted_argument_arrives_as_one_word() {
+        let mut registry = CommandRegistry::new();
+        registry.register("/model", Arc::new(TestHandler));
+
+        let output = registry
+            .process_commands(r#"/model "a b" ping #1045"#, &test_context())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            output.results[0].message, r##"ok: args=["a b", "ping", "#1045"]"##,
+            "{:?}",
+            output.results[0].error
+        );
+    }
+
+    /// A quoted command name is the same command to both readers. They share
+    /// one splitter for this: were the scan still splitting on whitespace, it
+    /// would read `/gra"nt"` as no command at all while dispatch ran a grant —
+    /// an agent could widen its own boundary through the send path.
+    #[tokio::test]
+    async fn a_quoted_command_name_is_the_same_command_to_both_readers() {
+        let mut registry = CommandRegistry::new();
+        registry.register("/grant", Arc::new(TestHandler));
+
+        for line in [r#"/gra"nt" /data"#, r#"/g"r"'a'nt /data"#] {
+            let output = registry
+                .process_commands(line, &test_context())
+                .await
+                .unwrap();
+            assert_eq!(output.results.len(), 1, "{line}: one command must run");
+            assert!(
+                output.results[0].success,
+                "{line}: dispatch must read it as /grant — {:?}",
+                output.results[0].error
+            );
+            assert!(
+                carries_authorization_command(line),
+                "{line}: the scan must name the command dispatch ran"
+            );
+        }
+    }
+
+    /// An unbalanced line runs nothing: dispatch refuses the whole line rather
+    /// than guessing at word boundaries nobody typed.
+    #[tokio::test]
+    async fn an_unbalanced_quote_is_refused_by_dispatch() {
+        let mut registry = CommandRegistry::new();
+        registry.register("/grant", Arc::new(TestHandler));
+
+        for line in [
+            r#"/gra"nt /data"#,
+            r#"/g'ra"'nt' /data"#,
+            r#"/grant /data "x"#,
+        ] {
+            let output = registry
+                .process_commands(line, &test_context())
+                .await
+                .unwrap();
+            assert_eq!(output.results.len(), 1, "{line}: a refusal, not silence");
+            assert!(
+                !output.results[0].success,
+                "{line}: an unbalanced line must not run"
+            );
+        }
+    }
+
+    /// Where the splitter refuses, the scan falls back to whitespace on the
+    /// same line. That can name `/grant` that dispatch never ran — over-naming,
+    /// the safe direction, since the message is refused before it is queued.
+    /// It cannot under-name a line dispatch *did* run: `split` succeeded there.
+    #[test]
+    fn an_unbalanced_quote_after_the_name_over_names_rather_than_under_names() {
+        // The unmatched quote sits after the command name, so the fallback's
+        // first word is still `/grant`.
+        assert!(carries_authorization_command(r#"/grant /data "x"#));
+        // Here the fallback word is the mangled `"/gra"nt` — not named. Nothing
+        // runs either, which is why this is not a hole.
+        assert!(!carries_authorization_command(r#"/gra"nt /data"#));
+    }
+
+    /// A quote before the leading `/` puts the line outside the command block
+    /// for both readers alike: the `/` check runs before any splitting, so a
+    /// quote cannot smuggle a command in — or out. The two agree it is not a
+    /// command, which is why neither reader runs nor names one.
+    #[tokio::test]
+    async fn a_quote_before_the_slash_is_no_command_to_either_reader() {
+        let mut registry = CommandRegistry::new();
+        registry.register("/grant", Arc::new(TestHandler));
+
+        for line in [r#"'/grant' /data"#, r#""/grant" /data"#] {
+            let output = registry
+                .process_commands(line, &test_context())
+                .await
+                .unwrap();
+            assert!(
+                output.results.is_empty(),
+                "{line}: no command must run — {:?}",
+                output.results
+            );
+            assert_eq!(output.cleaned_body, line, "{line}: the line is body text");
+            assert!(
+                !carries_authorization_command(line),
+                "{line}: the scan must not name a command either"
+            );
+        }
+    }
+
+    /// A line whose quotes do not close cannot be read, so it is refused and
+    /// dropped rather than run with a word nothing delimited — and the rest of
+    /// the message is body text, as after an unknown command.
+    #[tokio::test]
+    async fn an_unclosed_quote_is_refused_and_the_line_is_dropped() {
+        let mut registry = CommandRegistry::new();
+        registry.register("/grant", Arc::new(TestHandler));
+
+        let output = registry
+            .process_commands("/grant \"/data\nhello", &test_context())
+            .await
+            .unwrap();
+
+        assert_eq!(output.results.len(), 1, "{:?}", output.results);
+        assert!(!output.results[0].success);
+        assert!(
+            output.results[0]
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("unclosed")),
+            "{:?}",
+            output.results[0].error
+        );
+        assert_eq!(output.cleaned_body, "hello");
     }
 
     /// The dispatch-side half: a message an agent sent cannot run `/grant`,

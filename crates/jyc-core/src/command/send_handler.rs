@@ -613,6 +613,10 @@ fn usage() -> String {
 /// message text. `--` ends the flags explicitly, for a message that starts
 /// with one.
 ///
+/// The words arrive already split (`command::line`), with one level of quoting
+/// removed: `/send joe "/close --force"` is one message word here, and a
+/// message made of a dash-led word is spelled `/send joe -- --force`.
+///
 /// The shape is the one `/send`'s row declares: one positional, then text. Which
 /// word is which therefore comes from the declaration, so a message can never be
 /// read as a flag — and a flag can never be read as message text.
@@ -624,7 +628,7 @@ fn parse(args: &[String]) -> Result<SendArgs, String> {
         .first()
         .cloned()
         .ok_or_else(|| format!("Missing agent. {}", usage()))?;
-    let message = unquote(parsed.body.take().unwrap_or_default());
+    let message = parsed.body.take().unwrap_or_default();
     if message.trim().is_empty() {
         return Err(format!("Missing message. {}", usage()));
     }
@@ -643,21 +647,6 @@ fn parse(args: &[String]) -> Result<SendArgs, String> {
         recipient: parsed.value(SendFlag::Recipient).map(str::to_string),
         require_reply: parsed.has(SendFlag::Reply),
     })
-}
-
-/// Drop one pair of matching quotes around the whole message, so
-/// `/send joe "/close --force"` arrives as `/close --force` — the same thing
-/// the unquoted form now sends. Only a pair around the entire message counts;
-/// inner quotes are left alone.
-fn unquote(message: String) -> String {
-    let bytes = message.as_bytes();
-    if bytes.len() >= 2 {
-        let (first, last) = (bytes[0], bytes[bytes.len() - 1]);
-        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
-            return message[1..message.len() - 1].to_string();
-        }
-    }
-    message
 }
 
 #[async_trait]
@@ -768,21 +757,39 @@ mod tests {
         );
     }
 
+    /// Quoting is the splitter's job now: the words reach [`parse`] with the
+    /// quotes already gone, so `/send joe "/close --force"` is one message
+    /// word however it was written.
     #[test]
-    fn parse_drops_surrounding_quotes_from_the_message() {
-        // One token, and the two tokens a real command line hands over.
-        for words in [
-            vec!["invoice", "\"/close --force\""],
-            vec!["invoice", "\"/close", "--force\""],
+    fn a_quoted_message_word_arrives_without_its_quotes() {
+        for line in [
+            r#"/send invoice "/close --force""#,
+            "/send invoice '/close --force'",
         ] {
-            let parsed = parse(&args(&words)).unwrap();
-            assert_eq!(parsed.message, "/close --force", "{words:?}");
+            let words = crate::command::line::split(line).unwrap();
+            let parsed = parse(&words[1..]).unwrap();
+            assert_eq!(parsed.message, "/close --force", "{line}");
         }
-        let parsed = parse(&args(&["invoice", "'/close --force'"])).unwrap();
-        assert_eq!(parsed.message, "/close --force");
-        // An unpaired quote is not a pair, so it stays part of the message.
-        let parsed = parse(&args(&["invoice", "\"hello"])).unwrap();
-        assert_eq!(parsed.message, "\"hello");
+    }
+
+    /// A quote is no longer a way past the flag check — the splitter removes it
+    /// first. `--` is the one spelling that still starts a message with a dash.
+    #[test]
+    fn a_quoted_dash_is_a_flag_so_the_message_needs_the_double_dash() {
+        let words = crate::command::line::split(r#"/send invoice "-x""#).unwrap();
+        assert_eq!(words, ["/send", "invoice", "-x"]);
+
+        let parsed = parse(&args(&["invoice", "--", "-x"])).unwrap();
+        assert_eq!(parsed.message, "-x");
+    }
+
+    /// One level of quoting comes off, so a message that *is* a quote is spelled
+    /// by wrapping the other kind around it.
+    #[test]
+    fn a_literal_quote_is_reachable_by_quoting_the_other_kind() {
+        let words = crate::command::line::split(r#"/send invoice '"'"#).unwrap();
+        let parsed = parse(&words[1..]).unwrap();
+        assert_eq!(parsed.message, "\"");
     }
 
     #[test]

@@ -231,10 +231,12 @@ struct NamedPath {
 /// argument the program reads (`dd if=/etc/passwd`), so it is judged as before.
 ///
 /// Two shapes of "the shell does not do what the words look like" are honoured
-/// rather than guessed at: a `cd` inside `( … )` runs in a subshell and does not
-/// move the directory the rest of the line runs in, and a reserved word is one
-/// only as written — bash never re-reads an expansion as `then`, so `X=then; $X
-/// cd sub` runs a command named `then`.
+/// rather than guessed at, both by matching the word the line spells and never
+/// what a variable expands to: expansion re-creates neither shell syntax nor an
+/// assignment, so `X=then; $X cd sub` runs a command named `then` and
+/// `A=X=1; $A cd sub` runs one named `X=1`, leaving the directory alone. A
+/// `cd` inside `( … )` runs in a subshell and does not move the directory the
+/// rest of the line runs in, whatever the parentheses are glued to.
 fn named_paths(command: &str, working_dir: &Path) -> Vec<NamedPath> {
     // An unclosed quote is a syntax error to bash too: a command bash refuses
     // to run needs no boundary check. Statements are split at newlines as well
@@ -247,12 +249,23 @@ fn named_paths(command: &str, working_dir: &Path) -> Vec<NamedPath> {
     let mut cwd = Some(working_dir.to_path_buf());
     let mut at_command_start = true;
     let mut redirect_target = false;
+    // How many `( … )` the words have opened and not closed yet. A `cd` inside
+    // one runs in a subshell and never moves the shell the rest of the line runs
+    // in, so tracking it would judge what follows against a directory the
+    // command is not in — the one direction that fails *open*.
+    let mut subshell_depth = 0usize;
     // The literal assignments seen so far, so `X=…; cd $X` names the directory
     // the command really enters.
     let mut vars: HashMap<String, String> = HashMap::new();
     let mut words = words.iter();
 
     while let Some(raw) = words.next() {
+        // Counted from the word the line spells: quoting is gone by now, so a
+        // literal `(` (`echo "("`) counts as a grouping one. That only leaves
+        // the tracked directory shallower than the shell's, which judges a
+        // relative `..` word further out than the command reads it — never
+        // further in.
+        subshell_depth = group_depth(subshell_depth, raw);
         let expanded = shell_word(raw, &vars);
         let word = expanded.as_str();
         if word.is_empty() {
@@ -284,7 +297,16 @@ fn named_paths(command: &str, working_dir: &Path) -> Vec<NamedPath> {
         // `cd` moves the directory the rest of the command resolves against,
         // so its target is a path even when it holds no separator (`cd repo`).
         if at_command_start && word == "cd" {
+            // Where the `cd` itself sits — before the target's own parentheses
+            // are folded in, because `(cd sub)` closes the group on the target
+            // word and that `cd` still ran inside it.
+            let cd_depth = subshell_depth;
             let raw_target = words.next();
+            // The target is taken straight from the iterator, so its own
+            // parentheses do not pass the loop top.
+            if let Some(raw_target) = raw_target {
+                subshell_depth = group_depth(subshell_depth, raw_target);
+            }
             let target = raw_target.map(|word| shell_word(word, &vars));
 
             // `cd 2> err` sends stderr to a file: the directory is the one a
@@ -292,7 +314,9 @@ fn named_paths(command: &str, working_dir: &Path) -> Vec<NamedPath> {
             // relative words are not judged. The file is still a write.
             if let Some((_, tail)) = target.as_deref().and_then(leading_redirection) {
                 let tail = expand_vars(tail, &vars);
-                cwd = None;
+                if cd_depth == 0 {
+                    cwd = None;
+                }
                 if tail.is_empty() {
                     redirect_target = true;
                 } else if looks_like_path(&tail)
@@ -307,16 +331,23 @@ fn named_paths(command: &str, working_dir: &Path) -> Vec<NamedPath> {
                 continue;
             }
 
-            cwd = match target.as_deref() {
+            let entered = match target.as_deref() {
                 Some(target) if !target.is_empty() && target != "-" => {
                     resolve_path(target, cwd.as_deref())
                 }
                 // A bare `cd` goes to `$HOME`; `cd -` to wherever that was.
                 _ => None,
             };
-            if let Some(path) = &cwd {
+            // The path is one the command really enters, in whichever shell, so
+            // it is judged either way. Only the directory the *rest of the line*
+            // resolves against is left alone inside `( … )`: that `cd` never
+            // reaches the shell running the words after it.
+            if cd_depth == 0 {
+                cwd = entered.clone();
+            }
+            if let Some(path) = entered {
                 paths.push(NamedPath {
-                    path: path.clone(),
+                    path,
                     by_position: true,
                 });
             }
@@ -338,20 +369,26 @@ fn named_paths(command: &str, working_dir: &Path) -> Vec<NamedPath> {
         // Only at command position: anywhere else the word is an argument the
         // program interprets, and `dd if=/etc/passwd` really reads that file —
         // `if` is a shell name, so skipping it there would open the boundary.
+        //
+        // Matched against the word the line spells, not the value a variable
+        // expands to: bash never re-reads an expansion as an assignment, so
+        // `A=X=1; $A cd sub` runs a command named `X=1` and stays where it is.
+        // Reading that expansion as an assignment handed command position to
+        // the `cd` beside it and moved the tracked directory — the same escape
+        // as reading one as a keyword.
         if !by_position
             && at_command_start
-            && let Some((name, value)) = assignment(word)
+            && let Some((name, value)) = assignment(trim_shell_punctuation(raw))
         {
             vars.insert(name.to_string(), value.to_string());
             // The words after an assignment are still at command position: more
             // assignments (`X=1 X=2 cmd`) and the command name that follows are
             // all read the same way, and a separator glued to the value
-            // (`X=1; cd …`) opens a statement either way. A leading `(` does
-            // not: `(X=1 cd sub)` runs that `cd` in a subshell, which never
-            // moves the shell the rest of the line runs in — keeping command
-            // position there tracks a directory the command is not in, and
-            // judges what follows one level too shallow.
-            at_command_start = !raw.starts_with('(');
+            // (`X=1; cd …`) opens a statement either way. A `cd` inside
+            // `( … )` is held back by `subshell_depth`, not by dropping command
+            // position here — which only ever covered the `(` glued to the
+            // assignment (`(X=1`), and not the spaced spelling `( X=1`.
+            at_command_start = true;
             continue;
         }
 
@@ -411,6 +448,17 @@ const COMMAND_KEYWORDS: [&str; 7] = ["if", "while", "until", "then", "do", "elif
 /// to the end of a word (`done;`, `x&&`, `y|`).
 fn starts_command(raw: &str) -> bool {
     raw.ends_with([';', '&', '|'])
+}
+
+/// `depth` after `word`, counting the `( … )` groups it opens and closes.
+///
+/// The splitter only breaks on whitespace, so a group can open or close on a
+/// word that is also something else: `(X=1` opens one, `sub)` closes one. Both
+/// spellings of `( cd sub )` — glued or spaced — therefore move the depth.
+fn group_depth(depth: usize, word: &str) -> usize {
+    depth
+        .saturating_add(word.matches('(').count())
+        .saturating_sub(word.matches(')').count())
 }
 
 /// `word` without the shell punctuation that can sit against it: a separator
@@ -886,6 +934,59 @@ mod tests {
         assert_eq!(
             refused("(X=1 cd sub); cat ../../etc/passwd", working.path()),
             [existing("/etc/passwd")]
+        );
+    }
+
+    /// The `(` need not be glued to the assignment: the splitter breaks on
+    /// whitespace, so `( X=1 cd sub` reaches the assignment branch as a plain
+    /// `X=1` word. Nothing about that leaves the subshell, so the `cd` beside it
+    /// must not move the directory — the spelling base code refused only by
+    /// accident, by dropping command position on the assignment.
+    #[test]
+    fn a_spaced_subshell_does_not_move_the_directory() {
+        let working = tempfile::tempdir().expect("create working dir");
+        let root = working
+            .path()
+            .canonicalize()
+            .expect("canonical working dir");
+        let sub = root.join("sub");
+        std::fs::create_dir(&sub).expect("create sub");
+        let outside = root.parent().expect("working dir has a parent");
+
+        assert_eq!(
+            refused("( X=1 cd sub); cat ../../etc/passwd", working.path()),
+            [existing("/etc/passwd")]
+        );
+        // Not just the spelling with an assignment in front: the decision comes
+        // from the depth, so `( cd sub )` on its own holds too. The `cd` target
+        // is still a path the command enters; what must not move is where the
+        // words after the `)` resolve from.
+        assert_eq!(
+            named("( cd sub ); cat ../notes.txt", working.path()),
+            [
+                sub.display().to_string(),
+                outside.join("notes.txt").display().to_string()
+            ]
+        );
+    }
+
+    /// An expansion is no more an assignment than it is a keyword: bash runs a
+    /// command named `X=1` for `$A`, so the `cd` beside it is an argument and
+    /// the directory stays put. Reading the expansion as an assignment moved it
+    /// into `sub`, where `..` judges one level too shallow.
+    #[test]
+    fn an_expanded_assignment_does_not_assign() {
+        let working = tempfile::tempdir().expect("create working dir");
+        let root = working
+            .path()
+            .canonicalize()
+            .expect("canonical working dir");
+        std::fs::create_dir(root.join("sub")).expect("create sub");
+        let outside = root.parent().expect("working dir has a parent");
+
+        assert_eq!(
+            named("A=X=1; $A cd sub; cat ../notes.txt", working.path()),
+            [outside.join("notes.txt").display().to_string()]
         );
     }
 

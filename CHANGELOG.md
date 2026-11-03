@@ -1,3 +1,9 @@
+## [Unreleased]
+
+### Added
+
+- A topic's working directory can carry its own `.jyc/` as the topic's L3 **user layer**: `<topic_path>/.jyc/config.toml` is read beneath the registered state dir's config (framework layer — spawn's role expansion and command persistence — wins per key), and `<topic_path>/.jyc/skills/` joins skill discovery as the lowest-priority source. `mcps`/`mcps_replace` in the user layer are stripped and logged: MCP entries carry a `command` to execute and a working directory may come from a clone or the model itself, the same trust line that keeps hooks out of topic directories — declare MCPs in the state dir config or L1/L2. An in-dir `.jyc` that carries a framework `topic-path` breadcrumb — a co-pinned sibling's state dir or a stale leftover — is not a user layer and is skipped. One exception: a legacy topic whose state dir still lives at `<topic_path>/.jyc` reads its single file unstripped, because that layout predates the split and there is no separate framework layer to fall back to (#1056)
+
 ## [0.8.2] - 2026-11-03
 
 ### Added

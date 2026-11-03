@@ -172,7 +172,9 @@ directory its agent runs in (`topic_path`). Every framework-owned directory is
 dot-prefixed, so a name a user's project owns — `attachments/`, a checkout's
 own files — always stays free. A topic keeps the directory it was created with:
 one that predates the `.data` split keeps its older layout, with its state dir
-beside it as ever.
+beside it as ever. A working directory of its own may also carry a `.jyc/`
+(`config.toml` minus `mcps`, plus `skills/`) as the topic's lowest-priority
+user layer — merged beneath the state dir's config, never replacing it.
 
 Each topic is isolated: its own chat history, session state, and (for
 GitHub topics) its own repository checkout. Topics of one agent share

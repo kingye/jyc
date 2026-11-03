@@ -539,10 +539,11 @@ disabled_tools = ["bash", "write"]
 disabled_mcps = ["my-mcp-server"]
 ```
 
-Per-topic exclusions live in the topic's own `.jyc/config.toml`:
+Per-topic exclusions live in the topic's own `config.toml`:
 
 ```toml
-# <topic>/.jyc/config.toml
+# <home>/.jyc/config.toml (the topic's state dir; the working dir's
+# <topic_path>/.jyc/config.toml user layer works the same, minus mcps keys)
 disabled_tools = ["edit"]
 disabled_mcps = []
 ```

@@ -480,6 +480,9 @@ Each topic keeps its runtime state (agent session, chat history,
 exchange files, L3 topic config) in a `.jyc` directory resolved
 through `jyc_types::state_dir::resolve_state_dir(topic_name, topic_dir)` — a process-global
 registry keyed by **topic name** (the identity that distinguishes topics).
+The registered state dir always sits in the agents dir (`<home>/.jyc`, a
+sibling of the working dir) — except a legacy topic created before #825,
+whose registered state dir still lives at `<topic_path>/.jyc`.
 Find a topic among a listed set through `jyc_types::find_topic` /
 `topic_index` / `has_topic` — by name, narrowed by channel when the caller
 knows one — and never by `topic_path`, which a child sharing its parent's
@@ -487,6 +490,13 @@ directory also carries.
 **Every topic's state must be registered before any state access: an
 unregistered lookup panics instead of falling back to `<topic_dir>/.jyc`.**
 That fallback once silently created state inside pinned user repos (#825).
+The working directory's own `.jyc` (when it exists and is not the registered
+state dir) is **user layer, not state**: `load_topic_config` merges
+`<topic_path>/.jyc/config.toml` beneath the state dir's config (state wins
+per key) and `mcps`/`mcps_replace` are stripped from it — MCP entries name
+commands to execute, so they stay behind the operator-trust line that keeps
+hooks out of topic directories; `discover_skills` scans
+`<topic_path>/.jyc/skills/` as the lowest-priority source.
 Keying by name is what lets several agents pin the same directory while each
 keeps its own state dir.
 
@@ -1197,20 +1207,20 @@ Resolved via the `dirs` crate (`jyc-utils/src/paths.rs`). On Unix (Linux/macOS) 
 
 - **L1 (global)**: `<config dir>/` — `config.toml`, `skills/`, `templates/`, `subagents/<type>/config.toml` (subagent types; see Terminology — L1 only, types are not layered)
 - **L2 (data dir / data root)**: `--data-dir` if given, else the data dir — `config.toml` (via `--config`), `skills/`, `templates/`, plus all generated state
-- **L3 (topic)**: the topic's state dir — `<home>/.jyc/` (see Terminology: `topic_path` is the working dir, `.data` beside it) — `config.toml` (the topic's own overrides, see the table below), `skills/`, `templates/`, sessions, chat history, task list (`tasks.json`), the agent's own lessons (`lessons.md`)
+- **L3 (topic)**: the topic's state dir — `<home>/.jyc/` (see Terminology: `topic_path` is the working dir, `.data` beside it) — `config.toml` (the topic's own overrides, see the table below), `skills/`, `templates/`, sessions, chat history, task list (`tasks.json`), the agent's own lessons (`lessons.md`). The working dir's own `<topic_path>/.jyc/` is the **L3 user layer** (new/legacy topics only; see `config.toml` (L3) below)
 
 ### Merge & Lookup Rules
 
 | Asset | Rule |
 |---|---|
 | `config.toml` (L1/L2) | Deep merge at `toml::Value` level (`merge_toml`): tables merge recursively, arrays/scalars replaced by L2. `${VAR}` expansion after merge. Applies to startup and hot-reload (`load_config_layered`). |
-| `config.toml` (L3) | `TopicConfig`: `[ai]` models (`model`, `plan_model`, `build_model`, `small_model`), `[[mcps]]` + `mcps_replace`, and the topic's own `mode`, `skills` (allow-list), `disabled_tools`, `instructions`. Invalid files are ignored with a warning. |
+| `config.toml` (L3) | Two files: the **user layer** `<topic_path>/.jyc/config.toml` (what a user writes into their working directory) and the **framework layer** — the registered state dir's `config.toml` (spawn's `apply_subagent_type` expansion, command persistence). `TopicConfig` on both: `[ai]` models (`model`, `plan_model`, `build_model`, `small_model`), `[[mcps]]` + `mcps_replace`, and the topic's own `mode`, `skills` (allow-list), `disabled_tools`, `instructions`. Framework layer wins per key (`state.overlay(user)`). `mcps`/`mcps_replace` in the user layer are **stripped** with a warning — MCP entries carry a `command` to execute and the working directory's contents may come from a clone or the model, the same trust line that keeps hooks out of topic directories (`HookConfig`). Only the framework layer may set `mcps` (state dir config, or L1/L2). A legacy topic (state dir registered inside the working dir) reads its single file once, unstripped — it sits on the framework side of the line. Invalid files are ignored with a warning. `load_topic_config` (`jyc_types::config`) is the one entry point — every consumer (model resolver, `/skill` toggle, context strategy, spawn, tools.rs L3 overlay) sees the same merged result. |
 | Model precedence | `.jyc/<mode>-model-override` file (then the legacy `.jyc/model-override`) > L3 `config.toml` > pattern > L2/L1 config. One implementation for every consumer — see **One model resolver** below. |
 | Mode precedence | `.jyc/mode-override` (the user's `/mode`) > L3 `config.toml` > pattern > build. A configured mode is never written to `.jyc/mode-override`, which stays reserved for explicit user overrides. |
 | Skill filters | Allow-list only, and **opt-in**: L3 `skills` **replaces** pattern/channel (it is the narrowest statement of intent); no layer declaring `skills` means *none* — the default is an empty list, not "everything found". The list is what the system prompt lists (context cost); the runtime `/skill` toggle layers on top of it (`on` adds, `off` removes, both per topic). Every discovered skill stays invocable via `/skill:<name>`, whatever the list says. |
 | `disabled_tools` | Union of channel ∪ pattern ∪ L3 `config.toml` — subtractive at every layer. |
 | Subagent types | `[subagents.<type>]` in the config, or `<config dir>/subagents/<type>/config.toml` (L1 only); both are `TopicConfig`, merged key by key with the table winning. `spawn_handler::resolve_type_arg` resolves the name against the **live** config — the one the instance was started with (`--config` included) and reloads into — from the two entry points that hold it (`/spawn`'s `CommandContext`, the tool's shared `ArcSwap`); a refusal before anything is created, `apply_subagent_type` expands it into the child's state dir at spawn time. |
-| `skills/` | All levels scanned low→high; same-named skills are overridden by higher levels. Order: `~/.config/jyc/skills`, `~/.claude/skills` → L1 → L2 → topic repo → L3. |
+| `skills/` | All levels scanned low→high; same-named skills are overridden by higher levels. Order: `<topic_path>/.jyc/skills` (user layer; skipped for a legacy topic whose state dir is that path) → `~/.config/opencode/skills`, `~/.claude/skills` → L1 → L2 → topic repo → state dir L3. |
 | `templates/` | Lookup L3 → L2 → L1 (`TemplateDirs::resolve_with_topic`); first match wins. |
 | Custom `topic_path` | Absolute/`~` paths used as-is (outside the data root); **relative paths resolve against the data root** (previously process cwd). L3 applies to any topic directory, including ad-hoc topics (`jyc open <path>`). |
 

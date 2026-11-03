@@ -21,7 +21,9 @@ pub fn load_config(path: &Path) -> Result<AppConfig> {
     parse_and_deserialize(&content, &path.display().to_string())
 }
 
-/// Topic-level configuration (L3), loaded from `<topic_path>/.jyc/config.toml`.
+/// Topic-level configuration (L3), loaded from the registered state dir's
+/// `config.toml` merged over `<topic_path>/.jyc/config.toml` (see
+/// [`load_topic_config`]).
 ///
 /// Restricted subset of the app config:
 /// - `[ai]`: model overrides (legacy key `[agent]` accepted). Precedence:
@@ -30,6 +32,9 @@ pub fn load_config(path: &Path) -> Result<AppConfig> {
 /// - `[mcps]`: MCP overrides (additive by default, opt-in full replace via
 ///   `mcps_replace`). Precedence: `.jyc/config.toml` > pattern > channel >
 ///   global. No `<mode>-model-override` higher layer exists for MCPs.
+///   **State-dir config only**: `mcps`/`mcps_replace` in a working-directory
+///   `.jyc/config.toml` are ignored — MCP entries execute commands, so they
+///   are an operator-trust surface (see `HookConfig`).
 /// - `mode`, `skills`, `disabled_tools`, `instructions`,
 ///   `context_strategy`: settings the topic sets for itself, above the
 ///   pattern/channel layers and below the runtime override files. A **subagent
@@ -308,9 +313,21 @@ pub fn available_subagent_types(config: &AppConfig, config_dir: Option<&Path>) -
     names
 }
 
-/// Load topic-level overrides from the topic's resolved state dir
-/// (`resolve_state_dir(topic_name, topic_path)/config.toml`; in-dir `.jyc` for
-/// unpinned topics).
+/// Load topic-level overrides for a topic, merged from two locations:
+///
+/// 1. `<topic_path>/.jyc/config.toml` — the **user layer**: what a user
+///    writes into their working directory. `mcps` and `mcps_replace` are
+///    **stripped** here (with a `warn` when present): MCP entries carry a
+///    `command` to execute, and the working directory's contents may come
+///    from a clone or from the model itself — the same trust line that keeps
+///    hooks out of topic directories (see `HookConfig`).
+/// 2. The registered **state dir**'s `config.toml` — the **framework
+///    layer**: what spawn (`apply_subagent_type`) and the commands persist.
+///    Its keys win per key over the user layer (`state.overlay(user)`).
+///
+/// When both resolve to the same path (legacy pre-#825 topics whose state
+/// dir still lives inside the working directory), the file is read once and
+/// not stripped — it sits on the framework side of the trust line.
 ///
 /// Returns `None` when the file does not exist, when it cannot be read
 /// (e.g. EACCES in remote deployments — the agent runs under a different
@@ -322,12 +339,39 @@ pub fn available_subagent_types(config: &AppConfig, config_dir: Option<&Path>) -
 /// `Option<TopicConfig>` and swallows errors. `${VAR}` expansion runs
 /// on every string field (via [`parse_and_deserialize`]).
 pub fn load_topic_config(topic_name: &str, topic_path: &Path) -> Option<TopicConfig> {
-    let path = resolve_state_dir(topic_name, topic_path).join("config.toml");
+    let state_path = resolve_state_dir(topic_name, topic_path).join("config.toml");
+    let in_dir_path = topic_path.join(".jyc").join("config.toml");
+    // Legacy topics (state registered inside the working directory) have one
+    // file: read it once, on the framework side of the trust line.
+    let same_path =
+        crate::state_dir::normalize(&state_path) == crate::state_dir::normalize(&in_dir_path);
+    let user = (!same_path)
+        .then(|| read_topic_config_file(&in_dir_path, true))
+        .flatten();
+    let framework = read_topic_config_file(&state_path, false);
+    match (framework, user) {
+        (Some(f), Some(u)) => Some(f.overlay(u)),
+        (Some(f), None) => Some(f),
+        (None, user) => user,
+    }
+}
+
+/// Read and parse one topic config file. `strip_mcps` implements the
+/// working-directory trust line: `mcps`/`mcps_replace` from a topic's
+/// working directory are dropped with a `warn` (they name commands to
+/// execute — see [`load_topic_config`]).
+///
+/// Returns `None` when the file does not exist, when it cannot be read
+/// (e.g. EACCES in remote deployments — the agent runs under a different
+/// user than the config owner), or when it fails to parse; all non-`Ok`
+/// outcomes are logged at `warn` so the failure mode is visible in
+/// production logs. A broken topic config must not crash the agent.
+fn read_topic_config_file(path: &Path, strip_mcps: bool) -> Option<TopicConfig> {
     let path_label = path.display().to_string();
     if !path.exists() {
         return None;
     }
-    let content = match std::fs::read_to_string(&path) {
+    let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(
@@ -344,7 +388,20 @@ pub fn load_topic_config(topic_name: &str, topic_path: &Path) -> Option<TopicCon
     // step). Errors are swallowed (warn + None) per the docstring
     // above: a broken topic config must not crash the agent.
     match parse_and_deserialize::<TopicConfig>(&content, &path_label) {
-        Ok(cfg) => Some(cfg),
+        Ok(mut cfg) => {
+            if strip_mcps && (cfg.mcps.is_some() || cfg.mcps_replace) {
+                tracing::warn!(
+                    path = %path_label,
+                    "Ignoring mcps/mcps_replace in a working-directory topic config: \
+                     MCPs from a topic's working directory are not trusted (command \
+                     execution surface) — declare them in the state dir config or the \
+                     L1/L2 config instead"
+                );
+                cfg.mcps = None;
+                cfg.mcps_replace = false;
+            }
+            Some(cfg)
+        }
         Err(e) => {
             tracing::warn!(path = %path_label, error = %e, "Ignoring invalid topic config");
             None

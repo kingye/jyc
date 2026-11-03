@@ -30,7 +30,8 @@ and uses an in-process AI agent to generate replies.
 - 术语以 `DESIGN.md` 的 **Terminology** 为准，代码、文档、日志、提交信息一律使用统一名称
 - 禁止使用的旧名：`workdir`/`--workdir`、`data_home`、`config_home`、`jyc_dir`、`state_root`、`agents_root`、`agents_workspace_root`、`staging_dir`
 - 数据目录参数固定为 `--data-dir`（无短选项）
-- topic 的工作目录一律称 `topic_path`；`.jyc` 一律称 state dir，且恒在 agents dir 下
+- topic 的工作目录一律称 `topic_path`；`.jyc` 一律称 state dir，且恒在 agents dir 下。例外：`topic_path` 下自己的 `.jyc/` 不是 state——它是 L3 的**用户层**（`config.toml` 无 `mcps` + `skills/`），写「工作目录里的 .jyc」时必须点明这一区分
+- topic config 读取经 `load_topic_config`（state dir config 与 `<topic_path>/.jyc/config.toml` 逐键合并、state 优先；用户层剥离 `mcps`/`mcps_replace`）；skills 发现的最低优先级来源是 `<topic_path>/.jyc/skills`
 - topic 的 **home** 是它在 agents dir 下的归属目录（pipe topic 为 `<agents dir>/<agent>/<topic>/`，agent-keyed 的 1:1 与 `/spawn` 为 `<agents dir>/<name>/`）：home 下 `.jyc` 是 state dir、`.data` 是默认工作目录（即 `topic_path`），两者**并列**——state 永不落在工作目录内
 - 工作目录一经选定即不迁移：老 topic 保持它创建时的目录（state 也跟着不动），只有全新 topic 才得到 `<home>/.data`
 - 框架自有目录一律点开头（`.jyc`、`.data`、`.attachments`、`.inbound`）；工作目录里非点开头的内容属于用户/agent

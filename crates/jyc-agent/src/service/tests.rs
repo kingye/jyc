@@ -987,6 +987,52 @@ fn discover_skills_include_and_exclude_combined() {
 }
 
 #[test]
+fn discover_skills_in_dir_jyc_found_and_state_dir_wins() {
+    with_temp_home(|| {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "discover_skills_in_dir_jyc_found_and_state_wins";
+        // State dir outside the working directory: the in-dir `.jyc/skills`
+        // is a separate, lowest-priority source.
+        let state_dir = tmp.path().join("state").join(".jyc");
+        jyc_types::state_dir::register(topic, &state_dir);
+
+        // `base` lives only in the working-directory `.jyc/skills` — found
+        // because the in-dir slot is scanned. `shared` exists in both: the
+        // state dir's description must win (it is scanned later = higher
+        // priority).
+        let in_dir_skills = tmp.path().join(".jyc").join("skills");
+        for (name, description) in [("base", "in-dir base skill"), ("shared", "in-dir shared")] {
+            let dir = in_dir_skills.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {description}\n---\n"),
+            )
+            .unwrap();
+        }
+        let state_skills = state_dir.join("skills");
+        let dir = state_skills.join("shared");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: shared\ndescription: state-dir shared\n---\n",
+        )
+        .unwrap();
+
+        let svc = service_with_skills(vec![], None);
+        let skills = svc.discover_skills(topic, tmp.path(), None, None);
+        let find = |n: &str| {
+            skills
+                .iter()
+                .find(|s| s.name == n)
+                .unwrap_or_else(|| panic!("skill {n} not found"))
+        };
+        assert_eq!(find("base").description, "in-dir base skill");
+        assert_eq!(find("shared").description, "state-dir shared");
+    });
+}
+
+#[test]
 fn channel_skills_applied_when_no_pattern_match() {
     with_temp_home(|| {
         let tmp = tempfile::tempdir().unwrap();

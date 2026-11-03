@@ -1736,6 +1736,107 @@ instructions = "read-only: report, do not edit"
         );
     }
 
+    /// The working-directory `.jyc/config.toml` is a user layer: its keys
+    /// apply (below the state dir's), and its `mcps` are stripped — MCP
+    /// entries execute commands, so they never come from a topic's working
+    /// directory.
+    #[test]
+    fn test_load_topic_config_in_dir_user_layer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_load_topic_config_in_dir_user_layer";
+        // No state-dir config at all: the in-dir file is the only layer.
+        crate::state_dir::register(topic, &tmp.path().join("state").join(".jyc"));
+        let in_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&in_dir).unwrap();
+        std::fs::write(
+            in_dir.join("config.toml"),
+            r#"
+mode = "plan"
+instructions = "from the working directory"
+
+[[mcps]]
+name = "should-be-stripped"
+type = "local"
+command = ["./evil"]
+mcps_replace = true
+"#,
+        )
+        .unwrap();
+
+        let cfg = load_topic_config(topic, tmp.path()).unwrap();
+        assert_eq!(cfg.mode.as_deref(), Some("plan"));
+        assert_eq!(
+            cfg.instructions.as_deref(),
+            Some("from the working directory")
+        );
+        // The trust line: mcps/mcps_replace from the working dir never land.
+        assert!(cfg.mcps.is_none(), "in-dir mcps must be stripped");
+        assert!(!cfg.mcps_replace, "in-dir mcps_replace must be stripped");
+    }
+
+    /// The state dir config is the framework layer (spawn expansion, command
+    /// persistence): its keys win per key over the working-directory file.
+    #[test]
+    fn test_load_topic_config_state_layer_wins_per_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_load_topic_config_state_layer_wins_per_key";
+        let state_dir = tmp.path().join("state").join(".jyc");
+        crate::state_dir::register(topic, &state_dir);
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(
+            state_dir.join("config.toml"),
+            r#"
+mode = "build"
+"#,
+        )
+        .unwrap();
+        let in_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&in_dir).unwrap();
+        std::fs::write(
+            in_dir.join("config.toml"),
+            r#"
+mode = "plan"
+instructions = "from the working directory"
+"#,
+        )
+        .unwrap();
+
+        let cfg = load_topic_config(topic, tmp.path()).unwrap();
+        // The state dir's key wins; the in-dir-only key survives.
+        assert_eq!(cfg.mode.as_deref(), Some("build"));
+        assert_eq!(
+            cfg.instructions.as_deref(),
+            Some("from the working directory")
+        );
+    }
+
+    /// A legacy topic whose state dir IS `<topic_path>/.jyc` reads its one
+    /// file without stripping: it sits on the framework side of the trust
+    /// line (existing mcps tests depend on this shape).
+    #[test]
+    fn test_load_topic_config_legacy_same_path_keeps_mcps() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_load_topic_config_legacy_same_path_keeps_mcps";
+        crate::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let state_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(
+            state_dir.join("config.toml"),
+            r#"
+[[mcps]]
+name = "legacy-is-trusted"
+type = "local"
+command = ["./local-mcp"]
+"#,
+        )
+        .unwrap();
+
+        let cfg = load_topic_config(topic, tmp.path()).unwrap();
+        let mcps = cfg.mcps.expect("legacy same-path config keeps mcps");
+        assert_eq!(mcps.len(), 1);
+        assert_eq!(mcps[0].name, "legacy-is-trusted");
+    }
+
     /// `overlay` is the merge between an installed type and the same type in
     /// the config: key by key, the overlay winning, nothing else lost.
     #[test]

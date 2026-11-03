@@ -1118,14 +1118,14 @@ async fn skill_toggle_override_shapes_the_prompt_skill_list() {
     // No toggle and no allow-list: the prompt lists nothing.
     let svc = service_with_skills(vec![], None);
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], None)
+        .build_system_prompt(topic, tmp.path(), None, None, None, &[], &[], None)
         .await;
     assert!(!prompt.contains("## Available Skills"), "{prompt}");
 
     // `/skill on beta`: the toggle widens an empty allow-list.
     std::fs::write(&override_file, r#"{"on":["beta"]}"#).unwrap();
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], None)
+        .build_system_prompt(topic, tmp.path(), None, None, None, &[], &[], None)
         .await;
     assert!(prompt.contains("- **beta**"), "{prompt}");
     assert!(!prompt.contains("- **alpha**"), "{prompt}");
@@ -1133,7 +1133,7 @@ async fn skill_toggle_override_shapes_the_prompt_skill_list() {
     // `off` wins over `on`: exclusion is applied after inclusion.
     std::fs::write(&override_file, r#"{"on":["beta"],"off":["beta"]}"#).unwrap();
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], None)
+        .build_system_prompt(topic, tmp.path(), None, None, None, &[], &[], None)
         .await;
     assert!(!prompt.contains("## Available Skills"), "{prompt}");
 
@@ -1142,10 +1142,85 @@ async fn skill_toggle_override_shapes_the_prompt_skill_list() {
     std::fs::write(&override_file, r#"{"off":["alpha"]}"#).unwrap();
     let svc = service_with_skills(vec![], Some(vec!["alpha".into(), "beta".into()]));
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], None)
+        .build_system_prompt(topic, tmp.path(), None, None, None, &[], &[], None)
         .await;
     assert!(!prompt.contains("- **alpha**"), "{prompt}");
     assert!(prompt.contains("- **beta**"), "{prompt}");
+}
+
+/// Global `[ai].system_prompt` is persona-level standing orders: when set, it
+/// lands in the system prompt under `## Global Instructions`, right after the
+/// access boundary and before skills/topic instructions.
+#[tokio::test]
+async fn global_system_prompt_is_injected_into_the_system_prompt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let topic = "global_system_prompt_is_injected_into_the_system_prompt";
+    // build_system_prompt reads the topic's skill toggle overrides, and every
+    // topic must have its state dir registered before state is touched —
+    // there is deliberately no `topic_dir/.jyc` fallback (#825).
+    let state = tmp.path().join(".jyc");
+    std::fs::create_dir_all(&state).unwrap();
+    jyc_types::state_dir::register(topic, &state);
+
+    let svc = service_with_skills(vec![], None);
+    let prompt = svc
+        .build_system_prompt(
+            topic,
+            tmp.path(),
+            None,
+            None,
+            Some("Always answer in haiku."),
+            &[],
+            &[],
+            None,
+        )
+        .await;
+    assert!(prompt.contains("## Global Instructions"), "{prompt}");
+    let start = prompt
+        .find("## Global Instructions")
+        .expect("header present");
+    assert!(
+        prompt[start..].contains("Always answer in haiku."),
+        "{prompt}"
+    );
+    // Position: with no extra roots the boundary is the classic fixed
+    // sentence (format_access_boundary's no-roots branch) and nothing else
+    // precedes the global section, which in turn precedes the fixed reply
+    // section.
+    let expected_boundary = format!(
+        "Your working directory is \"{}\". You MUST only read, write, and \
+         access files within this directory.\n\n",
+        tmp.path().display()
+    );
+    assert_eq!(&prompt[..start], expected_boundary, "{prompt}");
+    let reply = prompt
+        .find("## Reply Instructions")
+        .expect("reply section present");
+    assert!(start < reply, "{prompt}");
+
+    jyc_types::state_dir::unregister(topic);
+}
+
+/// An empty or whitespace-only `[ai].system_prompt` adds nothing — same rule
+/// as topic `instructions`, so a placeholder value never spends prompt bytes.
+#[tokio::test]
+async fn blank_global_system_prompt_is_skipped() {
+    let tmp = tempfile::tempdir().unwrap();
+    let topic = "blank_global_system_prompt_is_skipped";
+    // Same state-dir rule as its sibling test above (#825).
+    let state = tmp.path().join(".jyc");
+    std::fs::create_dir_all(&state).unwrap();
+    jyc_types::state_dir::register(topic, &state);
+
+    let svc = service_with_skills(vec![], None);
+    for value in ["", "   \n\t "] {
+        let prompt = svc
+            .build_system_prompt(topic, tmp.path(), None, None, Some(value), &[], &[], None)
+            .await;
+        assert!(!prompt.contains("## Global Instructions"), "{prompt}");
+    }
+
+    jyc_types::state_dir::unregister(topic);
 }
 
 /// Register a topic whose `.jyc/config.toml` holds `body`, and return the
@@ -1236,7 +1311,16 @@ async fn topic_config_instructions_reach_the_system_prompt() {
 
     let svc = service_with_skills(vec![], None);
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, Some(&topic_cfg), &[], &[], None)
+        .build_system_prompt(
+            topic,
+            tmp.path(),
+            None,
+            Some(&topic_cfg),
+            None,
+            &[],
+            &[],
+            None,
+        )
         .await;
     assert!(prompt.contains("## Topic Instructions"), "{prompt}");
     assert!(prompt.contains("report findings only, change nothing"));
@@ -1289,7 +1373,7 @@ async fn cli_helper_section_lists_exactly_what_is_installed() {
 
     let svc = service_with_skills(vec![], None);
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], None)
+        .build_system_prompt(topic, tmp.path(), None, None, None, &[], &[], None)
         .await;
 
     let installed = crate::capabilities::available();
@@ -1342,7 +1426,7 @@ async fn volatile_runtime_state_rides_the_turn_not_the_system_prompt() {
     svc.set_topic_managers(Arc::new(TopicManagers::new()));
 
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], None)
+        .build_system_prompt(topic, tmp.path(), None, None, None, &[], &[], None)
         .await;
     assert!(
         !prompt.contains("Your subagents"),
@@ -1394,7 +1478,16 @@ async fn the_prompt_mentions_the_loader_only_when_the_registry_has_it() {
     assert!(registry.has_tool("load_extended_tools"));
 
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], Some(&registry))
+        .build_system_prompt(
+            topic,
+            tmp.path(),
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            Some(&registry),
+        )
         .await;
     assert!(
         prompt.contains("`load_extended_tools`"),
@@ -1405,7 +1498,16 @@ async fn the_prompt_mentions_the_loader_only_when_the_registry_has_it() {
     // gets. The prompt must not name a tool that is not there.
     registry.remove("load_extended_tools");
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, &[], &[], Some(&registry))
+        .build_system_prompt(
+            topic,
+            tmp.path(),
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            Some(&registry),
+        )
         .await;
     assert!(
         !prompt.contains("load_extended_tools"),
@@ -1950,6 +2052,7 @@ async fn system_prompt_enumerates_configured_access_roots() {
             tname,
             topic,
             message.matched_pattern.as_deref(),
+            None,
             None,
             &reads,
             &writes,

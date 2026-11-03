@@ -440,7 +440,7 @@ pub async fn run(
         // end of the loop — the strategy only changes what the LLM sees.
         //
         // `send_regions` is the parallel Vec<u8> of per-message labels
-        // (1=text-only history / Full-mode, 2=current turn's recent raw
+        // (1=history block / Full-mode, 2=current turn's recent raw
         // suffix, 3=folded current-turn checkpoint) — used by the
         // wire-payload debug dump and the composition snapshot.
         let build_started = Instant::now();

@@ -28,6 +28,7 @@ impl JycAgentService {
         topic_path: &Path,
         matched_pattern: Option<&str>,
         topic_cfg: Option<&TopicConfig>,
+        system_prompt: Option<&str>,
         additional_read_roots: &[PathBuf],
         additional_write_roots: &[PathBuf],
         registry: Option<&ToolRegistry>,
@@ -42,6 +43,16 @@ impl JycAgentService {
             additional_read_roots,
             additional_write_roots,
         ));
+
+        // Global `[ai].system_prompt` — persona-level standing orders for every
+        // topic on this instance. Placed right after the boundary so it reads
+        // before skills and per-topic instructions; empty/whitespace-only
+        // values are skipped, same as topic `instructions` below.
+        if let Some(global) = system_prompt.map(str::trim).filter(|s| !s.is_empty()) {
+            prompt.push_str("## Global Instructions\n\n");
+            prompt.push_str(global);
+            prompt.push_str("\n\n");
+        }
 
         // NOTE: the subagent list and the channel/topic enumeration are NOT
         // here — both change whenever a topic or a child is created or closed,

@@ -459,6 +459,7 @@ impl AgentService for JycAgentService {
                 topic_path,
                 message.matched_pattern.as_deref(),
                 topic_cfg.as_ref(),
+                agent_cfg.system_prompt.as_deref(),
                 &additional_read_roots,
                 &additional_write_roots,
                 Some(tools),

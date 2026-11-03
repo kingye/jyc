@@ -167,6 +167,9 @@ mode = "agent"
 # [ai.models]
 # review = "deepseek/deepseek-v4-flash"
 
+# App-wide system prompt injected into every agent's system prompt as a
+# "## Global Instructions" section (before skills and topic instructions).
+# An empty or whitespace-only value adds nothing.
 system_prompt = "You are an AI assistant. Respond professionally and concisely."
 
 # Maximum iterations per cycle (default: 500)

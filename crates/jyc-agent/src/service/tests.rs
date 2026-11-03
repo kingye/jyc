@@ -1029,6 +1029,48 @@ fn discover_skills_in_dir_jyc_found_and_state_dir_wins() {
         };
         assert_eq!(find("base").description, "in-dir base skill");
         assert_eq!(find("shared").description, "state-dir shared");
+        jyc_types::state_dir::unregister(topic);
+        jyc_types::state_dir::clear_closed(topic);
+    });
+}
+
+/// A shared `topic_path` puts the sibling's (usually the parent's) state
+/// dir at this topic's `<topic_path>/.jyc`. Its `topic-path` breadcrumb
+/// marks it as a state dir, so its skills do not leak into this topic's
+/// discovery — discovered skills stay invocable via `/skill:<name>`, so a
+/// leaked skill would be more than a prompt-listing artifact.
+#[test]
+fn discover_skills_in_dir_sibling_state_not_leaked() {
+    with_temp_home(|| {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "discover_skills_in_dir_sibling_state_not_leaked";
+        let state_dir = tmp.path().join("child").join(".jyc");
+        jyc_types::state_dir::register(topic, &state_dir);
+
+        // The parent's state dir inside the shared working directory,
+        // carrying a parent-only skill and the breadcrumb.
+        let sibling_state = tmp.path().join(".jyc");
+        let sibling_skills = sibling_state.join("skills").join("parents-only");
+        std::fs::create_dir_all(&sibling_skills).unwrap();
+        std::fs::write(
+            sibling_skills.join("SKILL.md"),
+            "---\nname: parents-only\ndescription: belongs to the parent topic\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            sibling_state.join("topic-path"),
+            tmp.path().join("parent-home").to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+
+        let svc = service_with_skills(vec![], None);
+        let skills = svc.discover_skills(topic, tmp.path(), None, None);
+        assert!(
+            !skills.iter().any(|s| s.name == "parents-only"),
+            "a sibling state dir's skills must not leak through the in-dir slot"
+        );
+        jyc_types::state_dir::unregister(topic);
+        jyc_types::state_dir::clear_closed(topic);
     });
 }
 

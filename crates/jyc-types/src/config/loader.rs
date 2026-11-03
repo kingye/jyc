@@ -325,9 +325,25 @@ pub fn available_subagent_types(config: &AppConfig, config_dir: Option<&Path>) -
 ///    layer**: what spawn (`apply_subagent_type`) and the commands persist.
 ///    Its keys win per key over the user layer (`state.overlay(user)`).
 ///
-/// When both resolve to the same path (legacy pre-#825 topics whose state
-/// dir still lives inside the working directory), the file is read once and
-/// not stripped — it sits on the framework side of the trust line.
+/// Two cases skip the user layer, both because the in-dir `.jyc` is
+/// *someone's state dir*, not a user surface:
+///
+/// - **Legacy topics** (#825 layouts whose registered state dir still lives
+///   at `<topic_path>/.jyc`): same path, one file, read once — unstripped,
+///   because these topics' framework config has always lived there and
+///   there is no separate framework layer to fall back to. Note the file
+///   still sits inside the model-writable working directory, so a
+///   `[[mcps]]` block in a legacy topic's file *is* executed as framework
+///   config; the carve-out is justified by the *reader*, not by the
+///   *bytes' location*.
+/// - **An in-dir `.jyc` carrying a `topic-path` breadcrumb**: that directory
+///   is a state dir — this topic's own (legacy), a co-pinned sibling's (a
+///   shared `topic_path` — without this guard the child would read the
+///   parent's spawn-expanded config as its user layer), or a stale leftover
+///   a newer adoption displaced. Skip it with a `debug` line; the guard
+///   subsumes the legacy case in production layouts, where every state dir
+///   gets a breadcrumb, but tests register state dirs bare — so both checks
+///   stay.
 ///
 /// Returns `None` when the file does not exist, when it cannot be read
 /// (e.g. EACCES in remote deployments — the agent runs under a different
@@ -340,14 +356,31 @@ pub fn available_subagent_types(config: &AppConfig, config_dir: Option<&Path>) -
 /// on every string field (via [`parse_and_deserialize`]).
 pub fn load_topic_config(topic_name: &str, topic_path: &Path) -> Option<TopicConfig> {
     let state_path = resolve_state_dir(topic_name, topic_path).join("config.toml");
-    let in_dir_path = topic_path.join(".jyc").join("config.toml");
+    let in_dir = topic_path.join(".jyc");
+    let in_dir_path = in_dir.join("config.toml");
     // Legacy topics (state registered inside the working directory) have one
-    // file: read it once, on the framework side of the trust line.
+    // file: read it once, unstripped — no separate framework layer to fall
+    // back to.
     let same_path =
         crate::state_dir::normalize(&state_path) == crate::state_dir::normalize(&in_dir_path);
-    let user = (!same_path)
-        .then(|| read_topic_config_file(&in_dir_path, true))
-        .flatten();
+    // An in-dir `.jyc` with a `topic-path` breadcrumb is a state dir —
+    // this topic's own (covered by `same_path` too), a co-pinned sibling's,
+    // or a stale leftover. None of those is a user surface.
+    let breadcrumb = in_dir.join("topic-path");
+    let user = if breadcrumb.is_file() && !same_path {
+        tracing::debug!(
+            path = %in_dir.display(),
+            topic = %topic_name,
+            "In-dir .jyc carries a topic-path breadcrumb: it is a state dir \
+             (a co-pinned sibling's or a stale leftover), not a user layer — \
+             skipped"
+        );
+        None
+    } else if !same_path {
+        read_topic_config_file(&in_dir_path, true)
+    } else {
+        None
+    };
     let framework = read_topic_config_file(&state_path, false);
     match (framework, user) {
         (Some(f), Some(u)) => Some(f.overlay(u)),

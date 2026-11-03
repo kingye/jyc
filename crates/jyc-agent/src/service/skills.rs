@@ -122,11 +122,20 @@ impl JycAgentService {
             // Lowest priority: every other source, including the registered
             // state dir's skills (where a spawned type's allow-list
             // expansion lives), overrides a same-named skill here. Skipped
-            // for legacy topics whose state dir IS this path.
+            // when this path is actually a state dir: the topic's own
+            // legacy one (same path), or another topic's — a co-pinned
+            // sibling's (a shared `topic_path` must not leak the parent's
+            // skills into the child, discovered skills stay invocable via
+            // `/skill:<name>`) or a stale leftover. The breadcrumb check
+            // mirrors `load_topic_config`'s user-layer guard; the raw
+            // `!=` merely saves a redundant `read_dir` for legacy topics.
             let state_skills =
                 jyc_types::state_dir::resolve_state_dir(topic_name, topic_path).join("skills");
-            let in_dir_skills = topic_path.join(".jyc").join("skills");
-            if in_dir_skills != state_skills {
+            let in_dir_jyc = topic_path.join(".jyc");
+            let in_dir_skills = in_dir_jyc.join("skills");
+            let in_dir_is_state =
+                in_dir_jyc.join("topic-path").is_file() || in_dir_skills == state_skills;
+            if !in_dir_is_state {
                 paths.push(in_dir_skills);
             }
 

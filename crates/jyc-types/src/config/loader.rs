@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::LazyLock;
 
 use crate::channel::ContextStrategyConfig;
 use crate::config::{
@@ -535,17 +536,21 @@ pub fn load_config_layered(global: Option<&Path>, path: &Path) -> Result<AppConf
     parse_and_deserialize_from_value(value, &path.display().to_string())
 }
 
+/// Compiled once, not per node: [`expand_env_vars`] recurses into every
+/// table and array, and compiling this pattern at each call dominated
+/// config loading — ~1.5 ms of CPU per TOML node, so a few hundred nodes
+/// cost over a second of startup.
+static ENV_VAR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$\{(\w+)\}").unwrap());
+
 /// Recursively expand `${VAR}` patterns in TOML string values.
 ///
 /// Resolution order per name: process environment variable, then jyc
 /// built-ins ([`builtin_var`]), then empty string. `config_path` is the
 /// file being loaded, used to resolve `${JYC_CONFIG_PATH}`.
 pub(crate) fn expand_env_vars(value: &mut toml::Value, config_path: &str) {
-    let re = Regex::new(r"\$\{(\w+)\}").unwrap();
-
     match value {
         toml::Value::String(s) if s.contains("${") => {
-            *s = re
+            *s = ENV_VAR_RE
                 .replace_all(s, |caps: &regex::Captures| {
                     std::env::var(&caps[1])
                         .unwrap_or_else(|_| builtin_var(&caps[1], config_path).unwrap_or_default())

@@ -1605,11 +1605,7 @@ fn extract_pairs_inner(raw_context: &[serde_json::Value], with_results: bool) ->
                 }
             }
             "assistant" => cur_assistants.push(msg.clone()),
-            "tool" => {
-                if with_results {
-                    cur_results.extend(tool_result_texts(msg));
-                }
-            }
+            "tool" if with_results => cur_results.extend(tool_result_texts(msg)),
             _ => {}
         }
     }

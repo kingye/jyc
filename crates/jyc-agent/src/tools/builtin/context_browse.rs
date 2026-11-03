@@ -45,9 +45,11 @@ const MESSAGE_TEXT_MAX: usize = 2000;
 const RESULT_TEXT_MAX: usize = 2000;
 const RESULTS_LINE_MAX: usize = 4000;
 
-/// One result plus its truncation and overflow markers always fits a line, so
-/// [`render_turn_results_bounded`] never has to drop *every* result. Pinned
-/// here rather than left as an unreachable branch in the renderer.
+/// One result plus its truncation and overflow markers always fits a line
+/// with the caps this module ships, so [`render_turn_results_bounded`] never
+/// *has* to drop every result. The renderer stays correct if that relation
+/// ever stops holding (a caller collecting with a wider cap), so this is a
+/// statement about the shipped caps, not the renderer's precondition.
 const _: () = assert!(RESULT_TEXT_MAX + 64 < RESULTS_LINE_MAX);
 
 /// Byte bound on the whole page. [`TOOLS_LINE_MAX`] and [`MESSAGE_TEXT_MAX`]
@@ -251,8 +253,14 @@ fn render_turn_results_bounded(pair: &TurnPair) -> Option<String> {
         if body.len() + suffix.len() <= RESULTS_LINE_MAX {
             return Some(format!("{body}{suffix}"));
         }
-        // `keep` cannot reach 0: one truncated result plus both markers fits
-        // `RESULTS_LINE_MAX` by the const assertion at the top of the module.
+        // The shipped caps cannot reach 0 (the const assertion at the top of
+        // the module), but the renderer must not depend on that: a caller
+        // collecting with a wider per-result cap would otherwise get a line
+        // over `RESULTS_LINE_MAX`. The marker alone, cut to the bound.
+        if keep == 0 {
+            let end = suffix.floor_char_boundary(RESULTS_LINE_MAX.min(suffix.len()));
+            return Some(suffix[..end].to_string());
+        }
         keep -= 1;
     }
 }
@@ -416,6 +424,50 @@ mod tests {
         assert!(text.contains("[4] USER: u4"), "first: {text}");
         assert!(text.contains("[6] ASSISTANT: a6"), "last: {text}");
         assert!(!text.contains("u3"), "older pair leaked: {text}");
+    }
+
+    /// The journal half of `results=true`: older turns replay the tool output
+    /// stored in the journal, not just the running turn's memory. Registered
+    /// so `resolve_state_dir` finds it, and unregistered afterwards so the
+    /// process-wide registry keeps no ghost.
+    #[tokio::test]
+    async fn results_read_tool_output_from_the_journal() {
+        let dir = tempfile::tempdir().expect("create working dir");
+        let state_dir = dir.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        let topic = "context_browse_journal_results";
+        jyc_types::state_dir::register_if_absent(topic, &state_dir);
+        let mut body = String::new();
+        for (i, output) in [(1, "first output"), (2, "second output")] {
+            for msg in [
+                json!({"role": "user", "content": format!("u{i}")}),
+                json!({"role": "assistant", "content": "ran", "tool_calls": [
+                    {"id": format!("c{i}"), "type": "function",
+                     "function": {"name": "bash", "arguments": "{\"command\":\"ls\"}"}}
+                ]}),
+                json!({"role": "tool", "tool_call_id": format!("c{i}"), "content": output}),
+                json!({"role": "assistant", "content": format!("a{i}")}),
+            ] {
+                body.push_str(&format!("{msg}\n"));
+            }
+        }
+        tokio::fs::write(state_dir.join("agent-context.jsonl"), body)
+            .await
+            .unwrap();
+
+        let tool = ContextBrowseTool;
+        let mut ctx = ToolContext::new(dir.path());
+        ctx.current_topic = Some(topic.to_string());
+        let out = tool
+            .execute(json!({"offset": 0, "limit": 5, "results": true}), &ctx)
+            .await
+            .unwrap();
+        let text = out.content;
+        assert!(text.contains("[1] RESULTS: first output"), "{text}");
+        assert!(text.contains("[2] RESULTS: second output"), "{text}");
+
+        jyc_types::state_dir::unregister(topic);
+        jyc_types::state_dir::clear_closed(topic);
     }
 
     /// `results=true` replays the OpenAI `role:"tool"` shape: the tool

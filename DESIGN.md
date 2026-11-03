@@ -2416,7 +2416,7 @@ JYC uses the following subset of the agent service API:
    | Content | Home | Why |
    |---------|------|-----|
    | Access boundaries, skills, `AGENTS.md`, reply/history/VCS rules, static cross-topic prose | system prompt | Changes only when config or files do — **except** the boundary's runtime grant lines, below |
-   | Global instructions (`[ai].system_prompt`) | system prompt | Config-driven: set once at startup, static while the instance runs |
+   | Global instructions (`[ai].system_prompt`) | system prompt | Config-driven: set via config, static between reloads |
    | Mode block (`<mode>`) | user message | `BUILD`↔`PLAN` switches per turn |
    | Subagent roster (`Your subagents (N): …`) | user message | A child is spawned or closed |
    | Channel/topic roster | — | Not in the prompt at all: the `list_topics` tool fetches it on demand |

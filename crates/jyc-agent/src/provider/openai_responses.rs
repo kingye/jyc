@@ -9,8 +9,10 @@
 //! - Tool definitions are flat (`{type:"function", name, ...}`), not nested
 //!   under a `function` key.
 //! - Reasoning is controllable via `reasoning: {effort, summary}` and —
-//!   unlike Chat Completions — reasoning **summaries** are streamed back as
-//!   `response.reasoning_summary_text.delta` events.
+//!   unlike Chat Completions — reasoning is streamed back as delta events:
+//!   `response.reasoning_summary_text.delta` (OpenAI summary form, GPT-5.x)
+//!   and `response.reasoning_text.delta` (raw chain-of-thought, e.g. Zhipu
+//!   GLM / open.bigmodel.cn).
 //! - Tools and reasoning are NOT mutually exclusive here (they are in Chat
 //!   Completions for gpt-5.6+).
 //!
@@ -513,11 +515,14 @@ fn parse_responses_event(data: &str, state: &mut ResponsesStreamState) -> Option
                 events.push(StreamEvent::TextDelta(delta.to_string()));
             }
         }
-        // Reasoning summary stream — the only way to surface GPT-5.x
-        // thinking (Chat Completions never exposes reasoning content).
-        // Requires `reasoning = { summary = "auto" }` (or "detailed") in
-        // the model's `params`.
-        "response.reasoning_summary_text.delta" => {
+        // Reasoning streams, both mapping to the same ReasoningDelta:
+        // - `response.reasoning_summary_text.delta` — OpenAI summary form
+        //   (GPT-5.x; requires `reasoning = { summary = "auto" }` or
+        //   "detailed" in the model's `params`).
+        // - `response.reasoning_text.delta` — raw chain-of-thought form,
+        //   what Zhipu's Responses API (GLM) streams; its ReasoningConfig
+        //   has no `summary` parameter.
+        "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
             if let Some(delta) = value.get("delta").and_then(|d| d.as_str())
                 && !delta.is_empty()
             {
@@ -731,6 +736,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_reasoning_text_delta_zhipu_shape() {
+        // Zhipu (open.bigmodel.cn) streams raw chain-of-thought via
+        // `response.reasoning_text.delta` — its ReasoningConfig has no
+        // `summary` parameter. The event shape from its OpenAPI spec
+        // carries extra fields (sequence_number, item_id, output_index,
+        // content_index) that must be tolerated.
+        let mut state = ResponsesStreamState::default();
+        let event = serde_json::json!({
+            "type": "response.reasoning_text.delta",
+            "sequence_number": 3,
+            "item_id": "msg_abc123",
+            "output_index": 0,
+            "content_index": 0,
+            "delta": "weighing both branches first",
+        });
+        let events = parse_responses_event(&event.to_string(), &mut state).unwrap();
+        assert!(
+            matches!(&events[0], StreamEvent::ReasoningDelta(t) if t == "weighing both branches first")
+        );
+    }
+
+    #[test]
     fn parse_function_call_streaming_sequence() {
         let mut state = ResponsesStreamState::default();
 
@@ -916,6 +943,7 @@ mod tests {
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hel\"}\n\n",
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\n",
             "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"thinking \"}\n\n",
+            "data: {\"type\":\"response.reasoning_text.delta\",\"sequence_number\":7,\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"raw cot \"}\n\n",
             "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read\"}}\n\n",
             "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"{\\\"path\\\":\\\"a\\\"}\"}\n\n",
             "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"a\\\"}\"}}\n\n",
@@ -959,18 +987,20 @@ mod tests {
             events.push(ev.expect("stream event"));
         }
 
-        // Full event sequence: text deltas, reasoning, tool call, usage, done.
+        // Full event sequence: text deltas, reasoning (summary + raw Zhipu
+        // form), tool call, usage, done.
         assert!(matches!(&events[0], StreamEvent::TextDelta(t) if t == "Hel"));
         assert!(matches!(&events[1], StreamEvent::TextDelta(t) if t == "lo"));
         assert!(matches!(&events[2], StreamEvent::ReasoningDelta(t) if t == "thinking "));
+        assert!(matches!(&events[3], StreamEvent::ReasoningDelta(t) if t == "raw cot "));
         assert!(matches!(
-            &events[3],
+            &events[4],
             StreamEvent::ToolUseStart { id, name } if id == "call_1" && name == "read"
         ));
-        assert!(matches!(&events[4], StreamEvent::ToolInputDelta(d) if d == "{\"path\":\"a\"}"));
-        assert!(matches!(&events[5], StreamEvent::ToolUseEnd));
+        assert!(matches!(&events[5], StreamEvent::ToolInputDelta(d) if d == "{\"path\":\"a\"}"));
+        assert!(matches!(&events[6], StreamEvent::ToolUseEnd));
         assert!(matches!(
-            &events[6],
+            &events[7],
             StreamEvent::Usage {
                 input_tokens: 10,
                 output_tokens: 5,
@@ -980,7 +1010,7 @@ mod tests {
                 ..
             }
         ));
-        assert!(matches!(&events[7], StreamEvent::Done));
+        assert!(matches!(&events[8], StreamEvent::Done));
 
         // Request body: Responses-API shape.
         let requests = server.received_requests().await.unwrap();

@@ -554,8 +554,9 @@ Key sections:
   `[agent.providers.<name>.models.<id>]` overrides per model.
   `type` is one of `"anthropic"`, `"openai-compatible"` (Chat Completions),
   or `"openai-responses"` (OpenAI Responses API — recommended for GPT-5.x /
-  o-series reasoning models: streams reasoning **summaries** when the model
-  sets `params = { reasoning = { effort = "...", summary = "auto" } }`, and
+  o-series reasoning models: streams reasoning as delta events — OpenAI
+  **summaries** with `params = { reasoning = { effort = "...", summary =
+  "auto" } }`, or the raw chain-of-thought form Zhipu GLM sends — and
   unlike Chat Completions supports tools + reasoning together)
 - **`[inspect]`** -- Inspect server settings (enabled, bind address,
   `base_url` for links that leave the server, e.g. `/exchange` share links)

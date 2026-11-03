@@ -1153,11 +1153,20 @@ async fn skill_toggle_override_shapes_the_prompt_skill_list() {
 /// access boundary and before skills/topic instructions.
 #[tokio::test]
 async fn global_system_prompt_is_injected_into_the_system_prompt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let topic = "global_system_prompt_is_injected_into_the_system_prompt";
+    // build_system_prompt reads the topic's skill toggle overrides, and every
+    // topic must have its state dir registered before state is touched —
+    // there is deliberately no `topic_dir/.jyc` fallback (#825).
+    let state = tmp.path().join(".jyc");
+    std::fs::create_dir_all(&state).unwrap();
+    jyc_types::state_dir::register(topic, &state);
+
     let svc = service_with_skills(vec![], None);
     let prompt = svc
         .build_system_prompt(
-            "any-topic",
-            Path::new("/tmp/does-not-exist"),
+            topic,
+            tmp.path(),
             None,
             None,
             Some("Always answer in haiku."),
@@ -1184,28 +1193,30 @@ async fn global_system_prompt_is_injected_into_the_system_prompt() {
         prompt[..start].contains("File access boundaries"),
         "{prompt}"
     );
+
+    jyc_types::state_dir::unregister(topic);
 }
 
 /// An empty or whitespace-only `[ai].system_prompt` adds nothing — same rule
 /// as topic `instructions`, so a placeholder value never spends prompt bytes.
 #[tokio::test]
 async fn blank_global_system_prompt_is_skipped() {
+    let tmp = tempfile::tempdir().unwrap();
+    let topic = "blank_global_system_prompt_is_skipped";
+    // Same state-dir rule as its sibling test above (#825).
+    let state = tmp.path().join(".jyc");
+    std::fs::create_dir_all(&state).unwrap();
+    jyc_types::state_dir::register(topic, &state);
+
     let svc = service_with_skills(vec![], None);
     for value in ["", "   \n\t "] {
         let prompt = svc
-            .build_system_prompt(
-                "any-topic",
-                Path::new("/tmp/does-not-exist"),
-                None,
-                None,
-                Some(value),
-                &[],
-                &[],
-                None,
-            )
+            .build_system_prompt(topic, tmp.path(), None, None, Some(value), &[], &[], None)
             .await;
         assert!(!prompt.contains("## Global Instructions"), "{prompt}");
     }
+
+    jyc_types::state_dir::unregister(topic);
 }
 
 /// Register a topic whose `.jyc/config.toml` holds `body`, and return the

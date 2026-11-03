@@ -5,7 +5,7 @@
 //!
 //! - System prompt travels as top-level `instructions`, not a message.
 //! - Conversation history is an `input` array of typed items: `message`,
-//!   `function_call`, `function_call_output`.
+//!   `reasoning`, `function_call`, `function_call_output`.
 //! - Tool definitions are flat (`{type:"function", name, ...}`), not nested
 //!   under a `function` key.
 //! - Reasoning is controllable via `reasoning: {effort, summary}` and —
@@ -24,6 +24,17 @@
 //! and Anthropic formats, so persisting chat format keeps that machinery
 //! working unchanged. Conversion to Responses input items happens at the
 //! wire boundary in [`chat_messages_to_responses_input`].
+//!
+//! ## Reasoning replay
+//!
+//! Assistant turns carrying `reasoning_content` are replayed as native
+//! `reasoning` input items (summary form: `summary: [{type:
+//! "summary_text", text}]`) — live-probed as accepted by both the Zhipu
+//! GLM gateway (which streams the raw `reasoning_text` form) and Kimi's
+//! Responses endpoint. Inline `<think>...</think>` prefixes (added by
+//! [`super::openai_compat::build_openai_raw_assistant`] for compat
+//! providers) are stripped from the replayed text so the model does not
+//! see its own thinking twice.
 
 use super::sse::{Event, stream_sse};
 use anyhow::Result;
@@ -269,6 +280,21 @@ impl Provider for OpenAiResponsesProvider {
     }
 }
 
+/// Strip a leading `<think>…</think>` block from assistant content text.
+///
+/// [`super::openai_compat::build_openai_raw_assistant`] inlines reasoning as
+/// a leading `<think>…</think>\n\n` block; the Responses path replays
+/// reasoning via a native `reasoning` item instead, so the inline copy must
+/// not reach the wire as answer text.
+fn strip_think_prefix(text: &str) -> &str {
+    if let Some(rest) = text.strip_prefix("<think>")
+        && let Some(end) = rest.find("</think>")
+    {
+        return rest[end + "</think>".len()..].trim_start_matches('\n');
+    }
+    text
+}
+
 /// Convert an internal [`Message`] to Responses API input items.
 ///
 /// One message can expand to multiple items: an assistant turn with text and
@@ -359,13 +385,11 @@ fn user_message_item(content: &[ContentBlock]) -> serde_json::Value {
 /// runs on every replay:
 /// - `user` / `system` messages → `message` items (`input_text` /
 ///   `input_image` parts)
-/// - `assistant` messages → `message` item (`output_text`) + one
+/// - `assistant` messages → optional `reasoning` item (from
+///   `reasoning_content`, summary form) + `message` item (`output_text`,
+///   with any leading inline `<think>…</think>` block stripped) + one
 ///   `function_call` item per entry in `tool_calls`
 /// - `tool` messages → `function_call_output` items
-///
-/// `reasoning_content` (DeepSeek-style) is dropped: Responses reasoning items
-/// cannot be replayed without server-side `encrypted_content`, which we do
-/// not request.
 pub(crate) fn chat_messages_to_responses_input(
     messages: &[serde_json::Value],
 ) -> Vec<serde_json::Value> {
@@ -417,9 +441,34 @@ pub(crate) fn chat_messages_to_responses_input(
                 _ => {}
             },
             "assistant" => {
-                if let Some(text) = msg.get("content").and_then(|c| c.as_str())
-                    && !text.is_empty()
-                {
+                // Replay prior reasoning as a native `reasoning` item so
+                // multi-step tool loops (and cross-turn history) keep the
+                // model's chain of thought connected. Summary form
+                // (`summary_text`) is accepted by every gateway we ship
+                // (OpenAI-style including Kimi, and Zhipu bigmodel,
+                // verified live 2026-11-03); raw `content` form is
+                // bigmodel-native but 400s on Kimi.
+                //
+                // The shared raw builder (see
+                // [`super::openai_compat::build_openai_raw_assistant`])
+                // also inlines the reasoning as a leading
+                // `<think>…</think>` block in `content` for Chat
+                // Completions providers; on this path that copy would
+                // double-replay the thinking as visible answer text, so
+                // strip it here.
+                let reasoning = msg
+                    .get("reasoning_content")
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("");
+                if !reasoning.is_empty() {
+                    input.push(serde_json::json!({
+                        "type": "reasoning",
+                        "summary": [{ "type": "summary_text", "text": reasoning }],
+                    }));
+                }
+                let text =
+                    strip_think_prefix(msg.get("content").and_then(|c| c.as_str()).unwrap_or(""));
+                if !text.is_empty() {
                     input.push(serde_json::json!({
                         "type": "message",
                         "role": "assistant",
@@ -921,15 +970,106 @@ mod tests {
     }
 
     #[test]
-    fn convert_chat_drops_reasoning_content() {
+    fn convert_chat_replays_reasoning_content_as_summary_item() {
         let msgs = vec![serde_json::json!({
             "role": "assistant",
             "content": "answer",
             "reasoning_content": "thinking...",
         })];
         let input = chat_messages_to_responses_input(&msgs);
+        assert_eq!(
+            input,
+            vec![
+                serde_json::json!({
+                    "type": "reasoning",
+                    "summary": [{ "type": "summary_text", "text": "thinking..." }],
+                }),
+                serde_json::json!({
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{ "type": "output_text", "text": "answer" }],
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn convert_chat_strips_inline_think_block_from_content() {
+        // Exact inline format produced by build_openai_raw_assistant:
+        // `<think>{reasoning}</think>\n\n{text}`.
+        let msgs = vec![serde_json::json!({
+            "role": "assistant",
+            "content": "<think>why</think>\n\nanswer",
+            "reasoning_content": "why",
+        })];
+        let input = chat_messages_to_responses_input(&msgs);
+        assert_eq!(
+            input,
+            vec![
+                serde_json::json!({
+                    "type": "reasoning",
+                    "summary": [{ "type": "summary_text", "text": "why" }],
+                }),
+                serde_json::json!({
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{ "type": "output_text", "text": "answer" }],
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn strip_think_prefix_leaves_plain_text_untouched() {
+        assert_eq!(strip_think_prefix("plain answer"), "plain answer");
+        assert_eq!(strip_think_prefix(""), "");
+        // Inline format without trailing text → empty (no message item).
+        assert_eq!(strip_think_prefix("<think>only reasoning</think>\n\n"), "");
+        // User-visible text that merely contains think tags mid-text is
+        // not touched (strip only applies to a *leading* block).
+        assert_eq!(
+            strip_think_prefix("see <think>x</think> here"),
+            "see <think>x</think> here"
+        );
+    }
+
+    #[test]
+    fn convert_chat_reasoning_item_precedes_tool_calls() {
+        let msgs = vec![serde_json::json!({
+            "role": "assistant",
+            "content": null,
+            "reasoning_content": "need to read the file",
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "read", "arguments": "{\"path\":\"a\"}"},
+            }],
+        })];
+        let input = chat_messages_to_responses_input(&msgs);
+        assert_eq!(input.len(), 2);
+        assert_eq!(input[0]["type"], "reasoning");
+        assert_eq!(input[0]["summary"][0]["text"], "need to read the file");
+        assert_eq!(input[1]["type"], "function_call");
+    }
+
+    #[test]
+    fn convert_chat_omits_reasoning_item_when_absent_or_empty() {
+        let with_null = vec![serde_json::json!({
+            "role": "assistant",
+            "content": "answer",
+        })];
+        let input = chat_messages_to_responses_input(&with_null);
         assert_eq!(input.len(), 1);
-        assert!(input[0].get("reasoning_content").is_none());
+        assert_eq!(input[0]["type"], "message");
+
+        let with_empty = vec![serde_json::json!({
+            "role": "assistant",
+            "content": "answer",
+            "reasoning_content": "",
+        })];
+        let input = chat_messages_to_responses_input(&with_empty);
+        assert_eq!(input.len(), 1);
+        assert_eq!(input[0]["type"], "message");
     }
 
     #[tokio::test]

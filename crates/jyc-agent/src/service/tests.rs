@@ -1183,16 +1183,20 @@ async fn global_system_prompt_is_injected_into_the_system_prompt() {
         prompt[start..].contains("Always answer in haiku."),
         "{prompt}"
     );
-    // Position: the boundary is the prompt's opening; the global section
-    // comes right after it, before skills and topic instructions.
-    assert!(
-        prompt.starts_with("Your working directory is \""),
-        "{prompt}"
+    // Position: with no extra roots the boundary is the classic fixed
+    // sentence (format_access_boundary's no-roots branch) and nothing else
+    // precedes the global section, which in turn precedes the fixed reply
+    // section.
+    let expected_boundary = format!(
+        "Your working directory is \"{}\". You MUST only read, write, and \
+         access files within this directory.\n\n",
+        tmp.path().display()
     );
-    assert!(
-        prompt[..start].contains("File access boundaries"),
-        "{prompt}"
-    );
+    assert_eq!(&prompt[..start], expected_boundary, "{prompt}");
+    let reply = prompt
+        .find("## Reply Instructions")
+        .expect("reply section present");
+    assert!(start < reply, "{prompt}");
 
     jyc_types::state_dir::unregister(topic);
 }

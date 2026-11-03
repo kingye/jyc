@@ -1753,12 +1753,12 @@ instructions = "read-only: report, do not edit"
             r#"
 mode = "plan"
 instructions = "from the working directory"
+mcps_replace = true
 
 [[mcps]]
 name = "should-be-stripped"
 type = "local"
 command = ["./evil"]
-mcps_replace = true
 "#,
         )
         .unwrap();
@@ -1772,6 +1772,8 @@ mcps_replace = true
         // The trust line: mcps/mcps_replace from the working dir never land.
         assert!(cfg.mcps.is_none(), "in-dir mcps must be stripped");
         assert!(!cfg.mcps_replace, "in-dir mcps_replace must be stripped");
+        crate::state_dir::unregister(topic);
+        crate::state_dir::clear_closed(topic);
     }
 
     /// The state dir config is the framework layer (spawn expansion, command
@@ -1808,6 +1810,8 @@ instructions = "from the working directory"
             cfg.instructions.as_deref(),
             Some("from the working directory")
         );
+        crate::state_dir::unregister(topic);
+        crate::state_dir::clear_closed(topic);
     }
 
     /// A legacy topic whose state dir IS `<topic_path>/.jyc` reads its one
@@ -1835,6 +1839,74 @@ command = ["./local-mcp"]
         let mcps = cfg.mcps.expect("legacy same-path config keeps mcps");
         assert_eq!(mcps.len(), 1);
         assert_eq!(mcps[0].name, "legacy-is-trusted");
+        crate::state_dir::unregister(topic);
+        crate::state_dir::clear_closed(topic);
+    }
+
+    /// A shared `topic_path` puts another topic's state dir at this topic's
+    /// `<topic_path>/.jyc`. Its `topic-path` breadcrumb marks it as a state
+    /// dir, so it is skipped as a user layer — a child sharing its parent's
+    /// directory must not inherit the parent's spawn-expanded config
+    /// (mode, skills, disabled_tools) as its own.
+    #[test]
+    fn test_load_topic_config_in_dir_sibling_state_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_load_topic_config_in_dir_sibling_state_skipped";
+        crate::state_dir::register(topic, &tmp.path().join("child").join(".jyc"));
+        // The parent's state dir (spawn-expanded config inside), sitting in
+        // the shared working directory and carrying its breadcrumb.
+        let sibling_state = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&sibling_state).unwrap();
+        std::fs::write(
+            sibling_state.join("topic-path"),
+            tmp.path().join("parent-home").to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+        std::fs::write(
+            sibling_state.join("config.toml"),
+            r#"
+mode = "plan"
+disabled_tools = ["write", "edit", "bash"]
+"#,
+        )
+        .unwrap();
+
+        let cfg = load_topic_config(topic, tmp.path());
+        assert!(
+            cfg.is_none(),
+            "a sibling state dir must not become this topic's config layer"
+        );
+        crate::state_dir::unregister(topic);
+        crate::state_dir::clear_closed(topic);
+    }
+
+    /// A stale in-dir `.jyc` left behind by an older adoption (its breadcrumb
+    /// still points where it once lived) is not resurrected as a user layer.
+    #[test]
+    fn test_load_topic_config_in_dir_stale_leftover_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_load_topic_config_in_dir_stale_leftover_skipped";
+        crate::state_dir::register(topic, &tmp.path().join("state").join(".jyc"));
+        let in_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&in_dir).unwrap();
+        std::fs::write(
+            in_dir.join("topic-path"),
+            "/displaced/home/from/an/older/pin",
+        )
+        .unwrap();
+        std::fs::write(
+            in_dir.join("config.toml"),
+            "mode = \"plan\"\ninstructions = \"stale leftover\"\n",
+        )
+        .unwrap();
+
+        let cfg = load_topic_config(topic, tmp.path());
+        assert!(
+            cfg.is_none(),
+            "a stale leftover state dir must not be resurrected as a config layer"
+        );
+        crate::state_dir::unregister(topic);
+        crate::state_dir::clear_closed(topic);
     }
 
     /// `overlay` is the merge between an installed type and the same type in

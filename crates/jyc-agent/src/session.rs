@@ -1427,15 +1427,21 @@ pub(crate) fn render_turn_tool_calls_bounded(pair: &TurnPair, limit: usize) -> O
         if keep == 1 {
             // Nothing left to drop: one call alone is over budget. Keep its
             // head (name first) rather than degrading to the bare count,
-            // which would hide which tool ran. The cut reserves the ellipsis
-            // — `…` is three bytes, not one — and the overflow marker, so the
-            // count of hidden calls survives *and* the bound is honoured to
-            // the byte. A budget too small for the marker keeps the head
-            // alone: the bound is the hard requirement, the count is not.
+            // which would hide which tool ran. The cut reserves the overflow
+            // marker *instead of* adding a second ellipsis: the marker opens
+            // with `…` (three bytes), so it already marks the truncated head
+            // and the note cannot read `… …(2 more calls)`. A single call
+            // (no hidden count) gets that ellipsis on its own. A budget too
+            // small for either keeps the head alone: the bound is the hard
+            // requirement, the marker is not.
             let one = pair.tool_calls[0].as_str();
             let head = |room: usize| one.floor_char_boundary(room.min(one.len()));
-            return Some(match limit.checked_sub('…'.len_utf8() + suffix.len()) {
-                Some(room) => format!("{}…{suffix}", &one[..head(room)]),
+            let tail = match suffix.trim_start() {
+                "" => "…",
+                marker => marker,
+            };
+            return Some(match limit.checked_sub(tail.len()) {
+                Some(room) => format!("{}{tail}", &one[..head(room)]),
                 None => one[..head(limit)].to_string(),
             });
         }
@@ -2062,6 +2068,9 @@ mod tests {
         assert!(note.len() <= 200, "budget exceeded: {}", note.len());
         assert!(note.starts_with("bash("), "name lost: {note}");
         assert!(note.contains("…(2 more calls)"), "count lost: {note}");
+        // The marker's own `…` is the truncation mark: adding one on top of
+        // it would read `… …(2 more calls)`.
+        assert!(!note.contains("… …"), "doubled marker: {note}");
         // Too small to hold even the count: the bound still wins.
         let tight = super::render_turn_tool_calls_bounded(&pairs[0], 8).unwrap();
         assert!(tight.len() <= 8, "budget exceeded: {tight}");

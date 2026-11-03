@@ -45,11 +45,11 @@ const MESSAGE_TEXT_MAX: usize = 2000;
 const RESULT_TEXT_MAX: usize = 2000;
 const RESULTS_LINE_MAX: usize = 4000;
 
-/// One result plus its truncation and overflow markers always fits a line
-/// with the caps this module ships, so [`render_turn_results_bounded`] never
-/// *has* to drop every result. The renderer stays correct if that relation
-/// ever stops holding (a caller collecting with a wider cap), so this is a
-/// statement about the shipped caps, not the renderer's precondition.
+/// One result plus its truncation and overflow markers fits a line with the
+/// caps this module ships, so a pair never starts out by dropping the result
+/// it was asked to show. The renderer does not *need* this to stay bounded —
+/// its empty-body pass returns the marker — so this is a statement about the
+/// shipped caps, not the renderer's precondition.
 const _: () = assert!(RESULT_TEXT_MAX + 64 < RESULTS_LINE_MAX);
 
 /// Byte bound on the whole page. [`TOOLS_LINE_MAX`] and [`MESSAGE_TEXT_MAX`]
@@ -253,14 +253,11 @@ fn render_turn_results_bounded(pair: &TurnPair) -> Option<String> {
         if body.len() + suffix.len() <= RESULTS_LINE_MAX {
             return Some(format!("{body}{suffix}"));
         }
-        // The shipped caps cannot reach 0 (the const assertion at the top of
-        // the module), but the renderer must not depend on that: a caller
-        // collecting with a wider per-result cap would otherwise get a line
-        // over `RESULTS_LINE_MAX`. The marker alone, cut to the bound.
-        if keep == 0 {
-            let end = suffix.floor_char_boundary(RESULTS_LINE_MAX.min(suffix.len()));
-            return Some(suffix[..end].to_string());
-        }
+        // Nothing else can happen: the next iteration has an empty body, so
+        // the only term left is the marker, which fits `RESULTS_LINE_MAX` for
+        // any decimal count. That empty-body pass *is* how the line stays
+        // bounded when a caller collects with a wider per-result cap, so no
+        // `keep == 0` branch is needed here.
         keep -= 1;
     }
 }

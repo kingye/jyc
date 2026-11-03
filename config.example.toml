@@ -5,9 +5,13 @@
 # Locations & layering (see README "Configuration & Data Layout"):
 #   L1 (global):  <config dir>/config.toml   (Linux/macOS: ~/.config/jyc/config.toml)
 #   L2 (data dir): <data dir>/config.toml      (--data-dir, or platform data dir)
-#   L3 (topic):  <topic>/.jyc/config.toml  (topic overrides: [ai], [[mcps]], mode,
+#   L3 (topic):  <home>/.jyc/config.toml    (topic overrides: [ai], [[mcps]], mode,
 #                                            skills, disabled_tools,
 #                                            instructions, [context_strategy])
+#                A topic's working dir may also carry <topic>/.jyc/config.toml
+#                as the user layer — everything above except [[mcps]], which is
+#                only read from the state dir / L1 / L2 (command-execution
+#                trust surface). State dir wins per key over the user layer.
 # L2 is deep-merged over L1 (tables merge; arrays/scalars are replaced).
 
 [general]

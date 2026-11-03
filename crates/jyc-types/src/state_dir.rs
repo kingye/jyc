@@ -74,7 +74,7 @@ pub fn clear_closed(topic_name: &str) {
 /// Lexically normalize a path used as a registry key: drop `.` components
 /// and trailing separators. Does NOT resolve `..` or symlinks — topic dirs
 /// are expected to be absolute and already tilde-expanded.
-fn normalize(dir: &Path) -> PathBuf {
+pub(crate) fn normalize(dir: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in dir.components() {
         if !matches!(c, Component::CurDir) {

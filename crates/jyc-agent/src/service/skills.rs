@@ -117,6 +117,19 @@ impl JycAgentService {
         let scan_paths: Vec<PathBuf> = {
             let mut paths = Vec::new();
 
+            // {topic_path}/.jyc/skills/ — the working-directory copy of the
+            // topic's `.jyc` (the user layer, see `load_topic_config`).
+            // Lowest priority: every other source, including the registered
+            // state dir's skills (where a spawned type's allow-list
+            // expansion lives), overrides a same-named skill here. Skipped
+            // for legacy topics whose state dir IS this path.
+            let state_skills =
+                jyc_types::state_dir::resolve_state_dir(topic_name, topic_path).join("skills");
+            let in_dir_skills = topic_path.join(".jyc").join("skills");
+            if in_dir_skills != state_skills {
+                paths.push(in_dir_skills);
+            }
+
             // $HOME/.config/opencode/skills/
             if let Ok(home) = std::env::var("HOME") {
                 paths.push(PathBuf::from(&home).join(".config/opencode/skills"));
@@ -143,10 +156,8 @@ impl JycAgentService {
             paths.push(topic_path.join(".claude/skills"));
             // {topic_path}/.opencode/skills/
             paths.push(topic_path.join(".opencode/skills"));
-            // {topic_path}/.jyc/skills/ (honors relocated state dir)
-            paths.push(
-                jyc_types::state_dir::resolve_state_dir(topic_name, topic_path).join("skills"),
-            );
+            // {state dir}/skills/ (honors relocated state dir)
+            paths.push(state_skills);
 
             paths
         };

@@ -1402,7 +1402,9 @@ pub(crate) fn render_turn_tool_calls(pair: &TurnPair) -> Option<String> {
 /// wide MCP schema can carry many parameters, each already capped at
 /// [`TOOL_ARG_MAX`]): dropping to the bare count would hide which tool ran,
 /// which is the note's whole point, so that call's head — its name comes
-/// first — is kept with a hard cut at the bound.
+/// first — is kept, cut so the ellipsis and the overflow marker still fit
+/// inside the budget. When the budget cannot hold even the marker, the head
+/// is cut at the bound and the count is lost with it — the bound wins.
 pub(crate) fn render_turn_tool_calls_bounded(pair: &TurnPair, limit: usize) -> Option<String> {
     if pair.tool_calls.is_empty() {
         return None;
@@ -1424,11 +1426,18 @@ pub(crate) fn render_turn_tool_calls_bounded(pair: &TurnPair, limit: usize) -> O
         }
         if keep == 1 {
             // Nothing left to drop: one call alone is over budget. Keep its
-            // head (name first) and hard-cut at the bound, without a second
-            // truncation marker that would push the result back over it.
-            let one = format!("{}{suffix}", pair.tool_calls[0]);
-            let end = one.floor_char_boundary(limit.saturating_sub(1));
-            return Some(format!("{}…", &one[..end]));
+            // head (name first) rather than degrading to the bare count,
+            // which would hide which tool ran. The cut reserves the ellipsis
+            // — `…` is three bytes, not one — and the overflow marker, so the
+            // count of hidden calls survives *and* the bound is honoured to
+            // the byte. A budget too small for the marker keeps the head
+            // alone: the bound is the hard requirement, the count is not.
+            let one = pair.tool_calls[0].as_str();
+            let head = |room: usize| one.floor_char_boundary(room.min(one.len()));
+            return Some(match limit.checked_sub('…'.len_utf8() + suffix.len()) {
+                Some(room) => format!("{}…{suffix}", &one[..head(room)]),
+                None => one[..head(limit)].to_string(),
+            });
         }
         keep -= 1;
     }
@@ -2027,6 +2036,33 @@ mod tests {
         assert!(bounded.starts_with("bash("), "name lost: {bounded}");
         assert!(bounded.ends_with('…'), "cut must be marked: {bounded}");
         // A budget smaller than the marker itself still holds.
+        let tight = super::render_turn_tool_calls_bounded(&pairs[0], 8).unwrap();
+        assert!(tight.len() <= 8, "budget exceeded: {tight}");
+    }
+
+    /// A turn whose *first* call alone overflows still reports how many calls
+    /// are hidden. The count is inside the budget, not appended after the cut
+    /// — appending it would either break the bound or lose the count exactly
+    /// on the widest turns.
+    #[test]
+    fn squeezed_note_keeps_the_hidden_count() {
+        let call = |i: usize| {
+            json!({"id": format!("t{i}"), "function": {
+                "name": "bash",
+                "arguments": format!("{{\"command\":\"{}\"}}", "x".repeat(300)),
+            }})
+        };
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "running",
+                   "tool_calls": [call(0), call(1), call(2)]}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        let note = super::render_turn_tool_calls_bounded(&pairs[0], 200).unwrap();
+        assert!(note.len() <= 200, "budget exceeded: {}", note.len());
+        assert!(note.starts_with("bash("), "name lost: {note}");
+        assert!(note.contains("…(2 more calls)"), "count lost: {note}");
+        // Too small to hold even the count: the bound still wins.
         let tight = super::render_turn_tool_calls_bounded(&pairs[0], 8).unwrap();
         assert!(tight.len() <= 8, "budget exceeded: {tight}");
     }

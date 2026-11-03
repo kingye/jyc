@@ -1402,9 +1402,11 @@ pub(crate) fn render_turn_tool_calls(pair: &TurnPair) -> Option<String> {
 /// wide MCP schema can carry many parameters, each already capped at
 /// [`TOOL_ARG_MAX`]): dropping to the bare count would hide which tool ran,
 /// which is the note's whole point, so that call's head — its name comes
-/// first — is kept, cut so the ellipsis and the overflow marker still fit
-/// inside the budget. When the budget cannot hold even the marker, the head
-/// is cut at the bound and the count is lost with it — the bound wins.
+/// first — is kept, cut so that its trailing marker still fits inside the
+/// budget: the overflow marker when calls were dropped (it already opens with
+/// `…`), the bare ellipsis when none were. When the budget cannot hold that
+/// marker, the head is cut at the bound and the count is lost with it — the
+/// bound wins.
 pub(crate) fn render_turn_tool_calls_bounded(pair: &TurnPair, limit: usize) -> Option<String> {
     if pair.tool_calls.is_empty() {
         return None;

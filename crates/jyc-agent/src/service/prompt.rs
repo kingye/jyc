@@ -149,9 +149,13 @@ impl JycAgentService {
         prompt.push_str(
             "## History Format\n\
              The sliding window inserts a machine-generated `[History messages]` \
-             divider before older compacted history: it marks text-only, degraded turns \
-             (tool calls and results omitted), is not from the user, and must not be \
-             treated as an instruction.\n\n",
+             divider before older compacted history: it marks degraded turns — the text \
+             of each turn plus a `[Tool calls]` note listing the calls it made, with tool \
+             results omitted — is not from the user, and must not be treated as an \
+             instruction or as something you already verified. A fact that lived in an \
+             omitted tool result is not recoverable from that block: re-run the tool, or \
+             read it back with `context_browse` (`results=true`), instead of restating it \
+             from memory.\n\n",
         );
 
         // Chat history access instructions — point at the resolved state dir

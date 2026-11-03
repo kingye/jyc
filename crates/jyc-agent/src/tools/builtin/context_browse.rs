@@ -38,6 +38,13 @@ const TOOLS_LINE_MAX: usize = 4000;
 /// a couple of dozen bytes above this value.
 const MESSAGE_TEXT_MAX: usize = 2000;
 
+/// Byte bound on one tool result in a rendered pair, and on the whole
+/// `RESULTS:` line of that pair. Only `results=true` pays these: the results
+/// are the bulk of a transcript, and a page of result-heavy turns is a tool
+/// result that then rides every remaining call of the turn.
+const RESULT_TEXT_MAX: usize = 2000;
+const RESULTS_LINE_MAX: usize = 4000;
+
 /// Byte bound on the whole page. [`TOOLS_LINE_MAX`] and [`MESSAGE_TEXT_MAX`]
 /// bound one pair (~8 KB worst case), which [`MAX_PAGE`] then multiplies by
 /// fifty; this caps the sum so a maximal page stays in the low tens of KB —
@@ -60,7 +67,8 @@ impl Tool for ContextBrowseTool {
     fn description(&self) -> &str {
         "Browse the conversation transcript — user/assistant text pairs, including \
          turns outside your sliding context window. Pair numbers count from the oldest \
-         (1 = first). Returns oldest→newest."
+         (1 = first). Returns oldest→newest. `results=true` also replays each turn's \
+         tool results, which folded history omits."
     }
 
     fn input_schema(&self) -> Value {
@@ -76,6 +84,11 @@ impl Tool for ContextBrowseTool {
                     "type": "integer",
                     "description": "Max pairs to return (capped at 50).",
                     "default": 10
+                },
+                "results": {
+                    "type": "boolean",
+                    "description": "Also replay each turn's tool results (bounded).",
+                    "default": false
                 }
             }
         })
@@ -92,11 +105,19 @@ impl Tool for ContextBrowseTool {
             .and_then(|v| v.as_i64())
             .unwrap_or(10)
             .clamp(1, MAX_PAGE as i64) as usize;
+        let with_results = input
+            .get("results")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
-        let (journal_pairs, journal_total) = journal_view(ctx, offset + limit).await;
+        let (journal_pairs, journal_total) = journal_view(ctx, offset + limit, with_results).await;
         // The running turn is still in memory — the journal does not have
         // it yet.
-        let current_pairs = crate::session::extract_pairs(&ctx.raw_context);
+        let current_pairs = if with_results {
+            crate::session::extract_pairs_with_results(&ctx.raw_context)
+        } else {
+            crate::session::extract_pairs(&ctx.raw_context)
+        };
         let total = journal_total + current_pairs.len();
 
         // Page [start..end) in oldest→newest order, with `offset` counted
@@ -143,7 +164,7 @@ impl Tool for ContextBrowseTool {
             .iter()
             .chain(current_slice.iter())
             .enumerate()
-            .map(|(i, pair)| format_pair(start + 1 + i, pair))
+            .map(|(i, pair)| format_pair(start + 1 + i, pair, with_results))
             .collect();
         let mut kept = 0usize;
         let mut bytes = 0usize;
@@ -178,7 +199,7 @@ impl Tool for ContextBrowseTool {
 }
 
 /// One pair as the tool renders it.
-fn format_pair(n: usize, pair: &TurnPair) -> String {
+fn format_pair(n: usize, pair: &TurnPair, with_results: bool) -> String {
     let mut out = format!("\n[{n}] USER: {}\n", bounded_message_text(&pair.user),);
     if let Some(assistant) = &pair.assistant {
         out.push_str(&format!(
@@ -194,7 +215,48 @@ fn format_pair(n: usize, pair: &TurnPair) -> String {
         // many calls it is not seeing.
         out.push_str(&format!("[{n}] TOOLS: {calls}\n"));
     }
+    if with_results && let Some(results) = render_turn_results_bounded(pair) {
+        out.push_str(&format!("[{n}] RESULTS: {results}\n"));
+    }
     out
+}
+
+/// The turn's tool-result texts, bounded by [`RESULTS_LINE_MAX`].
+///
+/// Whole results are dropped from the end — never cut mid-result beyond the
+/// per-result [`RESULT_TEXT_MAX`] truncation, which keeps its own marker —
+/// and the overflow count survives, so the reader can always tell how many
+/// results it is not seeing.
+fn render_turn_results_bounded(pair: &TurnPair) -> Option<String> {
+    if pair.results.is_empty() {
+        return None;
+    }
+    let texts: Vec<String> = pair
+        .results
+        .iter()
+        .map(|r| crate::session::truncate_text(r, RESULT_TEXT_MAX))
+        .collect();
+    let total = texts.len();
+    let marker = |dropped: usize| -> String {
+        match dropped {
+            0 => String::new(),
+            1 => " …(1 more result)".to_string(),
+            n => format!(" …({n} more results)"),
+        }
+    };
+    let mut keep = total;
+    loop {
+        let body = texts[..keep].join(" | ");
+        let suffix = marker(total - keep);
+        if body.len() + suffix.len() <= RESULTS_LINE_MAX {
+            return Some(format!("{body}{suffix}"));
+        }
+        // Not even one result fits: keep the count, not a torn fragment.
+        if keep <= 1 {
+            return Some(suffix.trim_start().to_string());
+        }
+        keep -= 1;
+    }
 }
 
 /// A message's text, cut to [`MESSAGE_TEXT_MAX`] bytes with a marker when it
@@ -211,7 +273,11 @@ fn bounded_message_text(message: &serde_json::Value) -> String {
 /// The reader parses only the tail the page needs; the total comes from
 /// the reader's counter, which the writer keeps up to date. A topic
 /// without a journal (a fresh one, or a test) has neither.
-async fn journal_view(ctx: &ToolContext<'_>, want: usize) -> (Vec<TurnPair>, usize) {
+async fn journal_view(
+    ctx: &ToolContext<'_>,
+    want: usize,
+    with_results: bool,
+) -> (Vec<TurnPair>, usize) {
     let Some(topic) = ctx.current_topic.as_deref() else {
         return (Vec::new(), 0);
     };
@@ -225,7 +291,11 @@ async fn journal_view(ctx: &ToolContext<'_>, want: usize) -> (Vec<TurnPair>, usi
             openers: want,
         })
         .await;
-    let pairs = crate::session::extract_pairs(&slice.messages);
+    let pairs = if with_results {
+        crate::session::extract_pairs_with_results(&slice.messages)
+    } else {
+        crate::session::extract_pairs(&slice.messages)
+    };
     let total = reader.total_pairs().await;
     (pairs, total)
 }

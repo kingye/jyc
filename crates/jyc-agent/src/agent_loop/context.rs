@@ -10,8 +10,8 @@ use jyc_types::{ContextRegion, ContextRegionInfo};
 use crate::provider::Provider;
 use crate::types::ContentBlock;
 
-/// Reformat a cleaned message (string content from `extract_user_assistant_pairs`)
-/// into the active provider's wire format via the Provider trait. This is
+/// Reformat one cleaned message — a turn's user or assistant text — into the
+/// active provider's wire format via the Provider trait. This is
 /// what makes sliding-window output valid for Anthropic, which requires
 /// user/assistant `content` to be an array of blocks. Returns `None` when
 /// the message has no extractable text, so callers must never emit empty
@@ -107,11 +107,12 @@ impl SendContextCache {
 ///
 /// * `Full` — borrow the full context (no copy).
 /// * `SlidingWindow` — three parts, in order:
-///   1. The prior turns as user+assistant text pairs, reformatted in
-///      provider wire format (string content → provider-correct content
-///      shape). This block only ever grows: nothing trims its head.
+///   1. The prior turns as their user text, a `[Tool calls]` note when the
+///      turn made calls, and their assistant text, reformatted in provider
+///      wire format (string content → provider-correct content shape). This
+///      block only ever grows: nothing trims its head.
 ///   2. A checkpoint for the older part of a long current turn, in the
-///      same text-only form. It appears once the turn has more than
+///      same folded form. It appears once the turn has more than
 ///      [`ContextStrategyConfig::checkpoint_interval`] assistant messages
 ///      and then widens each fold by
 ///      [`ContextStrategyConfig::checkpoint_growth`], so it holds still
@@ -127,8 +128,8 @@ impl SendContextCache {
 /// logic.
 ///
 /// Region labels:
-/// - `1` = text-only history (`SlidingWindow`) or the whole context (`Full`
-///   mode, no split).
+/// - `1` = folded history, text plus calls (`SlidingWindow`) or the whole
+///   context (`Full` mode, no split).
 /// - `2` = verbatim current-turn suffix (`SlidingWindow` only).
 /// - `3` = folded earlier work in the current turn (`SlidingWindow` only).
 ///
@@ -173,7 +174,7 @@ pub(crate) fn build_send_context_cached<'a>(
             if cache.boundary != Some(boundary) {
                 // The prior is the anchored window the loader read: its
                 // head only moves when the loader slides the anchor, so the
-                // text-only history only ever grows by append — the
+                // folded history only ever grows by append — the
                 // provider's cached prefix reaches as far as it does.
                 cache.history = build_history_region(provider, &raw_context[..boundary]);
                 cache.boundary = Some(boundary);
@@ -298,8 +299,8 @@ pub(crate) fn context_composition(
 
 /// Wire-only marker inserted at the start of a folded current-turn
 /// checkpoint. Not persisted to `raw_context`.
-pub(crate) const TURN_CHECKPOINT_MARKER_TEXT: &str = "[Current-turn checkpoint] earlier work in this turn follows — text-only, \
-     tool calls/results omitted.";
+pub(crate) const TURN_CHECKPOINT_MARKER_TEXT: &str = "[Current-turn checkpoint] earlier work in this turn follows — text plus \
+     tool calls; tool results omitted.";
 
 /// Where the verbatim current-turn suffix starts, relative to the current
 /// turn slice.
@@ -397,18 +398,33 @@ fn folded_assistant_count(n: usize, interval: usize, growth: usize) -> usize {
     }
 }
 
-/// Build the text-only history block from the prior window: the history
-/// marker, then every turn as a user/assistant pair.
+/// Byte bound on one turn's `[Tool calls]` note in a folded region.
+///
+/// The budget is **per turn**, never per block: a block-wide budget would let
+/// a new turn's calls push an older turn's out of the note, rewriting the
+/// middle of a block the provider has already cached. Per turn, the note is a
+/// pure function of that turn's calls, so it can only be appended.
+const REGION_TOOL_CALLS_MAX: usize = 1500;
+
+/// Build the history block from the prior window: the history
+/// marker, then every turn as user text, a `[Tool calls]` note when the turn
+/// made calls, and the assistant text.
 ///
 /// Nothing here trims: the prior is already the anchored window the loader
 /// bounded, and any head-trim here would rewrite the wire prefix on every
 /// turn — the bug this shape exists to avoid. The block only grows, so the
 /// payload is append-only from one turn to the next.
 ///
-/// The turns are folded to text: their tool calls, arguments and results do
-/// not reach the wire (the journal keeps them; `context_browse` reads the
-/// turns and their calls back, without results). Only the current turn
-/// carries structured tool calls, and it is sent verbatim by the caller.
+/// The tool **results** do not reach the wire — they are the bulk of a
+/// transcript, and a result the model can re-run is cheaper than one replayed
+/// forever. The calls do, as a text note: a conclusion without a trace of how
+/// it was checked is what an agent restates from memory. The note is a
+/// separate user message rather than structured `tool_calls`: a call without
+/// its result is dropped by the send path's dangling-call repair, and a
+/// result would have to be fabricated to keep it.
+///
+/// Each turn's note depends only on that turn, which is what keeps the block
+/// a byte-stable prefix across turns.
 fn build_history_region(
     provider: &dyn Provider,
     prior: &[serde_json::Value],
@@ -416,7 +432,7 @@ fn build_history_region(
     build_text_region(provider, prior, crate::session::HISTORY_MARKER_TEXT)
 }
 
-/// Compact the older part of the current turn into the same text-only
+/// Compact the older part of the current turn into the same folded
 /// shape as prior-turn history.
 fn build_checkpoint_region(
     provider: &dyn Provider,
@@ -425,33 +441,72 @@ fn build_checkpoint_region(
     build_text_region(provider, prefix, TURN_CHECKPOINT_MARKER_TEXT)
 }
 
-/// The one text-only region builder shared by history and current-turn
+/// The one folded-region builder shared by history and current-turn
 /// checkpoints.
+///
+/// Each turn renders as: its user text, a `[Tool calls]` note when it made
+/// calls, its assistant text. The note is a *separate user message*, never
+/// merged into the assistant text — the transcript must not teach the model
+/// to write its tool use as content — and never a structured `tool_calls`
+/// block, because a folded turn has no results to answer one: the send path
+/// drops a dangling call together with everything after it.
+///
+/// The note depends only on its own turn ([`crate::session::TurnPair`] is
+/// built from that turn's messages alone), and its budget is per turn, never
+/// per block. That is what keeps this function's output append-only as turns
+/// arrive: a block-wide budget would let a new turn's calls push an older
+/// turn's out of the note, rewriting the middle of a block the provider has
+/// already cached.
 fn build_text_region(
     provider: &dyn Provider,
     raw: &[serde_json::Value],
     marker: &str,
 ) -> Vec<serde_json::Value> {
-    // No keep-limit: the window bound is the loader's job, and dropping
-    // pairs here would cut the head the cache matches on.
-    let compacted = crate::session::extract_user_assistant_pairs(raw, usize::MAX);
+    let pairs = crate::session::extract_pairs(raw);
 
-    // The block leads with its marker and keeps it: it explains the
-    // text-only form the compacted pairs come in.
+    // The block leads with its marker and keeps it: it explains the folded
+    // form the compacted pairs come in (results gone, calls noted).
     let mut region: Vec<serde_json::Value> = Vec::new();
-    if !compacted.is_empty() {
+    if !pairs.is_empty() {
         region.push(provider.format_user_message(&[ContentBlock::Text {
             text: marker.into(),
         }]));
     }
-    for msg in &compacted {
+    for pair in &pairs {
         // Defensive: skip messages with no extractable text so the wire
         // payload never contains empty text blocks (which Anthropic
         // rejects, especially under cache_control).
-        if let Some(formatted) = format_cleaned_message(provider, msg) {
+        if let Some(formatted) = format_cleaned_message(provider, &pair.user) {
+            region.push(formatted);
+        }
+        if let Some(calls) =
+            crate::session::render_turn_tool_calls_bounded(pair, REGION_TOOL_CALLS_MAX)
+        {
+            region.push(provider.format_user_message(&[ContentBlock::Text {
+                text: format!("{} {calls}", crate::session::TOOL_CALLS_NOTE_PREFIX),
+            }]));
+        }
+        if let Some(assistant) = &pair.assistant
+            && let Some(formatted) = format_cleaned_message(provider, assistant)
+        {
             region.push(formatted);
         }
     }
+
+    // No complete pair (interrupted between a user message and the first
+    // response): keep the LAST text-bearing user message, the closest thing
+    // to an unfinished turn.
+    if region.is_empty()
+        && let Some(last_user) = raw.iter().rev().find(|m| crate::session::opens_turn(m))
+    {
+        region.push(provider.format_user_message(&[ContentBlock::Text {
+            text: marker.into(),
+        }]));
+        if let Some(formatted) = format_cleaned_message(provider, last_user) {
+            region.push(formatted);
+        }
+    }
+
     region
 }
 
@@ -659,8 +714,8 @@ fn append_region_summary(
     // "current turn" — never a numbered shorthand, so a dump can be read
     // without a legend.
     let region_headers = [
-        (1u8, "History — text-only turns, calls/results folded out"),
-        (3u8, "Current-turn checkpoint — older work, text-only"),
+        (1u8, "History — text plus calls, results folded out"),
+        (3u8, "Current-turn checkpoint — older work, text plus calls"),
         (2u8, "Current turn — recent suffix, verbatim"),
     ];
 
@@ -996,6 +1051,9 @@ mod render_raw_context_tests {
         assert!(!folded.contains("secret"), "reasoning leaked: {folded}");
         assert!(!folded.contains("RESULT-"), "tool result leaked: {folded}");
         assert!(folded.contains("step 0") && folded.contains("step 31"));
+        // The checkpoint gets the same trace of what was run, not only the
+        // steps' text.
+        assert!(folded.contains("[Tool calls] bash()"), "{folded}");
         assert!(!folded.contains("step 32"), "latest step must stay raw");
     }
 
@@ -1337,7 +1395,7 @@ mod render_raw_context_tests {
         ctx.extend(current.clone());
 
         // Every prior turn — u1/a1, u2 with its tool call, u3/a3 — folds
-        // to text: tool calls and results do not reach the wire.
+        // to text plus a note naming the calls; the results stay out.
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 2,
@@ -1349,9 +1407,10 @@ mod render_raw_context_tests {
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg).0;
         let sent = sent.into_owned();
 
-        // 1. History marker, then every prior turn in pure text (tool
-        //    calls dropped). Nothing trims the history block: the window
-        //    bound is the loader's, not this function's.
+        // 1. History marker, then every prior turn as text, with the one
+        //    call-making turn's note between its own user text and its
+        //    answer. Nothing trims the history block: the window bound is
+        //    the loader's, not this function's.
         assert_eq!(
             sent[0],
             json!({"role": "user", "content": crate::session::HISTORY_MARKER_TEXT})
@@ -1359,14 +1418,19 @@ mod render_raw_context_tests {
         assert_eq!(sent[1], json!({"role": "user", "content": "u1"}));
         assert_eq!(sent[2], json!({"role": "assistant", "content": "a1"}));
         assert_eq!(sent[3], json!({"role": "user", "content": "u2"}));
-        assert_eq!(sent[4], json!({"role": "assistant", "content": "a2"}));
-        assert_eq!(sent[5], json!({"role": "user", "content": "u3"}));
-        assert_eq!(sent[6], json!({"role": "assistant", "content": "a3"}));
+        assert_eq!(
+            sent[4],
+            json!({"role": "user", "content": "[Tool calls] bash()"}),
+            "the call-making turn keeps a trace of what it ran"
+        );
+        assert_eq!(sent[5], json!({"role": "assistant", "content": "a2"}));
+        assert_eq!(sent[6], json!({"role": "user", "content": "u3"}));
+        assert_eq!(sent[7], json!({"role": "assistant", "content": "a3"}));
 
-        // 2. Current turn verbatim (tool_calls preserved).
-        assert_eq!(sent[7], current[0]);
-        assert_eq!(sent[8], current[1]);
-        assert_eq!(sent[9], current[2]);
+        // 2. Current turn verbatim (structured tool_calls preserved).
+        assert_eq!(sent[8], current[0]);
+        assert_eq!(sent[9], current[1]);
+        assert_eq!(sent[10], current[2]);
     }
 
     #[test]
@@ -1401,19 +1465,27 @@ mod render_raw_context_tests {
 
     #[test]
     fn history_stays_a_byte_stable_prefix_across_turns() {
-        // The property the strategy exists for: history is text-only, so
-        // every turn's history block is a prefix of the next turn's — the
-        // provider's cached prefix reaches the whole of it, and only the
-        // turn that just ended is re-encoded (as it graduates into the
-        // text-only block) together with the current turn.
+        // The property the strategy exists for: history folds each turn to
+        // a shape that depends on that turn alone, so every turn's history
+        // block is a prefix of the next turn's — the provider's cached
+        // prefix reaches the whole of it, and only the turn that just ended
+        // is re-encoded (as it graduates into the folded block) together
+        // with the current turn.
         let prov = prov();
         let cfg = ContextStrategyConfig {
             ..ContextStrategyConfig::default()
         };
+        // Every turn makes a call, so the note is part of what has to stay
+        // byte-stable — a shape that only folds plain text would never
+        // exercise the property the note has to satisfy.
         let turn = |i: usize| {
             [
                 json!({"role": "user", "content": format!("u{i}")}),
-                json!({"role": "assistant", "content": format!("a{i}")}),
+                json!({"role": "assistant", "content": format!("a{i}"), "tool_calls": [
+                    {"id": format!("c{i}"), "type": "function",
+                     "function": {"name": "bash", "arguments": format!(r#"{{"command":"c{i}"}}"#)}}
+                ]}),
+                json!({"role": "tool", "tool_call_id": format!("c{i}"), "content": format!("R{i}")}),
             ]
         };
         // Turn k's payload: prior = turns 1..k-1, current turn = k.
@@ -1438,16 +1510,25 @@ mod render_raw_context_tests {
             "the current turn is the only region-2 block"
         );
         assert!(region1_5 > 0, "the marker and four turns");
-        assert_eq!(region1_6, region1_5 + 2, "history grew by exactly one turn");
+        assert_eq!(
+            region1_6,
+            region1_5 + 3,
+            "history grew by exactly one turn: its text, its note, its answer"
+        );
         assert_eq!(
             at_6[..region1_5],
             at_5[..region1_5],
             "the whole history block is a byte-stable prefix from one turn to the next"
         );
         // Everything past the history block is the current turn, and the
-        // history block's own tail is the turn that just graduated into it.
+        // history block's own tail is the turn that just graduated into it —
+        // note and all, rendered exactly as it was while it was current.
         assert_eq!(at_6[region1_5]["content"], "u5");
-        assert_eq!(at_6[region1_5 + 1]["content"], "a5");
+        assert_eq!(
+            at_6[region1_5 + 1]["content"],
+            r#"[Tool calls] bash(command="c5")"#
+        );
+        assert_eq!(at_6[region1_5 + 2]["content"], "a5");
         assert_eq!(at_5[region1_5]["content"], "u5");
         assert_eq!(at_6[region1_6]["content"], "u6");
     }
@@ -1551,10 +1632,13 @@ mod render_raw_context_tests {
         assert_eq!(&sent[tail_start..], current.as_slice());
     }
 
-    /// A prior turn's tool calls and results do not reach the wire: the
-    /// history block is text-only, and only the current turn is verbatim.
+    /// A prior turn's calls reach the wire as a `[Tool calls]` text note —
+    /// never as structured `tool_calls` (a folded turn has no results to
+    /// answer them, and the send path would drop the whole block), and never
+    /// merged into the assistant text. Its results stay out: re-running a
+    /// tool is cheaper than replaying every result forever.
     #[test]
-    fn sliding_window_folds_tool_calls_out_of_history() {
+    fn history_carries_tool_calls_as_a_note_but_not_results() {
         let prior = vec![
             json!({"role": "user", "content": "u1"}),
             json!({"role": "assistant", "content": "a1"}),
@@ -1580,8 +1664,8 @@ mod render_raw_context_tests {
             .0
             .into_owned();
 
-        // History: marker, then both prior turns as text only — the
-        // structured tool-call step and its result are gone.
+        // History: marker, then both prior turns — the call-making one
+        // with its note between the user text and the merged answer.
         assert_eq!(
             sent,
             vec![
@@ -1589,10 +1673,80 @@ mod render_raw_context_tests {
                 json!({"role": "user", "content": "u1"}),
                 json!({"role": "assistant", "content": "a1"}),
                 json!({"role": "user", "content": "u2"}),
+                json!({"role": "user", "content": "[Tool calls] bash(command=\"ls\")"}),
                 json!({"role": "assistant", "content": "calling bash\ndone"}),
                 current[0].clone(),
             ]
         );
+        // The result itself never reaches the wire.
+        let dumped = serde_json::to_string(&sent).unwrap();
+        assert!(!dumped.contains("file.txt"), "tool result leaked: {dumped}");
+    }
+
+    /// The cache invariant behind the note's shape: a turn's note is a
+    /// function of **that turn alone**. Were it "the last N turns" or
+    /// budgeted per block, a new turn would rewrite the middle of the block
+    /// and the provider's cached prefix would stop matching.
+    #[test]
+    fn tool_call_note_does_not_depend_on_later_turns() {
+        let prov = prov();
+        let short = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{\"command\":\"ls\"}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": "file.txt"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2"}),
+        ];
+        let mut long = short.clone();
+        for i in 3..=12 {
+            long.push(json!({"role": "user", "content": format!("u{i}")}));
+            long.push(json!({"role": "assistant", "content": format!("a{i}")}));
+        }
+
+        let short_region = build_history_region(&prov, &short);
+        let long_region = build_history_region(&prov, &long);
+
+        assert_eq!(short_region.len(), 6, "marker + note + two turns");
+        assert_eq!(
+            short_region,
+            long_region[..short_region.len()],
+            "a turn's note must render identically with ten more turns behind it"
+        );
+    }
+
+    /// The note's budget is per turn and drops whole calls: a call-heavy
+    /// turn cannot inflate the block, and the count of hidden calls survives
+    /// so the reader can tell the note is incomplete.
+    #[test]
+    fn tool_call_note_budget_drops_whole_calls_and_keeps_the_count() {
+        let calls: Vec<serde_json::Value> = (0..40)
+            .map(|i| {
+                json!({"id": i.to_string(), "type": "function", "function": {
+                    "name": "bash",
+                    "arguments": json!({"command": format!("{i} {}", "x".repeat(80))}).to_string(),
+                }})
+            })
+            .collect();
+        let prior = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1", "tool_calls": calls}),
+        ];
+        let region = build_history_region(&prov(), &prior);
+        let note = region[2]["content"].as_str().expect("the note is text");
+        assert!(note.starts_with("[Tool calls] "), "{note}");
+        assert!(
+            note.contains("more calls)"),
+            "the count must survive: {note}"
+        );
+        assert!(
+            note.len() <= "[Tool calls] ".len() + REGION_TOOL_CALLS_MAX,
+            "note over budget: {} bytes",
+            note.len()
+        );
+        // Whole calls only: no half-written argument looks like a real one.
+        assert!(note.ends_with(')'), "torn call: {note}");
     }
 
     /// `with_regions` and `dump_send_context` — verify region partition is
@@ -1657,7 +1811,7 @@ mod render_raw_context_tests {
 
         let dump = dump_send_context(&prov(), &ctx, prior.len(), &cfg);
         assert!(
-            dump.contains("History — text-only turns"),
+            dump.contains("History — text plus calls"),
             "missing the history box: {dump}"
         );
         assert!(
@@ -1789,7 +1943,7 @@ mod render_raw_context_tests {
 
     #[test]
     fn history_marker_present_whenever_prior_is_non_empty() {
-        // Every prior turn now goes into the same text-only block, so the
+        // Every prior turn now goes into the same folded block, so the
         // marker is emitted exactly when there is history to introduce.
         let prior = vec![
             json!({"role": "user", "content": "u1"}),
@@ -1887,7 +2041,7 @@ mod render_raw_context_tests {
 
     /// With `turn_tool_result_cap` set, the current turn is bounded too —
     /// head and tail kept, middle dropped with a paging marker — while the
-    /// history block stays text-only and unbounded by it.
+    /// history block folds (text plus calls) and is unbounded by it.
     #[test]
     fn build_send_context_caps_current_turn_when_turn_cap_set() {
         let big = "z".repeat(4000) + "ERROR: the tail matters";

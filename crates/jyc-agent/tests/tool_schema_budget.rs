@@ -98,7 +98,7 @@ fn already_available(loader: &ToolDefinition) -> Vec<&str> {
 const BUDGETS: &[(&str, usize, usize)] = &[
     ("ask_user", 330, 290),
     ("bash", 128, 46),
-    ("context_browse", 205, 101),
+    ("context_browse", 300, 150),
     ("edit", 222, 124),
     ("grep", 117, 113),
     ("jyc_publish_file", 211, 224),
@@ -163,7 +163,13 @@ const BUDGETS: &[(&str, usize, usize)] = &[
 /// way to fit this one by trimming — the tool *is* the new text, and the
 /// alternative to the tool is an agent that cannot ask about a path it was
 /// refused at all.
-const TOTAL_BUDGET: usize = 8_562;
+///
+/// The `context_browse` `results` flag raised it by exactly +129 (187 → 269
+/// description, 92 → 139 parameter text). The description has to say both what
+/// the flag does and *when* to reach for it: folded history keeps a turn's
+/// conclusions and calls but not its results, which is the one fact this flag
+/// exists to recover.
+const TOTAL_BUDGET: usize = 8_691;
 
 /// The advertised set — the core tools plus the loader's index — in
 /// characters. This is the standing per-call cost after the extended group

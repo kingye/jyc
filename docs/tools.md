@@ -539,12 +539,13 @@ disabled_tools = ["bash", "write"]
 disabled_mcps = ["my-mcp-server"]
 ```
 
-Per-topic exclusions live in the topic's own `.jyc/config.toml`:
+Per-topic exclusions live in the topic's own `config.toml`:
 
 ```toml
-# <topic>/.jyc/config.toml
+# <home>/.jyc/config.toml (the topic's state dir; the working dir's
+# <topic_path>/.jyc/config.toml user layer works the same — it has no
+# mcps keys at all, see the L3 note above)
 disabled_tools = ["edit"]
-disabled_mcps = []
 ```
 
 ### Fields
@@ -552,7 +553,7 @@ disabled_mcps = []
 | Field | Scope | Description |
 |-------|-------|-------------|
 | `disabled_tools` | Agent / Topic | List of tool names to remove. Matches built-in tools, MCP bridge tools, and external MCP tools by registration name. **External MCP tools can also be targeted as `server_name/tool_name` for precise exclusion when multiple servers provide the same tool name.** |
-| `disabled_mcps` | Agent / Topic | List of MCP server names to skip during tool loading. **Renamed from `disabled_mcp_servers`; the old key is still accepted.** |
+| `disabled_mcps` | Agent / Channel / Pattern | List of MCP server names to skip during tool loading. Not a topic-level key. **Renamed from `disabled_mcp_servers`; the old key is still accepted.** |
 | `disabled_builtin_tools` | Agent only | **Backward-compatible alias.** Merged into `disabled_tools` for built-in tool names. |
 | `disabled_tools` | Topic (L3) | Same list in the topic's own `.jyc/config.toml` — where a subagent type's `disabled_tools` lands, so a spawned role can be bounded structurally (e.g. `["write", "edit", "jyc_spawn_subagent"]` for the `review` role) instead of by instruction. Only the tools listed are affected: `bash` is a shell and can still write, so a role that keeps it (a reviewer needs `git diff`) leans on plan mode and its instructions for the rest. |
 

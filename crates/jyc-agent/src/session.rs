@@ -1360,6 +1360,12 @@ fn truncate_json_value(value: &serde_json::Value, max: usize) -> String {
 pub(crate) const HISTORY_MARKER_TEXT: &str = "[History messages] earlier conversation follows — text plus tool calls \
      (name and arguments); tool results omitted.";
 
+/// [`HISTORY_MARKER_TEXT`] for a block that replays tool results
+/// (`history_tool_result_cap` set): the omitted clause would be false there,
+/// and each replayed result is truncated, so the marker says both.
+pub(crate) const HISTORY_MARKER_TEXT_WITH_RESULTS: &str = "[History messages] earlier conversation follows — text plus tool calls \
+     (name and arguments) and their results, truncated when oversized.";
+
 /// Leading text of the wire-only note that carries one turn's tool calls in
 /// a folded region.
 ///
@@ -1369,6 +1375,15 @@ pub(crate) const HISTORY_MARKER_TEXT: &str = "[History messages] earlier convers
 /// results in a folded region, and the send path drops a dangling call
 /// together with every message after it.
 pub(crate) const TOOL_CALLS_NOTE_PREFIX: &str = "[Tool calls]";
+
+/// Leading text of the wire-only note that carries one turn's tool results
+/// in a folded region (`history_tool_result_cap` set).
+///
+/// A separate user message after the calls note, for the same reason: tool
+/// output never rides the assistant's own text. Each result is already cut
+/// to the configured cap at collection, its own paging marker stating what
+/// was dropped — the note adds no bound of its own.
+pub(crate) const TOOL_RESULTS_NOTE_PREFIX: &str = "[Tool results]";
 
 /// One user→assistant turn extracted from raw context.
 ///
@@ -1394,10 +1409,10 @@ pub(crate) struct TurnPair {
     /// [`Self::tool_calls`]. Renderers append `…(N more calls)`.
     pub omitted_tool_calls: usize,
     /// The turn's tool-result texts, in the order the results were
-    /// recorded (which is the order the calls were issued). Empty unless the
-    /// caller asked for them — see [`extract_pairs_with_results`]: the wire
-    /// history never carries results, so paying their clone on that path
-    /// would cost for text nobody reads. Each text is already cut to the
+    /// recorded (which is the order the calls were issued). Populated by
+    /// [`extract_pairs_with_results`] only: a plain [`extract_pairs`] fold
+    /// never carries results — the wire history omits them unless
+    /// `history_tool_result_cap` opts in. Each text is already cut to the
     /// caller's byte bound at collection.
     pub results: Vec<String>,
 }
@@ -1470,6 +1485,20 @@ pub(crate) fn render_turn_tool_calls_bounded(pair: &TurnPair, limit: usize) -> O
         }
         keep -= 1;
     }
+}
+
+/// The turn's rendered tool-result list for a folded-region note: results
+/// joined in call order, each already cut to the configured cap at
+/// collection (its own paging marker states what was dropped), so this adds
+/// no bound of its own. `None` when the turn has no collected results.
+///
+/// The `---` line keeps two consecutive results from reading as one — a
+/// result's text is free-form, so a newline alone would be ambiguous.
+pub(crate) fn render_turn_tool_results(pair: &TurnPair) -> Option<String> {
+    if pair.results.is_empty() {
+        return None;
+    }
+    Some(pair.results.join("\n---\n"))
 }
 
 /// Flush the accumulated turn into `pairs`: merge every assistant message
@@ -1602,6 +1631,12 @@ fn message_keeps_turn_alive(msg: &serde_json::Value) -> bool {
     keeps_turn_alive(&text, false) || !collect_tool_calls(msg).is_empty()
 }
 
+/// The truncation strategy a result collector applies: `(text, max_bytes) ->
+/// text`. Kept as an alias because the collectors pass it as a value
+/// (`Option<(usize, TruncateFn)>`), and spelling the `fn` type inline trips
+/// `clippy::type_complexity`.
+pub(crate) type TruncateFn = fn(&str, usize) -> String;
+
 /// Extract **all** user+assistant turn pairs from raw context.
 ///
 /// Pairing unit is the **turn**, not the single message: a turn opens at
@@ -1629,28 +1664,34 @@ pub(crate) fn extract_pairs(raw_context: &[serde_json::Value]) -> Vec<TurnPair> 
 
 /// [`extract_pairs`] plus each turn's tool-result texts
 /// ([`TurnPair::results`]), each cut to `result_max` bytes **as it is
-/// collected**.
+/// collected** by `truncate`.
 ///
-/// For `context_browse` only: it is the one reader that has to show what a
-/// tool returned, and the results are the bulk of a transcript. The bound
-/// belongs here rather than at render time because the page shows at most
-/// fifty pairs while the extraction window is `offset + limit` pairs deep —
-/// `offset` is unbounded, so a deep page would otherwise clone the whole
-/// journal's results (uncapped since `turn_tool_result_cap` defaults to
-/// off) to print a bounded page. The walk, the turn boundaries and the
-/// keep rules are the same function as above, so a result can never be
-/// attributed to a different turn than its calls.
+/// The wire's folded regions and `context_browse` are the readers: the
+/// former replay results only when `history_tool_result_cap` is set (and
+/// pass [`truncate_text_keeping_edges`], so each result keeps its head and
+/// tail); the latter always shows what a tool returned when asked to
+/// (`results=true`) and passes [`truncate_text`], the head-only cut it has
+/// always used. The bound belongs here rather than at render time because
+/// the page shows at most fifty pairs while the extraction window is
+/// `offset + limit` pairs deep — `offset` is unbounded, so a deep page
+/// would otherwise clone the whole journal's results (uncapped since
+/// `turn_tool_result_cap` defaults to off) to print a bounded page. The
+/// walk, the turn boundaries and the keep rules are the same function as
+/// above, so a result can never be attributed to a different turn than its
+/// calls.
 pub(crate) fn extract_pairs_with_results(
     raw_context: &[serde_json::Value],
     result_max: usize,
+    truncate: TruncateFn,
 ) -> Vec<TurnPair> {
-    extract_pairs_inner(raw_context, Some(result_max))
+    extract_pairs_inner(raw_context, Some((result_max, truncate)))
 }
 
-/// `result_max = None` skips result collection entirely (the wire path).
+/// `results = None` skips result collection entirely (the plain fold); the
+/// tuple is `(per-result byte bound, truncation strategy)`.
 fn extract_pairs_inner(
     raw_context: &[serde_json::Value],
-    result_max: Option<usize>,
+    results: Option<(usize, TruncateFn)>,
 ) -> Vec<TurnPair> {
     let mut pairs: Vec<TurnPair> = Vec::new();
     let mut cur_user: Option<serde_json::Value> = None;
@@ -1668,8 +1709,8 @@ fn extract_pairs_inner(
                 // reads only `tool_result` blocks here (the string-content
                 // branch is OpenAI's `role:"tool"`), so a plain user message
                 // contributes nothing.
-                if let Some(max) = result_max {
-                    cur_results.extend(tool_result_texts(msg, max));
+                if let Some((max, truncate)) = results {
+                    cur_results.extend(tool_result_texts(msg, max, truncate));
                 }
                 if opens_turn(msg) {
                     flush_turn(
@@ -1689,9 +1730,9 @@ fn extract_pairs_inner(
         // `if let` inside an arm is a `collapsible_match` lint (the guard
         // form cannot bind the cap).
         if role == "tool"
-            && let Some(max) = result_max
+            && let Some((max, truncate)) = results
         {
-            cur_results.extend(tool_result_texts(msg, max));
+            cur_results.extend(tool_result_texts(msg, max, truncate));
         }
     }
     flush_turn(
@@ -1712,15 +1753,15 @@ fn extract_pairs_inner(
 /// [`opens_turn`] keys on. An Anthropic `user` message with only text blocks
 /// yields nothing, so the caller can hand it any user message.
 ///
-/// Each text is cut to `max` bytes here, at collection — see
+/// Each text is cut to `max` bytes here, at collection by `truncate` — see
 /// [`extract_pairs_with_results`] for why the bound cannot wait for the
 /// renderer.
-fn tool_result_texts(msg: &serde_json::Value, max: usize) -> Vec<String> {
+fn tool_result_texts(msg: &serde_json::Value, max: usize, truncate: TruncateFn) -> Vec<String> {
     let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
     if role == "tool"
         && let Some(content) = msg.get("content").and_then(|c| c.as_str())
     {
-        return vec![truncate_text(content, max)];
+        return vec![truncate(content, max)];
     }
     let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) else {
         return Vec::new();
@@ -1729,7 +1770,7 @@ fn tool_result_texts(msg: &serde_json::Value, max: usize) -> Vec<String> {
         .iter()
         .filter(|block| block.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
         .filter_map(|block| block.get("content").and_then(|c| c.as_str()))
-        .map(|text| truncate_text(text, max))
+        .map(|text| truncate(text, max))
         .collect()
 }
 
@@ -2279,7 +2320,7 @@ mod tests {
             json!({"role": "tool", "tool_call_id": "c1", "content": "openai-out"}),
             json!({"role": "assistant", "content": "done"}),
         ];
-        let pairs = super::extract_pairs_with_results(&openai, 2000);
+        let pairs = super::extract_pairs_with_results(&openai, 2000, super::truncate_text);
         assert_eq!(pairs[0].results, vec!["openai-out".to_string()]);
 
         let anthropic = vec![
@@ -2292,7 +2333,7 @@ mod tests {
             ]}),
             json!({"role": "assistant", "content": [{"type": "text", "text": "done"}]}),
         ];
-        let pairs = super::extract_pairs_with_results(&anthropic, 2000);
+        let pairs = super::extract_pairs_with_results(&anthropic, 2000, super::truncate_text);
         assert_eq!(pairs[0].results, vec!["anthropic-out".to_string()]);
     }
 
@@ -2310,7 +2351,7 @@ mod tests {
             json!({"role": "tool", "tool_call_id": "c1", "content": huge}),
             json!({"role": "assistant", "content": "done"}),
         ];
-        let pairs = super::extract_pairs_with_results(&ctx, 100);
+        let pairs = super::extract_pairs_with_results(&ctx, 100, super::truncate_text);
         let result = &pairs[0].results[0];
         assert!(
             result.len() < 160,
@@ -2337,7 +2378,7 @@ mod tests {
             ]}),
             json!({"role": "assistant", "content": [{"type": "text", "text": "a2"}]}),
         ];
-        let pairs = super::extract_pairs_with_results(&ctx, 2000);
+        let pairs = super::extract_pairs_with_results(&ctx, 2000, super::truncate_text);
         assert_eq!(pairs.len(), 2, "two turns");
         assert_eq!(pairs[0].results, vec!["first-turn-out".to_string()]);
         assert!(pairs[1].results.is_empty(), "u2 carries no result");
@@ -2352,7 +2393,7 @@ mod tests {
             json!({"role": "assistant", "content": "a1"}),
             json!({"role": "user", "content": super::HISTORY_NOTE_PREFIX}),
         ];
-        let pairs = super::extract_pairs_with_results(&ctx, 2000);
+        let pairs = super::extract_pairs_with_results(&ctx, 2000, super::truncate_text);
         let collected: Vec<&Vec<String>> = pairs.iter().map(|p| &p.results).collect();
         assert!(
             pairs.iter().all(|p| p.results.is_empty()),

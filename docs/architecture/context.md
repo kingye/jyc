@@ -148,8 +148,11 @@ there:
 1. **History, text plus calls** — every prior turn in the window as its
    user text, a `[Tool calls]` note when the turn made any, and its
    assistant text, reformatted in the active provider's wire format. Tool
-   results are dropped from the payload (the journal keeps them;
-   `context_browse` with `results=true` replays them).
+   results are dropped from the payload by default (the journal keeps
+   them; `context_browse` with `results=true` replays them). With
+   `history_tool_result_cap` set, each result also rides along as a
+   `[Tool results]` note, truncated - head and tail kept - when it
+   exceeds the cap.
    The note is a **separate user message**, never merged into the
    assistant text — the transcript must not teach the model to write its
    tool use as content — and never a structured `tool_calls` block: a
@@ -210,7 +213,9 @@ count, with hysteresis — not a per-turn fitter.
 One request with six prior turns (t1…t6) and turn 7 in flight. Nothing
 else is in `messages`: prior history and the folded checkpoint carry text
 plus a per-turn note of the calls made, and only the recent current turn
-carries tool calls as structure and tool results at all.
+carries tool calls as structure and tool results at all (with
+`history_tool_result_cap` set, a `[Tool results]` note in both folded
+regions also carries each result, truncated when oversized).
 
 ```
 POST /v1/messages
@@ -230,7 +235,7 @@ POST /v1/messages
  5  assistant   t2: the reply text                         |  text plus a note of
  6  user        t3: what the user said                     |  the calls made: tool
  7  user        t3: "[Tool calls] ..."                     |  messages and results
- 8  assistant   t3: the reply text                         |  are dropped
+ 8  assistant   t3: the reply text                         |  are dropped by default
  ...
 17  assistant   t6: the reply text                         |
 
@@ -252,20 +257,21 @@ for:
   are never replayed as calls, and neither are the current turn's once
   they age past a checkpoint, so an old result cannot look like something
   the model is still working on. What survives of an aged turn is its
-  text plus the note of what it ran — the conclusions without the
-  evidence — and `context_browse` (`results=true`) is where the results
-  are read back.
+  text plus the note of what it ran - the conclusions without the
+  evidence by default (with `history_tool_result_cap` set, a truncated
+  `[Tool results]` note brings the evidence along) - and `context_browse`
+  (`results=true`) is where the full results are read back.
 
 ```mermaid
 flowchart TB
     subgraph R1["History — text plus calls"]
         R1U["user: 'u1'"]
         R1A["assistant: 'a1'<br/><i>pure text, no tools</i>"]
-        R1N["'[Tool calls] …' note<br/><i>results dropped</i>"]
+        R1N["'[Tool calls] …' note<br/><i>results dropped by default</i>"]
     end
     subgraph R3["Current-turn checkpoint — text plus calls"]
         R3M["marker + folded older steps"]
-        R3N["reasoning replayed · tool results dropped<br/>calls kept as notes"]
+        R3N["reasoning replayed · tool results dropped by default<br/>calls kept as notes"]
     end
     subgraph R2["Recent current turn — verbatim"]
         R2U["user: 'u2'"]
@@ -430,11 +436,12 @@ full transcript (shared `extract_pairs` view):
 - `offset` — pairs to skip from the **newest** end (0 = most recent).
 - `limit` — page size (default 10, max 50).
 - `results` — also replay each turn's tool results (default `false`). A
-  folded region keeps a turn's text and its `[Tool calls]` note but not
-  what the calls returned, so this is the only way back to the evidence
-  of a turn that has aged out. Each result keeps 2000 B and the whole
-  `RESULTS:` line 4000 B, whole results dropped from the end with a
-  `…(N more results)` count.
+  folded region keeps a turn's text and its `[Tool calls]` note but, by
+  default, not what the calls returned; with `history_tool_result_cap`
+  set it also carries truncated results in a `[Tool results]` note. This
+  is the way back to the full evidence of a turn that has aged out. Each
+  result keeps 2000 B and the whole `RESULTS:` line 4000 B, whole results
+  dropped from the end with a `…(N more results)` count.
 - Returns numbered `USER:` / `ASSISTANT:` / `TOOLS:` (`RESULTS:` when
   asked) lines, oldest→newest within the page.
 - Reads the older turns back from the journal (the reader parses only
@@ -443,9 +450,10 @@ full transcript (shared `extract_pairs` view):
 
 The system prompt tells the agent to use `context_browse` whenever it
 needs earlier turns of the current conversation, and — because a folded
-turn keeps its conclusions but not its evidence — that a fact which lived
-in an omitted tool result must be re-checked (re-run the tool, or read it
-back with `results=true`) rather than restated from memory.
+turn keeps its conclusions but, by default, not its evidence — that a
+fact which lived in an omitted or truncated tool result must be
+re-checked (re-run the tool, or read it back with `results=true`) rather
+than restated from memory.
 
 ## Token safety nets
 
@@ -495,6 +503,7 @@ rows):
 | `window` | `10` | Turns kept after a slide — the window's floor |
 | `extend_rate` | `0.5` | Growth allowed before a slide: `max_window = window + round(extend_rate × window)`; `0` = hard window (slides every turn) |
 | `turn_tool_result_cap` | unset | Per-result byte cap on the recent current-turn suffix — see below |
+| `history_tool_result_cap` | unset | Per-result byte cap on results replayed in the folded history and current-turn checkpoint; unset omits folded results entirely — see below |
 | `max_history_tokens` | unset | Second slide trigger, at the top of the extension cycle — see below |
 | `checkpoint_interval` | `32` | Completed assistant messages before the current turn's older steps fold into a text-plus-calls checkpoint; `0` disables folding — see below |
 | `checkpoint_growth` | `8` | Folds per widening step: each checkpoint is `checkpoint_interval / checkpoint_growth` steps wider than the last, so a long turn keeps a growing verbatim tail; `0` keeps the interval fixed — see below |
@@ -507,12 +516,13 @@ tool results, and silently trimming what it is still working through is
 the more damaging failure. The cost is that one verbose result — a
 `read` of a large file, a chatty command — rides every remaining call
 of the turn, at full price each time. The per-result cap below bounds
-one result; the checkpoint bounds how many old results remain on the
-wire at all.
+one result; the checkpoint bounds how many old results stay on the wire
+verbatim at all.
 
 `turn_tool_result_cap: N` opts into a size bound on the recent suffix
-(nothing else bounds those results — the window bound is history-only and
-the checkpoint already dropped the older steps' results). An oversized
+(nothing else bounds those results — the window bound is history-only,
+and the checkpoint's older steps' results, when replayed via
+`history_tool_result_cap`, are bounded by that cap). An oversized
 result keeps its **head and tail** with the middle replaced by
 
 ```
@@ -537,15 +547,46 @@ not per turn — a turn with ten tool calls can still exceed `N` in total.
 
 Set it from a command: `/context sliding 10 0.5 32768` (third
 positional; `0` switches it off, omitting it keeps the configured
-value, accepted range `0` or 130..1 MiB, and a sixth positional is
+value, accepted range `0` or 130..1 MiB, and an eighth positional is
 refused outright), or from config as
 `context_strategy = { …, turn_tool_result_cap = 32768 }` — where a
 non-zero value below 130 is lifted to 130 rather than rejected.
 
-**History and checkpoints have no tool results to cap.** Both are text
-plus calls, so the cap has nothing else to apply to: prior turns and the
-folded older part of the current turn were folded without their results
-in the first place.
+## `history_tool_result_cap` — bounding folded results
+
+By default the folded history and the current-turn checkpoint are
+**text plus calls**: a folded turn's tool results are dropped entirely,
+on the premise that the model can re-run what it needs. That premise
+holds for models that tolerate a text-only fold, but it breaks tool
+momentum in models that lean on the results they just read — the
+current turn's older steps fold mid-task and the model starts acting
+from memory instead of re-reading. This is why turn results are
+present by default.
+
+`history_tool_result_cap: N` opts into replaying each folded tool
+result, cut to at most `N` bytes with the same **head + tail** rule as
+`turn_tool_result_cap` (same marker, same 130-byte floor, marker inside
+the bound). Note the polarity is the **opposite** of the turn-side cap:
+there `unset` means "results are present and uncapped" — here `unset`
+means "results are absent". The knob gates presence itself.
+
+| Value | Behavior |
+|-------|----------|
+| unset (default) | Folded regions stay text plus calls; tool results are omitted. |
+| `Some(0)` | Explicit "off" sentinel — same as unset. |
+| `Some(N > 0)` | Each folded tool result is replayed, head + tail within `N` bytes total. A value below 130 is lifted to 130 (refused by `/context` instead). |
+
+Both regions switch together — history and checkpoint share one folded
+builder (`build_text_region`), so one knob covers both. The region
+marker text switches with the knob: with results replayed it no longer
+says "tool results omitted", and each truncated result carries its own
+`… [N bytes dropped from the middle …]` marker on the wire.
+
+Set it from a command: `/context sliding 10 0.5 32768 120000 4 8 4096`
+(seventh positional — the later slots are positional, so the earlier
+ones must be written to reach it; `0` switches it off, omitting it
+keeps the configured value), or from config as
+`context_strategy = { …, history_tool_result_cap = 4096 }`.
 
 **Why per-result, not global:** a single 5 KB `read` result is usually
 fine; ten 100 KB results from one bash test suite are the actual
@@ -560,9 +601,11 @@ the turn ends. The checkpoint bounds the **verbatim replay** of that
 growth without an LLM summary and without moving the history prefix. It
 is not a hard bound on the whole payload: the folded text still grows
 with the turn's visible assistant text and retained user messages, but
-older tool-result payloads stop riding every call; the folded turns'
-reasoning replays through the provider's wire shape and counts into the
-region's bytes/tokens like the rest of the fold.
+older tool-result payloads stop riding every call at full size (they stop
+entirely, or — with `history_tool_result_cap` set — ride truncated within
+the cap); the folded turns' reasoning replays through the provider's
+wire shape and counts into the region's bytes/tokens like the rest of the
+fold.
 
 With `n` completed assistant messages in the current turn, the configured
 `checkpoint_interval` (default 32; `0` disables folding) and
@@ -602,13 +645,17 @@ cache-aware:
 - Full mode does not checkpoint.
 
 What the folded part keeps is the opening user message, assistant
-visible text and the turn's reasoning. Like prior-turn history, it drops
-tool calls, arguments and results. The journal and `context_browse`
-still hold the raw steps.
+visible text and the turn's reasoning. Like prior-turn history, it
+replaces tool calls with a bounded `[Tool calls]` note carrying their
+names and arguments, and by default omits results — with
+`history_tool_result_cap` set, results ride along in a `[Tool results]`
+note (truncated when oversized). The journal and `context_browse` still
+hold the raw steps.
 
-**Tradeoff:** an older result is no longer replayed after a checkpoint.
-If the model needs that exact output again, it must re-read or re-run its
-source. The latest `checkpoint_interval` steps remain raw, which covers the
+**Tradeoff:** by default an older result is no longer replayed after a
+checkpoint; with `history_tool_result_cap` set it is replayed within the
+cap. If the model needs the full exact output again, it must re-read or
+re-run its source. The latest `checkpoint_interval` steps remain raw, which covers the
 normal read→act→observe cycle; a longer interval keeps more of that cycle
 verbatim (the default 32 was chosen because 16 folded a read-heavy turn's
 file contents away before the model had used them, degrading the turn into
@@ -674,7 +721,7 @@ bounds how much history survives before the next slide.
 |---------|--------|
 | `/context` | Show current strategy and its source (`override` / `default`) |
 | `/context full` | Send the full context |
-| `/context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH]` | Sliding window, N turns (default 10, max 200); EXT = extend rate (0..10, default 0.5); TURNCAP = per-result byte cap on the current turn (`0`, or 130 B..1 MiB; unset by default); MAXHIST = weight trigger for a slide (0..4M, unset by default); CHECKPOINT = completed assistant messages before the current turn's older steps fold into a text-plus-calls checkpoint (`0` disables folding; default 32); GROWTH = folds per widening step, each checkpoint `CHECKPOINT / GROWTH` steps wider (`0` keeps it fixed; default 8). A seventh positional (a command written before a slot was added) is refused; an absent slot falls back to the configured value; `0` switches a cap off |
+| `/context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH] [HISTCAP]` | Sliding window, N turns (default 10, max 200); EXT = extend rate (0..10, default 0.5); TURNCAP = per-result byte cap on the current turn (`0`, or 130 B..1 MiB; unset by default); MAXHIST = weight trigger for a slide (0..4M, unset by default); CHECKPOINT = completed assistant messages before the current turn's older steps fold into a text-plus-calls checkpoint (`0` disables folding; default 32); GROWTH = folds per widening step, each checkpoint `CHECKPOINT / GROWTH` steps wider (`0` keeps it fixed; default 8); HISTCAP = per-result byte cap on results replayed in the folded regions (`0` or 130 B..1 MiB; unset omits folded results). An eighth positional (a command written before a slot was added) is refused; an absent slot falls back to the configured value; `0` switches a cap off |
 | `/context reset` | Remove the runtime override, revert to configured default |
 
 ## Code map

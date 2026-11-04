@@ -513,6 +513,15 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # value below 130 is lifted to 130: below that the drop marker leaves no
 # room for both ends, so the trim would degrade to a head-only cut and
 # gut the result. `/context` refuses such a value instead of lifting it.
+# history_tool_result_cap: replay each folded tool result (history and the
+# current-turn checkpoint), head and tail kept, cut to at most this many
+# bytes. Unset by default — the opposite polarity of turn_tool_result_cap:
+# there unset means "present and uncapped", here unset means "absent". Set
+# it for models that lean on the results they just read: a text-only fold
+# breaks their tool momentum mid-task and they start acting from memory
+# instead of re-reading. 0 means off; a non-zero value below 130 is lifted
+# to 130 (`/context` refuses it instead). It gates presence, not the total:
+# a window of N turns can carry N × calls × cap bytes.
 # max_history_tokens: optional second trigger for a slide. When the window
 # has reached `max_window` turns and its estimated weight exceeds this, it
 # slides back to `window` turns — the same slide a window over `max_window`
@@ -544,6 +553,7 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5, max_history_tokens = 30000 }
 # context_strategy = { mode = "sliding_window", window = 10, checkpoint_interval = 64 }
 # context_strategy = { mode = "sliding_window", window = 10, checkpoint_growth = 0 }
+# context_strategy = { mode = "sliding_window", window = 10, history_tool_result_cap = 4096 }
 
 
 [ai.attachments]
@@ -1262,6 +1272,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #   # extend_rate = 0        # 0 = hard window: slide on every turn
 #   # max_history_tokens = 40000  # second slide trigger, at the top of a cycle
 #   # turn_tool_result_cap   # unset = current turn uncapped; 0 = off
+#   # history_tool_result_cap = 4096  # unset = folded results omitted; 0 = off
 #   # checkpoint_interval = 32  # assistant steps before in-turn folding; 0 = off
 #   # checkpoint_growth = 8     # folds per widening step; 0 = fixed interval
 #

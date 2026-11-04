@@ -75,7 +75,7 @@ impl Tool for ContextBrowseTool {
         "Browse the conversation transcript — user/assistant text pairs, including \
          turns outside your sliding context window. Pair numbers count from the oldest \
          (1 = first). Returns oldest→newest. `results=true` also replays each turn's \
-         tool results, which folded history omits."
+         tool results, which folded history omits by default."
     }
 
     fn input_schema(&self) -> Value {
@@ -121,7 +121,11 @@ impl Tool for ContextBrowseTool {
         // The running turn is still in memory — the journal does not have
         // it yet.
         let current_pairs = if with_results {
-            crate::session::extract_pairs_with_results(&ctx.raw_context, RESULT_TEXT_MAX)
+            crate::session::extract_pairs_with_results(
+                &ctx.raw_context,
+                RESULT_TEXT_MAX,
+                crate::session::truncate_text,
+            )
         } else {
             crate::session::extract_pairs(&ctx.raw_context)
         };
@@ -299,7 +303,11 @@ async fn journal_view(
         // is unbounded, so the per-result bound has to apply here: cloning
         // the journal's raw results first and truncating at render time
         // would pay for the whole journal to print one bounded page.
-        crate::session::extract_pairs_with_results(&slice.messages, RESULT_TEXT_MAX)
+        crate::session::extract_pairs_with_results(
+            &slice.messages,
+            RESULT_TEXT_MAX,
+            crate::session::truncate_text,
+        )
     } else {
         crate::session::extract_pairs(&slice.messages)
     };

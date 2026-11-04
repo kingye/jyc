@@ -38,6 +38,20 @@ const TOOLS_LINE_MAX: usize = 4000;
 /// a couple of dozen bytes above this value.
 const MESSAGE_TEXT_MAX: usize = 2000;
 
+/// Byte bound on one tool result in a rendered pair, and on the whole
+/// `RESULTS:` line of that pair. Only `results=true` pays these: the results
+/// are the bulk of a transcript, and a page of result-heavy turns is a tool
+/// result that then rides every remaining call of the turn.
+const RESULT_TEXT_MAX: usize = 2000;
+const RESULTS_LINE_MAX: usize = 4000;
+
+/// One result plus its truncation and overflow markers fits a line with the
+/// caps this module ships, so a pair never starts out by dropping the result
+/// it was asked to show. The renderer does not *need* this to stay bounded —
+/// its empty-body pass returns the marker — so this is a statement about the
+/// shipped caps, not the renderer's precondition.
+const _: () = assert!(RESULT_TEXT_MAX + 64 < RESULTS_LINE_MAX);
+
 /// Byte bound on the whole page. [`TOOLS_LINE_MAX`] and [`MESSAGE_TEXT_MAX`]
 /// bound one pair (~8 KB worst case), which [`MAX_PAGE`] then multiplies by
 /// fifty; this caps the sum so a maximal page stays in the low tens of KB —
@@ -60,7 +74,8 @@ impl Tool for ContextBrowseTool {
     fn description(&self) -> &str {
         "Browse the conversation transcript — user/assistant text pairs, including \
          turns outside your sliding context window. Pair numbers count from the oldest \
-         (1 = first). Returns oldest→newest."
+         (1 = first). Returns oldest→newest. `results=true` also replays each turn's \
+         tool results, which folded history omits."
     }
 
     fn input_schema(&self) -> Value {
@@ -76,6 +91,11 @@ impl Tool for ContextBrowseTool {
                     "type": "integer",
                     "description": "Max pairs to return (capped at 50).",
                     "default": 10
+                },
+                "results": {
+                    "type": "boolean",
+                    "description": "Also replay each turn's tool results (bounded).",
+                    "default": false
                 }
             }
         })
@@ -92,11 +112,19 @@ impl Tool for ContextBrowseTool {
             .and_then(|v| v.as_i64())
             .unwrap_or(10)
             .clamp(1, MAX_PAGE as i64) as usize;
+        let with_results = input
+            .get("results")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
-        let (journal_pairs, journal_total) = journal_view(ctx, offset + limit).await;
+        let (journal_pairs, journal_total) = journal_view(ctx, offset + limit, with_results).await;
         // The running turn is still in memory — the journal does not have
         // it yet.
-        let current_pairs = crate::session::extract_pairs(&ctx.raw_context);
+        let current_pairs = if with_results {
+            crate::session::extract_pairs_with_results(&ctx.raw_context, RESULT_TEXT_MAX)
+        } else {
+            crate::session::extract_pairs(&ctx.raw_context)
+        };
         let total = journal_total + current_pairs.len();
 
         // Page [start..end) in oldest→newest order, with `offset` counted
@@ -143,7 +171,7 @@ impl Tool for ContextBrowseTool {
             .iter()
             .chain(current_slice.iter())
             .enumerate()
-            .map(|(i, pair)| format_pair(start + 1 + i, pair))
+            .map(|(i, pair)| format_pair(start + 1 + i, pair, with_results))
             .collect();
         let mut kept = 0usize;
         let mut bytes = 0usize;
@@ -178,7 +206,7 @@ impl Tool for ContextBrowseTool {
 }
 
 /// One pair as the tool renders it.
-fn format_pair(n: usize, pair: &TurnPair) -> String {
+fn format_pair(n: usize, pair: &TurnPair, with_results: bool) -> String {
     let mut out = format!("\n[{n}] USER: {}\n", bounded_message_text(&pair.user),);
     if let Some(assistant) = &pair.assistant {
         out.push_str(&format!(
@@ -194,7 +222,44 @@ fn format_pair(n: usize, pair: &TurnPair) -> String {
         // many calls it is not seeing.
         out.push_str(&format!("[{n}] TOOLS: {calls}\n"));
     }
+    if with_results && let Some(results) = render_turn_results_bounded(pair) {
+        out.push_str(&format!("[{n}] RESULTS: {results}\n"));
+    }
     out
+}
+
+/// The turn's tool-result texts, bounded by [`RESULTS_LINE_MAX`].
+///
+/// Each result already carries its own [`RESULT_TEXT_MAX`] truncation from
+/// collection — see [`crate::session::extract_pairs_with_results`] — so this
+/// only drops whole results from the end. The overflow count survives, so
+/// the reader can always tell how many results it is not seeing.
+fn render_turn_results_bounded(pair: &TurnPair) -> Option<String> {
+    if pair.results.is_empty() {
+        return None;
+    }
+    let total = pair.results.len();
+    let marker = |dropped: usize| -> String {
+        match dropped {
+            0 => String::new(),
+            1 => " …(1 more result)".to_string(),
+            n => format!(" …({n} more results)"),
+        }
+    };
+    let mut keep = total;
+    loop {
+        let body = pair.results[..keep].join(" | ");
+        let suffix = marker(total - keep);
+        if body.len() + suffix.len() <= RESULTS_LINE_MAX {
+            return Some(format!("{body}{suffix}"));
+        }
+        // Nothing else can happen: the next iteration has an empty body, so
+        // the only term left is the marker, which fits `RESULTS_LINE_MAX` for
+        // any decimal count. That empty-body pass *is* how the line stays
+        // bounded when a caller collects with a wider per-result cap, so no
+        // `keep == 0` branch is needed here.
+        keep -= 1;
+    }
 }
 
 /// A message's text, cut to [`MESSAGE_TEXT_MAX`] bytes with a marker when it
@@ -211,7 +276,11 @@ fn bounded_message_text(message: &serde_json::Value) -> String {
 /// The reader parses only the tail the page needs; the total comes from
 /// the reader's counter, which the writer keeps up to date. A topic
 /// without a journal (a fresh one, or a test) has neither.
-async fn journal_view(ctx: &ToolContext<'_>, want: usize) -> (Vec<TurnPair>, usize) {
+async fn journal_view(
+    ctx: &ToolContext<'_>,
+    want: usize,
+    with_results: bool,
+) -> (Vec<TurnPair>, usize) {
     let Some(topic) = ctx.current_topic.as_deref() else {
         return (Vec::new(), 0);
     };
@@ -225,7 +294,15 @@ async fn journal_view(ctx: &ToolContext<'_>, want: usize) -> (Vec<TurnPair>, usi
             openers: want,
         })
         .await;
-    let pairs = crate::session::extract_pairs(&slice.messages);
+    let pairs = if with_results {
+        // The extraction window is `offset + limit` pairs deep and `offset`
+        // is unbounded, so the per-result bound has to apply here: cloning
+        // the journal's raw results first and truncating at render time
+        // would pay for the whole journal to print one bounded page.
+        crate::session::extract_pairs_with_results(&slice.messages, RESULT_TEXT_MAX)
+    } else {
+        crate::session::extract_pairs(&slice.messages)
+    };
     let total = reader.total_pairs().await;
     (pairs, total)
 }
@@ -344,6 +421,221 @@ mod tests {
         assert!(text.contains("[4] USER: u4"), "first: {text}");
         assert!(text.contains("[6] ASSISTANT: a6"), "last: {text}");
         assert!(!text.contains("u3"), "older pair leaked: {text}");
+    }
+
+    /// The journal half of `results=true`: older turns replay the tool output
+    /// stored in the journal, not just the running turn's memory. Registered
+    /// so `resolve_state_dir` finds it, and unregistered afterwards so the
+    /// process-wide registry keeps no ghost.
+    #[tokio::test]
+    async fn results_read_tool_output_from_the_journal() {
+        let dir = tempfile::tempdir().expect("create working dir");
+        let state_dir = dir.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        let topic = "context_browse_journal_results";
+        jyc_types::state_dir::register_if_absent(topic, &state_dir);
+        let mut body = String::new();
+        for (i, output) in [(1, "first output"), (2, "second output")] {
+            for msg in [
+                json!({"role": "user", "content": format!("u{i}")}),
+                json!({"role": "assistant", "content": "ran", "tool_calls": [
+                    {"id": format!("c{i}"), "type": "function",
+                     "function": {"name": "bash", "arguments": "{\"command\":\"ls\"}"}}
+                ]}),
+                json!({"role": "tool", "tool_call_id": format!("c{i}"), "content": output}),
+                json!({"role": "assistant", "content": format!("a{i}")}),
+            ] {
+                body.push_str(&format!("{msg}\n"));
+            }
+        }
+        tokio::fs::write(state_dir.join("agent-context.jsonl"), body)
+            .await
+            .unwrap();
+
+        let tool = ContextBrowseTool;
+        let mut ctx = ToolContext::new(dir.path());
+        ctx.current_topic = Some(topic.to_string());
+        let out = tool
+            .execute(json!({"offset": 0, "limit": 5, "results": true}), &ctx)
+            .await
+            .unwrap();
+        let text = out.content;
+        assert!(text.contains("[1] RESULTS: first output"), "{text}");
+        assert!(text.contains("[2] RESULTS: second output"), "{text}");
+
+        jyc_types::state_dir::unregister(topic);
+        jyc_types::state_dir::clear_closed(topic);
+    }
+
+    /// `results=true` replays the OpenAI `role:"tool"` shape: the tool
+    /// output rides its own `RESULTS:` line, and the default omits it.
+    #[tokio::test]
+    async fn results_render_the_openai_tool_output() {
+        let dir = tempfile::tempdir().expect("create working dir");
+        let raw = || {
+            vec![
+                json!({"role": "user", "content": "u1"}),
+                json!({"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "c1", "type": "function",
+                     "function": {"name": "bash", "arguments": "{\"command\":\"ls\"}"}}
+                ]}),
+                json!({"role": "tool", "tool_call_id": "c1", "content": "exit 0\nall green"}),
+                json!({"role": "assistant", "content": "done"}),
+            ]
+        };
+        let tool = ContextBrowseTool;
+        let with = tool
+            .execute(json!({"results": true}), &tool_ctx(dir.path(), raw()))
+            .await
+            .unwrap();
+        assert!(
+            with.content.contains("[1] RESULTS: exit 0\nall green"),
+            "results line: {}",
+            with.content
+        );
+        // The call itself still renders on its own line.
+        assert!(with.content.contains("[1] TOOLS:"), "{}", with.content);
+
+        let without = tool
+            .execute(json!({}), &tool_ctx(dir.path(), raw()))
+            .await
+            .unwrap();
+        assert!(
+            !without.content.contains("RESULTS:"),
+            "default must not replay results: {}",
+            without.content
+        );
+    }
+
+    /// `results=true` also reads the Anthropic shape, where a `user` message
+    /// carries the `tool_result` block instead of a `role:"tool"` message.
+    #[tokio::test]
+    async fn results_render_the_anthropic_tool_result_block() {
+        let dir = tempfile::tempdir().expect("create working dir");
+        let raw = vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "u1"}]}),
+            json!({"role": "assistant", "content": [
+                {"type": "text", "text": "running"},
+                {"type": "tool_use", "id": "t1", "name": "bash", "input": {"command": "ls"}}
+            ]}),
+            json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "a.txt\nb.txt"}
+            ]}),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "done"}]}),
+        ];
+        let out = ContextBrowseTool
+            .execute(json!({"results": true}), &tool_ctx(dir.path(), raw))
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("[1] RESULTS: a.txt\nb.txt"),
+            "anthropic result block: {}",
+            out.content
+        );
+    }
+
+    /// Turning results on changes what each pair shows, not which pairs the
+    /// page holds: same header, same numbering, same total.
+    #[tokio::test]
+    async fn results_flag_leaves_the_page_and_total_alone() {
+        let dir = tempfile::tempdir().expect("create working dir");
+        let raw = || {
+            let mut v = Vec::new();
+            for i in 1..=4 {
+                v.push(json!({"role": "user", "content": format!("u{i}")}));
+                v.push(json!({"role": "assistant", "content": "", "tool_calls": [
+                    {"id": format!("c{i}"), "type": "function",
+                     "function": {"name": "bash", "arguments": "{}"}}
+                ]}));
+                v.push(json!({"role": "tool", "tool_call_id": format!("c{i}"),
+                              "content": format!("out{i}")}));
+                v.push(json!({"role": "assistant", "content": format!("a{i}")}));
+            }
+            v
+        };
+        let tool = ContextBrowseTool;
+        let args = json!({"offset": 0, "limit": 2});
+        let plain = tool
+            .execute(args.clone(), &tool_ctx(dir.path(), raw()))
+            .await
+            .unwrap();
+        let mut with_args = args;
+        with_args["results"] = json!(true);
+        let with = tool
+            .execute(with_args, &tool_ctx(dir.path(), raw()))
+            .await
+            .unwrap();
+
+        let header = |text: &str| text.lines().next().unwrap_or("").to_string();
+        assert_eq!(header(&plain.content), header(&with.content));
+        assert!(header(&with.content).contains("of 4"), "{}", with.content);
+        assert!(
+            with.content.contains("[3] RESULTS: out3")
+                && with.content.contains("[4] RESULTS: out4"),
+            "the page must be pairs 3-4: {}",
+            with.content
+        );
+    }
+
+    /// A result much larger than the bound is cut at collection, with the
+    /// truncation marker saying how much was dropped — the page cannot grow
+    /// with the journal's raw output.
+    #[tokio::test]
+    async fn oversized_results_are_cut_at_collection() {
+        let dir = tempfile::tempdir().expect("create working dir");
+        let huge = "z".repeat(RESULT_TEXT_MAX * 5);
+        let raw = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "c1", "content": huge}),
+            json!({"role": "assistant", "content": "done"}),
+        ];
+        let out = ContextBrowseTool
+            .execute(json!({"results": true}), &tool_ctx(dir.path(), raw))
+            .await
+            .unwrap();
+        assert!(out.content.contains("truncated"), "{}", out.content);
+        assert!(
+            out.content.len() < RESULT_TEXT_MAX * 2,
+            "page grew with the raw result: {} bytes",
+            out.content.len()
+        );
+    }
+
+    /// Results over the line budget are dropped **whole** from the end and
+    /// counted, so the reader still knows how many it is not seeing.
+    #[tokio::test]
+    async fn many_results_keep_the_overflow_count() {
+        let dir = tempfile::tempdir().expect("create working dir");
+        let mut msgs = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c0", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+            ]}),
+        ];
+        // Three results of ~1.5 KB each: two fit `RESULTS_LINE_MAX`, so the
+        // third must be dropped and counted.
+        for i in 1..=3 {
+            msgs.push(json!({"role": "tool", "tool_call_id": format!("c{i}"),
+                             "content": format!("r{i}{}", "y".repeat(1500))}));
+        }
+        msgs.push(json!({"role": "assistant", "content": "done"}));
+        let out = ContextBrowseTool
+            .execute(json!({"results": true}), &tool_ctx(dir.path(), msgs))
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("more result"),
+            "overflow count missing: {}",
+            out.content
+        );
+        assert!(
+            out.content.contains("r1") && !out.content.contains("r3"),
+            "whole results, newest dropped: {}",
+            out.content
+        );
     }
 
     #[tokio::test]

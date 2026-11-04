@@ -877,10 +877,11 @@ pub fn effective_turn_cap(configured: Option<usize>) -> usize {
 /// head between them (a per-turn trim would rewrite the wire prefix every
 /// turn and destroy the cache hit).
 ///
-/// The payload itself is append-only: the windowed turns are sent as
-/// text-only user/assistant pairs that only ever grow, so the provider's
-/// cached prefix extends from one turn to the next, and the current turn
-/// follows verbatim with its tool calls and results.
+/// The payload itself is append-only: the windowed turns are sent as their
+/// text plus a per-turn `[Tool calls]` note (name and arguments — never the
+/// results) that only ever grow, so the provider's cached prefix extends
+/// from one turn to the next, and the current turn follows verbatim with its
+/// tool calls and results.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ContextStrategyConfig {
     /// Context strategy mode. Default: `sliding_window`.
@@ -943,8 +944,9 @@ pub struct ContextStrategyConfig {
     pub max_history_tokens: Option<usize>,
     /// Completed assistant messages per current-turn checkpoint
     /// (`sliding_window` mode): once the current turn passes this many
-    /// assistant messages, the older ones fold into a text-only checkpoint
-    /// and the recent suffix stays verbatim. Counting is by assistant
+    /// assistant messages, the older ones fold into a text-plus-calls
+    /// checkpoint (their results leave the wire, their calls stay as a
+    /// note) and the recent suffix stays verbatim. Counting is by assistant
     /// message — every step that produced output, tool call or final reply —
     /// not by turn or by tool call. Default:
     /// [`DEFAULT_CHECKPOINT_INTERVAL`] (32).

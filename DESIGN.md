@@ -2344,11 +2344,13 @@ JYC uses the following subset of the agent service API:
      `context_offset`, the journal byte offset where the window's oldest
      retained turn begins, and each load reads the journal forward from
      there. The wire payload is the history block — the prior turns as
-     text-only pairs, append-only, never trimmed — followed by the
+     their text plus a per-turn `[Tool calls]` note (name and arguments,
+     1500 B per turn), append-only, never trimmed — followed by the
      current turn in two parts: once it passes `checkpoint_interval`
      assistant steps (32 by default), the older steps fold into a
-     text-only checkpoint (same representation as history, so their
-     reasoning and tool results leave the wire), and the recent suffix
+     text-plus-calls checkpoint (same representation as history, so their
+     reasoning and tool results leave the wire while their calls stay
+     visible as notes), and the recent suffix
      stays verbatim with structured tool calls and results intact. Each
      later checkpoint is `checkpoint_interval / checkpoint_growth` steps
      wider — 32, 36, 40 … with the defaults (32 and 8) — so a long turn's
@@ -2391,6 +2393,31 @@ JYC uses the following subset of the agent service API:
 
    Full mechanism reference (turn pairing, what a request looks like,
    token safety nets, configuration): [docs/architecture/context.md](docs/architecture/context.md).
+
+   **Folded turns keep the calls, not the results (2026-11-03).** Folding
+   a turn to its text alone kept the model's own conclusions and dropped
+   the evidence for them, so a question about an earlier turn could only
+   be answered by restating — and, when the restatement did not fit, by
+   inventing a plausible detail (a file that does not exist, a line number
+   that does not exist). Two additions close that gap without touching the
+   prefix invariant. Folded regions (history and the current-turn
+   checkpoint) now carry a per-turn `[Tool calls]` note — the calls' names
+   and arguments, 1500 B per turn, whole calls dropped from the end with a
+   `…(N more calls)` count — and `context_browse` grew `results=true`,
+   which replays each turn's tool results from the journal (2000 B per
+   result, 4000 B per `RESULTS:` line). The note is a separate **user**
+   message: never merged into the assistant text (that would teach the
+   model to write its tool use as content, the #651 leak) and never a
+   structured `tool_calls` block (a folded turn has no result to answer
+   one, and the send path drops a dangling call together with every
+   message after it — which would have silently emptied the whole history
+   block). Its budget is **per turn**, never per block: a block-wide
+   budget would let a new turn's calls push an older turn's out, rewriting
+   the middle of a cached prefix. So a block still only grows between
+   slides, and `history_stays_a_byte_stable_prefix_across_turns` asserts
+   the byte-stability with calls in every turn. The note is not the
+   removed `note_window`: that carried results and text, was configurable
+   per window, and taught models to write their process as content.
 
    **`max_history_tokens` (2026-10-18; corrected 2026-10-28).** `window`
    counts turns, so `window = 10` costs 2k tokens on a quiet topic and
@@ -2580,8 +2607,9 @@ tokens ↓
 │  · Skills 清单 + AGENTS.md(项目指令)             │
 │  · Reply instructions / History format / VCS     │
 ├─ messages ──────────────────────────────────────┤
-│  历史 旧轮次 (text-only pairs)                   │
-│  └ user/assistant 文本原样, tool call/result 丢弃 │ ← 只追加: 前缀字节不变
+│  历史 旧轮次 (text + [Tool calls] note)          │
+│  └ user/assistant 文本原样, result 丢弃;         │ ← 只追加: 前缀字节不变
+│     tool call 以注记保留(名字+参数, 每轮 1500B)  │
 │                                                   │    ★不做任何裁剪★
 │                                                   │
 │  ⟵ 窗口超 max_window 轮, 或已到 max_window 且超   │
@@ -2590,7 +2618,7 @@ tokens ↓
 │  当前轮            0 → 增长                      │
 │  ├ user: <runtime-state> 参考块 ~300B ★易变★     │ ★新位置★
 │  │        + 入站消息(含 <mode> 块) + 附件          │
-│  ├ 每个 checkpoint: 旧步折叠为 text-only          │ ★checkpoint★
+│  ├ 每个 checkpoint: 旧步折叠为 text+调用注记      │ ★checkpoint★
 │  │     checkpoint (reasoning/tool result 丢弃)    │   32步起递增
 │  ├ recent suffix: assistant/tool 原样             │ ◇断点3 (n-3)
 │  ├ tool: result                                 │ ◇断点4 (n-2)

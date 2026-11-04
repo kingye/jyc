@@ -352,7 +352,7 @@ pub(crate) const TURN_CHECKPOINT_MARKER_TEXT: &str = "[Current-turn checkpoint] 
 /// false there, and each replayed result is truncated, so the marker says
 /// both.
 pub(crate) const TURN_CHECKPOINT_MARKER_TEXT_WITH_RESULTS: &str = "[Current-turn checkpoint] earlier work in this turn follows — text plus \
-     tool calls and their results, each truncated.";
+     tool calls and their results, truncated when oversized.";
 
 /// Where the verbatim current-turn suffix starts, relative to the current
 /// turn slice.
@@ -1964,6 +1964,17 @@ mod render_raw_context_tests {
         );
         assert_eq!(region[2]["content"], "[Tool calls] bash()");
         assert_eq!(region[3]["content"], "[Tool results] file.txt");
+
+        // 0 is the off sentinel for the checkpoint too: legacy marker and
+        // no results note.
+        let off = build_checkpoint_region(&prov(), &prefix, 0);
+        assert_eq!(off[0]["content"], TURN_CHECKPOINT_MARKER_TEXT);
+        assert!(
+            !serde_json::to_string(&off)
+                .unwrap()
+                .contains("[Tool results]"),
+            "zero cap must not replay results"
+        );
     }
 
     /// End to end: the strategy field reaches the builder, so a topic that
@@ -2014,6 +2025,16 @@ mod render_raw_context_tests {
         let dumped_off = serde_json::to_string(&sent_off).unwrap();
         assert!(!dumped_off.contains("file.txt"), "{dumped_off}");
         assert_eq!(sent_off[0]["content"], crate::session::HISTORY_MARKER_TEXT);
+
+        // `Some(0)` is the explicit off sentinel: byte-identical to unset.
+        let zero = ContextStrategyConfig {
+            history_tool_result_cap: Some(0),
+            ..cfg.clone()
+        };
+        let sent_zero = build_send_context_with_regions(&prov(), &ctx, prior_len, &zero)
+            .0
+            .into_owned();
+        assert_eq!(sent_zero, sent_off, "Some(0) must match None byte for byte");
     }
 
     /// The cache invariant behind the note's shape: a turn's note is a

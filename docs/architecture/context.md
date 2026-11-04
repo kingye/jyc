@@ -538,7 +538,7 @@ not per turn — a turn with ten tool calls can still exceed `N` in total.
 
 Set it from a command: `/context sliding 10 0.5 32768` (third
 positional; `0` switches it off, omitting it keeps the configured
-value, accepted range `0` or 130..1 MiB, and a sixth positional is
+value, accepted range `0` or 130..1 MiB, and an eighth positional is
 refused outright), or from config as
 `context_strategy = { …, turn_tool_result_cap = 32768 }` — where a
 non-zero value below 130 is lifted to 130 rather than rejected.
@@ -578,12 +578,6 @@ Set it from a command: `/context sliding 10 0.5 32768 120000 4 8 4096`
 ones must be written to reach it; `0` switches it off, omitting it
 keeps the configured value), or from config as
 `context_strategy = { …, history_tool_result_cap = 4096 }`.
-
-**Why per-result, not global:** same reason as the turn-side cap — one
-verbose `read` is usually fine; ten of them from one test suite are the
-problem. A global bound on the folded payload is `max_history_tokens`
-for history; the checkpoint's implicit bound is the checkpoint interval
-(the folded steps stop being verbatim either way).
 
 **Why per-result, not global:** a single 5 KB `read` result is usually
 fine; ten 100 KB results from one bash test suite are the actual
@@ -641,12 +635,14 @@ cache-aware:
 
 What the folded part keeps is the opening user message, assistant
 visible text and the turn's reasoning. Like prior-turn history, it drops
-tool calls, arguments and results. The journal and `context_browse`
-still hold the raw steps.
+tool-call arguments and, by default, results — with
+`history_tool_result_cap` set, results are replayed (truncated) within
+the cap. The journal and `context_browse` still hold the raw steps.
 
-**Tradeoff:** an older result is no longer replayed after a checkpoint.
-If the model needs that exact output again, it must re-read or re-run its
-source. The latest `checkpoint_interval` steps remain raw, which covers the
+**Tradeoff:** by default an older result is no longer replayed after a
+checkpoint; with `history_tool_result_cap` set it is replayed within the
+cap. If the model needs the full exact output again, it must re-read or
+re-run its source. The latest `checkpoint_interval` steps remain raw, which covers the
 normal read→act→observe cycle; a longer interval keeps more of that cycle
 verbatim (the default 32 was chosen because 16 folded a read-heavy turn's
 file contents away before the model had used them, degrading the turn into

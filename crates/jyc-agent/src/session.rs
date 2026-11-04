@@ -1364,7 +1364,7 @@ pub(crate) const HISTORY_MARKER_TEXT: &str = "[History messages] earlier convers
 /// (`history_tool_result_cap` set): the omitted clause would be false there,
 /// and each replayed result is truncated, so the marker says both.
 pub(crate) const HISTORY_MARKER_TEXT_WITH_RESULTS: &str = "[History messages] earlier conversation follows — text plus tool calls \
-     (name and arguments) and their results, each truncated.";
+     (name and arguments) and their results, truncated when oversized.";
 
 /// Leading text of the wire-only note that carries one turn's tool calls in
 /// a folded region.

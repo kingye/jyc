@@ -772,11 +772,11 @@ pub(crate) fn build_openai_raw_assistant(
     // Content stays a plain reply string: reasoning replays only through
     // the `reasoning_content` field below. The old additive inline
     // (`<think>…</think>\n\n` prefix) survived in the journal, and the
-    // fold used to lose the reasoning either way: since per-turn folding
-    // shipped (v0.8.0) the fold stripped the inline duplicate but dropped
-    // the field, so a folded turn reached a thinking-first model as bare
-    // reply text (the tag-era fold before it carried the inline copy
-    // itself), and the model degraded turn over turn (kimi k3.1-pro,
+    // fold used to lose the reasoning either way: since the transcript
+    // strip shipped (v0.8.0) the fold stripped the inline duplicate but
+    // dropped the field, so a folded turn reached a thinking-first model
+    // as bare reply text (the fold before it, v0.5.0–v0.7.3, carried the
+    // inline copy itself), and the model degraded turn over turn (kimi k3.1-pro,
     // verified against a recorded session). MiniMax M3 emits its thinking
     // inline in `content` (see the parser below), so field-only replay
     // is unverified for it — the field is the shape the non-inline

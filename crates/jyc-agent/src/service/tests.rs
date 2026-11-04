@@ -2188,3 +2188,48 @@ fn test_resolve_turn_mode() {
         );
     }
 }
+
+/// The History Format section is the model's only contract for the folded
+/// history block; these three tests pin the properties the sliding window
+/// and the cache rely on: the evidence rule is actually in the text, the
+/// text is static (no interpolation hole that could break the byte-stable
+/// prefix), and the built prompt really carries the section.
+mod history_format_section {
+    use super::super::prompt::HISTORY_FORMAT_SECTION;
+    use super::service_with_skills;
+
+    #[test]
+    fn evidence_rule_is_present() {
+        // The rule added after the fabricated-figures incident: the anchor
+        // phrase and the two obligations it names.
+        assert!(HISTORY_FORMAT_SECTION.contains("is not evidence"));
+        assert!(HISTORY_FORMAT_SECTION.contains("state that it is unverified"));
+        assert!(HISTORY_FORMAT_SECTION.contains("verify it with a tool call first"));
+    }
+
+    #[test]
+    fn static_text_no_interpolation_hole() {
+        // No `{`: anything else would make the section an interpolation
+        // target and reintroduce a per-request variable into the system
+        // prompt, which the byte-stable-prefix invariant forbids.
+        assert!(!HISTORY_FORMAT_SECTION.contains('{'));
+    }
+
+    #[tokio::test]
+    async fn built_prompt_carries_the_section() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "built_prompt_carries_the_section";
+        let state = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&state).unwrap();
+        jyc_types::state_dir::register_if_absent(topic, &state);
+
+        let svc = service_with_skills(vec![], None);
+        let prompt = svc
+            .build_system_prompt(topic, tmp.path(), None, None, None, &[], &[], None)
+            .await;
+        assert!(prompt.contains(HISTORY_FORMAT_SECTION), "{prompt}");
+
+        jyc_types::state_dir::unregister(topic);
+        jyc_types::state_dir::clear_closed(topic);
+    }
+}

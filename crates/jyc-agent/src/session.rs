@@ -1631,6 +1631,12 @@ fn message_keeps_turn_alive(msg: &serde_json::Value) -> bool {
     keeps_turn_alive(&text, false) || !collect_tool_calls(msg).is_empty()
 }
 
+/// The truncation strategy a result collector applies: `(text, max_bytes) ->
+/// text`. Kept as an alias because the collectors pass it as a value
+/// (`Option<(usize, TruncateFn)>`), and spelling the `fn` type inline trips
+/// `clippy::type_complexity`.
+pub(crate) type TruncateFn = fn(&str, usize) -> String;
+
 /// Extract **all** user+assistant turn pairs from raw context.
 ///
 /// Pairing unit is the **turn**, not the single message: a turn opens at
@@ -1676,7 +1682,7 @@ pub(crate) fn extract_pairs(raw_context: &[serde_json::Value]) -> Vec<TurnPair> 
 pub(crate) fn extract_pairs_with_results(
     raw_context: &[serde_json::Value],
     result_max: usize,
-    truncate: fn(&str, usize) -> String,
+    truncate: TruncateFn,
 ) -> Vec<TurnPair> {
     extract_pairs_inner(raw_context, Some((result_max, truncate)))
 }
@@ -1685,7 +1691,7 @@ pub(crate) fn extract_pairs_with_results(
 /// tuple is `(per-result byte bound, truncation strategy)`.
 fn extract_pairs_inner(
     raw_context: &[serde_json::Value],
-    results: Option<(usize, fn(&str, usize) -> String)>,
+    results: Option<(usize, TruncateFn)>,
 ) -> Vec<TurnPair> {
     let mut pairs: Vec<TurnPair> = Vec::new();
     let mut cur_user: Option<serde_json::Value> = None;
@@ -1750,11 +1756,7 @@ fn extract_pairs_inner(
 /// Each text is cut to `max` bytes here, at collection by `truncate` — see
 /// [`extract_pairs_with_results`] for why the bound cannot wait for the
 /// renderer.
-fn tool_result_texts(
-    msg: &serde_json::Value,
-    max: usize,
-    truncate: fn(&str, usize) -> String,
-) -> Vec<String> {
+fn tool_result_texts(msg: &serde_json::Value, max: usize, truncate: TruncateFn) -> Vec<String> {
     let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
     if role == "tool"
         && let Some(content) = msg.get("content").and_then(|c| c.as_str())

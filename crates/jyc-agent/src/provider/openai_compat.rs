@@ -354,10 +354,12 @@ struct ToolCallAccumulator {
 /// a separator and not emitted — this matches MiniMax M3's output format.
 ///
 /// **Known limitation:** a *bare* literal `<think>` that OPENS the reply
-/// (stream start, not in inline code, with a literal `</think>` later) is
-/// indistinguishable from a real reasoning block and will still be routed
-/// to reasoning. Mid-text literals and inline-code literals (the model
-/// discussing `` `<think>` ``) are kept in the text stream — see
+/// (stream start, not in inline code) is indistinguishable from a real
+/// reasoning block and will still be routed to reasoning — whether a
+/// literal `</think>` follows later (that tail then becomes text) or not
+/// (everything after the tag stays in the open block, and the end-of-stream
+/// flush emits it as reasoning). Mid-text literals and inline-code literals
+/// (the model discussing `` `<think>` ``) are kept in the text stream — see
 /// `is_real_think_tag`.
 fn split_think_tags(content: &str, state: &mut OpenAiStreamState) -> Vec<StreamEvent> {
     let mut events = Vec::new();
@@ -389,6 +391,11 @@ fn split_think_tags(content: &str, state: &mut OpenAiStreamState) -> Vec<StreamE
                 // `reasoning_content`, truncating the delivered text.
                 if !state.in_think_block && !is_real_think_tag(state, &text, pos) {
                     events.push(StreamEvent::TextDelta(text[..pos + tag.len()].to_string()));
+                    // The emitted text carries the tag itself, so it is never
+                    // whitespace-only: record it immediately — `is_real_think_tag`
+                    // consults `saw_text_output` within this same call for any
+                    // later tag in this chunk, before the end-of-call scan runs.
+                    state.saw_text_output = true;
                     text = text[pos + tag.len()..].to_string();
                     continue;
                 }
@@ -449,10 +456,10 @@ fn split_think_tags(content: &str, state: &mut OpenAiStreamState) -> Vec<StreamE
     // consults `saw_text_output` on later chunks, where this call's emitted
     // text is no longer in the buffer.
     for event in &events {
-        if let StreamEvent::TextDelta(t) = event {
-            if !t.trim().is_empty() {
-                state.saw_text_output = true;
-            }
+        if let StreamEvent::TextDelta(t) = event
+            && !t.trim().is_empty()
+        {
+            state.saw_text_output = true;
         }
     }
 
@@ -1592,11 +1599,11 @@ mod tests {
         assert!(!state.in_think_block);
     }
 
-    /// An inline-code literal at the very START of the reply ("`<think>`" at
-    /// byte 0) must stay text: the backtick immediately after the tag marks
-    /// it as an inline-code example, not a block start.
+    /// A literal tag with a backtick BEFORE it (`` `<think>` ``, inline code)
+    /// must stay text: the non-whitespace prefix already disqualifies it via
+    /// `is_real_think_tag`, so the backtick-after arm is not even consulted.
     #[test]
-    fn split_think_tags_literal_backticked_tag_at_stream_start() {
+    fn split_think_tags_literal_tag_after_backtick_prefix() {
         let mut state = OpenAiStreamState::default();
         let chunk = serde_json::json!({
             "choices": [{"delta": {"content": "`<think>` is the opening tag."}}]
@@ -1608,7 +1615,7 @@ mod tests {
         assert_eq!(
             texts(&events).concat(),
             "`<think>` is the opening tag.",
-            "backticked tag at byte 0 must stay literal"
+            "tag preceded by a backtick must stay literal"
         );
         assert!(!state.in_think_block);
     }
@@ -1669,6 +1676,70 @@ mod tests {
             reasonings(&events)
         );
         assert_eq!(texts(&events).concat(), "<think> rest");
+        assert!(!state.in_think_block);
+    }
+
+    /// Review-found same-call gap: the literal branch emits visible text and
+    /// `continue`s the parse loop BEFORE the end-of-call scan runs, so a later
+    /// tag in the SAME chunk — preceded only by whitespace — must see the flag
+    /// set by the literal branch itself. Without that in-branch update this
+    /// second tag is judged a stream-opening reasoning block and "B rest" is
+    /// swallowed into the reasoning channel (the incident shape again).
+    #[test]
+    fn split_think_tags_second_literal_tag_same_chunk_after_whitespace() {
+        let mut state = OpenAiStreamState::default();
+        let chunk = serde_json::json!({
+            "choices": [{"delta": {"content": "A<think>\n<think>B rest"}}]
+        })
+        .to_string();
+        let events = parse_openai_chunk(&chunk, &mut state).unwrap_or_default();
+
+        assert!(
+            reasonings(&events).is_empty(),
+            "reply text after a same-chunk literal tag must stay text, got: {:?}",
+            reasonings(&events)
+        );
+        assert_eq!(texts(&events).concat(), "A<think>\n<think>B rest");
+        assert!(!state.in_think_block);
+    }
+
+    /// The backtick-after arm of `is_real_think_tag` (a bare tag immediately
+    /// opening an inline-code literal) needs its own fixture: a backtick
+    /// BEFORE the tag is caught by the non-whitespace prefix check instead,
+    /// so this one uses a whitespace-only prefix to actually reach the arm.
+    #[test]
+    fn split_think_tags_bare_tag_followed_by_backtick_stays_literal() {
+        let mut state = OpenAiStreamState::default();
+        let chunk = serde_json::json!({
+            "choices": [{"delta": {"content": "\n<think>`x`"}}]
+        })
+        .to_string();
+        let events = parse_openai_chunk(&chunk, &mut state).unwrap_or_default();
+
+        assert!(
+            reasonings(&events).is_empty(),
+            "a tag opening inline code must stay literal, got: {:?}",
+            reasonings(&events)
+        );
+        assert_eq!(texts(&events).concat(), "\n<think>`x`");
+        assert!(!state.in_think_block);
+    }
+
+    /// A whitespace-only prefix must not set `saw_text_output`: a real
+    /// reasoning block may open after blank lines (the reason the flag and the
+    /// prefix check both use `trim()`). Pinned so nobody "simplifies" the
+    /// whitespace exclusion without breaking this.
+    #[test]
+    fn split_think_tags_real_block_after_whitespace_prefix() {
+        let mut state = OpenAiStreamState::default();
+        let chunk = serde_json::json!({
+            "choices": [{"delta": {"content": "\n\n<think>plan</think>\nanswer"}}]
+        })
+        .to_string();
+        let events = parse_openai_chunk(&chunk, &mut state).unwrap_or_default();
+
+        assert_eq!(reasonings(&events), vec!["plan"]);
+        assert_eq!(texts(&events), vec!["\n\n", "\nanswer"]);
         assert!(!state.in_think_block);
     }
 

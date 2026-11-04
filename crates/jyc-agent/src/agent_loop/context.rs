@@ -166,8 +166,9 @@ impl SendContextCache {
 /// logic.
 ///
 /// Region labels:
-/// - `1` = folded history, text plus calls (`SlidingWindow`) or the whole
-///   context (`Full` mode, no split).
+/// - `1` = folded history, text plus calls and — when
+///   `history_tool_result_cap` is set — truncated results
+///   (`SlidingWindow`) or the whole context (`Full` mode, no split).
 /// - `2` = verbatim current-turn suffix (`SlidingWindow` only).
 /// - `3` = folded earlier work in the current turn (`SlidingWindow` only).
 ///
@@ -181,9 +182,10 @@ impl SendContextCache {
 /// reasoning over those tool results mid-loop, so they must stay complete
 /// — and bounded by the opt-in `strategy.turn_tool_result_cap`, which
 /// keeps head and tail instead of the head alone. `Some(0)` or `None`
-/// disables capping. The checkpoint bounds the *older* part independently:
-/// its reasoning and tool results leave the wire exactly as prior-turn
-/// history does.
+/// disables capping. The folded regions follow `history_tool_result_cap`
+/// instead, which gates whether their results appear at all (`None` by
+/// default: the pre-existing payload; `Some(cap)` replays each result cut
+/// to `cap` bytes, head and tail kept).
 ///
 /// `cache` lets a turn's calls reuse the history and checkpoint blocks
 /// instead of rebuilding them per call (see [`SendContextCache`]).
@@ -208,13 +210,18 @@ pub(crate) fn build_send_context_cached<'a>(
             // the caller having done so.
             let boundary = prior_len.min(raw_context.len());
             let current = &raw_context[boundary..];
+            // The same lift the `/context` echo applies: `None`/`Some(0)`
+            // mean off, any other value is at least the edge-keeping floor.
+            let history_cap =
+                jyc_types::channel::effective_result_cap(strategy.history_tool_result_cap);
 
             if cache.boundary != Some(boundary) {
                 // The prior is the anchored window the loader read: its
                 // head only moves when the loader slides the anchor, so the
                 // folded history only ever grows by append — the
                 // provider's cached prefix reaches as far as it does.
-                cache.history = build_history_region(provider, &raw_context[..boundary]);
+                cache.history =
+                    build_history_region(provider, &raw_context[..boundary], history_cap);
                 cache.boundary = Some(boundary);
                 cache.rebuilt = Some(true);
                 // Absolute checkpoint indices belong to the previous
@@ -235,7 +242,7 @@ pub(crate) fn build_send_context_cached<'a>(
             match checkpoint_end {
                 Some(end) if cache.checkpoint_end != Some(end) => {
                     cache.checkpoint =
-                        build_checkpoint_region(provider, &raw_context[boundary..end]);
+                        build_checkpoint_region(provider, &raw_context[boundary..end], history_cap);
                     cache.checkpoint_end = Some(end);
                     cache.checkpoint_rebuilt = Some(true);
                 }
@@ -278,7 +285,7 @@ pub(crate) fn build_send_context_cached<'a>(
             // shared with the `/context` echo; the lift happens here, where
             // the value is finally trusted, so an old `config.toml` or a
             // stale override cannot skip it.
-            let turn_cap = jyc_types::channel::effective_turn_cap(strategy.turn_tool_result_cap);
+            let turn_cap = jyc_types::channel::effective_result_cap(strategy.turn_tool_result_cap);
             for msg in &raw_context[raw_start..] {
                 out.push(cap_tool_result_content_with(
                     msg,
@@ -339,6 +346,13 @@ pub(crate) fn context_composition(
 /// checkpoint. Not persisted to `raw_context`.
 pub(crate) const TURN_CHECKPOINT_MARKER_TEXT: &str = "[Current-turn checkpoint] earlier work in this turn follows — text plus \
      tool calls; tool results omitted.";
+
+/// [`TURN_CHECKPOINT_MARKER_TEXT`] for a checkpoint that replays tool
+/// results (`history_tool_result_cap` set): the omitted clause would be
+/// false there, and each replayed result is truncated, so the marker says
+/// both.
+pub(crate) const TURN_CHECKPOINT_MARKER_TEXT_WITH_RESULTS: &str = "[Current-turn checkpoint] earlier work in this turn follows — text plus \
+     tool calls and their results, truncated when oversized.";
 
 /// Where the verbatim current-turn suffix starts, relative to the current
 /// turn slice.
@@ -453,21 +467,34 @@ const REGION_TOOL_CALLS_MAX: usize = 1500;
 /// turn — the bug this shape exists to avoid. The block only grows, so the
 /// payload is append-only from one turn to the next.
 ///
-/// The tool **results** do not reach the wire — they are the bulk of a
-/// transcript, and a result the model can re-run is cheaper than one replayed
-/// forever. The calls do, as a text note: a conclusion without a trace of how
-/// it was checked is what an agent restates from memory. The note is a
-/// separate user message rather than structured `tool_calls`: a call without
-/// its result is dropped by the send path's dangling-call repair, and a
-/// result would have to be fabricated to keep it.
+/// By default the tool **results** do not reach the wire — they are the bulk
+/// of a transcript, and a result the model can re-run is cheaper than one
+/// replayed forever. The calls do, as a text note: a conclusion without a
+/// trace of how it was checked is what an agent restates from memory. The
+/// note is a separate user message rather than structured `tool_calls`: a
+/// call without its result is dropped by the send path's dangling-call
+/// repair, and a result would have to be fabricated to keep it.
+///
+/// `history_cap` ([`ContextStrategyConfig::history_tool_result_cap`],
+/// already through [`jyc_types::channel::effective_result_cap`]) opts the
+/// results back in: a nonzero cap replays each turn's results as a
+/// `[Tool results]` note after its calls note, each result keeping its head
+/// and tail with the middle replaced by a paging marker. `0` means off, the
+/// payload before the field existed.
 ///
 /// Each turn's note depends only on that turn, which is what keeps the block
 /// a byte-stable prefix across turns.
 fn build_history_region(
     provider: &dyn Provider,
     prior: &[serde_json::Value],
+    history_cap: usize,
 ) -> Vec<serde_json::Value> {
-    build_text_region(provider, prior, crate::session::HISTORY_MARKER_TEXT)
+    let marker = if history_cap > 0 {
+        crate::session::HISTORY_MARKER_TEXT_WITH_RESULTS
+    } else {
+        crate::session::HISTORY_MARKER_TEXT
+    };
+    build_text_region(provider, prior, marker, history_cap)
 }
 
 /// Compact the older part of the current turn into the same folded
@@ -475,8 +502,14 @@ fn build_history_region(
 fn build_checkpoint_region(
     provider: &dyn Provider,
     prefix: &[serde_json::Value],
+    history_cap: usize,
 ) -> Vec<serde_json::Value> {
-    build_text_region(provider, prefix, TURN_CHECKPOINT_MARKER_TEXT)
+    let marker = if history_cap > 0 {
+        TURN_CHECKPOINT_MARKER_TEXT_WITH_RESULTS
+    } else {
+        TURN_CHECKPOINT_MARKER_TEXT
+    };
+    build_text_region(provider, prefix, marker, history_cap)
 }
 
 /// The one folded-region builder shared by history and current-turn
@@ -499,11 +532,26 @@ fn build_text_region(
     provider: &dyn Provider,
     raw: &[serde_json::Value],
     marker: &str,
+    history_cap: usize,
 ) -> Vec<serde_json::Value> {
-    let pairs = crate::session::extract_pairs(raw);
+    // `0` is the off sentinel: the plain fold never clones results. A
+    // nonzero cap collects them here, already cut to the cap by
+    // `truncate_text_keeping_edges` — keeping head and tail for the same
+    // reason the current-turn cap does (what a result is read for usually
+    // sits at the ends).
+    let pairs = if history_cap > 0 {
+        crate::session::extract_pairs_with_results(
+            raw,
+            history_cap,
+            crate::session::truncate_text_keeping_edges,
+        )
+    } else {
+        crate::session::extract_pairs(raw)
+    };
 
     // The block leads with its marker and keeps it: it explains the folded
-    // form the compacted pairs come in (results gone, calls noted).
+    // form the compacted pairs come in (calls noted, results omitted or
+    // replayed-truncated).
     let mut region: Vec<serde_json::Value> = Vec::new();
     if !pairs.is_empty() {
         region.push(provider.format_user_message(&[ContentBlock::Text {
@@ -522,6 +570,11 @@ fn build_text_region(
         {
             region.push(provider.format_user_message(&[ContentBlock::Text {
                 text: format!("{} {calls}", crate::session::TOOL_CALLS_NOTE_PREFIX),
+            }]));
+        }
+        if let Some(results) = crate::session::render_turn_tool_results(pair) {
+            region.push(provider.format_user_message(&[ContentBlock::Text {
+                text: format!("{} {results}", crate::session::TOOL_RESULTS_NOTE_PREFIX),
             }]));
         }
         if let Some(assistant) = &pair.assistant
@@ -695,7 +748,7 @@ fn dump_send_context(
         // `0` is the off sentinel: it maps to itself, so the comparison
         // alone is enough — a configured value only gets a note when the
         // applied one is larger.
-        Some(c) if c < jyc_types::channel::effective_turn_cap(Some(c)) => {
+        Some(c) if c < jyc_types::channel::effective_result_cap(Some(c)) => {
             format!(" (lifted from {c})")
         }
         _ => String::new(),
@@ -705,7 +758,7 @@ fn dump_send_context(
          {} msgs, ~{} bytes\n\n",
         strategy.mode,
         strategy.window,
-        jyc_types::channel::effective_turn_cap(strategy.turn_tool_result_cap),
+        jyc_types::channel::effective_result_cap(strategy.turn_tool_result_cap),
         cap_note,
         strategy.max_history_tokens,
         sent.len(),
@@ -1810,6 +1863,180 @@ mod render_raw_context_tests {
         assert!(!dumped.contains("file.txt"), "tool result leaked: {dumped}");
     }
 
+    /// With `history_tool_result_cap` set, each folded turn replays its
+    /// results as a separate `[Tool results]` note after the calls note —
+    /// and the marker says results are included, because the pre-existing
+    /// "results omitted" marker would be false there.
+    #[test]
+    fn history_replays_results_when_cap_set() {
+        let prior = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "calling bash", "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": "file.txt"}),
+            json!({"role": "assistant", "content": "done"}),
+        ];
+        let region = build_history_region(&prov(), &prior, 4096);
+        assert_eq!(
+            region[0]["content"],
+            crate::session::HISTORY_MARKER_TEXT_WITH_RESULTS
+        );
+        assert_eq!(region[1]["content"], "u1");
+        assert_eq!(region[2]["content"], "[Tool calls] bash(command=\"ls\")");
+        assert_eq!(region[3]["content"], "[Tool results] file.txt");
+        // Both assistant texts of the turn merge past the tool message —
+        // same fixture semantics the sibling no-results test pins.
+        assert_eq!(region[4]["content"], "calling bash\ndone");
+        assert_eq!(region.len(), 5);
+    }
+
+    /// Each result is cut at collection with the same edge-keeping
+    /// truncation the current-turn cap uses: head and tail survive, the
+    /// dropped middle is stated, and the result never exceeds the cap
+    /// (the marker lives inside the budget).
+    #[test]
+    fn history_result_is_cut_keeping_both_ends() {
+        let result = format!("HEAD-{}{}-TAIL", "h".repeat(300), "m".repeat(4000));
+        let prior = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1", "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": result}),
+            json!({"role": "assistant", "content": "done"}),
+        ];
+        let cap = 512usize;
+        let region = build_history_region(&prov(), &prior, cap);
+        let note = region[3]["content"].as_str().expect("the note is text");
+        let text = note
+            .strip_prefix("[Tool results] ")
+            .expect("results note prefix");
+        assert!(
+            text.len() <= cap,
+            "result over its own cap: {} bytes",
+            text.len()
+        );
+        assert!(
+            text.contains("bytes dropped from the middle"),
+            "middle cut must be stated: {text}"
+        );
+        assert!(text.starts_with("HEAD-"), "head must survive: {text}");
+        assert!(text.ends_with("-TAIL"), "tail must survive: {text}");
+    }
+
+    /// The result note obeys the same cache invariant as the calls note: a
+    /// turn's note is a function of that turn alone, so the block stays a
+    /// byte-stable prefix as later turns arrive.
+    #[test]
+    fn history_result_notes_stay_a_byte_stable_prefix() {
+        let short = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1", "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": "file.txt"}),
+            json!({"role": "assistant", "content": "done"}),
+        ];
+        let mut long = short.clone();
+        for i in 2..=6 {
+            long.push(json!({"role": "user", "content": format!("u{i}")}));
+            long.push(json!({"role": "assistant", "content": format!("a{i}")}));
+        }
+        let short_region = build_history_region(&prov(), &short, 4096);
+        let long_region = build_history_region(&prov(), &long, 4096);
+        assert_eq!(
+            short_region,
+            long_region[..short_region.len()],
+            "a turn's result note must not change when later turns arrive"
+        );
+    }
+
+    /// The current-turn checkpoint follows the same switch: its marker
+    /// states that results are included and truncated, and the note
+    /// appears after the calls note.
+    #[test]
+    fn checkpoint_replays_results_when_cap_set() {
+        let prefix = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1", "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": "file.txt"}),
+            json!({"role": "assistant", "content": "done"}),
+        ];
+        let region = build_checkpoint_region(&prov(), &prefix, 4096);
+        assert_eq!(
+            region[0]["content"],
+            TURN_CHECKPOINT_MARKER_TEXT_WITH_RESULTS
+        );
+        assert_eq!(region[2]["content"], "[Tool calls] bash()");
+        assert_eq!(region[3]["content"], "[Tool results] file.txt");
+
+        // 0 is the off sentinel for the checkpoint too: legacy marker and
+        // no results note.
+        let off = build_checkpoint_region(&prov(), &prefix, 0);
+        assert_eq!(off[0]["content"], TURN_CHECKPOINT_MARKER_TEXT);
+        assert!(
+            !serde_json::to_string(&off)
+                .unwrap()
+                .contains("[Tool results]"),
+            "zero cap must not replay results"
+        );
+    }
+
+    /// End to end: the strategy field reaches the builder, so a topic that
+    /// sets `history_tool_result_cap` gets replayed results in the history
+    /// region of the payload it actually sends.
+    #[test]
+    fn build_send_context_replays_history_results_when_cap_set() {
+        let prior = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1", "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": "file.txt"}),
+            json!({"role": "assistant", "content": "done"}),
+        ];
+        let current = vec![json!({"role": "user", "content": "u2"})];
+        let prior_len = prior.len();
+        let mut ctx = prior.clone();
+        ctx.extend(current.clone());
+
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 5,
+            extend_rate: 0.5,
+            history_tool_result_cap: Some(4096),
+            ..ContextStrategyConfig::default()
+        };
+        let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg)
+            .0
+            .into_owned();
+
+        assert_eq!(
+            sent[0]["content"],
+            crate::session::HISTORY_MARKER_TEXT_WITH_RESULTS
+        );
+        let dumped = serde_json::to_string(&sent).unwrap();
+        assert!(
+            dumped.contains("[Tool results] file.txt"),
+            "replayed result missing: {dumped}"
+        );
+
+        // Off by default: the same payload keeps the pre-existing shape.
+        let off = ContextStrategyConfig {
+            history_tool_result_cap: None,
+            ..cfg.clone()
+        };
+        let sent_off = build_send_context_with_regions(&prov(), &ctx, prior_len, &off)
+            .0
+            .into_owned();
+        let dumped_off = serde_json::to_string(&sent_off).unwrap();
+        assert!(!dumped_off.contains("file.txt"), "{dumped_off}");
+        assert_eq!(sent_off[0]["content"], crate::session::HISTORY_MARKER_TEXT);
+
+        // `Some(0)` is the explicit off sentinel: byte-identical to unset.
+        let zero = ContextStrategyConfig {
+            history_tool_result_cap: Some(0),
+            ..cfg.clone()
+        };
+        let sent_zero = build_send_context_with_regions(&prov(), &ctx, prior_len, &zero)
+            .0
+            .into_owned();
+        assert_eq!(sent_zero, sent_off, "Some(0) must match None byte for byte");
+    }
+
     /// The cache invariant behind the note's shape: a turn's note is a
     /// function of **that turn alone**. Were it "the last N turns" or
     /// budgeted per block, a new turn would rewrite the middle of the block
@@ -1832,8 +2059,8 @@ mod render_raw_context_tests {
             long.push(json!({"role": "assistant", "content": format!("a{i}")}));
         }
 
-        let short_region = build_history_region(&prov, &short);
-        let long_region = build_history_region(&prov, &long);
+        let short_region = build_history_region(&prov, &short, 0);
+        let long_region = build_history_region(&prov, &long, 0);
 
         assert_eq!(short_region.len(), 6, "marker + note + two turns");
         assert_eq!(
@@ -1860,7 +2087,7 @@ mod render_raw_context_tests {
             json!({"role": "user", "content": "u1"}),
             json!({"role": "assistant", "content": "a1", "tool_calls": calls}),
         ];
-        let region = build_history_region(&prov(), &prior);
+        let region = build_history_region(&prov(), &prior, 0);
         let note = region[2]["content"].as_str().expect("the note is text");
         assert!(note.starts_with("[Tool calls] "), "{note}");
         assert!(

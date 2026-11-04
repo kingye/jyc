@@ -537,33 +537,34 @@ pub(super) fn push_latency_span(spans: &mut Vec<Span>, t: &TopicInfo) {
     }
 }
 
-/// The word that names the blocks on the status row. It says what the
-/// blocks count — the queue's occupancy — so they cannot be read as the
+/// The word that names the marks on the status row. It says what the
+/// marks count — the queue's occupancy — so they cannot be read as the
 /// progress of the turn the status word names.
 const QUEUE_WORD: &str = "queue ";
 
 /// The separator between the status word and the queue's part of the row.
 const QUEUE_SEPARATOR: &str = " · ";
 
-/// The block that stands for one message of the topic's queue.
+/// The mark that stands for one message of the topic's queue.
 ///
-/// A quarter short of a cell, so the blocks keep a gap between them and
-/// the row reads as a row of blocks rather than a solid bar. The block
-/// elements are one cell wide in every font — the wider box glyphs are
-/// ambiguous, and a CJK font would stretch them.
-const QUEUE_BLOCK: &str = "▊";
+/// A dash, one cell wide in every font. Both the queued and free marks are
+/// bold; colour carries occupancy — yellow for a message waiting for a turn
+/// of its own, dark gray for a free slot. The pane also uses a dash for an
+/// absent pattern and deleted-line counts; the leading word `queue` keeps
+/// the marks from reading as either.
+const QUEUE_MARK: &str = "-";
 
 /// Append the status row to `spans` — the topic's live status and the
-/// backlog its queue holds, on one row: `Processing · queue ▊▊▊ 2 / 10`.
+/// backlog its queue holds, on one row: `Processing · queue --- 2 / 10`.
 ///
-/// The blocks say how much of the queue is taken (the queued ones yellow,
+/// The marks say how much of the queue is taken (the queued ones yellow,
 /// the free slots dark gray), the figures carry the exact counts, and
-/// the word `queue` is what tells the reader that the blocks count the
+/// the word `queue` is what tells the reader that the marks count the
 /// queue and not the progress of the turn the status word names.
 ///
 /// The row gives way as the pane narrows, in this order: the figures
-/// move to the row under it, then the blocks go (and the word with them
-/// — it names blocks that are no longer there), then the figures move
+/// move to the row under it, then the marks go (and the word with them
+/// — it names marks that are no longer there), then the figures move
 /// under the status word. Nothing is dropped: every figure is still on
 /// the pane.
 ///
@@ -571,7 +572,7 @@ const QUEUE_BLOCK: &str = "▊";
 /// the queue, the ones the running turn pulled aside for a turn of their
 /// own, and the ones the running turn has taken in and the model has not
 /// read yet. It can exceed the capacity — the running turn holds
-/// messages the queue gave up room for — and the blocks then fill the row
+/// messages the queue gave up room for — and the marks then fill the row
 /// without covering it: the figures say what is really waiting.
 ///
 /// Returns the figures when they belong on the row under the status
@@ -592,31 +593,31 @@ pub(super) fn push_status_span(
         return None;
     }
     let figures = format!("{} / {}", t.queued, capacity);
-    // The row with the figures on it: status · queue <blocks> <figures>.
+    // The row with the figures on it: status · queue <marks> <figures>.
     let with_figures =
         status_cells + QUEUE_SEPARATOR.width() + QUEUE_WORD.width() + 1 + figures.width();
-    let blocks = value_cells.saturating_sub(with_figures);
-    if blocks >= MIN_BAR_WIDTH {
+    let marks = value_cells.saturating_sub(with_figures);
+    if marks >= MIN_BAR_WIDTH {
         spans.push(Span::raw(QUEUE_SEPARATOR));
         spans.push(Span::raw(QUEUE_WORD));
-        push_queue_blocks(spans, t, blocks);
+        push_queue_marks(spans, t, marks);
         spans.push(Span::raw(" "));
         spans.push(Span::raw(figures));
         return None;
     }
-    // The row without them: status · queue <blocks>, the figures on the
-    // row under it. The blocks keep two cells to the pane's edge, so they
+    // The row without them: status · queue <marks>, the figures on the
+    // row under it. The marks keep two cells to the pane's edge, so they
     // never touch the border.
-    let blocks = value_cells.saturating_sub(
+    let marks = value_cells.saturating_sub(
         status_cells + QUEUE_SEPARATOR.width() + QUEUE_WORD.width() + BAR_EDGE_ROOM,
     );
-    if blocks >= MIN_BAR_WIDTH {
+    if marks >= MIN_BAR_WIDTH {
         spans.push(Span::raw(QUEUE_SEPARATOR));
         spans.push(Span::raw(QUEUE_WORD));
-        push_queue_blocks(spans, t, blocks);
+        push_queue_marks(spans, t, marks);
         return Some(Span::raw(figures));
     }
-    // No blocks: the word names blocks that are no longer there, so it
+    // No marks: the word names marks that are no longer there, so it
     // goes with them.
     if value_cells >= status_cells + QUEUE_SEPARATOR.width() + figures.width() {
         spans.push(Span::raw(QUEUE_SEPARATOR));
@@ -626,15 +627,15 @@ pub(super) fn push_status_span(
     Some(Span::raw(figures))
 }
 
-/// Append the queue's blocks to `spans` — one block per message the
+/// Append the queue's marks to `spans` — one mark per message the
 /// queue can hold, the queued ones yellow and the free slots dark gray,
 /// in at most `room` cells of room.
 ///
-/// A capacity wider than the room is drawn as a share of it: the blocks
+/// A capacity wider than the room is drawn as a share of it: the marks
 /// would be cut in half by the wrapping, so the row shows how much of the
 /// queue is taken, rounded to the nearest cell. The figures beside the
-/// blocks carry the exact counts.
-fn push_queue_blocks(spans: &mut Vec<Span>, t: &TopicInfo, room: usize) {
+/// marks carry the exact counts.
+fn push_queue_marks(spans: &mut Vec<Span>, t: &TopicInfo, room: usize) {
     let capacity = t.queue_capacity;
     let (cells, filled) = if capacity <= room {
         (capacity, t.queued.min(capacity))
@@ -644,7 +645,7 @@ fn push_queue_blocks(spans: &mut Vec<Span>, t: &TopicInfo, room: usize) {
     };
     if filled > 0 {
         spans.push(Span::styled(
-            QUEUE_BLOCK.repeat(filled),
+            QUEUE_MARK.repeat(filled),
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -652,8 +653,10 @@ fn push_queue_blocks(spans: &mut Vec<Span>, t: &TopicInfo, room: usize) {
     }
     if filled < cells {
         spans.push(Span::styled(
-            QUEUE_BLOCK.repeat(cells - filled),
-            Style::default().fg(Color::DarkGray),
+            QUEUE_MARK.repeat(cells - filled),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
         ));
     }
 }
@@ -832,18 +835,18 @@ mod tests {
         assert!(figures.is_none());
     }
 
-    /// The status row carries the queue's backlog: the blocks say how much
+    /// The status row carries the queue's backlog: the marks say how much
     /// of the queue is taken, the figures carry the exact counts, and the
-    /// word `queue` says what the blocks count — so they cannot be read as
+    /// word `queue` says what the marks count — so they cannot be read as
     /// the progress of the turn the status word names.
     #[test]
-    fn the_status_row_carries_the_queue_as_blocks() {
+    fn the_status_row_carries_the_queue_as_marks() {
         let mut t = info_with(None, None, None, None, None, None);
         t.queued = 3;
         t.queue_capacity = 10;
         let mut spans = Vec::new();
         // A value column of twenty-five cells: the status word, the
-        // separator, the word, the figures and five cells of blocks.
+        // separator, the word, the figures and five cells of marks.
         let figures = push_status_span(&mut spans, &t, 25);
         assert_eq!(spans.len(), 8, "{spans:?}");
         assert_eq!(spans[0].content, padded("Status: "));
@@ -852,43 +855,45 @@ mod tests {
         assert_eq!(spans[3].content, QUEUE_WORD);
         // Three of ten messages waiting in five cells is a tenth and a
         // half of the row, which rounds to two cells.
-        assert_eq!(spans[4].content, QUEUE_BLOCK.repeat(2));
+        assert_eq!(spans[4].content, QUEUE_MARK.repeat(2));
         assert_eq!(spans[4].style.fg, Some(Color::Yellow));
-        assert_eq!(spans[5].content, QUEUE_BLOCK.repeat(3));
+        assert!(spans[4].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(spans[5].content, QUEUE_MARK.repeat(3));
         assert_eq!(spans[5].style.fg, Some(Color::DarkGray));
+        assert!(spans[5].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(spans[6].content, " ");
         assert_eq!(spans[7].content, "3 / 10");
         assert!(figures.is_none(), "the figures share the row");
     }
 
-    /// A row too narrow for the figures beside the blocks gives them the
-    /// row under it — nothing is dropped, and the blocks keep their word.
+    /// A row too narrow for the figures beside the marks gives them the
+    /// row under it — nothing is dropped, and the marks keep their word.
     #[test]
     fn the_status_row_gives_the_figures_the_row_under_it() {
         let mut t = info_with(None, None, None, None, None, None);
         t.queued = 3;
         t.queue_capacity = 10;
         let mut spans = Vec::new();
-        // One cell short of the figures fitting beside the blocks: the
-        // blocks take the room the figures would have had.
+        // One cell short of the figures fitting beside the marks: the
+        // marks take the room the figures would have had.
         let figures = push_status_span(&mut spans, &t, 24);
         assert_eq!(spans.len(), 6, "{spans:?}");
-        assert_eq!(spans[4].content, QUEUE_BLOCK.repeat(3));
+        assert_eq!(spans[4].content, QUEUE_MARK.repeat(3));
         assert_eq!(spans[4].style.fg, Some(Color::Yellow));
-        assert_eq!(spans[5].content, QUEUE_BLOCK.repeat(6));
+        assert_eq!(spans[5].content, QUEUE_MARK.repeat(6));
         assert_eq!(spans[5].style.fg, Some(Color::DarkGray));
         assert_eq!(figures.unwrap().content, "3 / 10");
     }
 
-    /// A row too narrow for honest blocks drops them — and the word that
+    /// A row too narrow for honest marks drops them — and the word that
     /// named them — and keeps the figures.
     #[test]
-    fn the_status_row_drops_the_blocks_when_the_row_cannot_carry_them() {
+    fn the_status_row_drops_the_marks_when_the_row_cannot_carry_them() {
         let mut t = info_with(None, None, None, None, None, None);
         t.queued = 3;
         t.queue_capacity = 10;
         let mut spans = Vec::new();
-        // Nineteen cells: too narrow for five blocks beside the word,
+        // Nineteen cells: too narrow for five marks beside the word,
         // wide enough for the figures.
         let figures = push_status_span(&mut spans, &t, 19);
         assert_eq!(spans.len(), 4, "{spans:?}");
@@ -915,7 +920,7 @@ mod tests {
     }
 
     /// A queue that holds more than its capacity fills the row without
-    /// covering it: the blocks stop at the row's width, and the figures
+    /// covering it: the marks stop at the row's width, and the figures
     /// carry the real count.
     #[test]
     fn a_queue_over_its_capacity_fills_the_row_and_no_more() {
@@ -925,11 +930,12 @@ mod tests {
         let mut spans = Vec::new();
         // Twenty-six cells: the status word, the separator, the word, a
         // space and the figures — `30 / 10` is seven cells, one more than
-        // a single-digit count — leave five for the blocks.
+        // a single-digit count — leave five for the marks.
         let figures = push_status_span(&mut spans, &t, 26);
         assert_eq!(spans.len(), 7, "{spans:?}");
-        assert_eq!(spans[4].content, QUEUE_BLOCK.repeat(5));
+        assert_eq!(spans[4].content, QUEUE_MARK.repeat(5));
         assert_eq!(spans[4].style.fg, Some(Color::Yellow));
+        assert!(spans[4].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(spans[6].content, "30 / 10");
         assert!(figures.is_none());
     }
@@ -943,8 +949,9 @@ mod tests {
         let mut spans = Vec::new();
         let figures = push_status_span(&mut spans, &t, 25);
         assert_eq!(spans.len(), 7, "{spans:?}");
-        assert_eq!(spans[4].content, QUEUE_BLOCK.repeat(5));
+        assert_eq!(spans[4].content, QUEUE_MARK.repeat(5));
         assert_eq!(spans[4].style.fg, Some(Color::DarkGray));
+        assert!(spans[4].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(spans[6].content, "0 / 10");
         assert!(figures.is_none());
     }

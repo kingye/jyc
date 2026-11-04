@@ -76,7 +76,7 @@ fn format_topic_info(t: &TopicInfo) -> String {
         lines.push(format!("Branch: {branch}"));
     }
     // The topic's live status, with the backlog its queue holds: the
-    // figures the pane's status row carries beside the blocks. Omitted
+    // figures the pane's status row carries beside the marks. Omitted
     // when the source reports no capacity — there is no queue to report
     // then.
     if t.queue_capacity > 0 {

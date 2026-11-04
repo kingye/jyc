@@ -354,11 +354,11 @@ pub struct TopicInfo {
     #[serde(default)]
     pub queued: usize,
     /// How many messages the topic's queue holds before new ones are
-    /// dropped — the queue's capacity, one slot per message the bar
-    /// draws.
+    /// dropped — the queue's capacity, one slot per message the row
+    /// draws a mark for.
     ///
     /// Zero when the source does not report a capacity: the surfaces
-    /// then omit the queue row rather than draw a bar of no slots.
+    /// then omit the queue row rather than draw marks for no slots.
     #[serde(default)]
     pub queue_capacity: usize,
     /// Name of the topic that spawned this one — read from the

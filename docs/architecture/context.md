@@ -323,9 +323,10 @@ The pairing unit is the **turn**, not the single message:
   context) closes it.
 - **All assistant messages in a turn are merged into one entry** holding
   their visible text plus the turn's `reasoning_content` — intermediate
-  tool-call steps and the final reply alike. The separate
-  `reasoning_content` field survives the merge (the fold replays it
-  through the provider's wire shape), one leading inline block that
+  tool-call steps and the final reply alike. The turn's concluding
+  step's `reasoning_content` survives the merge — last non-empty step
+  wins (the fold replays it through the provider's wire shape), one
+  leading inline block that
   duplicates it is stripped, and `tool_calls` are kept out of the
   assistant entry, so the history block carries no call structure. A
   leading block without that field is stripped on the replay path too —

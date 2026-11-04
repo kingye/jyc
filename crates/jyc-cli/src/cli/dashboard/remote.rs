@@ -429,8 +429,10 @@ impl Tunnel {
         // die of its bind failure (`ExitOnForwardFailure`) and the readiness
         // probe below could then connect to that foreign listener and declare
         // the wrong tunnel up.
-        if std::net::TcpListener::bind(&*addr).is_err() {
-            bail!("local port {local_port} is already in use; cannot open the tunnel there");
+        if port_has_listener(local_port) {
+            bail!(
+                "local port {local_port} is already in use by another listener; cannot open the tunnel there"
+            );
         }
         let args = tunnel_args(remote, local_port);
 
@@ -548,12 +550,25 @@ where
                 status = %status,
                 "ssh tunnel exited; reopening"
             ),
-            Err(err) => tracing::warn!(
-                addr = %tunnel.addr,
-                error = %err,
-                "waiting on the ssh tunnel failed; reopening"
-            ),
+            Err(err) => {
+                tracing::warn!(
+                    addr = %tunnel.addr,
+                    error = %err,
+                    "waiting on the ssh tunnel failed; killing it and reopening"
+                );
+                // A failed wait did not reap the child, so the forward may
+                // still be alive and still own the port — kill it before
+                // reopening, or the occupancy check in `open` would refuse
+                // forever with a misleading message.
+                if let Err(kill_err) = tunnel.child.kill().await {
+                    tracing::warn!(error = %kill_err, "failed to kill the ssh tunnel child");
+                }
+            }
         }
+        // The death moves the backoff, so the uptime is the *old* tunnel's
+        // alone: sample it here, before reopening adds its own duration on
+        // top of the measurement.
+        let uptime = opened_at.elapsed();
         loop {
             match open().await {
                 Ok(next) => {
@@ -572,7 +587,7 @@ where
                 }
             }
         }
-        backoff = next_backoff_after_death(backoff, opened_at.elapsed());
+        backoff = next_backoff_after_death(backoff, uptime);
     }
 }
 
@@ -604,14 +619,21 @@ fn is_wildcard(host: &str) -> bool {
         .is_ok_and(|ip| ip.is_unspecified())
 }
 
+/// Whether a process is already listening on the loopback port. A connect
+/// probe is used rather than a bind one, so a just-closed ssh forward — whose
+/// accepted sockets sit in TIME_WAIT on this port for a while — does not make
+/// a free port look occupied.
+fn port_has_listener(port: u16) -> bool {
+    std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+}
+
 /// Pick the local port for the tunnel.
 ///
 /// The same number as the remote side when it is free here, so links the
 /// server generates (`http://127.0.0.1:<port>/exchange/…`) resolve verbatim;
 /// otherwise an ephemeral port, with [`Tunnel::rewrite`] translating them.
 pub(super) fn choose_local_port(remote_port: u16) -> u16 {
-    let free = |port: u16| std::net::TcpListener::bind(("127.0.0.1", port)).is_ok();
-    if free(remote_port) {
+    if !port_has_listener(remote_port) {
         return remote_port;
     }
     std::net::TcpListener::bind(("127.0.0.1", 0))
@@ -1286,7 +1308,28 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        // Recovery parks the supervisor on the new tunnel: no further open
+        // may run. Without this an opener that never succeeds passes the
+        // loop above too, since `attempts >= 3` held from its third call on.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 3);
         handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn open_refuses_to_spawn_when_the_local_port_is_occupied() -> anyhow::Result<()> {
+        // No lock needed: the bail fires before ssh is ever spawned.
+        let foreign = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let port = foreign.local_addr()?.port();
+        let err = Tunnel::open(&remote(), port, port)
+            .await
+            .err()
+            .expect("open must refuse a port another listener owns");
+        assert!(
+            err.to_string().contains("already in use"),
+            "unexpected error: {err:#}"
+        );
         Ok(())
     }
 
@@ -1298,10 +1341,9 @@ mod tests {
         let open = move || {
             let recorded = recorded.clone();
             async move {
-                let child = Command::new("sleep")
-                    .arg("0.03")
-                    .kill_on_drop(true)
-                    .spawn()?;
+                // Long-lived: must still be running when the abort lands, or
+                // the post-abort assertions pass even if abort killed nothing.
+                let child = Command::new("sleep").arg("30").kill_on_drop(true).spawn()?;
                 recorded
                     .lock()
                     .unwrap()
@@ -1313,6 +1355,7 @@ mod tests {
                 })
             }
         };
+        // Short-lived: its death is what makes the supervisor reopen.
         let first_child = Command::new("sleep")
             .arg("0.03")
             .kill_on_drop(true)
@@ -1325,10 +1368,15 @@ mod tests {
         };
         let handle = tokio::spawn(async move { supervise_tunnel_loop(first, open).await });
         tokio::time::sleep(Duration::from_millis(400)).await;
+        let reopened = pids.lock().unwrap().clone();
+        assert!(!reopened.is_empty(), "supervisor never reopened the tunnel");
+        for pid in &reopened {
+            assert!(pid_alive(*pid), "tunnel child {pid} died before the abort");
+        }
         handle.abort();
         let _ = handle.await;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        for pid in std::iter::once(first_pid).chain(pids.lock().unwrap().iter().copied()) {
+        for pid in std::iter::once(first_pid).chain(reopened) {
             while pid_alive(pid) {
                 assert!(
                     tokio::time::Instant::now() < deadline,

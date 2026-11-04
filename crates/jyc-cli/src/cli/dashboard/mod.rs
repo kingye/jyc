@@ -1166,41 +1166,57 @@ pub async fn run_connect(args: &ConnectArgs, data_dir: &std::path::Path, pipe: b
     };
 
     // No `-p`/`-t`: plain dashboard against the remote.
-    if args.open.topic.is_none() && args.open.path.is_none() {
-        return run(&dashboard, data_dir, false, None, None, false).await;
-    }
-
-    // The server takes `-p` verbatim, so it has to be absolute already: this
-    // machine's cwd and home mean nothing on the other side. `~` is expanded
-    // against the *remote* home. `check_existing_topic_name` is deliberately
-    // not called — it reads the topic's own state dir, which lives over there,
-    // so the remote server's adoption rules are the authority for its paths.
-    let path = remote::resolve_remote_path(args.open.path.as_deref(), &remote.home().await?)?;
-    let topic = derive_topic_name(&path, args.open.topic.as_deref());
-    let client = match &dashboard.token {
-        Some(token) => InspectClient::with_token(&tunnel.addr, Some(token.as_str())),
-        None => InspectClient::new(&tunnel.addr),
+    let (topic, channel) = if args.open.topic.is_none() && args.open.path.is_none() {
+        (None, None)
+    } else {
+        // The server takes `-p` verbatim, so it has to be absolute already: this
+        // machine's cwd and home mean nothing on the other side. `~` is expanded
+        // against the *remote* home. `check_existing_topic_name` is deliberately
+        // not called — it reads the topic's own state dir, which lives over there,
+        // so the remote server's adoption rules are the authority for its paths.
+        let path = remote::resolve_remote_path(args.open.path.as_deref(), &remote.home().await?)?;
+        let topic = derive_topic_name(&path, args.open.topic.as_deref());
+        let client = match &dashboard.token {
+            Some(token) => InspectClient::with_token(&tunnel.addr, Some(token.as_str())),
+            None => InspectClient::new(&tunnel.addr),
+        };
+        let channel = resolve_websocket_channel(&client, args.open.channel.as_deref()).await?;
+        tracing::info!(
+            host = %args.host,
+            topic = %topic,
+            channel = %channel,
+            path = %path,
+            "Opening remote directory as ad-hoc topic via jyc connect"
+        );
+        register_topic(&client, &channel, &topic, &path).await?;
+        (Some(topic), Some(channel))
     };
-    let channel = resolve_websocket_channel(&client, args.open.channel.as_deref()).await?;
-    tracing::info!(
-        host = %args.host,
-        topic = %topic,
-        channel = %channel,
-        path = %path,
-        "Opening remote directory as ad-hoc topic via jyc connect"
-    );
-    register_topic(&client, &channel, &topic, &path).await?;
 
-    // `tunnel` stays alive for the whole run: it is the only route to the hub.
-    run(
+    // The tunnel is the only route to the hub, and a long network outage kills
+    // ssh's ServerAlive watchdog: supervise it so the dashboard's fixed local
+    // addr keeps working across tunnel restarts. Aborted when the run ends;
+    // `Tunnel`'s `kill_on_drop` then ends the forward as an unsupervised one
+    // did when the dashboard exited.
+    let supervisor = tokio::spawn(remote::supervise_tunnel(
+        remote,
+        local_port,
+        remote_port,
+        tunnel,
+    ));
+    let result = run(
         &dashboard,
         data_dir,
         false,
-        Some(&topic),
-        Some(&channel),
+        topic.as_deref(),
+        channel.as_deref(),
         false,
     )
-    .await
+    .await;
+    supervisor.abort();
+    // Await the aborted task so its `Tunnel` is dropped — and ssh killed —
+    // before `run_connect` returns, instead of leaving that to runtime drop.
+    let _ = supervisor.await;
+    result
 }
 
 /// Resolve the topic path to an absolute filesystem path.

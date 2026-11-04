@@ -23,6 +23,15 @@ use crate::cli::resolve::normalize_inspect_client_addr;
 
 /// How long the local end of the tunnel may take to accept connections.
 const TUNNEL_READY_TIMEOUT: Duration = Duration::from_secs(10);
+/// First delay before reopening a dead ssh tunnel.
+const TUNNEL_RETRY_MIN: Duration = Duration::from_secs(1);
+/// Longest backoff added after a failed reopen attempt — the same cadence as
+/// the dashboard's own WebSocket reconnect. An attempt costs its own setup
+/// time on top (up to [`TUNNEL_READY_TIMEOUT`] while ssh hangs).
+const TUNNEL_RETRY_MAX: Duration = Duration::from_secs(30);
+/// A tunnel that dies sooner than this never had a chance to serve; its death
+/// keeps the backoff growing instead of resetting it.
+const TUNNEL_MIN_UPTIME: Duration = Duration::from_secs(3);
 /// How long a remote `jyc serve` we started may take to answer.
 const SERVE_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long one ssh command may take, end to end.
@@ -389,14 +398,42 @@ pub(super) struct Tunnel {
     /// links carry the remote's own `http://127.0.0.1:<port>`, which does not
     /// resolve here, so message text is translated on the way in.
     pub(super) rewrite: Option<(String, String)>,
-    /// Held for its `kill_on_drop`.
-    _child: Child,
+    /// Held for its `kill_on_drop`; reaped by [`Tunnel::wait`] under the
+    /// supervisor.
+    child: Child,
+}
+
+/// The error for an ssh child that exited before its listener was ready: its
+/// own stderr is the diagnosis.
+async fn tunnel_exit_error(
+    host: &str,
+    status: std::process::ExitStatus,
+    child: &mut Child,
+) -> anyhow::Error {
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr).await;
+    }
+    anyhow::anyhow!(
+        "ssh tunnel to {host} exited ({status}): {}\n  \
+         the tunnel needs non-interactive auth — check `ssh {host} true` and your agent",
+        stderr.trim(),
+    )
 }
 
 impl Tunnel {
     /// Open the forward and wait until ssh accepts connections on it.
     pub(super) async fn open(remote: &Remote, local_port: u16, remote_port: u16) -> Result<Self> {
         let addr = format!("127.0.0.1:{local_port}");
+        // Refuse to even spawn when something else owns the port: ssh would
+        // die of its bind failure (`ExitOnForwardFailure`) and the readiness
+        // probe below could then connect to that foreign listener and declare
+        // the wrong tunnel up.
+        if port_has_listener(local_port) {
+            bail!(
+                "local port {local_port} is already in use by another listener; cannot open the tunnel there"
+            );
+        }
         let args = tunnel_args(remote, local_port);
 
         let mut child = Command::new("ssh")
@@ -414,20 +451,16 @@ impl Tunnel {
         let deadline = tokio::time::Instant::now() + TUNNEL_READY_TIMEOUT;
         loop {
             if TcpStream::connect(&addr).await.is_ok() {
+                // The probe proves *a* listener exists — ours, or a foreign
+                // one. Only count it while our ssh is still alive; a bind
+                // failure exits ssh within the first iteration.
+                if let Some(status) = child.try_wait()? {
+                    return Err(tunnel_exit_error(&remote.host, status, &mut child).await);
+                }
                 break;
             }
             if let Some(status) = child.try_wait()? {
-                let mut stderr = String::new();
-                if let Some(mut pipe) = child.stderr.take() {
-                    let _ = pipe.read_to_string(&mut stderr).await;
-                }
-                bail!(
-                    "ssh tunnel to {} exited ({status}): {}\n  \
-                     the tunnel needs non-interactive auth — check `ssh {} true` and your agent",
-                    remote.host,
-                    stderr.trim(),
-                    remote.host
-                );
+                return Err(tunnel_exit_error(&remote.host, status, &mut child).await);
             }
             if tokio::time::Instant::now() >= deadline {
                 bail!(
@@ -439,12 +472,122 @@ impl Tunnel {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
+        // stderr was piped so a failed start can report it above; afterwards
+        // nothing reads it, and a chatty ssh could fill the 64 KB pipe and
+        // block on write. Drain it for the rest of the tunnel's life.
+        if let Some(mut stderr) = child.stderr.take() {
+            tokio::spawn(async move {
+                let mut sink = tokio::io::sink();
+                let _ = tokio::io::copy(&mut stderr, &mut sink).await;
+            });
+        }
+
         let rewrite = rewrite_pair(local_port, remote_port, remote.bind_host()?);
         Ok(Self {
             addr,
             rewrite,
-            _child: child,
+            child,
         })
+    }
+
+    /// Wait for the ssh child to exit, whatever the status.
+    async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.child.wait().await
+    }
+}
+
+/// Delay after a failed reopen attempt: 1s, 2s, … capped at [`TUNNEL_RETRY_MAX`].
+fn next_tunnel_backoff(prev: Duration) -> Duration {
+    (prev * 2).min(TUNNEL_RETRY_MAX)
+}
+
+/// Backoff to use once a tunnel has died: one that demonstrably served resets
+/// to the minimum; one that died on arrival keeps the cadence growing, so a
+/// zero-progress respawn loop cannot churn at full rate.
+fn next_backoff_after_death(backoff: Duration, uptime: Duration) -> Duration {
+    if uptime >= TUNNEL_MIN_UPTIME {
+        TUNNEL_RETRY_MIN
+    } else {
+        next_tunnel_backoff(backoff)
+    }
+}
+
+/// Keep the dashboard's route to the hub alive.
+///
+/// ssh exits on its own once its `ServerAlive*` watchdog concludes the peer is
+/// gone (~45s of outage), and the dashboard's WS client retries forever — but
+/// only against a listener that exists. Without this supervisor a long outage
+/// leaves the UI reconnecting into a dead local port no matter how long it
+/// waits. So: wait out each ssh death, then reopen the same local port (the
+/// dashboard's addr never changes) with backoff until the network is back.
+///
+/// Only the transport is revived: a remote host reboot also kills `jyc serve`
+/// there, and this does not restart it — the UI keeps reconnecting into a
+/// silent hub until `jyc connect --serve` is run again.
+///
+/// Runs until aborted. `Tunnel`'s `kill_on_drop` ends the forward on the way
+/// out, exactly as an unsupervised tunnel did when the dashboard exited.
+pub(super) async fn supervise_tunnel(
+    remote: Remote,
+    local_port: u16,
+    remote_port: u16,
+    tunnel: Tunnel,
+) -> ! {
+    supervise_tunnel_loop(tunnel, || Tunnel::open(&remote, local_port, remote_port)).await
+}
+
+async fn supervise_tunnel_loop<F, Fut>(mut tunnel: Tunnel, mut open: F) -> !
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<Tunnel>>,
+{
+    let mut backoff = TUNNEL_RETRY_MIN;
+    loop {
+        let opened_at = std::time::Instant::now();
+        match tunnel.wait().await {
+            Ok(status) => tracing::warn!(
+                addr = %tunnel.addr,
+                status = %status,
+                "ssh tunnel exited; reopening"
+            ),
+            Err(err) => {
+                tracing::warn!(
+                    addr = %tunnel.addr,
+                    error = %err,
+                    "waiting on the ssh tunnel failed; killing it and reopening"
+                );
+                // A failed wait did not reap the child, so the forward may
+                // still be alive and still own the port — kill it before
+                // reopening, or the occupancy check in `open` would refuse
+                // forever with a misleading message.
+                if let Err(kill_err) = tunnel.child.kill().await {
+                    tracing::warn!(error = %kill_err, "failed to kill the ssh tunnel child");
+                }
+            }
+        }
+        // The death moves the backoff, so the uptime is the *old* tunnel's
+        // alone: sample it here, before reopening adds its own duration on
+        // top of the measurement.
+        let uptime = opened_at.elapsed();
+        loop {
+            match open().await {
+                Ok(next) => {
+                    tunnel = next;
+                    break;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        addr = %tunnel.addr,
+                        error = %err,
+                        backoff_ms = backoff.as_millis() as u64,
+                        "ssh tunnel reopen failed; retrying"
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff = next_tunnel_backoff(backoff);
+                }
+            }
+        }
+        backoff = next_backoff_after_death(backoff, uptime);
     }
 }
 
@@ -476,14 +619,21 @@ fn is_wildcard(host: &str) -> bool {
         .is_ok_and(|ip| ip.is_unspecified())
 }
 
+/// Whether a process is already listening on the loopback port. A connect
+/// probe is used rather than a bind one, so a just-closed ssh forward — whose
+/// accepted sockets sit in TIME_WAIT on this port for a while — does not make
+/// a free port look occupied.
+fn port_has_listener(port: u16) -> bool {
+    std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+}
+
 /// Pick the local port for the tunnel.
 ///
 /// The same number as the remote side when it is free here, so links the
 /// server generates (`http://127.0.0.1:<port>/exchange/…`) resolve verbatim;
 /// otherwise an ephemeral port, with [`Tunnel::rewrite`] translating them.
 pub(super) fn choose_local_port(remote_port: u16) -> u16 {
-    let free = |port: u16| std::net::TcpListener::bind(("127.0.0.1", port)).is_ok();
-    if free(remote_port) {
+    if !port_has_listener(remote_port) {
         return remote_port;
     }
     std::net::TcpListener::bind(("127.0.0.1", 0))
@@ -1050,5 +1200,203 @@ mod tests {
             one_shot.contains(&"Compression=no".to_string()),
             "{one_shot:?}"
         );
+    }
+
+    #[test]
+    fn tunnel_reopen_backoff_doubles_and_caps_at_thirty_seconds() {
+        let mut backoff = TUNNEL_RETRY_MIN;
+        let mut seen = Vec::new();
+        for _ in 0..7 {
+            seen.push(backoff);
+            backoff = next_tunnel_backoff(backoff);
+        }
+        assert_eq!(seen, [1, 2, 4, 8, 16, 30, 30].map(Duration::from_secs));
+    }
+
+    #[tokio::test]
+    async fn supervisor_reopens_a_dying_tunnel_until_aborted() {
+        let opens = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let opened = opens.clone();
+        let open = move || {
+            let opened = opened.clone();
+            async move {
+                opened.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok::<_, anyhow::Error>(Tunnel {
+                    addr: "127.0.0.1:0".to_string(),
+                    rewrite: None,
+                    child: Command::new("sleep")
+                        .arg("0.03")
+                        .kill_on_drop(true)
+                        .spawn()?,
+                })
+            }
+        };
+        let first = open().await.expect("first tunnel");
+        let handle = tokio::spawn(async move { supervise_tunnel_loop(first, open).await });
+        // Every generation lives ~30 ms; several must have come and gone by
+        // the time this fires, even on a heavily loaded runner.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        handle.abort();
+        let total = opens.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(total >= 3, "tunnel was reopened too few times: {total}");
+    }
+
+    #[test]
+    fn backoff_resets_after_real_uptime_but_grows_after_instant_death() {
+        let long_up = Duration::from_secs(10);
+        let instant = Duration::from_millis(100);
+        assert_eq!(
+            next_backoff_after_death(Duration::from_secs(1), long_up),
+            TUNNEL_RETRY_MIN
+        );
+        assert_eq!(
+            next_backoff_after_death(Duration::from_secs(1), instant),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            next_backoff_after_death(TUNNEL_RETRY_MAX, instant),
+            TUNNEL_RETRY_MAX
+        );
+    }
+
+    #[test]
+    fn tunnel_args_pin_the_requested_local_port() {
+        // A reopen must rebind the very port the dashboard is aimed at.
+        let args = tunnel_args(&remote(), 9876);
+        assert!(
+            args.iter()
+                .any(|a| a.to_string_lossy() == "127.0.0.1:9876:127.0.0.1:9876"),
+            "args: {args:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_reopens_retry_then_recover() -> anyhow::Result<()> {
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = attempts.clone();
+        let open = move || {
+            let seen = seen.clone();
+            async move {
+                // The first two opens fail; the third succeeds and stays up.
+                if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+                    Err(anyhow::anyhow!("ssh is down"))
+                } else {
+                    Ok::<_, anyhow::Error>(Tunnel {
+                        addr: "127.0.0.1:0".to_string(),
+                        rewrite: None,
+                        child: Command::new("sleep").arg("30").kill_on_drop(true).spawn()?,
+                    })
+                }
+            }
+        };
+        let first = Tunnel {
+            addr: "127.0.0.1:0".to_string(),
+            rewrite: None,
+            child: Command::new("sleep")
+                .arg("0.03")
+                .kill_on_drop(true)
+                .spawn()?,
+        };
+        let handle = tokio::spawn(async move { supervise_tunnel_loop(first, open).await });
+        // Two failures sleep 1s + 2s of backoff before the recovering open,
+        // so three attempts must show up well within the deadline.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while attempts.load(std::sync::atomic::Ordering::SeqCst) < 3 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "supervisor never recovered"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // Recovery parks the supervisor on the new tunnel: no further open
+        // may run. Without this an opener that never succeeds passes the
+        // loop above too, since `attempts >= 3` held from its third call on.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 3);
+        handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn open_refuses_to_spawn_when_the_local_port_is_occupied() -> anyhow::Result<()> {
+        // No lock needed: the bail fires before ssh is ever spawned.
+        let foreign = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let port = foreign.local_addr()?.port();
+        let err = Tunnel::open(&remote(), port, port)
+            .await
+            .err()
+            .expect("open must refuse a port another listener owns");
+        assert!(
+            err.to_string().contains("already in use"),
+            "unexpected error: {err:#}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn aborting_the_supervisor_kills_every_tunnel_child() -> anyhow::Result<()> {
+        let pids = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = pids.clone();
+        let open = move || {
+            let recorded = recorded.clone();
+            async move {
+                // Long-lived: must still be running when the abort lands, or
+                // the post-abort assertions pass even if abort killed nothing.
+                let child = Command::new("sleep").arg("30").kill_on_drop(true).spawn()?;
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push(child.id().expect("child just spawned"));
+                Ok::<_, anyhow::Error>(Tunnel {
+                    addr: "127.0.0.1:0".to_string(),
+                    rewrite: None,
+                    child,
+                })
+            }
+        };
+        // Short-lived: its death is what makes the supervisor reopen.
+        let first_child = Command::new("sleep")
+            .arg("0.03")
+            .kill_on_drop(true)
+            .spawn()?;
+        let first_pid = first_child.id().expect("child just spawned");
+        let first = Tunnel {
+            addr: "127.0.0.1:0".to_string(),
+            rewrite: None,
+            child: first_child,
+        };
+        let handle = tokio::spawn(async move { supervise_tunnel_loop(first, open).await });
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let reopened = pids.lock().unwrap().clone();
+        assert!(!reopened.is_empty(), "supervisor never reopened the tunnel");
+        for pid in &reopened {
+            assert!(pid_alive(*pid), "tunnel child {pid} died before the abort");
+        }
+        handle.abort();
+        let _ = handle.await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        for pid in std::iter::once(first_pid).chain(reopened) {
+            while pid_alive(pid) {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "tunnel child {pid} still alive after abort"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn pid_alive(pid: u32) -> bool {
+        std::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
     }
 }

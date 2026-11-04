@@ -484,7 +484,10 @@ the bootstrap expands `$HOME` and probes for `setsid` through it. That probe is
 also why `-s` works on macOS: `setsid` is used when present, `nohup` alone
 otherwise. Link rewriting covers a concrete non-wildcard bind host; with a
 wildcard bind or a configured `[inspect] base_url` the tunnel still works, but
-the links the server generates then keep their remote URL.
+the links the server generates then keep their remote URL. The tunnel
+self-heals after a network outage — the forward is reopened with backoff until
+the link is back — but a remote reboot also kills `jyc serve` there; rerun
+`jyc connect --serve` in that case.
 
 **Plugins**: a *plugin bundle* is a gzipped tar with `skills/`, `subagents/`,
 `hooks/` and `templates/` at its root — the four user-editable collections this

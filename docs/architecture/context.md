@@ -329,8 +329,9 @@ The pairing unit is the **turn**, not the single message:
   duplicates it is stripped, and `tool_calls` are kept out of the
   assistant entry, so the history block carries no call structure. A
   leading block without that field is stripped on the replay path too —
-  the shape a provider switch leaves in a cross-provider journal — while
-  the transcript view keeps it as visible text.
+  parity with the Responses wire's send-time strip; no in-tree builder
+  writes that shape, so the rule covers legacy or hand-edited entries —
+  while the transcript view keeps it as visible text.
 - **The turn's tool calls are collected separately** (`TurnPair::tool_calls`,
   one `name(args)` string per call — at most 20 per turn, the rest counted
   in `TurnPair::omitted_tool_calls` and rendered as `…(N more calls)`) for

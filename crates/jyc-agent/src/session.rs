@@ -1176,9 +1176,12 @@ fn strip_duplicated_inline_reasoning(text: &str, reasoning: &str) -> String {
 /// `reasoning_content` field, returning the text after it.
 ///
 /// The replay-path counterpart to [`strip_duplicated_inline_reasoning`]'s
-/// field-matched rule: a cross-provider journal (OpenAI → Anthropic →
-/// OpenAI) loses the field in `chat_to_anthropic_messages` but keeps the
-/// text, so the block can survive extraction without its duplicate.
+/// field-matched rule, with the same justification as the Responses wire's
+/// unconditional send-time strip ([`crate::provider::openai_responses`
+/// `strip_think_prefix`]): no in-tree builder writes a block without the
+/// field — every builder that inlined also set the field — so a fieldless
+/// leading block is legacy or hand-edited content, and a literal leading
+/// block is indistinguishable from real reasoning anyway (#1059).
 /// Returns `None` when the text does not open with a closed block — an
 /// unclosed or non-leading block stays visible text.
 pub(crate) fn strip_well_formed_leading_block(text: &str) -> Option<String> {

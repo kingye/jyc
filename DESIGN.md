@@ -2353,13 +2353,19 @@ JYC uses the following subset of the agent service API:
      the assistant reasoning replays through the provider's wire shape —
      the `reasoning_content` field on the OpenAI-compatible wire, a native
      `reasoning` item on Responses, dropped by the Anthropic builder —
-     with the inline `<think>` duplicate stripped; a leading block with no
-     field (the shape a provider switch leaves in a cross-provider
-     journal) strips on the replay path too, unless it is all the content
-     is. The folded reasoning is not size-capped: it counts into the
-     region's reported bytes/tokens like the rest of the fold, so a
-     reasoning-heavy history reaches the slide triggers sooner rather
-     than the payload growing past its budget), and the recent suffix
+     with the inline `<think>` duplicate stripped; a leading block with
+     no field strips on the replay path too — parity with the Responses
+     wire's send-time strip; no in-tree builder writes that shape (every
+     builder that inlined also set the field), so the rule covers legacy
+     or hand-edited entries, at the cost of deleting a literal block
+     indistinguishable from reasoning — unless it is the whole content.
+     Whether a provider that emits thinking inline (MiniMax M3) reads
+     the `reasoning_content` field on input is unverified. The folded
+     reasoning is not size-capped: it enlarges the payload and the
+     region's reported bytes/tokens, and nothing trims it — the slide
+     triggers are computed on the journal slice before the fold, so the
+     reported growth never feeds back into the trigger decision), and
+     the recent suffix
      stays verbatim with structured tool calls and results intact. Each
      later checkpoint is `checkpoint_interval / checkpoint_growth` steps
      wider — 32, 36, 40 … with the defaults (32 and 8) — so a long turn's

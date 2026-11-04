@@ -492,10 +492,11 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # grows between slides, until it reaches max_window turns, then slides back
 # to `window` turns. Slides are the only way history shrinks.
 #
-# History is text-only, so the payload is append-only: every turn appends to
-# the end and the provider's prefix cache keeps matching (another turn's tool
-# calls and results stay in the journal; `context_browse` still reaches them).
-# Only the current turn is sent verbatim, with its tool calls and results.
+# History folds each prior turn to its text plus a `[Tool calls]` note (name
+# and arguments, 1500 B per turn), so the payload is append-only: every turn
+# appends to the end and the provider's prefix cache keeps matching. Tool
+# results stay in the journal; `context_browse` with `results=true` replays
+# them. Only the current turn is sent verbatim, with its calls and results.
 #
 # window: the number of turns the window keeps after a slide — its floor.
 # Default: 10. 0 is treated as 1 (a window holds at least one turn);
@@ -506,8 +507,9 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # `window` a hard cap that slides on every turn — every turn then re-encodes
 # the history and the prompt cache stops paying off.
 # turn_tool_result_cap: cap each tool result in the current turn, keeping
-# the head and tail of an oversized result. Unset by default (the current
-# turn is in flight, so trimming it is opt-in). 0 means off. A non-zero
+# the head and tail of an oversized result. Unset by default, i.e. uncapped:
+# a result is the evidence for what the model is about to claim, and folded
+# history keeps the claim, not the evidence. 0 means off. A non-zero
 # value below 130 is lifted to 130: below that the drop marker leaves no
 # room for both ends, so the trim would degrade to a head-only cut and
 # gut the result. `/context` refuses such a value instead of lifting it.
@@ -522,8 +524,9 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # weight by triggering the slide. The estimate is heuristic (CJK characters
 # ~1 token, other bytes ~1/4), not a tokenizer. Unset by default.
 # checkpoint_interval: how many completed assistant messages the current
-# turn may reach before its older steps fold into a text-only checkpoint
-# (tool calls, arguments and results drop off the wire; visible text stays).
+# turn may reach before its older steps fold into a text-plus-calls
+# checkpoint (tool results drop off the wire; visible text and a `[Tool
+# calls]` note of the calls stay).
 # It counts assistant messages — every step that produced output, a tool
 # call or a final reply — not turns and not tool calls. Default: 32. 0
 # disables in-turn folding, so the whole current turn rides verbatim and
@@ -1170,8 +1173,9 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # window / extend_rate: the sliding window keeps `window` turns after a
 # slide and may grow to window + round(extend_rate * window) before it
 # slides back (defaults 10 and 0.5).
-# History is text-only: only the current turn carries tool calls and
-# results. See `[ai].context_strategy` above for the full field list.
+# History carries each prior turn's text plus a note of the calls it made
+# (never their results); only the current turn carries calls and results
+# verbatim. See `[ai].context_strategy` above for the full field list.
 # context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5 }
 # attachments = { enabled = true, allowed_extensions = [".pdf", ".md"] }
 #

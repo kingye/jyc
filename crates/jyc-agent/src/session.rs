@@ -378,8 +378,9 @@ pub async fn append_wire_payload_dump(
 /// **anchored window**: the journal forward from the anchor stored in the
 /// session state ([`SessionState::context_offset`]), so the window only
 /// ever grows between slides — the loader never trims its head. The wire
-/// payload that follows from this is append-only: the text-only history
-/// grows by append and only the current turn is re-sent (see
+/// payload that follows from this is append-only: the history block (turn
+/// text plus each turn's tool-call note) grows by append and only the
+/// current turn is re-sent (see
 /// `build_send_context_cached`). The window slides (anchor moves forward, whole turns dropped) when it holds
 /// more than [`ContextStrategyConfig::max_window`] turns, or when it has
 /// reached that bound and its estimated weight exceeds
@@ -1128,7 +1129,8 @@ pub(crate) fn extract_message_text(msg: &serde_json::Value) -> String {
     text
 }
 
-/// The assistant's visible text for the text-only transcript view.
+/// The assistant's visible text for the transcript view (the turn's tool
+/// calls are rendered beside it, never into it).
 ///
 /// Raw OpenAI-compatible assistant messages may carry reasoning twice:
 /// inline as one leading reasoning block and as `reasoning_content`. The
@@ -1202,8 +1204,9 @@ const HISTORY_NOTE_PREFIX: &str = "[History note]";
 /// arguments a JSON string) and Anthropic (`content: [{type: "tool_use",
 /// id, name, input}]`) shapes. `args` is the parsed JSON arguments (the
 /// raw string kept as a JSON string when it does not parse, e.g. broken or
-/// empty OpenAI `arguments`). The wire `id` is not kept: nothing links a
-/// call to its result any more (results do not reach the history).
+/// empty OpenAI `arguments`). The wire `id` is not kept: within a turn the
+/// loop appends calls and their results in issue order, so the transcript
+/// pairs them by position and needs no id.
 fn collect_tool_calls(msg: &serde_json::Value) -> Vec<(String, serde_json::Value)> {
     let mut calls = Vec::new();
 
@@ -1334,8 +1337,18 @@ fn truncate_json_value(value: &serde_json::Value, max: usize) -> String {
 /// Wire-only marker inserted at the start of the history block.
 /// It is **not** persisted to `raw_context`, so `extract_pairs` must never
 /// recognize it as a real user message.
-pub(crate) const HISTORY_MARKER_TEXT: &str =
-    "[History messages] earlier conversation follows — text-only, tool calls/results omitted.";
+pub(crate) const HISTORY_MARKER_TEXT: &str = "[History messages] earlier conversation follows — text plus tool calls \
+     (name and arguments); tool results omitted.";
+
+/// Leading text of the wire-only note that carries one turn's tool calls in
+/// a folded region.
+///
+/// The note is a separate user message, never part of the assistant's own
+/// text: the transcript must not teach the model to write its tool use as
+/// content. It is also never a structured `tool_calls` block — those have no
+/// results in a folded region, and the send path drops a dangling call
+/// together with every message after it.
+pub(crate) const TOOL_CALLS_NOTE_PREFIX: &str = "[Tool calls]";
 
 /// One user→assistant turn extracted from raw context.
 ///
@@ -1359,6 +1372,13 @@ pub(crate) struct TurnPair {
     /// Calls beyond [`TOOL_CALLS_PER_TURN_MAX`], absent from
     /// [`Self::tool_calls`]. Renderers append `…(N more calls)`.
     pub omitted_tool_calls: usize,
+    /// The turn's tool-result texts, in the order the results were
+    /// recorded (which is the order the calls were issued). Empty unless the
+    /// caller asked for them — see [`extract_pairs_with_results`]: the wire
+    /// history never carries results, so paying their clone on that path
+    /// would cost for text nobody reads. Each text is already cut to the
+    /// caller's byte bound at collection.
+    pub results: Vec<String>,
 }
 
 /// The turn's rendered tool-call list for the transcript view: calls joined
@@ -1374,10 +1394,19 @@ pub(crate) fn render_turn_tool_calls(pair: &TurnPair) -> Option<String> {
 /// When the full list does not fit, whole calls are dropped from the end —
 /// never cut mid-call, which would leave half an argument looking like a
 /// real one — and the overflow marker absorbs the count, so "how many are
-/// hidden" survives any bound that can hold the marker itself (only a
-/// `limit` smaller than the marker's own length cuts into it). That is the
+/// hidden" survives any bound that can hold the marker itself. That is the
 /// opposite of trimming the finished string: a blind byte cut at the end
 /// removes exactly the marker and keeps the unreadable fragment.
+///
+/// The one exception is a **single** call wider than the whole budget (a
+/// wide MCP schema can carry many parameters, each already capped at
+/// [`TOOL_ARG_MAX`]): dropping to the bare count would hide which tool ran,
+/// which is the note's whole point, so that call's head — its name comes
+/// first — is kept, cut so that its trailing marker still fits inside the
+/// budget: the overflow marker when calls were dropped (it already opens with
+/// `…`), the bare ellipsis when none were. When the budget cannot hold that
+/// marker, the head is cut at the bound and the count is lost with it — the
+/// bound wins.
 pub(crate) fn render_turn_tool_calls_bounded(pair: &TurnPair, limit: usize) -> Option<String> {
     if pair.tool_calls.is_empty() {
         return None;
@@ -1394,19 +1423,29 @@ pub(crate) fn render_turn_tool_calls_bounded(pair: &TurnPair, limit: usize) -> O
     loop {
         let body = pair.tool_calls[..keep].join(", ");
         let suffix = marker(pair.omitted_tool_calls + (total - keep));
-        if keep == 0 {
-            // Not even one call fits. Return the bare marker — trimmed of
-            // its leading space, which only separates it from a non-empty
-            // list and would otherwise render as an empty `TOOLS:` value.
-            // Hard-cut at a char boundary *without* a truncation marker:
-            // `truncate_text` appends one of its own, which would push the
-            // result back over the caller's bound.
-            let marker_only = suffix.trim_start();
-            let end = limit.min(marker_only.len());
-            return Some(marker_only[..marker_only.floor_char_boundary(end)].to_string());
-        }
         if body.len() + suffix.len() <= limit {
             return Some(format!("{body}{suffix}"));
+        }
+        if keep == 1 {
+            // Nothing left to drop: one call alone is over budget. Keep its
+            // head (name first) rather than degrading to the bare count,
+            // which would hide which tool ran. The cut reserves the overflow
+            // marker *instead of* adding a second ellipsis: the marker opens
+            // with `…` (three bytes), so it already marks the truncated head
+            // and the note cannot read `… …(2 more calls)`. A single call
+            // (no hidden count) gets that ellipsis on its own. A budget too
+            // small for either keeps the head alone: the bound is the hard
+            // requirement, the marker is not.
+            let one = pair.tool_calls[0].as_str();
+            let head = |room: usize| one.floor_char_boundary(room.min(one.len()));
+            let tail = match suffix.trim_start() {
+                "" => "…",
+                marker => marker,
+            };
+            return Some(match limit.checked_sub(tail.len()) {
+                Some(room) => format!("{}{tail}", &one[..head(room)]),
+                None => one[..head(limit)].to_string(),
+            });
         }
         keep -= 1;
     }
@@ -1418,15 +1457,18 @@ pub(crate) fn render_turn_tool_calls_bounded(pair: &TurnPair, limit: usize) -> O
 /// [`TurnPair::tool_calls`]. Always clears the turn state.
 ///
 /// A turn with no assistant reply yet (interrupted between user message
-/// and first response) produces no pair; the fallback in
-/// `extract_user_assistant_pairs` keeps the last user message for that
-/// case. Assistant messages seen before any user message (no pairing
-/// anchor) are dropped.
+/// and first response) produces no pair; the history builder keeps the last
+/// user message for that case. Assistant messages seen before any user
+/// message (no pairing anchor) are dropped.
 fn flush_turn(
     pairs: &mut Vec<TurnPair>,
     cur_user: &mut Option<serde_json::Value>,
     cur_assistants: &mut Vec<serde_json::Value>,
+    cur_results: &mut Vec<String>,
 ) {
+    // Taken unconditionally, so a turn that produces no pair cannot leak its
+    // results into the next one.
+    let results = std::mem::take(cur_results);
     let user_msg = cur_user.take();
     let assistants = std::mem::take(cur_assistants);
     if assistants.is_empty() {
@@ -1482,6 +1524,7 @@ fn flush_turn(
         assistant,
         tool_calls,
         omitted_tool_calls,
+        results,
     });
 }
 
@@ -1538,35 +1581,119 @@ fn message_keeps_turn_alive(msg: &serde_json::Value) -> bool {
 /// pairs in oldest→newest order.
 ///
 /// A trailing turn whose user message has no assistant reply yet is
-/// dropped — a completed turn only (`extract_user_assistant_pairs` has a
-/// fallback for the no-pairs case).
+/// dropped — a completed turn only (the history builder keeps the last user
+/// message for the no-pairs case).
 ///
 /// Shared by the sliding-window payload and the `context_browse` built-in
 /// tool.
 pub(crate) fn extract_pairs(raw_context: &[serde_json::Value]) -> Vec<TurnPair> {
+    extract_pairs_inner(raw_context, None)
+}
+
+/// [`extract_pairs`] plus each turn's tool-result texts
+/// ([`TurnPair::results`]), each cut to `result_max` bytes **as it is
+/// collected**.
+///
+/// For `context_browse` only: it is the one reader that has to show what a
+/// tool returned, and the results are the bulk of a transcript. The bound
+/// belongs here rather than at render time because the page shows at most
+/// fifty pairs while the extraction window is `offset + limit` pairs deep —
+/// `offset` is unbounded, so a deep page would otherwise clone the whole
+/// journal's results (uncapped since `turn_tool_result_cap` defaults to
+/// off) to print a bounded page. The walk, the turn boundaries and the
+/// keep rules are the same function as above, so a result can never be
+/// attributed to a different turn than its calls.
+pub(crate) fn extract_pairs_with_results(
+    raw_context: &[serde_json::Value],
+    result_max: usize,
+) -> Vec<TurnPair> {
+    extract_pairs_inner(raw_context, Some(result_max))
+}
+
+/// `result_max = None` skips result collection entirely (the wire path).
+fn extract_pairs_inner(
+    raw_context: &[serde_json::Value],
+    result_max: Option<usize>,
+) -> Vec<TurnPair> {
     let mut pairs: Vec<TurnPair> = Vec::new();
     let mut cur_user: Option<serde_json::Value> = None;
     let mut cur_assistants: Vec<serde_json::Value> = Vec::new();
+    let mut cur_results: Vec<String> = Vec::new();
 
     for msg in raw_context {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
         match role {
             "user" => {
-                // A text-bearing user message opens a new turn; user-role
-                // messages with no extractable text are Anthropic
-                // tool_result wrappers, which stay in the current turn.
+                // Anthropic tool results ride on a user message, and they
+                // answer calls made *before* it — so collect them first,
+                // even when the same message also opens a turn and is about
+                // to flush the turn they belong to. `tool_result_texts`
+                // reads only `tool_result` blocks here (the string-content
+                // branch is OpenAI's `role:"tool"`), so a plain user message
+                // contributes nothing.
+                if let Some(max) = result_max {
+                    cur_results.extend(tool_result_texts(msg, max));
+                }
                 if opens_turn(msg) {
-                    flush_turn(&mut pairs, &mut cur_user, &mut cur_assistants);
+                    flush_turn(
+                        &mut pairs,
+                        &mut cur_user,
+                        &mut cur_assistants,
+                        &mut cur_results,
+                    );
                     cur_user = Some(msg.clone());
                 }
             }
             "assistant" => cur_assistants.push(msg.clone()),
             _ => {}
         }
+        // A tool message carries nothing but its result, so it never joins
+        // the turn's assistant text; handled outside the match because the
+        // `if let` inside an arm is a `collapsible_match` lint (the guard
+        // form cannot bind the cap).
+        if role == "tool"
+            && let Some(max) = result_max
+        {
+            cur_results.extend(tool_result_texts(msg, max));
+        }
     }
-    flush_turn(&mut pairs, &mut cur_user, &mut cur_assistants);
+    flush_turn(
+        &mut pairs,
+        &mut cur_user,
+        &mut cur_assistants,
+        &mut cur_results,
+    );
 
     pairs
+}
+
+/// A tool-result message's text, in either wire shape: OpenAI's `role:"tool"`
+/// string `content`, or an Anthropic `user` message's `tool_result` blocks.
+///
+/// The string content is read only for `role:"tool"`: a `user` message's
+/// string content is the user's own words, and string content is what
+/// [`opens_turn`] keys on. An Anthropic `user` message with only text blocks
+/// yields nothing, so the caller can hand it any user message.
+///
+/// Each text is cut to `max` bytes here, at collection — see
+/// [`extract_pairs_with_results`] for why the bound cannot wait for the
+/// renderer.
+fn tool_result_texts(msg: &serde_json::Value, max: usize) -> Vec<String> {
+    let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+    if role == "tool"
+        && let Some(content) = msg.get("content").and_then(|c| c.as_str())
+    {
+        return vec![truncate_text(content, max)];
+    }
+    let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) else {
+        return Vec::new();
+    };
+    blocks
+        .iter()
+        .filter(|block| block.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+        .filter_map(|block| block.get("content").and_then(|c| c.as_str()))
+        .map(|text| truncate_text(text, max))
+        .collect()
 }
 
 /// Index where the last `keep_pairs` pair-producing turns begin, and how
@@ -1613,62 +1740,6 @@ pub(crate) fn pairs_tail_start(
 /// pair, so the two counts differ.
 pub(crate) fn count_turn_openers(raw_context: &[serde_json::Value]) -> usize {
     raw_context.iter().filter(|m| opens_turn(m)).count()
-}
-
-/// Extract user+assistant text pairs from raw context and keep only the
-/// last `keep_pairs` of them, flattened into a single Vec. Pair extraction
-/// semantics are defined in [`extract_pairs`].
-///
-/// Only the kept tail is extracted (see [`pairs_tail_start`]): the result is
-/// the same as extracting the whole history and keeping the last
-/// `keep_pairs`, at a fraction of the cloning.
-///
-/// Flattens to user → assistant per pair: the wire history is text-only, so
-/// the turn's tool calls and the tool results they produced are not part of
-/// the result (the journal keeps them; `context_browse` still reads them).
-///
-/// Shared by the sliding-window wire payload and any other caller that
-/// needs the same text-only view.
-pub(crate) fn extract_user_assistant_pairs(
-    raw_context: &[serde_json::Value],
-    keep_pairs: usize,
-) -> Vec<serde_json::Value> {
-    // Start the extraction where the kept turns begin: `extract_pairs`
-    // deep-clones every message it visits, and on a long history the
-    // discarded prefix is the bulk of that work.
-    let tail_start = pairs_tail_start(raw_context, keep_pairs).0;
-    let pairs: Vec<_> = extract_pairs(&raw_context[tail_start..])
-        .into_iter()
-        .rev()
-        .take(keep_pairs)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    let summary: Vec<serde_json::Value> = pairs
-        .into_iter()
-        .flat_map(|pair| {
-            let mut v = vec![pair.user];
-            if let Some(assistant) = pair.assistant {
-                v.push(assistant);
-            }
-            v
-        })
-        .collect();
-
-    if summary.is_empty() {
-        // Fallback: keep the LAST text-bearing user message — the closest
-        // thing to an unfinished turn. (The first user message is usually
-        // ancient, unrelated history and would sit misleadingly in front
-        // of the current turn.)
-        if let Some(last_user) = raw_context.iter().rev().find(|m| opens_turn(m)) {
-            vec![last_user.clone()]
-        } else {
-            Vec::new()
-        }
-    } else {
-        summary
-    }
 }
 
 /// Index in `raw_context` where the last `turns` turn openers begin (0 when
@@ -1948,12 +2019,12 @@ mod tests {
         );
     }
 
-    /// When not even one call plus the marker fits the budget, the marker
-    /// alone is returned — hard-cut, with no second truncation marker
-    /// pushing it back over the bound and no leading space left where the
-    /// (empty) body would have been.
+    /// A single call wider than the whole budget keeps its head — the tool's
+    /// name and as much of the arguments as fits — hard-cut at the bound.
+    /// Degrading to the bare count would hide which tool ran, which is what
+    /// the note exists to tell the reader.
     #[test]
-    fn bounded_rendering_degrades_to_the_marker_alone() {
+    fn bounded_rendering_keeps_the_name_of_one_oversized_call() {
         let long = "x".repeat(300);
         let ctx = vec![
             json!({"role": "user", "content": "u1"}),
@@ -1969,8 +2040,40 @@ mod tests {
         assert!(full.len() > 200, "fixture must overflow: {}", full.len());
 
         let bounded = super::render_turn_tool_calls_bounded(&pairs[0], 200).unwrap();
-        assert_eq!(bounded, "…(1 more call)", "marker alone, no empty body");
+        assert!(bounded.len() <= 200, "budget exceeded: {}", bounded.len());
+        assert!(bounded.starts_with("bash("), "name lost: {bounded}");
+        assert!(bounded.ends_with('…'), "cut must be marked: {bounded}");
         // A budget smaller than the marker itself still holds.
+        let tight = super::render_turn_tool_calls_bounded(&pairs[0], 8).unwrap();
+        assert!(tight.len() <= 8, "budget exceeded: {tight}");
+    }
+
+    /// A turn whose *first* call alone overflows still reports how many calls
+    /// are hidden. The count is inside the budget, not appended after the cut
+    /// — appending it would either break the bound or lose the count exactly
+    /// on the widest turns.
+    #[test]
+    fn squeezed_note_keeps_the_hidden_count() {
+        let call = |i: usize| {
+            json!({"id": format!("t{i}"), "function": {
+                "name": "bash",
+                "arguments": format!("{{\"command\":\"{}\"}}", "x".repeat(300)),
+            }})
+        };
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "running",
+                   "tool_calls": [call(0), call(1), call(2)]}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        let note = super::render_turn_tool_calls_bounded(&pairs[0], 200).unwrap();
+        assert!(note.len() <= 200, "budget exceeded: {}", note.len());
+        assert!(note.starts_with("bash("), "name lost: {note}");
+        assert!(note.contains("…(2 more calls)"), "count lost: {note}");
+        // The marker's own `…` is the truncation mark: adding one on top of
+        // it would read `… …(2 more calls)`.
+        assert!(!note.contains("… …"), "doubled marker: {note}");
+        // Too small to hold even the count: the bound still wins.
         let tight = super::render_turn_tool_calls_bounded(&pairs[0], 8).unwrap();
         assert!(tight.len() <= 8, "budget exceeded: {tight}");
     }
@@ -1996,9 +2099,8 @@ mod tests {
     /// and replaying it teaches the model to imitate it.
     ///
     /// Such a message reaches the journal through
-    /// `summarize_context_heuristic`, which called
-    /// `extract_user_assistant_pairs(.., None)` (notes on every pair) and
-    /// wrote the result back with `replace_raw_context` — so a `/reset`
+    /// `summarize_context_heuristic`, which asked for a note on every pair
+    /// and wrote the result back with `replace_raw_context` — so a `/reset`
     /// under heuristic compression before 2026-10-20 can leave one behind.
     #[test]
     fn legacy_history_note_does_not_open_a_turn() {
@@ -2060,14 +2162,9 @@ mod tests {
         assert_eq!(pairs[0].user, ctx[0]);
         assert_eq!(pairs[0].assistant.as_ref().unwrap()["content"], "a1\ndone");
         assert_eq!(pairs[0].tool_calls, vec![r#"bash(command="ls")"#]);
-        // The wire view is text-only: no call, no result.
-        assert_eq!(
-            super::extract_user_assistant_pairs(&ctx, 10),
-            vec![
-                ctx[0].clone(),
-                json!({"role": "assistant", "content": "a1\ndone"})
-            ]
-        );
+        // The plain extractor carries no results: only the context_browse
+        // read-back path asks for them.
+        assert!(pairs[0].results.is_empty());
     }
 
     /// OpenAI-shaped context: tool calls render with all parameters,
@@ -2092,13 +2189,7 @@ mod tests {
             ]
         );
         assert_eq!(pairs[0].assistant.as_ref().unwrap()["content"], "running");
-        assert_eq!(
-            super::extract_user_assistant_pairs(&ctx, 10),
-            vec![
-                json!({"role": "user", "content": "u1"}),
-                json!({"role": "assistant", "content": "running"}),
-            ]
-        );
+        assert!(pairs[0].results.is_empty());
     }
 
     /// Tool-call-only assistant turns (no text) are kept as a turn — the
@@ -2116,10 +2207,7 @@ mod tests {
         assert_eq!(pairs.len(), 1);
         assert!(pairs[0].assistant.is_none());
         assert_eq!(pairs[0].tool_calls, vec![r#"bash(command="ls -la")"#]);
-        assert_eq!(
-            super::extract_user_assistant_pairs(&ctx, 10),
-            vec![json!({"role": "user", "content": "u1"})]
-        );
+        assert!(pairs[0].results.is_empty());
     }
 
     /// Over-long single argument values are truncated with `…`; the tool
@@ -2139,6 +2227,100 @@ mod tests {
         assert!(call.contains('…'), "long arg not truncated: {call:?}");
         // 200-char cap + ellipsis + `command=` prefix + quotes.
         assert!(call.len() < 300, "call too big: {call:?}");
+    }
+
+    /// `extract_pairs_with_results` reads both wire shapes: OpenAI's
+    /// `role:"tool"` message and Anthropic's `tool_result` block on a user
+    /// message.
+    #[test]
+    fn extract_pairs_with_results_reads_both_shapes() {
+        let openai = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "function": {"name": "bash", "arguments": "{}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "c1", "content": "openai-out"}),
+            json!({"role": "assistant", "content": "done"}),
+        ];
+        let pairs = super::extract_pairs_with_results(&openai, 2000);
+        assert_eq!(pairs[0].results, vec!["openai-out".to_string()]);
+
+        let anthropic = vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "u1"}]}),
+            json!({"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "bash", "input": {}}
+            ]}),
+            json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "anthropic-out"}
+            ]}),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "done"}]}),
+        ];
+        let pairs = super::extract_pairs_with_results(&anthropic, 2000);
+        assert_eq!(pairs[0].results, vec!["anthropic-out".to_string()]);
+    }
+
+    /// Results are cut **at collection**, not at render: the extraction
+    /// window is `offset + limit` pairs deep and `offset` is unbounded, so a
+    /// deep page must not clone the journal's raw multi-megabyte output.
+    #[test]
+    fn extract_pairs_with_results_bounds_each_result() {
+        let huge = "z".repeat(5000);
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "function": {"name": "bash", "arguments": "{}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "c1", "content": huge}),
+            json!({"role": "assistant", "content": "done"}),
+        ];
+        let pairs = super::extract_pairs_with_results(&ctx, 100);
+        let result = &pairs[0].results[0];
+        assert!(
+            result.len() < 160,
+            "not bounded at collection: {}",
+            result.len()
+        );
+        assert!(result.contains("truncated"), "cut must be marked: {result}");
+    }
+
+    /// An Anthropic user message that both carries `tool_result` blocks and
+    /// opens a turn puts those results on the **previous** turn — they
+    /// answer calls made before it. Collecting after the flush would lose
+    /// them silently, with no count to show something was missing.
+    #[test]
+    fn tool_results_on_an_opening_message_belong_to_the_previous_turn() {
+        let ctx = vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "u1"}]}),
+            json!({"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "bash", "input": {}}
+            ]}),
+            json!({"role": "user", "content": [
+                {"type": "text", "text": "u2"},
+                {"type": "tool_result", "tool_use_id": "t1", "content": "first-turn-out"}
+            ]}),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "a2"}]}),
+        ];
+        let pairs = super::extract_pairs_with_results(&ctx, 2000);
+        assert_eq!(pairs.len(), 2, "two turns");
+        assert_eq!(pairs[0].results, vec!["first-turn-out".to_string()]);
+        assert!(pairs[1].results.is_empty(), "u2 carries no result");
+    }
+
+    /// A plain user message's own words are not a tool result: the string
+    /// `content` branch belongs to OpenAI's `role:"tool"` message only.
+    #[test]
+    fn plain_user_text_is_not_collected_as_a_result() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": super::HISTORY_NOTE_PREFIX}),
+        ];
+        let pairs = super::extract_pairs_with_results(&ctx, 2000);
+        let collected: Vec<&Vec<String>> = pairs.iter().map(|p| &p.results).collect();
+        assert!(
+            pairs.iter().all(|p| p.results.is_empty()),
+            "user text leaked into results: {collected:?}"
+        );
     }
 
     /// `extract_pairs` returns ALL completed pairs in oldest→newest order
@@ -2371,43 +2553,26 @@ mod tests {
     /// differential test below cannot catch a drift of the rule itself, since
     /// both sides of it would drift together.
     #[test]
-    fn extract_user_assistant_pairs_drops_assistant_without_text_or_calls() {
+    fn extract_pairs_drops_assistant_without_text_or_calls() {
         let ctx = vec![
             json!({"role": "user", "content": "u1"}),
             json!({"role": "assistant", "content": "a1"}),
             json!({"role": "user", "content": "u2"}),
             json!({"role": "assistant", "content": ""}),
         ];
-        assert_eq!(
-            super::extract_user_assistant_pairs(&ctx, 1),
-            vec![
-                json!({"role": "user", "content": "u1"}),
-                json!({"role": "assistant", "content": "a1"}),
-            ]
-        );
+        let pairs = super::extract_pairs(&ctx);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].user["content"], "u1");
+        assert_eq!(pairs[0].assistant.as_ref().unwrap()["content"], "a1");
     }
 
-    /// The tail scan must return exactly what the old full extraction plus a
-    /// `take` returned, across the shapes that stress turn boundaries and the
-    /// keep counts the sliding window uses.
+    /// The tail scan must start exactly where the full extraction's last
+    /// `keep` turns begin, across the shapes that stress turn boundaries and
+    /// the keep counts the sliding window uses: the reader sizes its window
+    /// from the scan, so a scan that counts differently loses or duplicates
+    /// a turn at the window's edge.
     #[test]
-    fn extract_user_assistant_pairs_matches_full_extraction() {
-        // The same extraction the sliding window performs, as the oracle.
-        fn full_tail(ctx: &[serde_json::Value], keep: usize) -> Vec<serde_json::Value> {
-            let pairs = super::extract_pairs(ctx);
-            let skip = pairs.len().saturating_sub(keep);
-            pairs[skip..]
-                .iter()
-                .flat_map(|p| {
-                    let mut v = vec![p.user.clone()];
-                    if let Some(assistant) = &p.assistant {
-                        v.push(assistant.clone());
-                    }
-                    v
-                })
-                .collect()
-        }
-
+    fn pairs_tail_start_matches_full_extraction() {
         let shapes: Vec<Vec<serde_json::Value>> = vec![
             // Plain turns.
             vec![
@@ -2450,12 +2615,17 @@ mod tests {
         ];
 
         for ctx in &shapes {
+            let full = super::extract_pairs(ctx);
             for keep in 1..=3 {
-                assert_eq!(
-                    super::extract_user_assistant_pairs(ctx, keep),
-                    full_tail(ctx, keep),
-                    "keep={keep}, ctx={ctx:?}"
-                );
+                let (tail_start, _) = super::pairs_tail_start(ctx, keep);
+                let tail = super::extract_pairs(&ctx[tail_start..]);
+                let expected = &full[full.len().saturating_sub(keep)..];
+                assert_eq!(tail.len(), expected.len(), "keep={keep}, ctx={ctx:?}");
+                for (got, want) in tail.iter().zip(expected) {
+                    assert_eq!(got.user, want.user, "keep={keep}");
+                    assert_eq!(got.assistant, want.assistant, "keep={keep}");
+                    assert_eq!(got.tool_calls, want.tool_calls, "keep={keep}");
+                }
             }
         }
     }
@@ -2464,7 +2634,7 @@ mod tests {
     /// end: it produces no pair, so the kept tail starts at the last turn
     /// that has an assistant reply.
     #[test]
-    fn extract_user_assistant_pairs_skips_trailing_orphan_turn() {
+    fn extract_pairs_skips_trailing_orphan_turn() {
         let ctx = vec![
             json!({"role": "user", "content": "u1"}),
             json!({"role": "assistant", "content": "a1"}),
@@ -2472,26 +2642,10 @@ mod tests {
             json!({"role": "assistant", "content": "a2"}),
             json!({"role": "user", "content": "never answered"}),
         ];
-        let pairs = super::extract_user_assistant_pairs(&ctx, 1);
+        let pairs = super::extract_pairs(&ctx);
         assert_eq!(pairs.len(), 2);
-        assert_eq!(pairs[0]["content"], "u2");
-        assert_eq!(pairs[1]["content"], "a2");
-    }
-
-    /// No complete pairs: the fallback keeps the LAST text-bearing user
-    /// message (nearest to an unfinished turn), not the first — and skips
-    /// Anthropic tool_result wrappers, which carry no real user text.
-    #[test]
-    fn fallback_keeps_last_text_user() {
-        let ctx = vec![
-            json!({"role": "user", "content": "ancient"}),
-            json!({"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}
-            ]}),
-            json!({"role": "user", "content": "latest"}),
-        ];
-        let pairs = super::extract_user_assistant_pairs(&ctx, 10);
-        assert_eq!(pairs, vec![json!({"role": "user", "content": "latest"})]);
+        assert_eq!(pairs[1].user["content"], "u2");
+        assert_eq!(pairs[1].assistant.as_ref().unwrap()["content"], "a2");
     }
 
     /// Legacy `jyc_reply_message` calls are filtered out of the rendered

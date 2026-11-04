@@ -793,7 +793,7 @@ pub const WIRE_PAYLOAD_DUMP_MAX_LINES: usize = 50;
 ///
 /// Returns `None` when the file is missing, malformed, or `window == 0`.
 /// A zero-window prior context would degrade to a single fallback user
-/// message (see `extract_user_assistant_pairs`), which is almost
+/// message (see `build_text_region`), which is almost
 /// certainly not what the user wants; we silently fall back to the
 /// configured default rather than persist a broken strategy.
 pub async fn read_context_strategy_override(

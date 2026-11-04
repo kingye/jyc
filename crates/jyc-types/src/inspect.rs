@@ -293,7 +293,8 @@ pub struct ChannelInfo {
 pub enum ContextRegion {
     /// The whole context, unsplit (`Full` mode).
     Full,
-    /// Prior turns, rendered as text-only user/assistant pairs.
+    /// Prior turns, rendered as their text plus a per-turn `[Tool calls]`
+    /// note.
     History,
     /// The folded older part of the current turn (`SlidingWindow` only).
     Checkpoint,

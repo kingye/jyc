@@ -1883,7 +1883,9 @@ mod render_raw_context_tests {
         assert_eq!(region[1]["content"], "u1");
         assert_eq!(region[2]["content"], "[Tool calls] bash(command=\"ls\")");
         assert_eq!(region[3]["content"], "[Tool results] file.txt");
-        assert_eq!(region[4]["content"], "done");
+        // Both assistant texts of the turn merge past the tool message —
+        // same fixture semantics the sibling no-results test pins.
+        assert_eq!(region[4]["content"], "calling bash\ndone");
         assert_eq!(region.len(), 5);
     }
 

@@ -31,9 +31,9 @@
 //! `reasoning` input items (summary form: `summary: [{type:
 //! "summary_text", text}]`) — live-probed as accepted by both the Zhipu
 //! GLM gateway (which streams the raw `reasoning_text` form) and Kimi's
-//! Responses endpoint. Inline `<think>...</think>` prefixes (added by
-//! [`super::openai_compat::build_openai_raw_assistant`] for compat
-//! providers) are stripped from the replayed text so the model does not
+//! Responses endpoint. Inline `<think>...</think>` prefixes (a legacy
+//! journal shape — the compat builder used to inline reasoning into
+//! `content`) are stripped from the replayed text so the model does not
 //! see its own thinking twice.
 
 use super::sse::{Event, stream_sse};
@@ -282,10 +282,10 @@ impl Provider for OpenAiResponsesProvider {
 
 /// Strip a leading `<think>…</think>` block from assistant content text.
 ///
-/// [`super::openai_compat::build_openai_raw_assistant`] inlines reasoning as
-/// a leading `<think>…</think>\n\n` block; the Responses path replays
-/// reasoning via a native `reasoning` item instead, so the inline copy must
-/// not reach the wire as answer text.
+/// Legacy journals carry a leading `<think>…</think>\n\n` block that the
+/// compat builder inlined before it stopped doing so; the Responses path
+/// replays reasoning via a native `reasoning` item instead, so the inline
+/// copy must not reach the wire as answer text.
 fn strip_think_prefix(text: &str) -> &str {
     if let Some(rest) = text.strip_prefix("<think>")
         && let Some(end) = rest.find("</think>")
@@ -449,11 +449,11 @@ pub(crate) fn chat_messages_to_responses_input(
                 // verified live 2026-11-03); raw `content` form is
                 // bigmodel-native but 400s on Kimi.
                 //
-                // The shared raw builder (see
-                // [`super::openai_compat::build_openai_raw_assistant`])
-                // also inlines the reasoning as a leading
-                // `<think>…</think>` block in `content` for Chat
-                // Completions providers; on this path that copy would
+                // The shared raw builder stopped inlining reasoning into
+                // `content` (see
+                // [`super::openai_compat::build_openai_raw_assistant`]),
+                // but legacy journals still carry that leading
+                // `<think>…</think>` block; on this path it would
                 // double-replay the thinking as visible answer text, so
                 // strip it here.
                 let reasoning = msg
@@ -995,8 +995,8 @@ mod tests {
 
     #[test]
     fn convert_chat_strips_inline_think_block_from_content() {
-        // Exact inline format produced by build_openai_raw_assistant:
-        // `<think>{reasoning}</think>\n\n{text}`.
+        // Legacy inline format produced by build_openai_raw_assistant
+        // before it stopped inlining: `<think>{reasoning}</think>\n\n{text}`.
         let msgs = vec![serde_json::json!({
             "role": "assistant",
             "content": "<think>why</think>\n\nanswer",

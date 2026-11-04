@@ -1172,6 +1172,26 @@ fn strip_duplicated_inline_reasoning(text: &str, reasoning: &str) -> String {
     visible.strip_prefix("\n\n").unwrap_or(visible).to_string()
 }
 
+/// Strip one leading, fully closed inline think block regardless of the
+/// `reasoning_content` field, returning the text after it.
+///
+/// The replay-path counterpart to [`strip_duplicated_inline_reasoning`]'s
+/// field-matched rule, with the same justification as the Responses wire's
+/// unconditional send-time strip ([`crate::provider::openai_responses`
+/// `strip_think_prefix`]): no in-tree builder writes a block without the
+/// field — every builder that inlined also set the field — so a fieldless
+/// leading block is legacy or hand-edited content, and a literal leading
+/// block is indistinguishable from real reasoning anyway (#1059).
+/// Returns `None` when the text does not open with a closed block — an
+/// unclosed or non-leading block stays visible text.
+pub(crate) fn strip_well_formed_leading_block(text: &str) -> Option<String> {
+    let rest = text.strip_prefix(concat!("<", "think>"))?;
+    let close = rest.find(concat!("</", "think>"))?;
+    let visible = &rest[close + concat!("</", "think>").len()..];
+    let visible = visible.strip_prefix("\n\n").unwrap_or(visible);
+    Some(visible.to_string())
+}
+
 /// Max length of a single rendered tool-call argument value kept in a
 /// turn's rendered calls; longer values are truncated with an explicit
 /// `… [truncated N bytes]` marker.
@@ -1352,10 +1372,11 @@ pub(crate) const TOOL_CALLS_NOTE_PREFIX: &str = "[Tool calls]";
 
 /// One user→assistant turn extracted from raw context.
 ///
-/// The assistant entry holds ONLY the assistant's own text; the turn's
-/// tool calls are kept separately in [`Self::tool_calls`] — never merged
-/// into that text, so the transcript view cannot teach the model to write
-/// its tool use as content.
+/// The assistant entry holds the assistant's own text plus the turn's
+/// `reasoning_content` (the fold replays it through the provider's wire
+/// shape); the turn's tool calls are kept separately in
+/// [`Self::tool_calls`] — never merged into that text, so the transcript
+/// view cannot teach the model to write its tool use as content.
 pub(crate) struct TurnPair {
     /// The turn-opening user message (original wire format).
     pub user: serde_json::Value,
@@ -1479,14 +1500,26 @@ fn flush_turn(
     let mut texts: Vec<String> = Vec::with_capacity(assistants.len());
     let mut tool_calls: Vec<String> = Vec::new();
     let mut has_payload = false;
+    let mut last_reasoning = String::new();
     for msg in &assistants {
         // One extraction and one call parse per message: the keep-rule and
-        // the transcript view both need them. Keep only role + content for
-        // the text; the calls are rendered separately so a tool-call-only
+        // the transcript view both need them. Keep role + content (plus
+        // the turn's reasoning, merged below) for the text; the calls are
+        // rendered separately so a tool-call-only
         // step (empty text) still shows up as a call instead of being
         // dropped.
         let text = extract_assistant_transcript_text(msg);
         let calls = collect_tool_calls(msg);
+        // The merged assistant keeps the turn's reasoning so the fold can
+        // replay it through the provider's wire shape. Without the field the
+        // compacted turn reaches a thinking-first model as bare reply text,
+        // and the model mimics that shape — reasoning degrades turn over
+        // turn. Last non-empty wins: it pairs with the turn's conclusion.
+        if let Some(reasoning) = msg.get("reasoning_content").and_then(|v| v.as_str())
+            && !reasoning.is_empty()
+        {
+            last_reasoning = reasoning.to_string();
+        }
         has_payload |= keeps_turn_alive(&text, !calls.is_empty());
         for (name, args) in &calls {
             // Legacy `jyc_reply_message` calls (from transcripts persisted
@@ -1514,10 +1547,14 @@ fn flush_turn(
     let assistant = if texts.is_empty() {
         None
     } else {
-        Some(serde_json::json!({
+        let mut merged = serde_json::json!({
             "role": "assistant",
             "content": texts.join("\n"),
-        }))
+        });
+        if !last_reasoning.is_empty() {
+            merged["reasoning_content"] = serde_json::json!(last_reasoning);
+        }
+        Some(merged)
     };
     pairs.push(TurnPair {
         user: user_msg,
@@ -1575,10 +1612,10 @@ fn message_keeps_turn_alive(msg: &serde_json::Value) -> bool {
 /// conclusion. Legacy `jyc_reply_message` calls (pre-final-text-reply
 /// transcripts) still count as the step they were, but render no tool call.
 ///
-/// Assistant messages are cleaned to only role + content (strip
-/// reasoning_content, tool_calls); the calls themselves are rendered into
-/// [`TurnPair::tool_calls`], never into the assistant's own text. Returns
-/// pairs in oldest→newest order.
+/// Assistant messages are cleaned to role + content + reasoning_content
+/// (the fold replays it; `tool_calls` are stripped); the calls themselves
+/// are rendered into [`TurnPair::tool_calls`], never into the assistant's
+/// own text. Returns pairs in oldest→newest order.
 ///
 /// A trailing turn whose user message has no assistant reply yet is
 /// dropped — a completed turn only (the history builder keeps the last user
@@ -2545,6 +2582,57 @@ mod tests {
         assert_eq!(pairs[0].user["content"], "u2");
         assert_eq!(pairs[0].assistant.as_ref().unwrap()["content"], "a2");
         assert!(pairs[0].tool_calls.is_empty());
+    }
+
+    /// A multi-step turn keeps its reasoning across the merge: the compacted
+    /// assistant carries `reasoning_content` (last non-empty step wins, so it
+    /// pairs with the turn's conclusion), and a turn with no reasoning field
+    /// gains none — legacy transcripts must not invent one.
+    #[test]
+    fn extract_pairs_merged_turn_keeps_reasoning_content() {
+        let (open, close) = (concat!("<", "think>"), concat!("</", "think>"));
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({
+                "role": "assistant",
+                "content": format!("{open}first thought{close}\n\nstep1"),
+                "reasoning_content": "first thought",
+                "tool_calls": [
+                    {"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+                ],
+            }),
+            json!({"role": "tool", "tool_call_id": "1", "content": "out1"}),
+            json!({
+                "role": "assistant",
+                "content": format!("{open}final thought{close}\n\nfinal answer"),
+                "reasoning_content": "final thought",
+            }),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        assert_eq!(pairs.len(), 1);
+        let merged = pairs[0].assistant.as_ref().unwrap();
+        assert_eq!(
+            merged["content"].as_str().unwrap(),
+            "step1\nfinal answer",
+            "inline reasoning must not enter the merged text"
+        );
+        assert_eq!(
+            merged["reasoning_content"].as_str().unwrap(),
+            "final thought",
+            "the turn's reasoning must survive the merge"
+        );
+
+        let bare = vec![
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "reply only"}),
+        ];
+        let pairs = super::extract_pairs(&bare);
+        assert_eq!(pairs.len(), 1);
+        let merged = pairs[0].assistant.as_ref().unwrap();
+        assert!(
+            merged.get("reasoning_content").is_none(),
+            "no field must be invented: {merged}"
+        );
     }
 
     /// The literal rule the tail scan shares with `flush_turn`: an assistant

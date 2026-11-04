@@ -163,8 +163,9 @@ there:
    assistant steps (default 32), the older steps fold into one checkpoint
    in that same shape, with a marker. It contains the turn's
    opening user message and the folded assistant conclusions; older
-   reasoning and tool results leave the wire exactly as they do for prior
-   turns, while the folded steps' calls stay visible as notes. Each later
+   tool results leave the wire exactly as they do for prior
+   turns, while reasoning replays through the provider's wire shape and
+   the folded steps' calls stay visible as notes. Each later
    checkpoint is wider by `checkpoint_interval /
    checkpoint_growth` steps (default 32 / 8 = 4), so the verbatim tail
    grows with the turn.
@@ -264,7 +265,7 @@ flowchart TB
     end
     subgraph R3["Current-turn checkpoint — text plus calls"]
         R3M["marker + folded older steps"]
-        R3N["reasoning · tool results dropped<br/>calls kept as notes"]
+        R3N["reasoning replayed · tool results dropped<br/>calls kept as notes"]
     end
     subgraph R2["Recent current turn — verbatim"]
         R2U["user: 'u2'"]
@@ -321,12 +322,17 @@ The pairing unit is the **turn**, not the single message:
 - A **text-bearing user message opens a turn**; the next one (or end of
   context) closes it.
 - **All assistant messages in a turn are merged into one entry** holding
-  only their visible text — intermediate tool-call steps and the final reply
-  alike. The separate `reasoning_content` field, one leading inline block
-  that duplicates it, and `tool_calls` are stripped from the assistant
-  entry, so the history block carries neither reasoning nor call structure.
-  A block-shaped leading string without that field is preserved as visible
-  text.
+  their visible text plus the turn's `reasoning_content` — intermediate
+  tool-call steps and the final reply alike. The turn's last
+  non-empty step's `reasoning_content` survives the merge (the fold
+  replays it through the provider's wire shape), one
+  leading inline block that
+  duplicates it is stripped, and `tool_calls` are kept out of the
+  assistant entry, so the history block carries no call structure. A
+  leading block without that field is stripped on the replay path too —
+  parity with the Responses wire's send-time strip; no in-tree builder
+  writes that shape, so the rule covers legacy or hand-edited entries —
+  while the transcript view keeps it as visible text.
 - **The turn's tool calls are collected separately** (`TurnPair::tool_calls`,
   one `name(args)` string per call — at most 20 per turn, the rest counted
   in `TurnPair::omitted_tool_calls` and rendered as `…(N more calls)`) for
@@ -554,7 +560,9 @@ the turn ends. The checkpoint bounds the **verbatim replay** of that
 growth without an LLM summary and without moving the history prefix. It
 is not a hard bound on the whole payload: the folded text still grows
 with the turn's visible assistant text and retained user messages, but
-older reasoning and tool-result payloads stop riding every call.
+older tool-result payloads stop riding every call; the folded turns'
+reasoning replays through the provider's wire shape and counts into the
+region's bytes/tokens like the rest of the fold.
 
 With `n` completed assistant messages in the current turn, the configured
 `checkpoint_interval` (default 32; `0` disables folding) and
@@ -593,10 +601,10 @@ cache-aware:
   the folded prefix never shrinks.
 - Full mode does not checkpoint.
 
-What the folded part keeps is the opening user message and assistant
-visible text. Like prior-turn history, it drops tool calls, arguments,
-results and reasoning. The journal and `context_browse` still hold the raw
-steps.
+What the folded part keeps is the opening user message, assistant
+visible text and the turn's reasoning. Like prior-turn history, it drops
+tool calls, arguments and results. The journal and `context_browse`
+still hold the raw steps.
 
 **Tradeoff:** an older result is no longer replayed after a checkpoint.
 If the model needs that exact output again, it must re-read or re-run its
@@ -708,8 +716,9 @@ Key changes, newest first (see CHANGELOG.md for full entries):
   text-plus-calls history, an optional text-plus-calls checkpoint for older
   steps of a long current turn, and the verbatim recent suffix. The checkpoint folds
   the first `floor((n-1)/interval)×interval` assistant steps once a turn
-  passes the interval (default 32), dropping their reasoning and tool
-  results the same way prior-turn history does. It advances only at whole
+  passes the interval (default 32), dropping their tool
+  results the same way prior-turn history does while their reasoning
+  replays through the provider's wire shape. It advances only at whole
   interval boundaries, so it is byte-stable between advances; the journal
   is untouched and the latest steps remain raw. `regions` in the wire dump
   marks it `3`, and the `LLM call started` log carries `checkpoint_rebuilt`.

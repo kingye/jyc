@@ -495,6 +495,7 @@ rows):
 | `window` | `10` | Turns kept after a slide — the window's floor |
 | `extend_rate` | `0.5` | Growth allowed before a slide: `max_window = window + round(extend_rate × window)`; `0` = hard window (slides every turn) |
 | `turn_tool_result_cap` | unset | Per-result byte cap on the recent current-turn suffix — see below |
+| `history_tool_result_cap` | unset | Per-result byte cap on results replayed in the folded history and current-turn checkpoint; unset omits folded results entirely — see below |
 | `max_history_tokens` | unset | Second slide trigger, at the top of the extension cycle — see below |
 | `checkpoint_interval` | `32` | Completed assistant messages before the current turn's older steps fold into a text-plus-calls checkpoint; `0` disables folding — see below |
 | `checkpoint_growth` | `8` | Folds per widening step: each checkpoint is `checkpoint_interval / checkpoint_growth` steps wider than the last, so a long turn keeps a growing verbatim tail; `0` keeps the interval fixed — see below |
@@ -542,10 +543,47 @@ refused outright), or from config as
 `context_strategy = { …, turn_tool_result_cap = 32768 }` — where a
 non-zero value below 130 is lifted to 130 rather than rejected.
 
-**History and checkpoints have no tool results to cap.** Both are text
-plus calls, so the cap has nothing else to apply to: prior turns and the
-folded older part of the current turn were folded without their results
-in the first place.
+## `history_tool_result_cap` — bounding folded results
+
+By default the folded history and the current-turn checkpoint are
+**text plus calls**: a folded turn's tool results are dropped entirely,
+on the premise that the model can re-run what it needs. That premise
+holds for models that tolerate a text-only fold, but it breaks tool
+momentum in models that lean on the results they just read — the
+current turn's older steps fold mid-task and the model starts acting
+from memory instead of re-reading. This is why turn results are
+present by default.
+
+`history_tool_result_cap: N` opts into replaying each folded tool
+result, cut to at most `N` bytes with the same **head + tail** rule as
+`turn_tool_result_cap` (same marker, same 130-byte floor, marker inside
+the bound). Note the polarity is the **opposite** of the turn-side cap:
+there `unset` means "results are present and uncapped" — here `unset`
+means "results are absent". The knob gates presence itself.
+
+| Value | Behavior |
+|-------|----------|
+| unset (default) | Folded regions stay text plus calls; tool results are omitted. |
+| `Some(0)` | Explicit "off" sentinel — same as unset. |
+| `Some(N > 0)` | Each folded tool result is replayed, head + tail within `N` bytes total. A value below 130 is lifted to 130 (refused by `/context` instead). |
+
+Both regions switch together — history and checkpoint share one folded
+builder (`build_text_region`), so one knob covers both. The region
+marker text switches with the knob: with results replayed it no longer
+says "tool results omitted", and each truncated result carries its own
+`… [N bytes dropped from the middle …]` marker on the wire.
+
+Set it from a command: `/context sliding 10 0.5 32768 120000 4 8 4096`
+(seventh positional — the later slots are positional, so the earlier
+ones must be written to reach it; `0` switches it off, omitting it
+keeps the configured value), or from config as
+`context_strategy = { …, history_tool_result_cap = 4096 }`.
+
+**Why per-result, not global:** same reason as the turn-side cap — one
+verbose `read` is usually fine; ten of them from one test suite are the
+problem. A global bound on the folded payload is `max_history_tokens`
+for history; the checkpoint's implicit bound is the checkpoint interval
+(the folded steps stop being verbatim either way).
 
 **Why per-result, not global:** a single 5 KB `read` result is usually
 fine; ten 100 KB results from one bash test suite are the actual

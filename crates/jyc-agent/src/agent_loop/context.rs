@@ -23,11 +23,11 @@ use crate::types::ContentBlock;
 /// inline duplicate is owned by the extraction layer
 /// ([`crate::session::flush_turn`] applies the transcript view's rule per
 /// step); this function adds the replay-only rule for the fieldless
-/// leading block a cross-provider journal leaves behind — strip it when
-/// real text follows, drop the message when it does not. Without the
-/// replay, a folded assistant turn reaches a thinking-first model (Kimi,
-/// MiniMax) as reply text carrying its reasoning and no field, and the
-/// model mimics that shape: reasoning degrades turn over turn.
+/// leading block — strip it when real text follows, drop the message when
+/// it does not. Without the replay, a folded assistant turn reaches a
+/// model that reads its thinking shape out of `content` (Kimi, verified)
+/// as reply text carrying its reasoning and no field, and the model
+/// mimics that shape: reasoning degrades turn over turn.
 fn format_cleaned_message(
     provider: &dyn Provider,
     msg: &serde_json::Value,
@@ -39,10 +39,17 @@ fn format_cleaned_message(
             .and_then(|v| v.as_str())
             .unwrap_or("");
         // The extraction layer owns the field-matched strip; this is the
-        // replay-only rule for the fieldless leading block a cross-provider
-        // journal leaves behind. A block-only entry is the reasoning-only
-        // turn of the tag era — dropped here for the same reason
-        // reasoning-only turns drop, though the transcript view keeps it.
+        // replay-only rule for the fieldless leading block, mirroring the
+        // Responses wire's unconditional send-time strip. No in-tree
+        // builder writes that shape (every builder that inlined also set
+        // the field): it covers legacy or hand-edited entries, at the
+        // cost of deleting a literal block nothing can tell from real
+        // reasoning. A block coexisting with a non-matching field ships
+        // as-is — from the builders the two always match, so a mismatch
+        // is hand-edited content and deleting either half is not this
+        // layer's call. A block-only entry is the reasoning-only turn of
+        // the tag era — dropped here for the same reason reasoning-only
+        // turns drop, though the transcript view keeps it.
         if reasoning.is_empty()
             && let Some(remainder) = crate::session::strip_well_formed_leading_block(&text)
         {
@@ -1125,12 +1132,13 @@ mod render_raw_context_tests {
         assert_eq!(wire["content"].as_str().unwrap(), "plain answer");
         assert_eq!(wire["reasoning_content"].as_str().unwrap(), "why");
 
-        // A fieldless leading block with real text after it — the shape a
-        // cross-provider journal (OpenAI → Anthropic → OpenAI) leaves in
-        // stored content — strips on the replay path: replaying reasoning
-        // as reply text is the shape that taught thinking-first models to
-        // inline it. (The transcript view keeps its conservative rule; the
-        // extraction layer only strips the field's exact duplicate.)
+        // A fieldless leading block with real text after it — legacy or
+        // hand-edited content: no in-tree builder writes the block
+        // without the field — strips on the replay path, the same shape
+        // the Responses wire strips unconditionally at send time:
+        // replaying reasoning as reply text is what taught models to
+        // inline it. (The transcript view keeps its conservative rule;
+        // the extraction layer only strips the field's exact duplicate.)
         let msg = json!({
             "role": "assistant",
             "content": format!("{open}why{close}\n\nanswer"),

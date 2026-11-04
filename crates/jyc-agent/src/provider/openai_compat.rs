@@ -770,12 +770,15 @@ pub(crate) fn build_openai_raw_assistant(
     let mut msg = serde_json::json!({ "role": "assistant" });
 
     // Content stays a plain reply string: reasoning replays only through
-    // the `reasoning_content` field below (DeepSeek, Kimi). The old
-    // additive inline (`<think>…</think>\n\n` prefix) survived in the
-    // journal and came back through the folded history as reply text,
-    // which taught thinking-first models to emit reasoning as visible
-    // output — thinking then degraded turn over turn. Models that expect
-    // thinking inline parse the tags we never send.
+    // the `reasoning_content` field below. The old additive inline
+    // (`<think>…</think>\n\n` prefix) survived in the journal and came
+    // back through the folded history as reply text, which taught models
+    // that read their thinking shape out of `content` (kimi k3.1-pro,
+    // verified against a recorded session) to emit reasoning as visible
+    // output, degrading turn over turn. MiniMax M3 emits its thinking
+    // inline in `content` (see the parser below), so field-only replay
+    // is unverified for it — the field is the one shape every non-inline
+    // provider reads, and a folded history must pick one.
     if !text.is_empty() {
         msg["content"] = serde_json::Value::String(text.to_string());
     } else {

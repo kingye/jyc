@@ -2358,7 +2358,8 @@ JYC uses the following subset of the agent service API:
      wire's send-time strip; no in-tree builder writes that shape (every
      builder that inlined also set the field), so the rule covers legacy
      or hand-edited entries, at the cost of deleting a literal block
-     indistinguishable from reasoning — unless it is the whole content.
+     indistinguishable from reasoning; a block-only entry drops
+     outright, as the reasoning-only turn it is.
      Whether a provider that emits thinking inline (MiniMax M3) reads
      the `reasoning_content` field on input is unverified. The folded
      reasoning is not size-capped: it enlarges the payload and the

@@ -6,7 +6,7 @@
 
 ### Changed
 
-- The TUI topic info pane draws queue occupancy as bold dashes instead of quarter-cell blocks: yellow dashes count messages waiting for a turn, and dark-gray dashes mark free slots, so the row avoids a font-sensitive glyph while its word, counts, colours, and narrow-pane fallback stay unchanged (#1063)
+- The TUI topic info pane draws queue occupancy with bold dashes instead of the ambiguous-width `▊` block: each queue mark stands for one message, so a font that widens the block would miscount capacity. Both queued and free-slot marks are bold — yellow marks count messages waiting for a turn, and dark-gray marks show free slots — while the row's word, figures, and narrow-pane fallback stay unchanged (#1063)
 
 ### Fixed
 

@@ -3543,8 +3543,7 @@ Not connected: connection refused
                                                                                            │ Model:       claude-opus-4-8         
                                                                                            │ Mode:        build                   
                                                                                            │ Branch:      feat/issue-42           
-                                                                                           │ Status:      Processing · queue -----
-                                                                                           │              2 / 10
+                                                                                           │ Status:      Processing · 2 / 10     
                                                                                            │ Tokens:      ━━━━━━━━──────────────  
                                                                                            │              44.17K / 117.19K (38%)  
                                                                                            │ Cache:                               
@@ -3638,9 +3637,10 @@ Not connected: connection refused
   say how much of the topic's queue is taken — one mark per message the
   queue can hold, a bold yellow `-` for a message waiting for a turn of
   its own, a bold dim-gray `-` for a free slot — so the row shows both
-  what the topic holds and the room it has left; the colour separates
-  occupancy while the shared one-cell dash shape keeps the count legible
-  without colour. The word `queue` names the marks, so they cannot be
+  what the topic holds and the room it has left. Both marks are bold — a
+  deliberate exception to the bars' weight convention — so colour alone
+  separates occupancy; without colour, the figures still carry the exact
+  counts. The word `queue` names the marks, so they cannot be
   read as the progress of the turn the status word names:
   `Status: Processing · queue --- 2 / 10`. The word and the marks are
   what the row gives up as the column narrows: first the figures (`2 /

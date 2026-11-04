@@ -549,7 +549,9 @@ const QUEUE_SEPARATOR: &str = " · ";
 ///
 /// A dash, one cell wide in every font. Both the queued and free marks are
 /// bold; colour carries occupancy — yellow for a message waiting for a turn
-/// of its own, dark gray for a free slot.
+/// of its own, dark gray for a free slot. The pane also uses a dash for an
+/// absent pattern and deleted-line counts; the leading word `queue` keeps
+/// the marks from reading as either.
 const QUEUE_MARK: &str = "-";
 
 /// Append the status row to `spans` — the topic's live status and the

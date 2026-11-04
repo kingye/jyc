@@ -2405,26 +2405,21 @@ fn info_pane_shows_a_zero_weight_composition_without_a_bar() {
 /// progress of the turn the status names. The figures share the row.
 #[test]
 fn info_pane_draws_the_queue_on_the_status_row() {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
     let mut app = info_pane_app(jyc_types::task::TaskList::default());
     let detail = app.topic_detail.as_mut().expect("the detail");
     detail.queued = 2;
     detail.queue_capacity = 10;
 
     let width = 40;
-    let height = 24;
-    let backend = TestBackend::new(width, height);
-    let mut terminal = Terminal::new(backend).expect("terminal");
-    terminal
-        .draw(|frame| render_topic_info_pane(frame, frame.area(), &mut app))
-        .expect("draw");
-    let buffer = terminal.backend().buffer().clone();
+    let (screen, buffer) = info_pane_screen(&mut app, width, 24);
+    // The status row, not the first row anywhere in the pane that draws a
+    // dash: `Pattern:` and changed-file rows can use the same glyph.
+    let row = screen
+        .lines()
+        .position(|line| line.contains("Status:"))
+        .expect("the status row") as u16;
 
-    // The row that carries the marks.
-    let row = (0..height)
-        .find(|y| (0..width).any(|x| buffer[(x, *y)].symbol() == "-"))
-        .expect("the status row");
+    // Read colours and weight straight off that row's cells.
     let marks: Vec<(u16, Color, bool)> = (0..width)
         .filter_map(|x| {
             let cell = &buffer[(x, row)];
@@ -2444,7 +2439,10 @@ fn info_pane_draws_the_queue_on_the_status_row() {
         .iter()
         .filter(|(_, fg, _)| *fg == Color::DarkGray)
         .count();
-    assert_eq!(queued, 1, "the two messages waiting are yellow");
+    assert_eq!(
+        queued, 1,
+        "the two waiting messages round to one yellow mark of six"
+    );
     assert_eq!(free, 5, "the free slots are gray");
     // The queued marks come first: the row reads as a queue filling up.
     let first_gray = marks
@@ -2469,10 +2467,13 @@ fn info_pane_omits_the_queue_without_a_capacity() {
     let detail = app.topic_detail.as_mut().expect("the detail");
     detail.queued = 0;
     detail.queue_capacity = 0;
-    let pane = info_pane_text(&mut app, 40, 24);
-    assert!(!pane.contains("queue"), "{pane}");
-    assert!(!pane.contains('-'), "{pane}");
-    assert!(pane.contains("Status:"), "{pane}");
+    let (screen, _) = info_pane_screen(&mut app, 40, 24);
+    let status = screen
+        .lines()
+        .find(|line| line.contains("Status:"))
+        .expect("the status row");
+    assert!(!status.contains("queue"), "{status}");
+    assert!(!status.contains('-'), "{status}");
 }
 
 /// A pane too narrow for the marks puts the figures under the status
@@ -2484,12 +2485,18 @@ fn info_pane_puts_the_queue_figures_under_the_status_in_a_narrow_pane() {
     detail.queued = 2;
     detail.queue_capacity = 10;
     // Six cells of pane: too narrow for a mark of five.
-    let pane = info_pane_text(&mut app, 7, 24);
-    assert!(pane.contains("2 / 10"), "{pane}");
-    assert!(!pane.contains('-'), "a narrow pane draws no marks:\n{pane}");
+    let (screen, _) = info_pane_screen(&mut app, 7, 24);
+    let figures = screen
+        .lines()
+        .find(|line| line.contains("2 / 10"))
+        .expect("the figures row");
     assert!(
-        !pane.contains("queue"),
-        "a narrow pane drops the word with the marks:\n{pane}"
+        !figures.contains('-'),
+        "a narrow pane draws no marks:\n{figures}"
+    );
+    assert!(
+        !figures.contains("queue"),
+        "a narrow pane drops the word with the marks:\n{figures}"
     );
 }
 

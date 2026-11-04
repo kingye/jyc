@@ -1,3 +1,9 @@
+## [Unreleased]
+
+### Fixed
+
+- `jyc connect` reopens the SSH tunnel after ssh dies. The tunnel's `ServerAlive` watchdog makes ssh exit after ~45s of network outage, and from then on the dashboard's infinite WebSocket reconnect kept dialing a local port nothing listened on — a long outage stranded the session even after the network recovered. A supervisor now waits out each ssh death and reopens the same local port with 1s–30s backoff (the WS client's own cadence), so the dashboard's fixed address keeps working across tunnel restarts (#1061)
+
 ## [0.8.3] - 2026-11-04
 
 ### Added

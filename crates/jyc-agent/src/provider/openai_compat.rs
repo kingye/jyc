@@ -311,12 +311,21 @@ struct OpenAiStreamState {
     /// field wrapped in `<think>...</think>` tags rather than in a separate
     /// `reasoning_content` field.
     in_think_block: bool,
-    /// Whether a `<think>` block has already been entered. Thinking models
-    /// emit their reasoning FIRST, at the very start of the content stream,
-    /// so the first `<think>` is always real; later `<think>` occurrences
-    /// may be the model writing "<think>" as literal text (e.g. inline code
-    /// "`<think>`") and must not be treated as block starts.
+    /// Whether a `<think>` block has already been entered. Once set, later
+    /// `<think>` occurrences are real only when a closing `</think>` follows
+    /// in the same buffer; otherwise they are the model writing "<think>" as
+    /// literal text (e.g. inline code "`<think>`") and must stay in the text
+    /// stream. Before it is set, `is_real_think_tag` decides via the
+    /// stream-opening heuristic (see its doc).
     saw_think_block: bool,
+    /// Whether any non-whitespace text has already been emitted OUTSIDE a
+    /// think block. A real reasoning block always opens the stream — it
+    /// precedes the visible reply — so once real reply text has been
+    /// delivered, a `<think>` can no longer be a true block start; it is the
+    /// model writing the tag as literal text. This complements the
+    /// per-buffer check in `is_real_think_tag`: text emitted in earlier
+    /// chunks is no longer present in `tag_buffer`, but is recorded here.
+    saw_text_output: bool,
     /// Unparsed tail of the `content` stream. Holds the substring from the last
     /// `<` onwards when no complete tag is present, so we can detect tags that
     /// arrive split across chunks.
@@ -344,12 +353,14 @@ struct ToolCallAccumulator {
 /// When a `</think>` tag is followed by `\n\n`, the newlines are consumed as
 /// a separator and not emitted — this matches MiniMax M3's output format.
 ///
-/// **Known limitation:** if the model's response text contains the literal
-/// substring `<think>` outside a think block (e.g. the user asked "what does
-/// `<think>` mean?"), the parser will incorrectly treat subsequent text as
-/// reasoning. This is inherent to stateless tag parsing without context
-/// awareness and is acceptable for the current scope — in practice models do
-/// not emit `<think>` as literal text in their responses.
+/// **Known limitation:** a *bare* literal `<think>` that OPENS the reply
+/// (stream start, not in inline code) is indistinguishable from a real
+/// reasoning block and will still be routed to reasoning — whether a
+/// literal `</think>` follows later (that tail then becomes text) or not
+/// (everything after the tag stays in the open block, and the end-of-stream
+/// flush emits it as reasoning). Mid-text literals and inline-code literals
+/// (the model discussing `` `<think>` ``) are kept in the text stream — see
+/// `is_real_think_tag`.
 fn split_think_tags(content: &str, state: &mut OpenAiStreamState) -> Vec<StreamEvent> {
     let mut events = Vec::new();
     let mut text = std::mem::take(&mut state.tag_buffer) + content;
@@ -380,6 +391,11 @@ fn split_think_tags(content: &str, state: &mut OpenAiStreamState) -> Vec<StreamE
                 // `reasoning_content`, truncating the delivered text.
                 if !state.in_think_block && !is_real_think_tag(state, &text, pos) {
                     events.push(StreamEvent::TextDelta(text[..pos + tag.len()].to_string()));
+                    // The emitted text carries the tag itself, so it is never
+                    // whitespace-only: record it immediately — `is_real_think_tag`
+                    // consults `saw_text_output` within this same call for any
+                    // later tag in this chunk, before the end-of-call scan runs.
+                    state.saw_text_output = true;
                     text = text[pos + tag.len()..].to_string();
                     continue;
                 }
@@ -436,21 +452,44 @@ fn split_think_tags(content: &str, state: &mut OpenAiStreamState) -> Vec<StreamE
         }
     }
 
+    // Record visible reply text emitted by this call. `is_real_think_tag`
+    // consults `saw_text_output` on later chunks, where this call's emitted
+    // text is no longer in the buffer.
+    for event in &events {
+        if let StreamEvent::TextDelta(t) = event
+            && !t.trim().is_empty()
+        {
+            state.saw_text_output = true;
+        }
+    }
+
     events
 }
 
 /// Whether a `<think>` at `pos` in `text` starts a REAL thinking block.
 ///
-/// Thinking models (MiniMax M3, DeepSeek) emit their reasoning FIRST, at the
-/// very start of the content stream — so the first `<think>` is always the
-/// model's real thinking. Later `<think>` occurrences are real only when a
-/// closing `</think>` follows in the same text; otherwise they are literal
-/// text (the model discussing "<think>" as inline code, e.g. in `` `...` ``)
-/// and must stay in the text stream rather than swallowing the rest of the
-/// reply into `reasoning_content`.
+/// Thinking models (MiniMax M3) emit their reasoning FIRST, at the very
+/// start of the content stream — before any visible reply text. So a
+/// `<think>` with no earlier real block can only be a true block start when
+/// it actually sits at the opening of the output:
+///
+/// - nothing but whitespace was already emitted (checked in the current
+///   buffer via `text[..pos]`, and across chunks via `state.saw_text_output`
+///   — earlier chunks' text is no longer in the buffer),
+/// - and the tag is not opening an inline-code literal (`` `<think>` `` —
+///   a backtick immediately after the tag).
+///
+/// Anything else is the model writing the tag as literal text, which must
+/// stay in the text stream rather than swallowing the rest of the reply
+/// into `reasoning_content` (the kimi k3.1-pro incident: a reply discussing
+/// the `<think>` format had its middle routed to the reasoning channel).
+/// Once a real block has been seen, later `<think>` occurrences are real
+/// only when a closing `</think>` follows in the same text.
 fn is_real_think_tag(state: &OpenAiStreamState, text: &str, pos: usize) -> bool {
     if !state.saw_think_block {
-        return true;
+        return !state.saw_text_output
+            && text[..pos].trim().is_empty()
+            && !text[pos + "<think>".len()..].starts_with('`');
     }
     text[pos + "<think>".len()..].contains("</think>")
 }
@@ -1530,6 +1569,178 @@ mod tests {
         );
         assert!(!state.in_think_block);
         assert!(state.tag_buffer.is_empty());
+    }
+
+    /// Regression (the kimi k3.1-pro incident): a reply discussing the
+    /// `<think>` format emits the tag as literal text MID-STREAM, with no
+    /// real reasoning block before it and no closing tag after. The old
+    /// first-tag rule ("the first `<think>` is always real") routed the rest
+    /// of the reply into the reasoning channel. Mid-text position alone must
+    /// mark it literal.
+    #[test]
+    fn split_think_tags_literal_first_tag_mid_text_without_prior_block() {
+        let mut state = OpenAiStreamState::default();
+        let chunk = serde_json::json!({
+            "choices": [{"delta": {"content": "Answer: <think> marks reasoning in this reply."}}]
+        })
+        .to_string();
+        let events = parse_openai_chunk(&chunk, &mut state).unwrap_or_default();
+
+        assert!(
+            reasonings(&events).is_empty(),
+            "mid-text literal tag must not open a reasoning block, got: {:?}",
+            reasonings(&events)
+        );
+        assert_eq!(
+            texts(&events).concat(),
+            "Answer: <think> marks reasoning in this reply.",
+            "the whole reply must stay in the text stream"
+        );
+        assert!(!state.in_think_block);
+    }
+
+    /// A literal tag with a backtick BEFORE it (`` `<think>` ``, inline code)
+    /// must stay text: the non-whitespace prefix already disqualifies it via
+    /// `is_real_think_tag`, so the backtick-after arm is not even consulted.
+    #[test]
+    fn split_think_tags_literal_tag_after_backtick_prefix() {
+        let mut state = OpenAiStreamState::default();
+        let chunk = serde_json::json!({
+            "choices": [{"delta": {"content": "`<think>` is the opening tag."}}]
+        })
+        .to_string();
+        let events = parse_openai_chunk(&chunk, &mut state).unwrap_or_default();
+
+        assert!(reasonings(&events).is_empty());
+        assert_eq!(
+            texts(&events).concat(),
+            "`<think>` is the opening tag.",
+            "tag preceded by a backtick must stay literal"
+        );
+        assert!(!state.in_think_block);
+    }
+
+    /// A mid-text literal open+close PAIR must be routed to text in full.
+    /// Pins the new semantics: the first tag is no longer real merely because
+    /// a closing tag follows in the same buffer — reply text before it
+    /// already disqualifies it.
+    #[test]
+    fn split_think_tags_literal_pair_mid_text_stays_text() {
+        let mut state = OpenAiStreamState::default();
+        let chunk = serde_json::json!({
+            "choices": [{"delta": {"content": "Example: <think>sample</think> done."}}]
+        })
+        .to_string();
+        let events = parse_openai_chunk(&chunk, &mut state).unwrap_or_default();
+
+        assert!(
+            reasonings(&events).is_empty(),
+            "got: {:?}",
+            reasonings(&events)
+        );
+        // A literal `</think>` with no matching open has no tag meaning; the
+        // parser holds it in the buffer until the end-of-stream flush.
+        let flush = flush_think_buffer(&mut state).expect("buffered close tag flushes as text");
+        let mut all = events;
+        all.push(flush);
+        assert_eq!(
+            texts(&all).concat(),
+            "Example: <think>sample</think> done.",
+            "the literal pair must survive verbatim in the text stream"
+        );
+        assert!(!state.in_think_block);
+    }
+
+    /// The `saw_text_output` flag must cover text emitted in EARLIER chunks:
+    /// "Hello " flushes in chunk 1, the tag completes in chunk 3 with an
+    /// empty prefix in the buffer. Without the flag this would be treated as
+    /// a stream-opening reasoning block.
+    #[test]
+    fn split_think_tags_literal_tag_after_text_in_earlier_chunks() {
+        let mut state = OpenAiStreamState::default();
+
+        let chunk1 = serde_json::json!({"choices": [{"delta": {"content": "Hello "}}]}).to_string();
+        let events = parse_openai_chunk(&chunk1, &mut state).unwrap_or_default();
+        assert_eq!(texts(&events), vec!["Hello "]);
+
+        let chunk2 = serde_json::json!({"choices": [{"delta": {"content": "<thi"}}]}).to_string();
+        parse_openai_chunk(&chunk2, &mut state).unwrap_or_default();
+
+        let chunk3 =
+            serde_json::json!({"choices": [{"delta": {"content": "nk> rest"}}]}).to_string();
+        let events = parse_openai_chunk(&chunk3, &mut state).unwrap_or_default();
+
+        assert!(
+            reasonings(&events).is_empty(),
+            "tag after earlier-chunk text must stay literal, got: {:?}",
+            reasonings(&events)
+        );
+        assert_eq!(texts(&events).concat(), "<think> rest");
+        assert!(!state.in_think_block);
+    }
+
+    /// Review-found same-call gap: the literal branch emits visible text and
+    /// `continue`s the parse loop BEFORE the end-of-call scan runs, so a later
+    /// tag in the SAME chunk — preceded only by whitespace — must see the flag
+    /// set by the literal branch itself. Without that in-branch update this
+    /// second tag is judged a stream-opening reasoning block and "B rest" is
+    /// swallowed into the reasoning channel (the incident shape again).
+    #[test]
+    fn split_think_tags_second_literal_tag_same_chunk_after_whitespace() {
+        let mut state = OpenAiStreamState::default();
+        let chunk = serde_json::json!({
+            "choices": [{"delta": {"content": "A<think>\n<think>B rest"}}]
+        })
+        .to_string();
+        let events = parse_openai_chunk(&chunk, &mut state).unwrap_or_default();
+
+        assert!(
+            reasonings(&events).is_empty(),
+            "reply text after a same-chunk literal tag must stay text, got: {:?}",
+            reasonings(&events)
+        );
+        assert_eq!(texts(&events).concat(), "A<think>\n<think>B rest");
+        assert!(!state.in_think_block);
+    }
+
+    /// The backtick-after arm of `is_real_think_tag` (a bare tag immediately
+    /// opening an inline-code literal) needs its own fixture: a backtick
+    /// BEFORE the tag is caught by the non-whitespace prefix check instead,
+    /// so this one uses a whitespace-only prefix to actually reach the arm.
+    #[test]
+    fn split_think_tags_bare_tag_followed_by_backtick_stays_literal() {
+        let mut state = OpenAiStreamState::default();
+        let chunk = serde_json::json!({
+            "choices": [{"delta": {"content": "\n<think>`x`"}}]
+        })
+        .to_string();
+        let events = parse_openai_chunk(&chunk, &mut state).unwrap_or_default();
+
+        assert!(
+            reasonings(&events).is_empty(),
+            "a tag opening inline code must stay literal, got: {:?}",
+            reasonings(&events)
+        );
+        assert_eq!(texts(&events).concat(), "\n<think>`x`");
+        assert!(!state.in_think_block);
+    }
+
+    /// A whitespace-only prefix must not set `saw_text_output`: a real
+    /// reasoning block may open after blank lines (the reason the flag and the
+    /// prefix check both use `trim()`). Pinned so nobody "simplifies" the
+    /// whitespace exclusion without breaking this.
+    #[test]
+    fn split_think_tags_real_block_after_whitespace_prefix() {
+        let mut state = OpenAiStreamState::default();
+        let chunk = serde_json::json!({
+            "choices": [{"delta": {"content": "\n\n<think>plan</think>\nanswer"}}]
+        })
+        .to_string();
+        let events = parse_openai_chunk(&chunk, &mut state).unwrap_or_default();
+
+        assert_eq!(reasonings(&events), vec!["plan"]);
+        assert_eq!(texts(&events), vec!["\n\n", "\nanswer"]);
+        assert!(!state.in_think_block);
     }
 
     /// `build_raw_assistant_message` must inline reasoning as `<think>` tags

@@ -1172,6 +1172,23 @@ fn strip_duplicated_inline_reasoning(text: &str, reasoning: &str) -> String {
     visible.strip_prefix("\n\n").unwrap_or(visible).to_string()
 }
 
+/// Strip one leading, fully closed inline think block regardless of the
+/// `reasoning_content` field, returning the text after it.
+///
+/// The replay-path counterpart to [`strip_duplicated_inline_reasoning`]'s
+/// field-matched rule: a cross-provider journal (OpenAI → Anthropic →
+/// OpenAI) loses the field in `chat_to_anthropic_messages` but keeps the
+/// text, so the block can survive extraction without its duplicate.
+/// Returns `None` when the text does not open with a closed block — an
+/// unclosed or non-leading block stays visible text.
+pub(crate) fn strip_well_formed_leading_block(text: &str) -> Option<String> {
+    let rest = text.strip_prefix(concat!("<", "think>"))?;
+    let close = rest.find(concat!("</", "think>"))?;
+    let visible = &rest[close + concat!("</", "think>").len()..];
+    let visible = visible.strip_prefix("\n\n").unwrap_or(visible);
+    Some(visible.to_string())
+}
+
 /// Max length of a single rendered tool-call argument value kept in a
 /// turn's rendered calls; longer values are truncated with an explicit
 /// `… [truncated N bytes]` marker.
@@ -1352,10 +1369,11 @@ pub(crate) const TOOL_CALLS_NOTE_PREFIX: &str = "[Tool calls]";
 
 /// One user→assistant turn extracted from raw context.
 ///
-/// The assistant entry holds ONLY the assistant's own text; the turn's
-/// tool calls are kept separately in [`Self::tool_calls`] — never merged
-/// into that text, so the transcript view cannot teach the model to write
-/// its tool use as content.
+/// The assistant entry holds the assistant's own text plus the turn's
+/// `reasoning_content` (the fold replays it through the provider's wire
+/// shape); the turn's tool calls are kept separately in
+/// [`Self::tool_calls`] — never merged into that text, so the transcript
+/// view cannot teach the model to write its tool use as content.
 pub(crate) struct TurnPair {
     /// The turn-opening user message (original wire format).
     pub user: serde_json::Value,
@@ -1482,8 +1500,9 @@ fn flush_turn(
     let mut last_reasoning = String::new();
     for msg in &assistants {
         // One extraction and one call parse per message: the keep-rule and
-        // the transcript view both need them. Keep only role + content for
-        // the text; the calls are rendered separately so a tool-call-only
+        // the transcript view both need them. Keep role + content (plus
+        // the turn's reasoning, merged below) for the text; the calls are
+        // rendered separately so a tool-call-only
         // step (empty text) still shows up as a call instead of being
         // dropped.
         let text = extract_assistant_transcript_text(msg);
@@ -1590,10 +1609,10 @@ fn message_keeps_turn_alive(msg: &serde_json::Value) -> bool {
 /// conclusion. Legacy `jyc_reply_message` calls (pre-final-text-reply
 /// transcripts) still count as the step they were, but render no tool call.
 ///
-/// Assistant messages are cleaned to only role + content (strip
-/// reasoning_content, tool_calls); the calls themselves are rendered into
-/// [`TurnPair::tool_calls`], never into the assistant's own text. Returns
-/// pairs in oldest→newest order.
+/// Assistant messages are cleaned to role + content + reasoning_content
+/// (the fold replays it; `tool_calls` are stripped); the calls themselves
+/// are rendered into [`TurnPair::tool_calls`], never into the assistant's
+/// own text. Returns pairs in oldest→newest order.
 ///
 /// A trailing turn whose user message has no assistant reply yet is
 /// dropped — a completed turn only (the history builder keeps the last user

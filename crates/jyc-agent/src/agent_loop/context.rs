@@ -16,21 +16,35 @@ use crate::types::ContentBlock;
 /// user/assistant `content` to be an array of blocks. Returns `None` when
 /// the message has no extractable text, so callers must never emit empty
 /// text blocks (Anthropic rejects them).
+///
+/// Assistant reasoning replays through the provider's own wire shape — the
+/// same call the current turn uses ([`Provider::build_raw_assistant_message`])
+/// with the message's `reasoning_content` — and the inline `<think>` prefix
+/// is stripped when it duplicates that field. Without the replay, a folded
+/// assistant turn reaches a thinking-first model (Kimi, MiniMax) as reply
+/// text carrying its reasoning and no field, and the model mimics that
+/// shape: reasoning degrades turn over turn.
 fn format_cleaned_message(
     provider: &dyn Provider,
     msg: &serde_json::Value,
 ) -> Option<serde_json::Value> {
-    let text = crate::session::extract_message_text(msg);
-    if text.is_empty() {
-        return None;
+    if msg.get("role").and_then(|r| r.as_str()) == Some("assistant") {
+        let text = crate::session::extract_assistant_transcript_text(msg);
+        if text.is_empty() {
+            return None;
+        }
+        let reasoning = msg
+            .get("reasoning_content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        Some(provider.build_raw_assistant_message(&text, reasoning, &[]))
+    } else {
+        let text = crate::session::extract_message_text(msg);
+        if text.is_empty() {
+            return None;
+        }
+        Some(provider.format_user_message(&[ContentBlock::Text { text }]))
     }
-    Some(
-        if msg.get("role").and_then(|r| r.as_str()) == Some("assistant") {
-            provider.build_raw_assistant_message(&text, "", &[])
-        } else {
-            provider.format_user_message(&[ContentBlock::Text { text }])
-        },
-    )
 }
 
 /// Cold build — [`build_send_context_cached`] with a throwaway cache.
@@ -821,10 +835,14 @@ mod render_raw_context_tests {
         fn build_raw_assistant_message(
             &self,
             text: &str,
-            _reasoning: &str,
+            reasoning: &str,
             _tool_calls: &[(String, String, String)],
         ) -> serde_json::Value {
-            json!({"role": "assistant", "content": text})
+            let mut msg = json!({"role": "assistant", "content": text});
+            if !reasoning.is_empty() {
+                msg["reasoning_content"] = json!(reasoning);
+            }
+            msg
         }
     }
 
@@ -910,8 +928,9 @@ mod render_raw_context_tests {
     }
 
     /// Append one assistant tool-call step and its result. The assistant
-    /// carries reasoning twice, exactly as the OpenAI-compatible builder
-    /// persists it.
+    /// carries reasoning twice — the inline `<think>` block plus the
+    /// `reasoning_content` field — the shape the compat builder persisted
+    /// before it stopped inlining, which legacy journals still hold.
     fn push_interaction(ctx: &mut Vec<serde_json::Value>, i: usize, reasoning: &str) {
         let (open, close) = (concat!("<", "think>"), concat!("</", "think>"));
         ctx.push(json!({
@@ -1048,13 +1067,69 @@ mod render_raw_context_tests {
         );
 
         let folded = serde_json::to_string(&sent[..raw_start]).unwrap();
-        assert!(!folded.contains("secret"), "reasoning leaked: {folded}");
+        // Reasoning replays through the wire shape (the mock mirrors the
+        // real builder's `reasoning_content` field); the inline `<think>`
+        // duplicate must not survive the fold as reply text.
+        assert!(folded.contains("secret"), "reasoning dropped: {folded}");
+        assert!(
+            !folded.contains("<think>"),
+            "inline think tags leaked: {folded}"
+        );
         assert!(!folded.contains("RESULT-"), "tool result leaked: {folded}");
         assert!(folded.contains("step 0") && folded.contains("step 31"));
         // The checkpoint gets the same trace of what was run, not only the
         // steps' text.
         assert!(folded.contains("[Tool calls] bash()"), "{folded}");
         assert!(!folded.contains("step 32"), "latest step must stay raw");
+    }
+
+    #[test]
+    fn folded_assistant_replays_reasoning_through_the_wire_shape() {
+        let open = concat!("<", "think>");
+        let close = concat!("</", "think>");
+        // Field + matching inline prefix — the legacy persisted shape:
+        // content stripped back to the reply text, reasoning replayed.
+        let msg = json!({
+            "role": "assistant",
+            "content": format!("{open}why{close}\n\nanswer"),
+            "reasoning_content": "why",
+        });
+        let wire = format_cleaned_message(&prov(), &msg).expect("reply text survives");
+        assert_eq!(wire["content"].as_str().unwrap(), "answer");
+        assert_eq!(wire["reasoning_content"].as_str().unwrap(), "why");
+
+        // Field without an inline prefix: content untouched, still replayed.
+        let msg = json!({
+            "role": "assistant",
+            "content": "plain answer",
+            "reasoning_content": "why",
+        });
+        let wire = format_cleaned_message(&prov(), &msg).expect("reply text survives");
+        assert_eq!(wire["content"].as_str().unwrap(), "plain answer");
+        assert_eq!(wire["reasoning_content"].as_str().unwrap(), "why");
+
+        // Inline prefix without the field: treated as ordinary visible
+        // text (the session layer's established conservative semantics —
+        // guessing would drop a legitimate reply).
+        let msg = json!({
+            "role": "assistant",
+            "content": format!("{open}why{close}\n\nanswer"),
+        });
+        let wire = format_cleaned_message(&prov(), &msg).expect("text survives");
+        assert_eq!(
+            wire["content"].as_str().unwrap(),
+            format!("{open}why{close}\n\nanswer")
+        );
+        assert!(wire.get("reasoning_content").is_none());
+
+        // Reasoning-only (nothing visible after the strip): dropped —
+        // replay input never holds a reasoning-only turn.
+        let msg = json!({
+            "role": "assistant",
+            "content": format!("{open}why{close}"),
+            "reasoning_content": "why",
+        });
+        assert!(format_cleaned_message(&prov(), &msg).is_none());
     }
 
     #[test]

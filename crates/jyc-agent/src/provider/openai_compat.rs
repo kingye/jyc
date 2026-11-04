@@ -769,15 +769,14 @@ pub(crate) fn build_openai_raw_assistant(
 ) -> serde_json::Value {
     let mut msg = serde_json::json!({ "role": "assistant" });
 
-    // Content: when both reasoning and response text are present, inline
-    // the reasoning as `<think>...</think>` tags so providers that expect
-    // thinking inline (e.g. MiniMax M3) receive it in the right shape on
-    // replay. Providers that use a separate `reasoning_content` field
-    // (e.g. DeepSeek) still get the field below, so this is additive and
-    // does not break them.
-    if !reasoning.is_empty() && !text.is_empty() {
-        msg["content"] = serde_json::Value::String(format!("<think>{reasoning}</think>\n\n{text}"));
-    } else if !text.is_empty() {
+    // Content stays a plain reply string: reasoning replays only through
+    // the `reasoning_content` field below (DeepSeek, Kimi). The old
+    // additive inline (`<think>…</think>\n\n` prefix) survived in the
+    // journal and came back through the folded history as reply text,
+    // which taught thinking-first models to emit reasoning as visible
+    // output — thinking then degraded turn over turn. Models that expect
+    // thinking inline parse the tags we never send.
+    if !text.is_empty() {
         msg["content"] = serde_json::Value::String(text.to_string());
     } else {
         msg["content"] = serde_json::Value::Null;
@@ -1743,12 +1742,13 @@ mod tests {
         assert!(!state.in_think_block);
     }
 
-    /// `build_raw_assistant_message` must inline reasoning as `<think>` tags
-    /// in `content` so providers like MiniMax M3 receive it in the shape they
-    /// expect on replay, while still emitting `reasoning_content` for providers
-    /// like DeepSeek that use a separate field.
+    /// `build_raw_assistant_message` must replay reasoning only through the
+    /// `reasoning_content` field (DeepSeek, Kimi) and keep `content` a plain
+    /// reply string. The old inline `<think>` prefix came back through the
+    /// folded history as reply text and taught thinking-first models to
+    /// emit their reasoning as visible output.
     #[test]
-    fn build_raw_assistant_message_inlines_think_tags() {
+    fn build_raw_assistant_message_replays_reasoning_as_field() {
         let provider = OpenAiCompatProvider::new(
             "https://api.example.com",
             "test",
@@ -1759,8 +1759,7 @@ mod tests {
         )
         .unwrap();
         let msg = provider.build_raw_assistant_message("the answer", "the thinking", &[]);
-        let content = msg["content"].as_str().expect("content should be string");
-        assert_eq!(content, "<think>the thinking</think>\n\nthe answer");
+        assert_eq!(msg["content"].as_str().unwrap(), "the answer");
         let reasoning = msg["reasoning_content"]
             .as_str()
             .expect("reasoning_content set");

@@ -2349,8 +2349,11 @@ JYC uses the following subset of the agent service API:
      current turn in two parts: once it passes `checkpoint_interval`
      assistant steps (32 by default), the older steps fold into a
      text-plus-calls checkpoint (same representation as history, so their
-     reasoning and tool results leave the wire while their calls stay
-     visible as notes), and the recent suffix
+     tool results leave the wire while their calls stay visible as notes;
+     the assistant reasoning replays through the provider's wire shape —
+     the `reasoning_content` field on the OpenAI-compatible wire, dropped
+     by the Anthropic builder — with the inline `<think>` duplicate
+     stripped), and the recent suffix
      stays verbatim with structured tool calls and results intact. Each
      later checkpoint is `checkpoint_interval / checkpoint_growth` steps
      wider — 32, 36, 40 … with the defaults (32 and 8) — so a long turn's
@@ -2619,7 +2622,7 @@ tokens ↓
 │  ├ user: <runtime-state> 参考块 ~300B ★易变★     │ ★新位置★
 │  │        + 入站消息(含 <mode> 块) + 附件          │
 │  ├ 每个 checkpoint: 旧步折叠为 text+调用注记      │ ★checkpoint★
-│  │     checkpoint (reasoning/tool result 丢弃)    │   32步起递增
+│  │     checkpoint (result 丢弃; reasoning 回放)   │   32步起递增
 │  ├ recent suffix: assistant/tool 原样             │ ◇断点3 (n-3)
 │  ├ tool: result                                 │ ◇断点4 (n-2)
 │  │     默认原样携带 ★turn_tool_result_cap★       │  ★置了则 ≤ N 字节:

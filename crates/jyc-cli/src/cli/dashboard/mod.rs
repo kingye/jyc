@@ -1213,6 +1213,9 @@ pub async fn run_connect(args: &ConnectArgs, data_dir: &std::path::Path, pipe: b
     )
     .await;
     supervisor.abort();
+    // Await the aborted task so its `Tunnel` is dropped — and ssh killed —
+    // before `run_connect` returns, instead of leaving that to runtime drop.
+    let _ = supervisor.await;
     result
 }
 

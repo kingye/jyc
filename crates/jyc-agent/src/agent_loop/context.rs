@@ -19,24 +19,41 @@ use crate::types::ContentBlock;
 ///
 /// Assistant reasoning replays through the provider's own wire shape — the
 /// same call the current turn uses ([`Provider::build_raw_assistant_message`])
-/// with the message's `reasoning_content` — and the inline `<think>` prefix
-/// is stripped when it duplicates that field. Without the replay, a folded
-/// assistant turn reaches a thinking-first model (Kimi, MiniMax) as reply
-/// text carrying its reasoning and no field, and the model mimics that
-/// shape: reasoning degrades turn over turn.
+/// with the message's `reasoning_content`. The field-matched strip of the
+/// inline duplicate is owned by the extraction layer
+/// ([`crate::session::flush_turn`] applies the transcript view's rule per
+/// step); this function adds the replay-only rule for the fieldless
+/// leading block a cross-provider journal leaves behind — strip it when
+/// real text follows, drop the message when it does not. Without the
+/// replay, a folded assistant turn reaches a thinking-first model (Kimi,
+/// MiniMax) as reply text carrying its reasoning and no field, and the
+/// model mimics that shape: reasoning degrades turn over turn.
 fn format_cleaned_message(
     provider: &dyn Provider,
     msg: &serde_json::Value,
 ) -> Option<serde_json::Value> {
     if msg.get("role").and_then(|r| r.as_str()) == Some("assistant") {
-        let text = crate::session::extract_assistant_transcript_text(msg);
-        if text.is_empty() {
-            return None;
-        }
+        let mut text = crate::session::extract_assistant_transcript_text(msg);
         let reasoning = msg
             .get("reasoning_content")
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        // The extraction layer owns the field-matched strip; this is the
+        // replay-only rule for the fieldless leading block a cross-provider
+        // journal leaves behind. A block-only entry is the reasoning-only
+        // turn of the tag era — dropped here for the same reason
+        // reasoning-only turns drop, though the transcript view keeps it.
+        if reasoning.is_empty()
+            && let Some(remainder) = crate::session::strip_well_formed_leading_block(&text)
+        {
+            if remainder.is_empty() {
+                return None;
+            }
+            text = remainder;
+        }
+        if text.is_empty() {
+            return None;
+        }
         Some(provider.build_raw_assistant_message(&text, reasoning, &[]))
     } else {
         let text = crate::session::extract_message_text(msg);
@@ -1108,28 +1125,50 @@ mod render_raw_context_tests {
         assert_eq!(wire["content"].as_str().unwrap(), "plain answer");
         assert_eq!(wire["reasoning_content"].as_str().unwrap(), "why");
 
-        // Inline prefix without the field: treated as ordinary visible
-        // text (the session layer's established conservative semantics —
-        // guessing would drop a legitimate reply).
+        // A fieldless leading block with real text after it — the shape a
+        // cross-provider journal (OpenAI → Anthropic → OpenAI) leaves in
+        // stored content — strips on the replay path: replaying reasoning
+        // as reply text is the shape that taught thinking-first models to
+        // inline it. (The transcript view keeps its conservative rule; the
+        // extraction layer only strips the field's exact duplicate.)
         let msg = json!({
             "role": "assistant",
             "content": format!("{open}why{close}\n\nanswer"),
         });
         let wire = format_cleaned_message(&prov(), &msg).expect("text survives");
-        assert_eq!(
-            wire["content"].as_str().unwrap(),
-            format!("{open}why{close}\n\nanswer")
-        );
+        assert_eq!(wire["content"].as_str().unwrap(), "answer");
         assert!(wire.get("reasoning_content").is_none());
 
-        // Reasoning-only (nothing visible after the strip): dropped —
-        // replay input never holds a reasoning-only turn.
+        // A block-only entry without the field is a reasoning-only turn of
+        // the tag era: dropped from the replay like its field-carrying
+        // sibling below (the view still renders it).
+        let msg = json!({
+            "role": "assistant",
+            "content": format!("{open}why{close}"),
+        });
+        assert!(format_cleaned_message(&prov(), &msg).is_none());
+
+        // Reasoning-only with the field (defensive: flush_turn already
+        // yields no assistant entry for such a step): dropped — replay
+        // input never holds a reasoning-only turn.
         let msg = json!({
             "role": "assistant",
             "content": format!("{open}why{close}"),
             "reasoning_content": "why",
         });
         assert!(format_cleaned_message(&prov(), &msg).is_none());
+
+        // An unclosed leading block is not well-formed: preserved verbatim
+        // (guessing where the block ends would eat real text).
+        let msg = json!({
+            "role": "assistant",
+            "content": format!("{open}why and the answer"),
+        });
+        let wire = format_cleaned_message(&prov(), &msg).expect("text survives");
+        assert_eq!(
+            wire["content"].as_str().unwrap(),
+            format!("{open}why and the answer")
+        );
     }
 
     #[test]
@@ -1202,7 +1241,12 @@ mod render_raw_context_tests {
     }
 
     #[test]
-    fn current_turn_checkpoint_uses_provider_wire_shape() {
+    // The Anthropic exemption: its builder ignores reasoning (a thinking
+    // block cannot be forged without an API signature), so folded reasoning
+    // never reaches this wire. The compat expectation — folded reasoning
+    // riding `reasoning_content` — is pinned by
+    // `current_turn_checkpoint_folds_older_interactions_only`.
+    fn current_turn_checkpoint_anthropic_drops_folded_reasoning() {
         let mut ctx = current_with_interactions(33, "folded-reasoning");
         // The latest step is retained verbatim, so give it a distinct
         // reasoning marker: only the folded marker may disappear from the wire.

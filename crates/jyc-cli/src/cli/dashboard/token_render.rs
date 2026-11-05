@@ -554,7 +554,8 @@ const QUEUE_ACTIVE_MARK: &str = "·";
 const QUEUE_INACTIVE_MARK: &str = "·";
 
 /// Append the status row to `spans` — the topic's live status and the
-/// backlog its queue holds, on one row: `Processing · queue ······ 2 / 10`.
+/// backlog its queue holds, on one row: `Processing · queue ······ 2 / 10`
+/// (the first of the six dots yellow, the split read by colour alone).
 ///
 /// The marks say how much of the queue is taken (the queued ones yellow,
 /// the free slots dark gray), the figures carry the exact counts, and

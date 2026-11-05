@@ -2454,11 +2454,11 @@ fn info_pane_draws_the_queue_on_the_status_row() {
     );
     let queued = marks
         .iter()
-        .filter(|(_, symbol, fg, _)| *symbol == "·" && *fg == Color::Yellow)
+        .filter(|(_, _, fg, _)| *fg == Color::Yellow)
         .count();
     let free = marks
         .iter()
-        .filter(|(_, symbol, fg, _)| *symbol == "·" && *fg == Color::DarkGray)
+        .filter(|(_, _, fg, _)| *fg == Color::DarkGray)
         .count();
     assert_eq!(
         queued, 1,
@@ -2494,7 +2494,6 @@ fn info_pane_omits_the_queue_without_a_capacity() {
         .find(|line| line.contains("Status:"))
         .expect("the status row");
     assert!(!status.contains("queue"), "{status}");
-    assert!(!status.contains('-'), "{status}");
     assert!(!status.contains('·'), "{status}");
 }
 
@@ -2512,10 +2511,6 @@ fn info_pane_puts_the_queue_figures_under_the_status_in_a_narrow_pane() {
         .lines()
         .find(|line| line.contains("2 / 10"))
         .expect("the figures row");
-    assert!(
-        !figures.contains('-'),
-        "a narrow pane draws no marks:\n{figures}"
-    );
     assert!(
         !figures.contains('·'),
         "a narrow pane draws no free-slot marks:\n{figures}"

@@ -1499,12 +1499,6 @@ fn truncate_json_value(value: &serde_json::Value, max: usize) -> String {
 pub(crate) const HISTORY_MARKER_TEXT: &str = "[History messages] earlier conversation follows — text plus tool calls \
      (name and arguments); tool results omitted.";
 
-/// [`HISTORY_MARKER_TEXT`] for a block that replays tool results
-/// (`history_tool_result_cap` set): the omitted clause would be false there,
-/// and each replayed result is truncated, so the marker says both.
-pub(crate) const HISTORY_MARKER_TEXT_WITH_RESULTS: &str = "[History messages] earlier conversation follows — text plus tool calls \
-     (name and arguments) and their results, truncated when oversized.";
-
 /// Leading text of the wire-only note that carries one turn's tool calls in
 /// a folded region.
 ///
@@ -1516,12 +1510,12 @@ pub(crate) const HISTORY_MARKER_TEXT_WITH_RESULTS: &str = "[History messages] ea
 pub(crate) const TOOL_CALLS_NOTE_PREFIX: &str = "[Tool calls]";
 
 /// Leading text of the wire-only note that carries one turn's tool results
-/// in a folded region (`history_tool_result_cap` set).
+/// in a checkpoint fold.
 ///
 /// A separate user message after the calls note, for the same reason: tool
 /// output never rides the assistant's own text. Each result is already cut
-/// to the configured cap at collection, its own paging marker stating what
-/// was dropped — the note adds no bound of its own.
+/// to the fixed checkpoint replay cap at collection, its own paging marker
+/// stating what was dropped — the note adds no bound of its own.
 pub(crate) const TOOL_RESULTS_NOTE_PREFIX: &str = "[Tool results]";
 
 /// One user→assistant turn extracted from raw context.
@@ -1550,9 +1544,8 @@ pub(crate) struct TurnPair {
     /// The turn's tool-result texts, in the order the results were
     /// recorded (which is the order the calls were issued). Populated by
     /// [`extract_pairs_with_results`] only: a plain [`extract_pairs`] fold
-    /// never carries results — the wire history omits them unless
-    /// `history_tool_result_cap` opts in. Each text is already cut to the
-    /// caller's byte bound at collection.
+    /// never carries results — the wire history omits them. Each text is
+    /// already cut to the caller's byte bound at collection.
     pub results: Vec<String>,
 }
 
@@ -1827,12 +1820,13 @@ pub(crate) fn extract_pairs(raw_context: &[serde_json::Value]) -> Vec<TurnPair> 
 /// ([`TurnPair::results`]), each cut to `result_max` bytes **as it is
 /// collected** by `truncate`.
 ///
-/// The wire's folded regions and `context_browse` are the readers: the
-/// former replay results only when `history_tool_result_cap` is set (and
-/// pass [`truncate_text_keeping_edges`], so each result keeps its head and
-/// tail); the latter always shows what a tool returned when asked to
-/// (`results=true`) and passes [`truncate_text`], the head-only cut it has
-/// always used. The bound belongs here rather than at render time because
+/// The wire's checkpoint folds and `context_browse` are the readers: the
+/// former replay the current turn's earlier steps with each result cut by
+/// the fixed checkpoint cap (and pass [`truncate_text_keeping_edges`], so
+/// each result keeps its head and tail); the latter always shows what a
+/// tool returned when asked to (`results=true`) and passes
+/// [`truncate_text`], the head-only cut it has always used. The bound
+/// belongs here rather than at render time because
 /// the page shows at most fifty pairs while the extraction window is
 /// `offset + limit` pairs deep — `offset` is unbounded, so a deep page
 /// would otherwise clone the whole journal's results (uncapped since

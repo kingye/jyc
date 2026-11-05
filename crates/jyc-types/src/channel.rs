@@ -797,6 +797,12 @@ pub enum ContextStrategy {
     /// kept verbatim.
     #[serde(alias = "sliding")]
     SlidingWindow,
+    /// Send nothing but the current turn. The journal keeps every earlier
+    /// turn and `context_browse` can read them back, but no prior turn
+    /// reaches the wire — each request starts as if `/context restart`
+    /// had just run. Long turns still fold through the checkpoint, so the
+    /// wire stays bounded; the cost is the cross-turn prefix cache.
+    Turn,
 }
 
 /// Bytes reserved inside a cap for the edge-keeping trim's drop marker.
@@ -858,8 +864,7 @@ pub const DEFAULT_CHECKPOINT_GROWTH: usize = 8;
 /// is lifted to [`MIN_EDGE_KEEPING_CAP`], because a smaller non-zero cap
 /// would degrade the trim to a head-only cut and gut every tool result.
 /// Both the wire builder and the `/context` echo call this — for
-/// [`ContextStrategyConfig::turn_tool_result_cap`] and
-/// [`ContextStrategyConfig::history_tool_result_cap`] alike — so the echo
+/// [`ContextStrategyConfig::turn_tool_result_cap`] — so the echo
 /// shows exactly what the model receives.
 pub fn effective_result_cap(configured: Option<usize>) -> usize {
     match configured {
@@ -920,26 +925,6 @@ pub struct ContextStrategyConfig {
     /// when unset so existing readers stay compatible.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_tool_result_cap: Option<usize>,
-    /// Byte cap on each tool result replayed in a folded region
-    /// (`sliding_window` mode): the windowed history and the current-turn
-    /// checkpoint both render each turn's tool results as a `[Tool results]`
-    /// note when this is set, each result cut to at most `Some(cap)` bytes.
-    ///
-    /// Unlike [`Self::turn_tool_result_cap`] — a cap on results that are
-    /// present by default, because the model is reasoning over them
-    /// mid-loop — this field gates presence itself: `None` (the default)
-    /// keeps folded turns text-plus-calls only, exactly the payload before
-    /// this field existed, so the wire bytes stay stable for every topic
-    /// that does not opt in. `Some(cap)` includes the results, keeping each
-    /// one's head and tail with the middle replaced by a paging marker, for
-    /// the same reason the turn cap does. A non-zero value below
-    /// [`MIN_EDGE_KEEPING_CAP`] is lifted to that floor on read, and the
-    /// `/context` command refuses it outright. `Some(0)` means the same as
-    /// `None`. Only meaningful when `mode = "sliding_window"`. Omitted from
-    /// serialized override files when unset so existing readers stay
-    /// compatible.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub history_tool_result_cap: Option<usize>,
     /// Token budget for the windowed history (`sliding_window` mode).
     /// `None` (the default) bounds the history by turns alone — `window`
     /// and `extend_rate` decide. `Some(0)` means the same.
@@ -965,10 +950,11 @@ pub struct ContextStrategyConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_history_tokens: Option<usize>,
     /// Completed assistant messages per current-turn checkpoint
-    /// (`sliding_window` mode): once the current turn passes this many
-    /// assistant messages, the older ones fold into a text-plus-calls
-    /// checkpoint (their results leave the wire, their calls stay as a
-    /// note) and the recent suffix stays verbatim. Counting is by assistant
+    /// (`sliding_window` and `turn` modes): once the current turn passes
+    /// this many assistant messages, the older ones fold into a
+    /// text-plus-calls checkpoint (each result replayed truncated to 512 B,
+    /// head and tail kept, its calls as a note) and the recent suffix stays
+    /// verbatim. Counting is by assistant
     /// message — every step that produced output, tool call or final reply —
     /// not by turn or by tool call. Default:
     /// [`DEFAULT_CHECKPOINT_INTERVAL`] (32).
@@ -982,7 +968,8 @@ pub struct ContextStrategyConfig {
     /// long read-heavy turns loop, so raise it rather than lower it when the
     /// model keeps re-reading what it just read.
     ///
-    /// Only meaningful when `mode = "sliding_window"`. Always serialized
+    /// Only meaningful when `mode = "sliding_window"` or `mode = "turn"`.
+    /// Always serialized
     /// (unlike the two `Option` caps above) because unlike them it has a
     /// non-off default: a reader that omitted it gets 32, not "off".
     #[serde(default = "default_checkpoint_interval")]
@@ -1003,8 +990,8 @@ pub struct ContextStrategyConfig {
     /// interval per fold (32, 64, 96, 128 …), which quickly makes the
     /// checkpoint bound nothing.
     ///
-    /// Only meaningful when `mode = "sliding_window"` and
-    /// [`Self::checkpoint_interval`] is non-zero. Always serialized for the
+    /// Only meaningful when `mode = "sliding_window"` or `mode = "turn"`,
+    /// and [`Self::checkpoint_interval`] is non-zero. Always serialized for the
     /// same reason as `checkpoint_interval`: it has a non-off default, so an
     /// omitted value must read as 8, not 0.
     #[serde(default = "default_checkpoint_growth")]
@@ -1035,12 +1022,6 @@ impl Default for ContextStrategyConfig {
             // silently trimming results the model is still working through
             // is the more damaging default — so it is opt-in.
             turn_tool_result_cap: None,
-            // Folded history omits results by default: that is the wire
-            // shape existing topics and their prompt caches are built on,
-            // and models that tolerate a text-plus-calls fold see no
-            // change. Replaying results is opt-in for the models that need
-            // the tool trace to keep calling tools.
-            history_tool_result_cap: None,
             // History weight is unbounded by default: `window` is the lever
             // users already know, and a token budget silently truncating
             // history is the more surprising default.
@@ -1444,64 +1425,6 @@ topic_path = "~/projects/jyc"
             serde_json::from_str(&serde_json::to_string(&cfg0).unwrap()).unwrap();
         assert_eq!(cfg0_back.turn_tool_result_cap, Some(0));
         assert_ne!(cfg0_back.turn_tool_result_cap, None);
-    }
-
-    #[test]
-    fn test_context_strategy_history_tool_result_cap_defaults_to_none() {
-        // Unset by default: the folded regions keep the pre-existing
-        // text-plus-calls shape, so the wire bytes stay stable for every
-        // topic that does not opt in.
-        assert_eq!(
-            ContextStrategyConfig::default().history_tool_result_cap,
-            None
-        );
-
-        // An override file written before this field existed must load
-        // with None rather than failing.
-        let cfg: ContextStrategyConfig =
-            toml::from_str("mode = \"sliding_window\"\nwindow = 10\n").unwrap();
-        assert_eq!(cfg.history_tool_result_cap, None);
-
-        // And it must stay out of the serialized form when unset, so a
-        // round-trip through an old reader loses nothing.
-        let serialized = toml::to_string(&ContextStrategyConfig::default()).unwrap();
-        assert!(
-            !serialized.contains("history_tool_result_cap"),
-            "unset history_tool_result_cap must not serialize: {serialized}"
-        );
-    }
-
-    #[test]
-    fn test_context_strategy_history_tool_result_cap_roundtrip() {
-        let cfg = ContextStrategyConfig {
-            history_tool_result_cap: Some(4096),
-            ..ContextStrategyConfig::default()
-        };
-        let serialized = toml::to_string(&cfg).unwrap();
-        assert!(
-            serialized.contains("history_tool_result_cap = 4096"),
-            "history_tool_result_cap should serialize in TOML, got: {serialized}"
-        );
-        let deserialized: ContextStrategyConfig = toml::from_str(&serialized).unwrap();
-        assert_eq!(deserialized, cfg);
-
-        let json = serde_json::to_string(&cfg).unwrap();
-        assert!(
-            json.contains("\"history_tool_result_cap\":4096"),
-            "history_tool_result_cap should serialize in JSON as snake_case, got: {json}"
-        );
-        let cfg2: ContextStrategyConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(cfg2, cfg);
-
-        // Some(0) is the explicit-off sentinel, distinct from None.
-        let cfg0 = ContextStrategyConfig {
-            history_tool_result_cap: Some(0),
-            ..ContextStrategyConfig::default()
-        };
-        let cfg0_back: ContextStrategyConfig =
-            serde_json::from_str(&serde_json::to_string(&cfg0).unwrap()).unwrap();
-        assert_eq!(cfg0_back.history_tool_result_cap, Some(0));
-        assert_ne!(cfg0_back.history_tool_result_cap, None);
     }
 
     #[test]

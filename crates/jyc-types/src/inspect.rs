@@ -283,9 +283,11 @@ pub struct ChannelInfo {
 
 /// One region of the context sent to the most recent LLM call.
 ///
-/// The regions are the three parts `SlidingWindow` sends — prior history,
-/// the folded part of the current turn, and the current turn's recent raw
-/// suffix — plus the single region `Full` mode sends. The figures describe
+/// The regions are the three parts the windowed modes (`SlidingWindow`,
+/// `Turn`) send — prior history (absent in `Turn`, whose loader projects an
+/// empty prior), the folded part of the current turn, and the current
+/// turn's recent raw suffix — plus the single region `Full` mode sends. The
+/// figures describe
 /// the wire messages only: the system prompt, tool definitions and provider
 /// framing are outside them.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -296,7 +298,8 @@ pub enum ContextRegion {
     /// Prior turns, rendered as their text plus a per-turn `[Tool calls]`
     /// note.
     History,
-    /// The folded older part of the current turn (`SlidingWindow` only).
+    /// The folded older part of the current turn (`SlidingWindow` and
+    /// `Turn` modes).
     Checkpoint,
     /// The current turn's recent messages, sent verbatim.
     Current,

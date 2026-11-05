@@ -439,6 +439,15 @@ pub async fn load_context(
         jyc_types::channel::ContextStrategy::SlidingWindow => {
             load_context_windowed(&reader, &state_dir, topic_name, strategy).await
         }
+        jyc_types::channel::ContextStrategy::Turn => {
+            // Nothing but the current turn rides the wire. The journal is
+            // persisted only at end-of-loop and holds completed turns, so
+            // there is no "current turn" in it to slice out — the projection
+            // is empty by construction, without reading the journal at all.
+            // Nothing is lost: the journal keeps every turn, and
+            // `context_browse` reads them back on demand.
+            (Vec::new(), Vec::new())
+        }
     }
 }
 
@@ -1499,12 +1508,6 @@ fn truncate_json_value(value: &serde_json::Value, max: usize) -> String {
 pub(crate) const HISTORY_MARKER_TEXT: &str = "[History messages] earlier conversation follows — text plus tool calls \
      (name and arguments); tool results omitted.";
 
-/// [`HISTORY_MARKER_TEXT`] for a block that replays tool results
-/// (`history_tool_result_cap` set): the omitted clause would be false there,
-/// and each replayed result is truncated, so the marker says both.
-pub(crate) const HISTORY_MARKER_TEXT_WITH_RESULTS: &str = "[History messages] earlier conversation follows — text plus tool calls \
-     (name and arguments) and their results, truncated when oversized.";
-
 /// Leading text of the wire-only note that carries one turn's tool calls in
 /// a folded region.
 ///
@@ -1516,12 +1519,12 @@ pub(crate) const HISTORY_MARKER_TEXT_WITH_RESULTS: &str = "[History messages] ea
 pub(crate) const TOOL_CALLS_NOTE_PREFIX: &str = "[Tool calls]";
 
 /// Leading text of the wire-only note that carries one turn's tool results
-/// in a folded region (`history_tool_result_cap` set).
+/// in a checkpoint fold.
 ///
 /// A separate user message after the calls note, for the same reason: tool
 /// output never rides the assistant's own text. Each result is already cut
-/// to the configured cap at collection, its own paging marker stating what
-/// was dropped — the note adds no bound of its own.
+/// to the fixed checkpoint replay cap at collection, its own paging marker
+/// stating what was dropped — the note adds no bound of its own.
 pub(crate) const TOOL_RESULTS_NOTE_PREFIX: &str = "[Tool results]";
 
 /// One user→assistant turn extracted from raw context.
@@ -1550,9 +1553,8 @@ pub(crate) struct TurnPair {
     /// The turn's tool-result texts, in the order the results were
     /// recorded (which is the order the calls were issued). Populated by
     /// [`extract_pairs_with_results`] only: a plain [`extract_pairs`] fold
-    /// never carries results — the wire history omits them unless
-    /// `history_tool_result_cap` opts in. Each text is already cut to the
-    /// caller's byte bound at collection.
+    /// never carries results — the wire history omits them. Each text is
+    /// already cut to the caller's byte bound at collection.
     pub results: Vec<String>,
 }
 
@@ -1827,12 +1829,13 @@ pub(crate) fn extract_pairs(raw_context: &[serde_json::Value]) -> Vec<TurnPair> 
 /// ([`TurnPair::results`]), each cut to `result_max` bytes **as it is
 /// collected** by `truncate`.
 ///
-/// The wire's folded regions and `context_browse` are the readers: the
-/// former replay results only when `history_tool_result_cap` is set (and
-/// pass [`truncate_text_keeping_edges`], so each result keeps its head and
-/// tail); the latter always shows what a tool returned when asked to
-/// (`results=true`) and passes [`truncate_text`], the head-only cut it has
-/// always used. The bound belongs here rather than at render time because
+/// The wire's checkpoint folds and `context_browse` are the readers: the
+/// former replay the current turn's earlier steps with each result cut by
+/// the fixed checkpoint cap (and pass [`truncate_text_keeping_edges`], so
+/// each result keeps its head and tail); the latter always shows what a
+/// tool returned when asked to (`results=true`) and passes
+/// [`truncate_text`], the head-only cut it has always used. The bound
+/// belongs here rather than at render time because
 /// the page shows at most fifty pairs while the extraction window is
 /// `offset + limit` pairs deep — `offset` is unbounded, so a deep page
 /// would otherwise clone the whole journal's results (uncapped since
@@ -3141,6 +3144,13 @@ mod windowed_load_tests {
         }
     }
 
+    fn turn() -> ContextStrategyConfig {
+        ContextStrategyConfig {
+            mode: ContextStrategy::Turn,
+            ..Default::default()
+        }
+    }
+
     fn turns_journal(from: usize, to: usize) -> String {
         let mut out = String::new();
         for i in from..=to {
@@ -3398,6 +3408,56 @@ mod windowed_load_tests {
         assert!(
             stored_full_restart_offset(&state_dir).await.is_none(),
             "a plain full load does not invent a restart boundary"
+        );
+        state_dir::unregister(topic);
+        state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn turn_mode_projects_an_empty_prior_regardless_of_journal() {
+        // Turn mode sends only the current turn. The journal holds completed
+        // turns only (persistence is end-of-loop), so the projection is
+        // empty by construction — and the journal itself must remain
+        // untouched: `context_browse` still reads every turn from it.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "turn-mode-empty-projection";
+        let journal = turns_journal(1, 3);
+        let state_dir = setup(&tmp, topic, &journal).await;
+
+        let (internal, raw) = load_context(topic, tmp.path(), &turn()).await;
+
+        assert!(raw.is_empty(), "no prior turn rides the wire in turn mode");
+        assert!(internal.is_empty());
+        let (_, raw_again) = load_context(topic, tmp.path(), &turn()).await;
+        assert_eq!(raw_again.len(), 0);
+        assert_eq!(
+            tokio::fs::read_to_string(state_dir.join(AGENT_CONTEXT_FILE))
+                .await
+                .unwrap(),
+            journal,
+            "the journal is not rewritten by a turn-mode load"
+        );
+        state_dir::unregister(topic);
+        state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn turn_mode_accumulates_exactly_one_turn_then_resets() {
+        // The wire-visible sequence across two turns: each turn starts from
+        // an empty prior (no cross-turn accumulation), which is the point of
+        // the mode. The journal keeps both turns for `context_browse`.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "turn-mode-accumulates";
+        let state_dir = setup(&tmp, topic, &turns_journal(1, 2)).await;
+
+        let (_, raw) = load_context(topic, tmp.path(), &turn()).await;
+        assert!(raw.is_empty(), "turn 3 starts with no prior turns");
+
+        append_turn(&state_dir, 3).await;
+        let (_, raw_next) = load_context(topic, tmp.path(), &turn()).await;
+        assert!(
+            raw_next.is_empty(),
+            "turn 4 also starts empty — no accumulation"
         );
         state_dir::unregister(topic);
         state_dir::clear_closed(topic);

@@ -456,7 +456,7 @@ async fn load_context_full(
     if offset == 0 {
         return reader.read_prior(PriorDepth::All).await;
     }
-    match read_anchored_slice(reader, state_dir, offset, Some(offset)).await {
+    match read_anchored_slice(reader, state_dir, offset, true).await {
         Some(slice) => slice,
         None => {
             clear_full_restart_offset(topic_name, state_dir).await;
@@ -470,18 +470,20 @@ async fn load_context_full(
 /// its own field and cold-starts, so the bad anchor is not re-evaluated on
 /// every later turn.
 ///
-/// An offset exactly at the journal's end is trusted only when it is the
-/// shared restart boundary (`restart_offset == Some(offset)`): that is the
-/// state `/context restart` writes before the next append. The same pair of
-/// offsets identifies an in-range restart boundary, where the first message
-/// may be any user message — a turn opener with empty text is still the start
-/// of the new visible history. Slide anchors, by contrast, must open on a
-/// text-bearing user message because they are used to trim whole turns.
+/// An offset exactly at the journal's end is trusted only for a restart
+/// boundary — the state `/context restart` writes before the next append.
+/// Full mode always passes `true` because the offset it hands in comes from
+/// `full_restart_offset`, a field only the restart writes. Sliding passes
+/// `true` only when its anchor still equals that field.
+///
+/// A restart boundary may start at any user-authored message, including a
+/// turn opener with empty text; slide anchors must open on a text-bearing
+/// user message because they are used to trim whole turns.
 async fn read_anchored_slice(
     reader: &ContextReader,
     state_dir: &Path,
     offset: u64,
-    restart_offset: Option<u64>,
+    is_restart_boundary: bool,
 ) -> Option<crate::context_reader::PriorSlice> {
     if offset == 0 {
         return Some(reader.read_from(0).await);
@@ -490,7 +492,6 @@ async fn read_anchored_slice(
         .await
         .map(|m| m.len())
         .unwrap_or(0);
-    let is_restart_boundary = restart_offset == Some(offset);
     if offset > journal_len || (offset == journal_len && !is_restart_boundary) {
         tracing::warn!(
             offset,
@@ -504,7 +505,7 @@ async fn read_anchored_slice(
     let slice = reader.read_from(offset).await;
     let boundary_is_valid = slice.messages.first().is_some_and(|msg| {
         if is_restart_boundary {
-            msg.get("role").and_then(|r| r.as_str()) == Some("user")
+            opens_restart_boundary(msg)
         } else {
             opens_turn(msg)
         }
@@ -544,7 +545,9 @@ async fn load_context_windowed(
 
     let mut slice = match stored {
         Some(offset) => {
-            match read_anchored_slice(reader, state_dir, offset, restart_offset).await {
+            match read_anchored_slice(reader, state_dir, offset, restart_offset == Some(offset))
+                .await
+            {
                 Some(slice) => slice,
                 None => {
                     clear_context_offset(topic_name, state_dir).await;
@@ -1747,6 +1750,26 @@ pub(crate) fn opens_turn(msg: &serde_json::Value) -> bool {
     }
     let text = extract_message_text(msg);
     !text.is_empty() && !text.starts_with(HISTORY_NOTE_PREFIX)
+}
+
+/// Whether a message may open a `/context restart` boundary.
+///
+/// More permissive than [`opens_turn`] — a user-authored turn with empty
+/// text still starts the new visible history — but never permissive enough
+/// to accept an Anthropic tool-result carrier: that is `role: "user"` too,
+/// yet it cannot begin a wire payload without the assistant `tool_use` it
+/// answers.
+fn opens_restart_boundary(msg: &serde_json::Value) -> bool {
+    if msg.get("role").and_then(|r| r.as_str()) != Some("user") {
+        return false;
+    }
+    !msg.get("content")
+        .and_then(|content| content.as_array())
+        .is_some_and(|blocks| {
+            blocks
+                .iter()
+                .any(|block| block.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+        })
 }
 
 /// Whether one assistant message keeps its turn alive: it carries text or a
@@ -3635,15 +3658,18 @@ mod windowed_load_tests {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "restart-operation-unterminated-message";
         let mut journal = turns_journal(1, 2);
-        let restart_at = journal.len() as u64;
         journal.push_str(&serde_json::json!({"role": "user", "content": "u3"}).to_string());
+        // `clean_end` treats a complete message that lost only its newline as
+        // committed, so the restart boundary belongs after it: the message is
+        // hidden from the new visible context, not truncated away.
+        let file_end = journal.len() as u64;
         let state_dir = setup(&tmp, topic, &journal).await;
 
         restart_context_window(topic, tmp.path()).await.unwrap();
 
         let state = stored_state(&state_dir).await;
-        assert_eq!(state.context_offset, Some(restart_at));
-        assert_eq!(state.full_restart_offset, Some(restart_at));
+        assert_eq!(state.context_offset, Some(file_end));
+        assert_eq!(state.full_restart_offset, Some(file_end));
         let (_, full_raw) = load_context(topic, tmp.path(), &full()).await;
         assert!(full_raw.is_empty(), "the pre-restart suffix is hidden");
 
@@ -3662,6 +3688,47 @@ mod windowed_load_tests {
         let (_, sliding_raw) = load_context(topic, tmp.path(), &sliding(10, 0.5)).await;
         assert_eq!(sliding_raw.len(), 2);
         assert_eq!(sliding_raw[0]["content"], "u4");
+        state_dir::unregister(topic);
+        state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn restart_boundary_rejects_a_tool_result_carrier_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "restart-operation-tool-result-boundary";
+        let mut journal = turns_journal(1, 1);
+        let anchor = journal.len() as u64;
+        journal.push_str(&format!(
+            "{}\n",
+            serde_json::json!({
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t", "content": "r"}],
+            })
+        ));
+        journal.push_str(&turns_journal(2, 2));
+        let state_dir = setup(&tmp, topic, &journal).await;
+
+        let mut state = stored_state(&state_dir).await;
+        state.context_offset = Some(anchor);
+        state.full_restart_offset = Some(anchor);
+        save_session_state(topic, &state_dir.join(SESSION_FILE), &state).await;
+
+        let (_, raw) = load_context(topic, tmp.path(), &full()).await;
+        assert_eq!(
+            raw[0]["content"], "u1",
+            "a stale restart boundary cold-starts instead of opening on tool_result"
+        );
+        assert!(
+            stored_full_restart_offset(&state_dir).await.is_none(),
+            "the rejected full boundary is cleared"
+        );
+
+        let (_, raw) = load_context(topic, tmp.path(), &sliding(10, 0.5)).await;
+        assert_eq!(raw[0]["content"], "u1");
+        assert!(
+            stored_offset(&state_dir).await.is_none(),
+            "the rejected sliding anchor is cleared too"
+        );
         state_dir::unregister(topic);
         state_dir::clear_closed(topic);
     }

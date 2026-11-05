@@ -167,9 +167,11 @@ impl SendContextCache {
 ///
 /// Region labels:
 /// - `1` = folded history, text plus calls — results never reach it
-///   (`SlidingWindow`) or the whole context (`Full` mode, no split).
-/// - `2` = verbatim current-turn suffix (`SlidingWindow` only).
-/// - `3` = folded earlier work in the current turn (`SlidingWindow` only).
+///   (`SlidingWindow`), or the whole context (`Full` mode, no split).
+///   `Turn` mode has no history at all, so label `1` never occurs there.
+/// - `2` = verbatim current-turn suffix (`SlidingWindow` and `Turn`).
+/// - `3` = folded earlier work in the current turn (`SlidingWindow` and
+///   `Turn`).
 ///
 /// How much history the prior holds is the loader's decision, not this
 /// function's: `window` / `extend_rate` / `max_history_tokens` slide the
@@ -203,7 +205,7 @@ pub(crate) fn build_send_context_cached<'a>(
             cache.checkpoint_rebuilt = None;
             (Cow::Borrowed(raw_context), vec![1; raw_context.len()])
         }
-        ContextStrategy::SlidingWindow => {
+        ContextStrategy::SlidingWindow | ContextStrategy::Turn => {
             // A stale `prior_len` must not index past the context: the
             // cancellation truncation is the only shrink, and it clamps
             // `prior_len` itself, but the slice math should not depend on
@@ -312,9 +314,11 @@ pub(crate) fn context_composition(
     for (msg, label) in messages.iter().zip(regions) {
         let region = match (mode, *label) {
             (ContextStrategy::Full, 1) => ContextRegion::Full,
-            (ContextStrategy::SlidingWindow, 1) => ContextRegion::History,
-            (ContextStrategy::SlidingWindow, 3) => ContextRegion::Checkpoint,
-            (ContextStrategy::SlidingWindow, 2) => ContextRegion::Current,
+            (ContextStrategy::SlidingWindow | ContextStrategy::Turn, 1) => ContextRegion::History,
+            (ContextStrategy::SlidingWindow | ContextStrategy::Turn, 3) => {
+                ContextRegion::Checkpoint
+            }
+            (ContextStrategy::SlidingWindow | ContextStrategy::Turn, 2) => ContextRegion::Current,
             _ => continue,
         };
         let bytes = serde_json::to_vec(msg)
@@ -1381,6 +1385,60 @@ mod render_raw_context_tests {
         assert!(matches!(sent, Cow::Borrowed(_)));
         assert_eq!(sent.len(), ctx.len());
         assert!(regions.iter().all(|r| *r == 1));
+    }
+
+    /// Turn mode loads an empty prior, so a short turn rides verbatim —
+    /// exactly like `Full`, but by construction rather than by decision.
+    #[test]
+    fn turn_mode_short_turn_rides_verbatim() {
+        let ctx = current_with_interactions(3, "secret");
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::Turn,
+            ..sliding_cfg()
+        };
+        let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, 0, &cfg);
+        assert_eq!(sent.len(), ctx.len(), "nothing to fold below the interval");
+        assert!(regions.iter().all(|r| *r == 2), "every message is current");
+        let dumped = serde_json::to_string(&sent).unwrap();
+        assert!(
+            !dumped.contains(crate::session::HISTORY_MARKER_TEXT),
+            "turn mode has no history block: {dumped}"
+        );
+    }
+
+    /// The checkpoint machinery is the only fold in turn mode, and it is
+    /// shared with sliding-window: once the turn passes the interval, older
+    /// steps fold with their truncated results while the suffix rides
+    /// verbatim.
+    #[test]
+    fn turn_mode_folds_a_long_turn_through_the_checkpoint() {
+        let ctx = current_with_interactions(33, "secret");
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::Turn,
+            ..sliding_cfg()
+        };
+        let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, 0, &cfg);
+        let dumped = serde_json::to_string(&sent).unwrap();
+        assert!(
+            dumped.contains(TURN_CHECKPOINT_MARKER_TEXT),
+            "a long turn folds through the checkpoint: {dumped}"
+        );
+        assert!(
+            dumped.contains("RESULT-33"),
+            "the verbatim suffix keeps recent results: {dumped}"
+        );
+        assert!(
+            regions.contains(&3),
+            "the checkpoint region is labeled: {regions:?}"
+        );
+        assert!(
+            regions.contains(&2),
+            "the verbatim suffix region is labeled: {regions:?}"
+        );
+        assert!(
+            !regions.contains(&1),
+            "no history region exists in turn mode: {regions:?}"
+        );
     }
 
     #[test]

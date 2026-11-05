@@ -1664,6 +1664,7 @@ mode = "agent"
             let mode = match g.mode {
                 ContextStrategy::Full => "full",
                 ContextStrategy::SlidingWindow => "sliding_window",
+                ContextStrategy::Turn => "turn",
             };
             let parts = format!(
                 "mode = \"{mode}\", window = {}, extend_rate = {}",
@@ -1680,6 +1681,7 @@ mode = "agent"
                 let mode = match c.mode {
                     ContextStrategy::Full => "full",
                     ContextStrategy::SlidingWindow => "sliding_window",
+                    ContextStrategy::Turn => "turn",
                 };
                 let parts = format!(
                     "mode = \"{mode}\", window = {}, extend_rate = {}",

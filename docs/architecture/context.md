@@ -319,6 +319,45 @@ included — nothing is lost, it is just not replayed. `context_browse` is
 the way back to them, and it renders each turn's calls on its own
 `[n] TOOLS:` line.
 
+### `turn`
+
+Sends only the current turn: no prior turns ride the wire at all. The
+loader projects an empty prior — the journal holds completed turns only
+(persistence is end-of-loop), so there is nothing to slice out, and
+`load_context` returns empty without reading the journal. The journal
+itself keeps every turn, and `context_browse` reads them back on demand.
+
+Every request starts with zero prior turns — the equivalent of running
+`/context restart` before each turn, without writing a boundary and
+without losing the journal. Because the prior is empty, the history block
+never exists and the checkpoint is the only fold: once the turn passes
+`checkpoint_interval` assistant steps, older steps fold exactly as in
+`sliding_window` (reasoning replayed, calls kept as notes, results
+truncated to 512 B each), while the recent suffix rides verbatim. The
+checkpoint knobs stay live here; `window`, `extend_rate`,
+`turn_tool_result_cap` and `max_history_tokens` have no object — nothing
+is windowed and no prior history exists — and `/context turn` resets them
+in the override it writes instead of carrying dead values.
+
+The system prompt changes with the mode: the `## History Format` section
+(describing the folded history block and the `[History messages]`
+divider) is replaced by two sentences stating that prior turns are not in
+the context and that `context_browse` reads them back. A prompt section
+describing a block that cannot appear would violate the same rule the
+section itself ends with — never describe what did not happen.
+
+**Trade-off.** Cross-turn prompt-cache reuse is lost: each turn's payload
+starts after `system` + `tools`, so only that prefix stays cacheable, and
+the first request of every turn re-encodes from there. What is bought:
+the smallest possible payload (one turn, not a window), immunity to the
+accumulated-history failure mode (weak models imitating bare Q→A shapes
+folded history tends to accumulate), and a constant-shape wire for
+providers that misbehave on long transcripts. Strong models work fine
+without prior turns in the window — they reach for `context_browse` —
+and weak ones degrade either way, so the mode trades cache for
+predictability. Opt in via `context_strategy = { mode = "turn" }` or
+`/context turn`.
+
 #### Turn pairing (`extract_pairs`, `crates/jyc-agent/src/session.rs`)
 
 The pairing unit is the **turn**, not the single message:

@@ -797,6 +797,12 @@ pub enum ContextStrategy {
     /// kept verbatim.
     #[serde(alias = "sliding")]
     SlidingWindow,
+    /// Send nothing but the current turn. The journal keeps every earlier
+    /// turn and `context_browse` can read them back, but no prior turn
+    /// reaches the wire — each request starts as if `/context restart`
+    /// had just run. Long turns still fold through the checkpoint, so the
+    /// wire stays bounded; the cost is the cross-turn prefix cache.
+    Turn,
 }
 
 /// Bytes reserved inside a cap for the edge-keeping trim's drop marker.

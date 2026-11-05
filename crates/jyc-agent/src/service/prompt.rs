@@ -36,6 +36,20 @@ pub(crate) const HISTORY_FORMAT_SECTION: &str = "## History Format\n\
      command outcomes — that no tool call in the current turn produced is not \
      evidence; state that it is unverified, or verify it with a tool call first.\n\n";
 
+/// The turn-mode counterpart of [`HISTORY_FORMAT_SECTION`]: on the wire there
+/// is no history block and no machine-generated divider at all, so the
+/// divider contract would describe a shape that never occurs. The one fact
+/// the model needs replaces it, including the same evidence rule — the
+/// sliding-window copy is a special case of this one.
+pub(crate) const TURN_FORMAT_SECTION: &str = "## History Format\n\
+     Prior turns are not part of your context: each request carries only the \
+     current turn. Nothing was lost — the full transcript is retrievable with \
+     `context_browse` (page with `offset`/`limit`, `results=true` also replays \
+     tool results). Facts from earlier turns, including anything you stated \
+     with a tool call behind it, are only evidence if a tool call in the \
+     current turn produced them; otherwise state that they are unverified, \
+     or verify them first.\n\n";
+
 impl JycAgentService {
     // The inputs are the per-turn facts — who the topic is, what the
     // boundaries are, and which tools this turn has. They are one list
@@ -52,6 +66,7 @@ impl JycAgentService {
         additional_read_roots: &[PathBuf],
         additional_write_roots: &[PathBuf],
         registry: Option<&ToolRegistry>,
+        context_mode: jyc_types::channel::ContextStrategy,
     ) -> String {
         let mut prompt = String::new();
 
@@ -166,7 +181,17 @@ impl JycAgentService {
         // text and marks the block with a machine-generated divider. Models
         // have been observed treating such machine text as conversation.
         // State the contract explicitly.
-        prompt.push_str(HISTORY_FORMAT_SECTION);
+        //
+        // In turn mode there is no history block and no divider on the wire —
+        // the sliding section would describe a shape that never occurs, so it
+        // is replaced by the one fact the model needs: prior turns are one
+        // `context_browse` call away. Both texts are consts (byte-stable
+        // cached prefix; the choice between two consts is still stable).
+        if context_mode == jyc_types::channel::ContextStrategy::Turn {
+            prompt.push_str(TURN_FORMAT_SECTION);
+        } else {
+            prompt.push_str(HISTORY_FORMAT_SECTION);
+        }
 
         // Chat history access instructions — point at the resolved state dir
         // (relocated out of the topic dir for pinned topics).

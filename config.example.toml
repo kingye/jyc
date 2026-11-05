@@ -486,7 +486,8 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # Default context management strategy. Per-pattern `context_strategy`
 # takes priority. Overridden at runtime by the `.jyc/context-strategy.json`
 # file written by `/context`.
-# mode: "full" | "sliding_window" (alias "sliding"). Default: "sliding_window".
+# mode: "full" | "sliding_window" (alias "sliding") | "turn".
+# Default: "sliding_window".
 #
 # sliding_window sends an *anchored* window of the journal: it only ever
 # grows between slides, until it reaches max_window turns, then slides back
@@ -545,6 +546,21 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5, max_history_tokens = 30000 }
 # context_strategy = { mode = "sliding_window", window = 10, checkpoint_interval = 64 }
 # context_strategy = { mode = "sliding_window", window = 10, checkpoint_growth = 0 }
+#
+# turn sends only the current turn: no prior turns ride the wire at all.
+# Every request starts from zero prior turns — the equivalent of
+# `/context restart` before each turn, without touching the journal.
+# The current turn still uses the checkpoint machinery above (interval and
+# growth apply here too); earlier turns remain in the journal and are read
+# back with `context_browse` when needed. The system prompt describes this
+# and points the model at the tool. Trade-off: cross-turn prompt-cache
+# reuse is lost (only the tools + system prefix still hits), in exchange
+# for the smallest possible payload and no accumulated-history failure
+# modes. window/extend_rate/turn_tool_result_cap/max_history_tokens have no
+# object in this mode; `/context turn` resets them in the override it
+# writes.
+# context_strategy = { mode = "turn" }
+# context_strategy = { mode = "turn", checkpoint_interval = 16 }
 
 
 [ai.attachments]

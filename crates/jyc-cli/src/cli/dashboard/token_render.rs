@@ -545,17 +545,14 @@ const QUEUE_WORD: &str = "queue ";
 /// The separator between the status word and the queue's part of the row.
 const QUEUE_SEPARATOR: &str = " · ";
 
-/// The mark that stands for one message of the topic's queue.
-///
-/// A dash, one cell wide in every font. Both the queued and free marks are
-/// bold; colour carries occupancy — yellow for a message waiting for a turn
-/// of its own, dark gray for a free slot. The pane also uses a dash for an
-/// absent pattern and deleted-line counts; the leading word `queue` keeps
-/// the marks from reading as either.
-const QUEUE_MARK: &str = "-";
+/// A bold yellow dash for a message waiting for a turn of its own.
+const QUEUE_ACTIVE_MARK: &str = "-";
+/// A bold dark-gray middle dot for a free slot. The dot is width-ambiguous;
+/// the figures carry the exact counts if the terminal widens it.
+const QUEUE_INACTIVE_MARK: &str = "·";
 
 /// Append the status row to `spans` — the topic's live status and the
-/// backlog its queue holds, on one row: `Processing · queue --- 2 / 10`.
+/// backlog its queue holds, on one row: `Processing · queue -···· 2 / 10`.
 ///
 /// The marks say how much of the queue is taken (the queued ones yellow,
 /// the free slots dark gray), the figures carry the exact counts, and
@@ -645,7 +642,7 @@ fn push_queue_marks(spans: &mut Vec<Span>, t: &TopicInfo, room: usize) {
     };
     if filled > 0 {
         spans.push(Span::styled(
-            QUEUE_MARK.repeat(filled),
+            QUEUE_ACTIVE_MARK.repeat(filled),
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -653,7 +650,7 @@ fn push_queue_marks(spans: &mut Vec<Span>, t: &TopicInfo, room: usize) {
     }
     if filled < cells {
         spans.push(Span::styled(
-            QUEUE_MARK.repeat(cells - filled),
+            QUEUE_INACTIVE_MARK.repeat(cells - filled),
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
@@ -855,10 +852,10 @@ mod tests {
         assert_eq!(spans[3].content, QUEUE_WORD);
         // Three of ten messages waiting in five cells is a tenth and a
         // half of the row, which rounds to two cells.
-        assert_eq!(spans[4].content, QUEUE_MARK.repeat(2));
+        assert_eq!(spans[4].content, QUEUE_ACTIVE_MARK.repeat(2));
         assert_eq!(spans[4].style.fg, Some(Color::Yellow));
         assert!(spans[4].style.add_modifier.contains(Modifier::BOLD));
-        assert_eq!(spans[5].content, QUEUE_MARK.repeat(3));
+        assert_eq!(spans[5].content, QUEUE_INACTIVE_MARK.repeat(3));
         assert_eq!(spans[5].style.fg, Some(Color::DarkGray));
         assert!(spans[5].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(spans[6].content, " ");
@@ -878,9 +875,9 @@ mod tests {
         // marks take the room the figures would have had.
         let figures = push_status_span(&mut spans, &t, 24);
         assert_eq!(spans.len(), 6, "{spans:?}");
-        assert_eq!(spans[4].content, QUEUE_MARK.repeat(3));
+        assert_eq!(spans[4].content, QUEUE_ACTIVE_MARK.repeat(3));
         assert_eq!(spans[4].style.fg, Some(Color::Yellow));
-        assert_eq!(spans[5].content, QUEUE_MARK.repeat(6));
+        assert_eq!(spans[5].content, QUEUE_INACTIVE_MARK.repeat(6));
         assert_eq!(spans[5].style.fg, Some(Color::DarkGray));
         assert_eq!(figures.unwrap().content, "3 / 10");
     }
@@ -933,7 +930,7 @@ mod tests {
         // a single-digit count — leave five for the marks.
         let figures = push_status_span(&mut spans, &t, 26);
         assert_eq!(spans.len(), 7, "{spans:?}");
-        assert_eq!(spans[4].content, QUEUE_MARK.repeat(5));
+        assert_eq!(spans[4].content, QUEUE_ACTIVE_MARK.repeat(5));
         assert_eq!(spans[4].style.fg, Some(Color::Yellow));
         assert!(spans[4].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(spans[6].content, "30 / 10");
@@ -949,7 +946,7 @@ mod tests {
         let mut spans = Vec::new();
         let figures = push_status_span(&mut spans, &t, 25);
         assert_eq!(spans.len(), 7, "{spans:?}");
-        assert_eq!(spans[4].content, QUEUE_MARK.repeat(5));
+        assert_eq!(spans[4].content, QUEUE_INACTIVE_MARK.repeat(5));
         assert_eq!(spans[4].style.fg, Some(Color::DarkGray));
         assert!(spans[4].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(spans[6].content, "0 / 10");

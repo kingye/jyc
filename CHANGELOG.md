@@ -7,7 +7,7 @@
 
 ### Changed
 
-- The TUI topic info pane draws queue occupancy with bold one-cell marks instead of the ambiguous-width `▊` block: active messages keep yellow `-` dashes, and free slots now use dark-gray `·` dots, so glyph as well as colour distinguishes occupancy. The row's word, figures, narrow-pane fallback, and all other progress bars stay unchanged (#1063, #1065)
+- The TUI topic info pane draws queue occupancy with bold yellow `-` dashes for active messages and dark-gray `·` dots for free slots instead of `▊` blocks, so the active and free marks differ by glyph as well as colour. The row's word, figures, narrow-pane fallback, and all other progress bars stay unchanged (#1063, #1065)
 
 ### Fixed
 

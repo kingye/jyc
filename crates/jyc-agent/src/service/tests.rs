@@ -2317,4 +2317,45 @@ mod history_format_section {
         jyc_types::state_dir::unregister(topic);
         jyc_types::state_dir::clear_closed(topic);
     }
+
+    #[tokio::test]
+    async fn turn_mode_swaps_the_section_for_the_browse_pointer() {
+        // In `turn` mode the wire never carries a history block, so the
+        // History Format section would describe folding that cannot happen
+        // there. The prompt swaps it for the `context_browse` pointer.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "turn_mode_swaps_the_history_section";
+        let state = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&state).unwrap();
+        jyc_types::state_dir::register_if_absent(topic, &state);
+
+        let svc = service_with_skills(vec![], None);
+        let prompt = svc
+            .build_system_prompt(
+                topic,
+                tmp.path(),
+                None,
+                None,
+                None,
+                &[],
+                &[],
+                None,
+                jyc_types::channel::ContextStrategy::Turn,
+            )
+            .await;
+        use super::super::prompt::TURN_FORMAT_SECTION;
+        assert!(prompt.contains(TURN_FORMAT_SECTION), "{prompt}");
+        assert!(
+            !prompt.contains(HISTORY_FORMAT_SECTION),
+            "the sliding-window history section must not survive into a \
+             turn-mode prompt: {prompt}"
+        );
+        assert!(
+            prompt.contains("context_browse"),
+            "the turn-mode section must point at the way back: {prompt}"
+        );
+
+        jyc_types::state_dir::unregister(topic);
+        jyc_types::state_dir::clear_closed(topic);
+    }
 }

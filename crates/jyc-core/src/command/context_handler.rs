@@ -141,17 +141,25 @@ impl CommandHandler for ContextCommandHandler {
             matched_pattern.as_deref(),
             topic_cfg.as_ref().and_then(|c| c.context_strategy.as_ref()),
         );
+        // The runtime override outranks the config chain everywhere the
+        // strategy is consulted — the agent loop's load and this command's
+        // echo alike (see `session_state.rs` on `resolve_context_strategy`)
+        // — so resolve it once, up front, and judge "the current mode" by
+        // it: `/context turn` only writes the override, and a mode check
+        // against `configured` would miss what the user just switched to.
+        let effective = crate::session_state::read_context_strategy_override(
+            &context.topic_name,
+            &context.topic_path,
+        )
+        .await
+        .unwrap_or_else(|| configured.clone());
 
-        // No args → show current strategy (runtime override takes priority).
+        // No args → show current strategy.
         if context.args.is_empty() {
-            let runtime = crate::session_state::read_context_strategy_override(
-                &context.topic_name,
-                &context.topic_path,
-            )
-            .await;
-            let (label, source) = match &runtime {
-                Some(cs) => (describe_strategy(cs), "override"),
-                None => (describe_strategy(&configured), "default"),
+            let (label, source) = if override_path.exists() {
+                (describe_strategy(&effective), "override")
+            } else {
+                (describe_strategy(&effective), "default")
             };
             return Ok(CommandResult {
                 success: true,
@@ -169,7 +177,12 @@ impl CommandHandler for ContextCommandHandler {
                         "/context: unexpected argument '{extra}' (usage: /context restart)"
                     )));
                 }
-                if configured.mode == ContextStrategy::Turn {
+                // Judge the no-op by the same effective mode the agent loop
+                // loads with: the override outranks the config chain, and a
+                // mode check against `configured` alone would skip the no-op
+                // right after `/context turn`, writing a dead boundary file
+                // that silently truncates a later full/sliding session.
+                if effective.mode == ContextStrategy::Turn {
                     // Every request already starts with zero prior turns in
                     // this mode; writing the boundary would be a dead side
                     // effect, so report instead of doing it.
@@ -237,20 +250,38 @@ impl CommandHandler for ContextCommandHandler {
                 })
             }
             "turn" => {
+                // Same guard as `sliding`: a trailing positional is a
+                // slot-shifted or stale command, refused rather than
+                // silently dropped. This subcommand takes no knobs — the
+                // checkpoint knobs carry over from the effective values.
+                if let Some(extra) = context.args.get(1) {
+                    return Ok(CommandResult {
+                        success: false,
+                        message: format!(
+                            "/context: unexpected argument '{extra}' (usage: /context turn)"
+                        ),
+                        error: None,
+                        append_body: None,
+                    });
+                }
                 write_override(
                     &state_dir,
                     &override_path,
                     ContextStrategyConfig {
                         mode: ContextStrategy::Turn,
                         // The checkpoint still bounds a long turn in this
-                        // mode, so its knobs stay; the sliding-only knobs
-                        // (window, extend_rate, turn cap, max_history_tokens)
-                        // have no object here — nothing is windowed and no
-                        // prior history exists — and are reset to their
-                        // defaults so the override never carries values that
-                        // cannot take effect.
-                        checkpoint_interval: configured.checkpoint_interval,
-                        checkpoint_growth: configured.checkpoint_growth,
+                        // mode, so its knobs carry over from the *effective*
+                        // values (override included) — dropping a just-set
+                        // interval because it lives only in the override
+                        // would be the same silent reset the dead sliding
+                        // knobs get. The sliding-only knobs (window,
+                        // extend_rate, turn cap, max_history_tokens) have no
+                        // object here — nothing is windowed and no prior
+                        // history exists — and are reset to their defaults
+                        // so the override never carries values that cannot
+                        // take effect.
+                        checkpoint_interval: effective.checkpoint_interval,
+                        checkpoint_growth: effective.checkpoint_growth,
                         ..ContextStrategyConfig::default()
                     },
                 )
@@ -484,7 +515,7 @@ impl CommandHandler for ContextCommandHandler {
             other => Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/context: unknown argument '{other}'. Use: /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH] | full | restart | reset | dump [on|off]"
+                    "/context: unknown argument '{other}'. Use: /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH] | turn | full | restart | reset | dump [on|off]"
                 ),
                 error: None,
                 append_body: None,
@@ -606,18 +637,23 @@ fn describe_strategy(cfg: &ContextStrategyConfig) -> String {
         }
         ContextStrategy::Turn => {
             let mut s = "turn (current turn only; prior turns via context_browse".to_string();
-            // The checkpoint still bounds a long turn, so its knobs are live
-            // here and echoed when non-default.
+            // The checkpoint is the ONLY fold in this mode, so its knobs are
+            // the live knobs and get the sliding branch's echo rules:
+            // interval is always echoed (its default is non-off, so absence
+            // would read as "not configured"), growth only while interval is
+            // on, and a fixed interval is labeled as such.
             if cfg.checkpoint_interval == 0 {
                 s.push_str(", checkpoint_interval=0 (off)");
-            } else if cfg.checkpoint_interval != DEFAULT_CHECKPOINT_INTERVAL {
+            } else {
                 s.push_str(&format!(
                     ", checkpoint_interval={}",
                     cfg.checkpoint_interval
                 ));
-            }
-            if cfg.checkpoint_interval != 0 && cfg.checkpoint_growth != DEFAULT_CHECKPOINT_GROWTH {
-                s.push_str(&format!(", checkpoint_growth={}", cfg.checkpoint_growth));
+                if cfg.checkpoint_growth == 0 {
+                    s.push_str(", checkpoint_growth=0 (fixed)");
+                } else {
+                    s.push_str(&format!(", checkpoint_growth={}", cfg.checkpoint_growth));
+                }
             }
             s.push(')');
             s
@@ -795,6 +831,64 @@ mod tests {
         assert_eq!(
             v["checkpoint_interval"],
             serde_json::json!(jyc_types::channel::DEFAULT_CHECKPOINT_INTERVAL)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_turn_switch_keeps_checkpoint_knobs_from_the_override() {
+        // The checkpoint pair carries over from the *effective* values:
+        // an interval set through a live `/context sliding` override must
+        // survive the switch to turn — dropping it back to the config-chain
+        // 32 would be the same silent reset the dead sliding knobs get.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_turn_switch_keeps_checkpoint_knobs";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec![
+            "sliding".into(),
+            "10".into(),
+            "0.5".into(),
+            "0".into(),
+            "0".into(),
+            "16".into(),
+        ];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec!["turn".into()];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+
+        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v["mode"], "turn");
+        assert_eq!(
+            v["checkpoint_interval"], 16,
+            "the override's interval survives the switch, not the config 32"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_turn_rejects_extra_positional() {
+        // `/context turn` takes no knobs — its checkpoint pair carries over
+        // from the effective values. A trailing positional is a stale or
+        // slot-shifted command; refused like `sliding` refuses its extras.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_turn_rejects_extra_positional";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec!["turn".into(), "7".into()];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(!result.success);
+        assert!(result.message.contains("unexpected argument '7'"));
+        assert!(
+            !tmp.path().join(".jyc/context-strategy.json").exists(),
+            "a refused command must not write the override"
         );
     }
 

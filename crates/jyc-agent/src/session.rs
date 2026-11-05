@@ -199,6 +199,17 @@ pub struct SessionState {
     /// before the field existed deserialize as `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_offset: Option<u64>,
+    /// Journal byte offset where full-mode history resumes after
+    /// `/context restart` (`agent-context.jsonl`). Full mode normally reads
+    /// the whole journal and keeps no anchor; this boundary exists only so a
+    /// restart can make the next request start from zero prior turns without
+    /// clearing the journal or the session counters.
+    ///
+    /// `None` = full mode has never been restarted: the whole journal is
+    /// read. `serde(default)` so session files written before the field
+    /// existed deserialize as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_restart_offset: Option<u64>,
     /// Accumulated cost of this session, in the currency configured for
     /// the model(s) used. **One of this struct's accumulating fields** —
     /// with `total_call_duration_ms`, `call_count` and `turn_cost`, which a
@@ -374,14 +385,15 @@ pub async fn append_wire_payload_dump(
 /// - internal_messages: for logic (reply detection, text extraction)
 /// - raw_context: for sending to the API (preserves provider-specific fields).
 ///
-/// `Full` mode reads the whole journal. `sliding_window` reads an
-/// **anchored window**: the journal forward from the anchor stored in the
-/// session state ([`SessionState::context_offset`]), so the window only
-/// ever grows between slides — the loader never trims its head. The wire
-/// payload that follows from this is append-only: the history block (turn
-/// text plus each turn's tool-call note) grows by append and only the
-/// current turn is re-sent (see
-/// `build_send_context_cached`). The window slides (anchor moves forward, whole turns dropped) when it holds
+/// `Full` mode reads the whole journal, or everything after the persisted
+/// `/context restart` boundary. `sliding_window` reads an **anchored window**:
+/// the journal forward from the anchor stored in the session state
+/// ([`SessionState::context_offset`]), so the window only ever grows between
+/// slides — the loader never trims its head. The wire payload that follows
+/// from this is append-only: the history block (turn text plus each turn's
+/// tool-call note) grows by append and only the current turn is re-sent (see
+/// `build_send_context_cached`). The window slides (anchor moves forward,
+/// whole turns dropped) when it holds
 /// more than [`ContextStrategyConfig::max_window`] turns, or when it has
 /// reached that bound and its estimated weight exceeds
 /// `max_history_tokens`; the slide returns it to `window` turns.
@@ -421,12 +433,98 @@ pub async fn load_context(
     let reader = ContextReader::new(topic_name, &state_dir);
     match strategy.mode {
         jyc_types::channel::ContextStrategy::Full => {
-            let slice = reader.read_prior(PriorDepth::All).await;
+            let slice = load_context_full(&reader, &state_dir, topic_name).await;
             finish_load(&reader, &state_dir, slice.messages, slice.reached_head).await
         }
         jyc_types::channel::ContextStrategy::SlidingWindow => {
             load_context_windowed(&reader, &state_dir, topic_name, strategy).await
         }
+    }
+}
+
+/// `load_context`'s full-context arm: read the whole journal, unless
+/// `/context restart` persisted a boundary. The boundary is a normal
+/// forward read, so post-restart full mode accumulates every appended turn.
+async fn load_context_full(
+    reader: &ContextReader,
+    state_dir: &Path,
+    topic_name: &str,
+) -> crate::context_reader::PriorSlice {
+    let Some(offset) = read_full_restart_offset(state_dir).await else {
+        return reader.read_prior(PriorDepth::All).await;
+    };
+    if offset == 0 {
+        return reader.read_prior(PriorDepth::All).await;
+    }
+    match read_anchored_slice(reader, state_dir, offset, true).await {
+        Some(slice) => slice,
+        None => {
+            clear_full_restart_offset(topic_name, state_dir).await;
+            reader.read_prior(PriorDepth::All).await
+        }
+    }
+}
+
+/// Read forward from one persisted journal anchor after deciding whether the
+/// anchor is trustworthy. Returns `None` when it is stale: the caller clears
+/// its own field and cold-starts, so the bad anchor is not re-evaluated on
+/// every later turn.
+///
+/// An offset exactly at the journal's end is trusted only for a restart
+/// boundary — the state `/context restart` writes before the next append.
+/// Full mode always passes `true` because the offset it hands in comes from
+/// `full_restart_offset`, a field only the restart writes. Sliding passes
+/// `true` only when its anchor still equals that field.
+///
+/// A restart boundary may start at any user-authored message, including a
+/// turn opener with empty text; slide anchors must open on a text-bearing
+/// user message because they are used to trim whole turns.
+async fn read_anchored_slice(
+    reader: &ContextReader,
+    state_dir: &Path,
+    offset: u64,
+    is_restart_boundary: bool,
+) -> Option<crate::context_reader::PriorSlice> {
+    if offset == 0 {
+        return Some(reader.read_from(0).await);
+    }
+    let journal_len = tokio::fs::metadata(state_dir.join(AGENT_CONTEXT_FILE))
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
+    if offset > journal_len || (offset == journal_len && !is_restart_boundary) {
+        tracing::warn!(
+            offset,
+            journal_len,
+            is_restart_boundary,
+            "context anchor names no journal content; cold-starting"
+        );
+        return None;
+    }
+
+    let slice = reader.read_from(offset).await;
+    let boundary_is_valid = slice.messages.first().is_some_and(|msg| {
+        if is_restart_boundary {
+            opens_restart_boundary(msg)
+        } else {
+            opens_turn(msg)
+        }
+    });
+    if boundary_is_valid
+        || (slice.messages.is_empty()
+            && reader
+                .clean_end()
+                .await
+                .is_some_and(|point| point.offset == offset))
+    {
+        Some(slice)
+    } else {
+        tracing::warn!(
+            offset,
+            is_restart_boundary,
+            "context anchor is not a trusted boundary; cold-starting"
+        );
+        None
     }
 }
 
@@ -443,44 +541,19 @@ async fn load_context_windowed(
     topic_name: &str,
     strategy: &ContextStrategyConfig,
 ) -> (Vec<Message>, Vec<serde_json::Value>) {
-    let journal_len = tokio::fs::metadata(state_dir.join(AGENT_CONTEXT_FILE))
-        .await
-        .map(|m| m.len())
-        .unwrap_or(0);
-
-    let stored = read_context_offset(state_dir).await;
+    let (stored, restart_offset) = read_context_offsets(state_dir).await;
 
     let mut slice = match stored {
-        Some(offset) if offset > 0 && offset < journal_len => {
-            let slice = reader.read_from(offset).await;
-            // A stale anchor — the journal was replaced or truncated under
-            // it — parses garbage. Only a slice that opens on a turn
-            // boundary (what the writer guarantees) is trusted; anything
-            // else falls back to a cold start and drops the anchor, so the
-            // next turn does not re-read the whole journal and warn again.
-            if slice.messages.first().is_some_and(opens_turn) {
-                slice
-            } else {
-                tracing::warn!(
-                    offset,
-                    "sliding-window anchor is not a turn boundary; cold-starting"
-                );
-                clear_context_offset(topic_name, state_dir).await;
-                reader.read_from(0).await
-            }
-        }
         Some(offset) => {
-            // Past the journal's end (or 0, which the writer never
-            // persists): the anchor names nothing. A cold start needs no
-            // anchor at all — the window covers the whole journal — and a
-            // new one is written when it next slides.
-            tracing::warn!(
-                offset,
-                journal_len,
-                "sliding-window anchor is outside the journal; cold-starting"
-            );
-            clear_context_offset(topic_name, state_dir).await;
-            reader.read_from(0).await
+            match read_anchored_slice(reader, state_dir, offset, restart_offset == Some(offset))
+                .await
+            {
+                Some(slice) => slice,
+                None => {
+                    clear_context_offset(topic_name, state_dir).await;
+                    reader.read_from(0).await
+                }
+            }
         }
         None => reader.read_from(0).await,
     };
@@ -569,13 +642,21 @@ async fn finish_load(
     (internal, raw)
 }
 
+/// The persisted journal anchors, one read of the session file:
+/// `context_offset` for the sliding window and `full_restart_offset` for a
+/// full-mode restart boundary. `None` means that mode has no anchor — the
+/// loader then reads from the journal's head.
+async fn read_context_offsets(state_dir: &Path) -> (Option<u64>, Option<u64>) {
+    let state = load_session_state(&state_dir.join(SESSION_FILE)).await;
+    (state.context_offset, state.full_restart_offset)
+}
+
 /// The persisted sliding-window anchor: the journal byte offset where the
 /// window's oldest retained turn begins. `None` when the session file
 /// predates the field or has no anchor yet — the loader then cold-starts.
+#[cfg(test)]
 async fn read_context_offset(state_dir: &Path) -> Option<u64> {
-    load_session_state(&state_dir.join(SESSION_FILE))
-        .await
-        .context_offset
+    read_context_offsets(state_dir).await.0
 }
 
 /// Persist the sliding-window anchor. Best-effort, like the counters: a
@@ -598,6 +679,24 @@ async fn clear_context_offset(topic_name: &str, state_dir: &Path) {
     let path = state_dir.join(SESSION_FILE);
     let mut state = load_session_state(&path).await;
     if state.context_offset.take().is_none() {
+        return;
+    }
+    save_session_state(topic_name, &path, &state).await;
+}
+
+/// The persisted full-context restart boundary. `None` is the normal full
+/// state: no restart has happened, so the whole journal is read.
+async fn read_full_restart_offset(state_dir: &Path) -> Option<u64> {
+    read_context_offsets(state_dir).await.1
+}
+
+/// Drop a full-context restart boundary the journal no longer supports (it
+/// was replaced or truncated under it), restoring full mode's whole-journal
+/// behavior.
+async fn clear_full_restart_offset(topic_name: &str, state_dir: &Path) {
+    let path = state_dir.join(SESSION_FILE);
+    let mut state = load_session_state(&path).await;
+    if state.full_restart_offset.take().is_none() {
         return;
     }
     save_session_state(topic_name, &path, &state).await;
@@ -1057,6 +1156,46 @@ pub async fn add_session_cost(topic_name: &str, topic_path: &Path, cost: f64) {
 }
 
 // ─── Reset ───────────────────────────────────────────────────────────
+
+/// Restart the visible context at the journal's current clean end without
+/// resetting the session.
+///
+/// The journal, chat history, task list, token counters, and cost totals all
+/// stay in place. Both mode-specific boundaries move to the same point: the
+/// next request sees zero prior turns; later requests see what the active
+/// context strategy sends from there (the whole journal suffix in `full`
+/// mode, the bounded window in `sliding_window`).
+///
+/// The boundary comes from the reader's clean-end calculation, not the raw
+/// file length, so a torn final line is dropped instead of becoming the next
+/// turn's history.
+pub async fn restart_context_window(topic_name: &str, topic_path: &Path) -> anyhow::Result<()> {
+    let state_dir = resolve_state_dir(topic_name, topic_path);
+    let reader = ContextReader::new(topic_name, &state_dir);
+    let Some(point) = reader.clean_end().await else {
+        anyhow::bail!("context journal is unreadable; context restart refused");
+    };
+
+    let session_path = state_dir.join(SESSION_FILE);
+    let journal_path = state_dir.join(AGENT_CONTEXT_FILE);
+    if !session_path.exists() && !journal_path.exists() {
+        // Nothing has been persisted yet: the next load is already an empty
+        // start, so writing a fresh session file would only invent state.
+        return Ok(());
+    }
+    let mut state = load_session_state(&session_path).await;
+    if state.created_at.is_empty() {
+        state.created_at = chrono::Utc::now().to_rfc3339();
+    }
+    state.context_offset = Some(point.offset);
+    state.full_restart_offset = Some(point.offset);
+    save_session_state(topic_name, &session_path, &state).await;
+    tracing::info!(
+        offset = point.offset,
+        "Context window restarted without resetting the session"
+    );
+    Ok(())
+}
 
 /// Clear the session: drop the session file and the raw context.
 ///
@@ -1611,6 +1750,28 @@ pub(crate) fn opens_turn(msg: &serde_json::Value) -> bool {
     }
     let text = extract_message_text(msg);
     !text.is_empty() && !text.starts_with(HISTORY_NOTE_PREFIX)
+}
+
+/// Whether a message may open a `/context restart` boundary.
+///
+/// More permissive than [`opens_turn`] — a user-authored turn with empty
+/// text still starts the new visible history — but never permissive enough
+/// to accept an Anthropic tool-result carrier or a legacy `[History note]`
+/// line: both are `role: "user"` without opening a user-authored turn.
+fn opens_restart_boundary(msg: &serde_json::Value) -> bool {
+    if msg.get("role").and_then(|r| r.as_str()) != Some("user") {
+        return false;
+    }
+    let text = extract_message_text(msg);
+    !text.starts_with(HISTORY_NOTE_PREFIX)
+        && !msg
+            .get("content")
+            .and_then(|content| content.as_array())
+            .is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .any(|block| block.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+            })
 }
 
 /// Whether one assistant message keeps its turn alive: it carries text or a
@@ -2973,6 +3134,13 @@ mod windowed_load_tests {
         }
     }
 
+    fn full() -> ContextStrategyConfig {
+        ContextStrategyConfig {
+            mode: ContextStrategy::Full,
+            ..Default::default()
+        }
+    }
+
     fn turns_journal(from: usize, to: usize) -> String {
         let mut out = String::new();
         for i in from..=to {
@@ -3022,11 +3190,19 @@ mod windowed_load_tests {
         read_context_offset(state_dir).await
     }
 
+    async fn stored_full_restart_offset(state_dir: &std::path::Path) -> Option<u64> {
+        read_full_restart_offset(state_dir).await
+    }
+
     async fn offset_is_line_start(state_dir: &std::path::Path, offset: u64) -> bool {
         let journal = tokio::fs::read(state_dir.join(AGENT_CONTEXT_FILE))
             .await
             .unwrap();
         journal.get(offset as usize).is_some_and(|&b| b == b'{')
+    }
+
+    async fn stored_state(state_dir: &std::path::Path) -> SessionState {
+        load_session_state(&state_dir.join(SESSION_FILE)).await
     }
 
     #[tokio::test]
@@ -3207,6 +3383,503 @@ mod windowed_load_tests {
             stored_offset(&state_dir).await.is_none(),
             "an anchor past the end is dropped too"
         );
+    }
+
+    #[tokio::test]
+    async fn full_without_restart_reads_the_whole_journal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "full-without-restart";
+        let state_dir = setup(&tmp, topic, &turns_journal(1, 3)).await;
+
+        let (_, raw) = load_context(topic, tmp.path(), &full()).await;
+
+        assert_eq!(raw.len(), 6, "full mode keeps every turn");
+        assert_eq!(raw[0]["content"], "u1");
+        assert!(
+            stored_full_restart_offset(&state_dir).await.is_none(),
+            "a plain full load does not invent a restart boundary"
+        );
+        state_dir::unregister(topic);
+        state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn full_restart_starts_empty_and_accumulates_everything_since() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "full-restart-accumulates";
+        let journal = turns_journal(1, 3);
+        let restart_at = journal.len() as u64;
+        let state_dir = setup(&tmp, topic, &journal).await;
+
+        let mut state = stored_state(&state_dir).await;
+        state.full_restart_offset = Some(restart_at);
+        save_session_state(topic, &state_dir.join(SESSION_FILE), &state).await;
+
+        let (_, raw) = load_context(topic, tmp.path(), &full()).await;
+        assert!(
+            raw.is_empty(),
+            "the restart boundary excludes all prior turns"
+        );
+
+        append_turn(&state_dir, 4).await;
+        let (_, raw) = load_context(topic, tmp.path(), &full()).await;
+        assert_eq!(raw.len(), 2, "one complete turn after the boundary");
+        assert_eq!(raw[0]["content"], "u4");
+        assert_eq!(raw[1]["content"], "a4");
+
+        append_turn(&state_dir, 5).await;
+        let (_, raw) = load_context(topic, tmp.path(), &full()).await;
+        assert_eq!(
+            raw.len(),
+            4,
+            "full mode accumulates every post-restart turn"
+        );
+        assert_eq!(raw[0]["content"], "u4");
+        assert_eq!(raw[3]["content"], "a5");
+        assert_eq!(
+            stored_full_restart_offset(&state_dir).await,
+            Some(restart_at),
+            "the restart boundary is not a one-shot flag"
+        );
+        state_dir::unregister(topic);
+        state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn restart_boundary_is_shared_until_the_modes_diverge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "restart-shared-boundary";
+        let journal = turns_journal(1, 3);
+        let restart_at = journal.len() as u64;
+        let state_dir = setup(&tmp, topic, &journal).await;
+
+        let mut state = stored_state(&state_dir).await;
+        state.context_offset = Some(restart_at);
+        state.full_restart_offset = Some(restart_at);
+        save_session_state(topic, &state_dir.join(SESSION_FILE), &state).await;
+
+        append_turn(&state_dir, 4).await;
+        let (_, sliding_raw) = load_context(topic, tmp.path(), &sliding(10, 0.5)).await;
+        assert_eq!(
+            sliding_raw.len(),
+            2,
+            "sliding also starts at the shared boundary"
+        );
+
+        append_turn(&state_dir, 5).await;
+        let (_, full_raw) = load_context(topic, tmp.path(), &full()).await;
+        assert_eq!(
+            full_raw.len(),
+            4,
+            "full keeps everything since the shared boundary"
+        );
+        assert_eq!(full_raw[0]["content"], "u4");
+        assert_eq!(full_raw[3]["content"], "a5");
+        state_dir::unregister(topic);
+        state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn full_stale_restart_boundary_recovers_the_whole_journal() {
+        for (label, offset) in [("mid-line", 3_u64), ("past-end", 9_999_999_u64)] {
+            let tmp = tempfile::tempdir().unwrap();
+            let topic = format!("full-stale-restart-{label}");
+            let state_dir = setup(&tmp, &topic, &turns_journal(1, 3)).await;
+
+            let mut state = stored_state(&state_dir).await;
+            state.full_restart_offset = Some(offset);
+            save_session_state(&topic, &state_dir.join(SESSION_FILE), &state).await;
+
+            let (_, raw) = load_context(&topic, tmp.path(), &full()).await;
+            assert_eq!(raw.len(), 6, "{label}: fallback reads the whole journal");
+            assert_eq!(raw[0]["content"], "u1");
+            assert!(
+                stored_full_restart_offset(&state_dir).await.is_none(),
+                "{label}: the stale boundary is dropped"
+            );
+            state_dir::unregister(&topic);
+            state_dir::clear_closed(&topic);
+        }
+    }
+
+    #[tokio::test]
+    async fn eof_anchor_gives_sliding_an_empty_window_that_grows_by_append() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "sliding-eof-anchor";
+        let journal = turns_journal(1, 3);
+        let anchor = journal.len() as u64;
+        let state_dir = setup(&tmp, topic, &journal).await;
+
+        let mut state = stored_state(&state_dir).await;
+        state.context_offset = Some(anchor);
+        state.full_restart_offset = Some(anchor);
+        save_session_state(topic, &state_dir.join(SESSION_FILE), &state).await;
+
+        let (_, raw) = load_context(topic, tmp.path(), &sliding(10, 0.5)).await;
+        assert!(raw.is_empty(), "EOF is a valid zero-turn window");
+
+        append_turn(&state_dir, 4).await;
+        let (_, raw) = load_context(topic, tmp.path(), &sliding(10, 0.5)).await;
+        assert_eq!(
+            raw.len(),
+            2,
+            "the next turn becomes the first retained turn"
+        );
+        assert_eq!(raw[0]["content"], "u4");
+
+        append_turn(&state_dir, 5).await;
+        let (_, raw) = load_context(topic, tmp.path(), &sliding(10, 0.5)).await;
+        assert_eq!(raw.len(), 4, "the anchored window then grows by append");
+        assert_eq!(raw[0]["content"], "u4");
+        assert_eq!(raw[3]["content"], "a5");
+        assert_eq!(
+            stored_offset(&state_dir).await,
+            Some(anchor),
+            "no slide happened, so the restart anchor is unchanged"
+        );
+        state_dir::unregister(topic);
+        state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn eof_anchor_without_a_restart_boundary_recovers_cold() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "sliding-eof-anchor-without-restart";
+        let journal = turns_journal(1, 3);
+        let anchor = journal.len() as u64;
+        let state_dir = setup(&tmp, topic, &journal).await;
+
+        let mut state = stored_state(&state_dir).await;
+        state.context_offset = Some(anchor);
+        save_session_state(topic, &state_dir.join(SESSION_FILE), &state).await;
+
+        let (_, raw) = load_context(topic, tmp.path(), &sliding(10, 0.5)).await;
+        assert_eq!(raw.len(), 6, "an unmatched EOF anchor names no restart");
+        assert_eq!(raw[0]["content"], "u1");
+        assert!(
+            stored_offset(&state_dir).await.is_none(),
+            "the unmatched anchor is dropped, not mistaken for an empty window"
+        );
+        state_dir::unregister(topic);
+        state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn restart_context_window_anchors_both_modes_and_preserves_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "restart-operation-preserves-session";
+        let journal = turns_journal(1, 3);
+        let journal_len = journal.len() as u64;
+        let state_dir = setup(&tmp, topic, &journal).await;
+
+        let mut state = stored_state(&state_dir).await;
+        state.session_cost = 12.5;
+        state.total_output_tokens = 7;
+        save_session_state(topic, &state_dir.join(SESSION_FILE), &state).await;
+        let journal_before = tokio::fs::read(state_dir.join(AGENT_CONTEXT_FILE))
+            .await
+            .unwrap();
+
+        restart_context_window(topic, tmp.path()).await.unwrap();
+
+        let journal_after = tokio::fs::read(state_dir.join(AGENT_CONTEXT_FILE))
+            .await
+            .unwrap();
+        assert_eq!(
+            journal_before, journal_after,
+            "the journal is not rewritten"
+        );
+
+        let state = stored_state(&state_dir).await;
+        assert_eq!(state.context_offset, Some(journal_len));
+        assert_eq!(state.full_restart_offset, Some(journal_len));
+        assert_eq!(
+            state.session_cost, 12.5,
+            "session cost survives the restart"
+        );
+        assert_eq!(
+            state.total_output_tokens, 7,
+            "token counters survive it too"
+        );
+
+        let (_, raw) = load_context(topic, tmp.path(), &full()).await;
+        assert!(
+            raw.is_empty(),
+            "the next full-mode request sees no prior turns"
+        );
+        state_dir::unregister(topic);
+        state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn restart_context_window_uses_clean_end_before_a_torn_tail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "restart-operation-torn-tail";
+        let mut journal = turns_journal(1, 2);
+        let cut = journal.len() as u64;
+        journal.push_str(r#"{"role":"user","content":"u3"#);
+        let state_dir = setup(&tmp, topic, &journal).await;
+
+        restart_context_window(topic, tmp.path()).await.unwrap();
+
+        let state = stored_state(&state_dir).await;
+        assert_eq!(
+            state.context_offset,
+            Some(cut),
+            "the restart starts before the torn line, not at the raw file length"
+        );
+        assert_eq!(state.full_restart_offset, Some(cut));
+
+        let (_, full_raw) = load_context(topic, tmp.path(), &full()).await;
+        assert!(full_raw.is_empty(), "the torn tail is not visible history");
+        let (_, sliding_raw) = load_context(topic, tmp.path(), &sliding(10, 0.5)).await;
+        assert!(sliding_raw.is_empty());
+
+        save_raw_context(
+            topic,
+            tmp.path(),
+            vec![
+                serde_json::json!({"role": "user", "content": "u3"}),
+                serde_json::json!({"role": "assistant", "content": "a3"}),
+            ],
+        )
+        .await;
+        let (_, full_raw) = load_context(topic, tmp.path(), &full()).await;
+        assert_eq!(full_raw.len(), 2, "the repaired append is the first turn");
+        assert_eq!(full_raw[0]["content"], "u3");
+        assert_eq!(full_raw[1]["content"], "a3");
+        let (_, sliding_raw) = load_context(topic, tmp.path(), &sliding(10, 0.5)).await;
+        assert_eq!(sliding_raw.len(), 2);
+        assert_eq!(sliding_raw[0]["content"], "u3");
+        state_dir::unregister(topic);
+        state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn restart_context_window_keeps_an_unterminated_message_append_aligned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "restart-operation-unterminated-message";
+        let mut journal = turns_journal(1, 2);
+        journal.push_str(&serde_json::json!({"role": "user", "content": "u3"}).to_string());
+        // `clean_end` treats a complete message that lost only its newline as
+        // committed, so the restart boundary belongs after it: the message is
+        // hidden from the new visible context, not truncated away.
+        let file_end = journal.len() as u64;
+        let state_dir = setup(&tmp, topic, &journal).await;
+
+        restart_context_window(topic, tmp.path()).await.unwrap();
+
+        let state = stored_state(&state_dir).await;
+        assert_eq!(state.context_offset, Some(file_end));
+        assert_eq!(state.full_restart_offset, Some(file_end));
+        let (_, full_raw) = load_context(topic, tmp.path(), &full()).await;
+        assert!(full_raw.is_empty(), "the pre-restart suffix is hidden");
+
+        save_raw_context(
+            topic,
+            tmp.path(),
+            vec![
+                serde_json::json!({"role": "user", "content": "u4"}),
+                serde_json::json!({"role": "assistant", "content": "a4"}),
+            ],
+        )
+        .await;
+        let (_, full_raw) = load_context(topic, tmp.path(), &full()).await;
+        assert_eq!(full_raw.len(), 2);
+        assert_eq!(full_raw[0]["content"], "u4");
+        let (_, sliding_raw) = load_context(topic, tmp.path(), &sliding(10, 0.5)).await;
+        assert_eq!(sliding_raw.len(), 2);
+        assert_eq!(sliding_raw[0]["content"], "u4");
+        state_dir::unregister(topic);
+        state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn restart_boundary_rejects_a_tool_result_carrier_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "restart-operation-tool-result-boundary";
+        let mut journal = turns_journal(1, 1);
+        let anchor = journal.len() as u64;
+        journal.push_str(&format!(
+            "{}\n",
+            serde_json::json!({
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t", "content": "r"}],
+            })
+        ));
+        journal.push_str(&turns_journal(2, 2));
+        let state_dir = setup(&tmp, topic, &journal).await;
+
+        let mut state = stored_state(&state_dir).await;
+        state.context_offset = Some(anchor);
+        state.full_restart_offset = Some(anchor);
+        save_session_state(topic, &state_dir.join(SESSION_FILE), &state).await;
+
+        let (_, raw) = load_context(topic, tmp.path(), &full()).await;
+        assert_eq!(
+            raw[0]["content"], "u1",
+            "a stale restart boundary cold-starts instead of opening on tool_result"
+        );
+        assert!(
+            stored_full_restart_offset(&state_dir).await.is_none(),
+            "the rejected full boundary is cleared"
+        );
+
+        let (_, raw) = load_context(topic, tmp.path(), &sliding(10, 0.5)).await;
+        assert_eq!(raw[0]["content"], "u1");
+        assert!(
+            stored_offset(&state_dir).await.is_none(),
+            "the rejected sliding anchor is cleared too"
+        );
+        state_dir::unregister(topic);
+        state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn restart_boundary_accepts_an_empty_text_user_turn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "restart-operation-empty-user-boundary";
+        let mut journal = turns_journal(1, 1);
+        let anchor = journal.len() as u64;
+        journal.push_str(&format!(
+            "{}\n",
+            serde_json::json!({"role": "user", "content": ""})
+        ));
+        journal.push_str(&format!(
+            "{}\n",
+            serde_json::json!({"role": "assistant", "content": "a2"})
+        ));
+        let state_dir = setup(&tmp, topic, &journal).await;
+
+        let mut state = stored_state(&state_dir).await;
+        state.context_offset = Some(anchor);
+        state.full_restart_offset = Some(anchor);
+        save_session_state(topic, &state_dir.join(SESSION_FILE), &state).await;
+
+        let (_, full_raw) = load_context(topic, tmp.path(), &full()).await;
+        assert_eq!(
+            full_raw.len(),
+            2,
+            "the empty-text turn stays at the boundary"
+        );
+        assert_eq!(full_raw[0]["content"], "");
+        assert_eq!(full_raw[1]["content"], "a2");
+        assert_eq!(
+            stored_full_restart_offset(&state_dir).await,
+            Some(anchor),
+            "a valid restart boundary is not cleared"
+        );
+
+        let (_, sliding_raw) = load_context(topic, tmp.path(), &sliding(10, 0.5)).await;
+        assert_eq!(sliding_raw.len(), 2);
+        assert_eq!(sliding_raw[0]["content"], "");
+        assert_eq!(
+            stored_offset(&state_dir).await,
+            Some(anchor),
+            "sliding accepts the same boundary"
+        );
+        state_dir::unregister(topic);
+        state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn restart_boundary_rejects_a_history_note_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "restart-operation-history-note-boundary";
+        let mut journal = turns_journal(1, 1);
+        let anchor = journal.len() as u64;
+        journal.push_str(&format!(
+            "{}\n",
+            serde_json::json!({
+                "role": "user",
+                "content": format!("{} compacted prior context", HISTORY_NOTE_PREFIX),
+            })
+        ));
+        journal.push_str(&turns_journal(2, 2));
+        let state_dir = setup(&tmp, topic, &journal).await;
+
+        let mut state = stored_state(&state_dir).await;
+        state.context_offset = Some(anchor);
+        state.full_restart_offset = Some(anchor);
+        save_session_state(topic, &state_dir.join(SESSION_FILE), &state).await;
+
+        let (_, raw) = load_context(topic, tmp.path(), &full()).await;
+        assert_eq!(
+            raw[0]["content"], "u1",
+            "machine-written history must not open the restarted context"
+        );
+        assert!(
+            stored_full_restart_offset(&state_dir).await.is_none(),
+            "the rejected full boundary is cleared"
+        );
+
+        let (_, raw) = load_context(topic, tmp.path(), &sliding(10, 0.5)).await;
+        assert_eq!(raw[0]["content"], "u1");
+        assert!(
+            stored_offset(&state_dir).await.is_none(),
+            "the rejected sliding anchor is cleared too"
+        );
+        state_dir::unregister(topic);
+        state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn restart_context_window_noops_without_a_session_or_journal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "restart-operation-fresh-topic";
+        let state_dir = tmp.path().join(".jyc");
+        state_dir::register(topic, &state_dir);
+
+        restart_context_window(topic, tmp.path())
+            .await
+            .expect("restarting an empty topic is already its next state");
+        assert!(
+            !state_dir.join(SESSION_FILE).exists(),
+            "the command must not invent a session file for an empty topic"
+        );
+        state_dir::unregister(topic);
+        state_dir::clear_closed(topic);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn restart_context_window_rejects_an_unreadable_journal() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "restart-operation-unreadable-journal";
+        let state_dir = setup(&tmp, topic, &turns_journal(1, 1)).await;
+        let journal_path = state_dir.join(AGENT_CONTEXT_FILE);
+        // A merely missing journal is a valid empty restart point, so this
+        // fixture removes read permission to make the existing journal
+        // genuinely unreadable on Unix runners.
+        let mut unreadable = tokio::fs::metadata(&journal_path)
+            .await
+            .unwrap()
+            .permissions();
+        unreadable.set_mode(0o000);
+        tokio::fs::set_permissions(&journal_path, unreadable)
+            .await
+            .unwrap();
+
+        let error = restart_context_window(topic, tmp.path())
+            .await
+            .expect_err("an unreadable journal cannot be restarted safely");
+
+        let mut readable = tokio::fs::metadata(&journal_path)
+            .await
+            .unwrap()
+            .permissions();
+        readable.set_mode(0o600);
+        tokio::fs::set_permissions(&journal_path, readable)
+            .await
+            .unwrap();
+        assert!(
+            error.to_string().contains("context journal is unreadable"),
+            "unexpected error: {error}"
+        );
+        state_dir::unregister(topic);
+        state_dir::clear_closed(topic);
     }
 
     #[tokio::test]

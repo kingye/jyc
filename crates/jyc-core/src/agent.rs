@@ -82,4 +82,11 @@ pub trait AgentService: Send + Sync {
     /// Reset the session for a topic: delete the session and context
     /// files. The next turn starts from an empty context.
     async fn reset_session(&self, topic_path: &Path, topic_name: &str) -> Result<()>;
+
+    /// Restart the visible context at the journal's clean end while
+    /// preserving the session. Unsupported agent modes must not pretend the
+    /// restart happened.
+    async fn restart_context_window(&self, _topic_path: &Path, _topic_name: &str) -> Result<()> {
+        anyhow::bail!("context restart is not supported by this agent mode")
+    }
 }

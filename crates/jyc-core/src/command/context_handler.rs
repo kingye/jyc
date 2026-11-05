@@ -12,7 +12,9 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///
 /// Usage:
 ///   /context              Show current strategy
-///   /context full         Switch to full context (send everything)
+///   /context full         Switch to full context (send everything since the
+///                         last `/context restart`, or the whole journal when
+///                         no restart boundary exists)
 ///   /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH] [HISTCAP]
 ///     Switch to sliding window. Parameters are positional and all
 ///     optional:
@@ -70,6 +72,10 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///     value (the config.toml chain) — not to whatever an earlier
 ///     `/context` call left in the runtime override, so changing one slot
 ///     does not preserve the others you set before it.
+///   /context restart      Move both full and sliding history boundaries to
+///                         the journal's current end. The next request sees
+///                         zero prior turns; the session, counters, task list,
+///                         and complete journal are preserved.
 ///   /context reset        Remove runtime override (revert to configured default)
 ///   /context dump [on|off]
 ///     Toggle wire-payload debug dump. When on, every LLM call appends
@@ -157,6 +163,29 @@ impl CommandHandler for ContextCommandHandler {
 
         let cmd = context.args[0].to_lowercase();
         match cmd.as_str() {
+            "restart" => {
+                if let Some(extra) = context.args.get(1) {
+                    return Ok(CommandResult::refusal(format!(
+                        "/context: unexpected argument '{extra}' (usage: /context restart)"
+                    )));
+                }
+                let Some(agent) = context.agent.as_ref() else {
+                    return Ok(CommandResult::refusal(
+                        "/context: no agent is available for this topic".to_string(),
+                    ));
+                };
+                agent
+                    .restart_context_window(&context.topic_path, &context.topic_name)
+                    .await?;
+                Ok(CommandResult {
+                    success: true,
+                    message: "/context: restarted; the next request has 0 prior turns. \
+                              Session and journal preserved."
+                        .into(),
+                    error: None,
+                    append_body: None,
+                })
+            }
             "reset" => {
                 tokio::fs::remove_file(&override_path).await.ok();
                 Ok(CommandResult {
@@ -190,7 +219,7 @@ impl CommandHandler for ContextCommandHandler {
                 .await?;
                 Ok(CommandResult {
                     success: true,
-                    message: "/context: switched to full (all history sent)".into(),
+                    message: "/context: switched to full (history since the last restart, or all history)".into(),
                     error: None,
                     append_body: None,
                 })
@@ -456,7 +485,7 @@ impl CommandHandler for ContextCommandHandler {
             other => Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/context: unknown argument '{other}'. Use: /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH] [HISTCAP] | full | reset | dump [on|off]"
+                    "/context: unknown argument '{other}'. Use: /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH] [HISTCAP] | full | restart | reset | dump [on|off]"
                 ),
                 error: None,
                 append_body: None,
@@ -596,14 +625,112 @@ fn describe_strategy(cfg: &ContextStrategyConfig) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use jyc_types::channel::{DEFAULT_CHECKPOINT_GROWTH, DEFAULT_CHECKPOINT_INTERVAL};
     use std::path::Path;
+    use std::sync::Arc;
+
+    #[derive(Default)]
+    struct RestartRecordingAgent {
+        restart_names: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl crate::agent::AgentService for RestartRecordingAgent {
+        async fn base_url(&self) -> Result<String> {
+            Ok(String::new())
+        }
+
+        async fn process(
+            &self,
+            _message: &jyc_types::InboundMessage,
+            _topic_name: &str,
+            _topic_path: &Path,
+            _message_dir: &str,
+            _pending_rx: &mut tokio::sync::mpsc::Receiver<jyc_types::QueueItem>,
+            _topic_cancel: tokio_util::sync::CancellationToken,
+        ) -> Result<crate::agent::AgentResult> {
+            Ok(crate::agent::AgentResult {
+                reply_delivered: false,
+                reply_text: None,
+            })
+        }
+
+        async fn reset_session(&self, _topic_path: &Path, _topic_name: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn restart_context_window(&self, _topic_path: &Path, topic_name: &str) -> Result<()> {
+            self.restart_names
+                .lock()
+                .unwrap()
+                .push(topic_name.to_string());
+            Ok(())
+        }
+    }
 
     fn test_context(topic_name: &str, topic_path: &Path) -> CommandContext {
         jyc_types::state_dir::register(topic_name, &topic_path.join(".jyc"));
         let mut context = crate::test_support::test_context(topic_name, topic_path);
         context.channel_type = "email".into();
         context
+    }
+
+    #[tokio::test]
+    async fn test_restart_delegates_to_agent_by_topic_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_context_restart_delegates";
+        let agent = Arc::new(RestartRecordingAgent::default());
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec!["restart".into()];
+        ctx.agent = Some(agent.clone());
+
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        assert!(result.message.contains("0 prior turns"));
+        assert_eq!(
+            agent.restart_names.lock().unwrap().as_slice(),
+            [topic.to_string()]
+        );
+        jyc_types::state_dir::unregister(topic);
+        jyc_types::state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn test_restart_requires_an_agent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_context_restart_requires_agent";
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec!["restart".into()];
+
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(!result.success);
+        assert!(result.message.contains("no agent"));
+        jyc_types::state_dir::unregister(topic);
+        jyc_types::state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn test_restart_rejects_extra_arguments() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_context_restart_rejects_extra";
+        let agent = Arc::new(RestartRecordingAgent::default());
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec!["restart".into(), "now".into()];
+        ctx.agent = Some(agent.clone());
+
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(!result.success);
+        assert!(result.message.contains("unexpected argument 'now'"));
+        assert!(
+            agent.restart_names.lock().unwrap().is_empty(),
+            "a refused command must not touch the session"
+        );
+        jyc_types::state_dir::unregister(topic);
+        jyc_types::state_dir::clear_closed(topic);
     }
 
     #[tokio::test]

@@ -96,6 +96,7 @@ pub static CONTEXT_ARGS: ArgSource = ArgSource::Declared(&[
     // spelling, and typing the other simply closes the popup.
     ArgDef::leaf("sliding", "Sliding window; optionally follow a window size"),
     ArgDef::leaf("full", "Keep the whole prior conversation verbatim"),
+    ArgDef::leaf("restart", "Start the next request with zero prior turns"),
     ArgDef::leaf("reset", "Drop the runtime override"),
     ArgDef::opening(
         "dump",

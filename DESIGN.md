@@ -2339,7 +2339,12 @@ JYC uses the following subset of the agent service API:
    (`context_strategy`), overridable at runtime via `.jyc/context-strategy.json`
    (written by `/context full | sliding [N] | reset`).
 
-   * `full` (default) — send the entire `agent-context.jsonl`.
+   * `full` (default) — send the whole `agent-context.jsonl`, or the suffix
+     after the last `/context restart` (`agent-session.json`'s
+     `full_restart_offset`). `/context restart` itself writes the clean
+     journal end to both mode-specific offsets without touching the
+     session, so the next request in either strategy starts with zero
+     prior turns while the journal and `context_browse` remain intact.
    * `sliding_window` — anchored: `agent-session.json` persists
      `context_offset`, the journal byte offset where the window's oldest
      retained turn begins, and each load reads the journal forward from

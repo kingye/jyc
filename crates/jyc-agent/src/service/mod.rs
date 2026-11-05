@@ -769,6 +769,10 @@ impl AgentService for JycAgentService {
 
         Ok(())
     }
+
+    async fn restart_context_window(&self, topic_path: &Path, topic_name: &str) -> Result<()> {
+        session::restart_context_window(topic_name, topic_path).await
+    }
 }
 
 /// Derive the effective [`jyc_types::AiConfig`] for a channel — re-exported

@@ -1156,11 +1156,16 @@ mod render_raw_context_tests {
             !folded.contains("<think>"),
             "inline think tags leaked: {folded}"
         );
-        assert!(!folded.contains("RESULT-"), "tool result leaked: {folded}");
+        // The checkpoint replays results (truncated to
+        // CHECKPOINT_RESULT_REPLAY_CAP when oversized; these 8-byte
+        // fixtures ride whole) — the fold drops full-size payloads, not
+        // the evidence itself.
+        assert!(folded.contains("RESULT-"), "results replay: {folded}");
         assert!(folded.contains("step 0") && folded.contains("step 31"));
         // The checkpoint gets the same trace of what was run, not only the
         // steps' text.
         assert!(folded.contains("[Tool calls] bash()"), "{folded}");
+        assert!(folded.contains("[Tool results]"), "{folded}");
         assert!(!folded.contains("step 32"), "latest step must stay raw");
     }
 
@@ -1356,8 +1361,8 @@ mod render_raw_context_tests {
                 "folded reasoning reached the wire: {wire}"
             );
             assert!(
-                !wire.contains("RESULT-0"),
-                "folded tool result reached the wire: {wire}"
+                wire.contains("RESULT-0"),
+                "folded results replay truncated: {wire}"
             );
             assert!(
                 wire.contains("retained-reasoning"),
@@ -1424,7 +1429,7 @@ mod render_raw_context_tests {
             "a long turn folds through the checkpoint: {dumped}"
         );
         assert!(
-            dumped.contains("RESULT-33"),
+            dumped.contains("RESULT-32"),
             "the verbatim suffix keeps recent results: {dumped}"
         );
         assert!(

@@ -495,12 +495,16 @@ than restated from memory.
 ## Restarting the visible context
 
 `/context restart` moves the visible context to the journal's current
-clean end without resetting the session. It works in both strategies:
+clean end without resetting the session. In `full` and `sliding_window`
+it works the same way:
 
 - the next request has zero prior turns;
 - subsequent `full` requests include every turn appended after the restart;
 - subsequent `sliding_window` requests grow the bounded window from the
   same restart point.
+
+In `turn` mode it is a no-op: every request already starts with zero
+prior turns, so the command reports that and writes nothing.
 
 The command writes two mode-specific offsets, `context_offset` and
 `full_restart_offset`, to `agent-session.json`. They are not a pending
@@ -734,7 +738,8 @@ bounds how much history survives before the next slide.
 |---------|--------|
 | `/context` | Show current strategy and its source (`override` / `default`) |
 | `/context full` | Send the full context (the whole journal, or everything since the last `/context restart`) |
-| `/context restart` | Restart the visible context at the journal's clean end in the current strategy: the next request has zero prior turns; the journal and session are preserved |
+| `/context turn` | Send only the current turn: the loader projects an empty prior (the journal holds completed turns only, so there is nothing to slice) and the checkpoint is the only fold. `/context restart` is a no-op in this mode; earlier turns stay in the journal, readable via `context_browse` |
+| `/context restart` | Restart the visible context at the journal's clean end in the current strategy: the next request has zero prior turns; the journal and session are preserved. No-op in `turn` mode |
 | `/context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH]` | Sliding window, N turns (default 10, max 200); EXT = extend rate (0..10, default 0.5); TURNCAP = per-result byte cap on the current turn (`0`, or 130 B..1 MiB; unset by default); MAXHIST = weight trigger for a slide (0..4M, unset by default); CHECKPOINT = completed assistant messages before the current turn's older steps fold into a checkpoint (`0` disables folding; default 32); GROWTH = folds per widening step, each checkpoint `CHECKPOINT / GROWTH` steps wider (`0` keeps it fixed; default 8). A seventh positional is refused; an absent slot falls back to the configured value; `0` switches a cap off |
 | `/context reset` | Remove the runtime override, revert to configured default |
 

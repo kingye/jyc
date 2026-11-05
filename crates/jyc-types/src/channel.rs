@@ -950,10 +950,11 @@ pub struct ContextStrategyConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_history_tokens: Option<usize>,
     /// Completed assistant messages per current-turn checkpoint
-    /// (`sliding_window` mode): once the current turn passes this many
-    /// assistant messages, the older ones fold into a text-plus-calls
-    /// checkpoint (their results leave the wire, their calls stay as a
-    /// note) and the recent suffix stays verbatim. Counting is by assistant
+    /// (`sliding_window` and `turn` modes): once the current turn passes
+    /// this many assistant messages, the older ones fold into a
+    /// text-plus-calls checkpoint (each result replayed truncated to 512 B,
+    /// head and tail kept, its calls as a note) and the recent suffix stays
+    /// verbatim. Counting is by assistant
     /// message — every step that produced output, tool call or final reply —
     /// not by turn or by tool call. Default:
     /// [`DEFAULT_CHECKPOINT_INTERVAL`] (32).
@@ -967,7 +968,8 @@ pub struct ContextStrategyConfig {
     /// long read-heavy turns loop, so raise it rather than lower it when the
     /// model keeps re-reading what it just read.
     ///
-    /// Only meaningful when `mode = "sliding_window"`. Always serialized
+    /// Only meaningful when `mode = "sliding_window"` or `mode = "turn"`.
+    /// Always serialized
     /// (unlike the two `Option` caps above) because unlike them it has a
     /// non-off default: a reader that omitted it gets 32, not "off".
     #[serde(default = "default_checkpoint_interval")]
@@ -988,8 +990,8 @@ pub struct ContextStrategyConfig {
     /// interval per fold (32, 64, 96, 128 …), which quickly makes the
     /// checkpoint bound nothing.
     ///
-    /// Only meaningful when `mode = "sliding_window"` and
-    /// [`Self::checkpoint_interval`] is non-zero. Always serialized for the
+    /// Only meaningful when `mode = "sliding_window"` or `mode = "turn"`,
+    /// and [`Self::checkpoint_interval`] is non-zero. Always serialized for the
     /// same reason as `checkpoint_interval`: it has a non-off default, so an
     /// omitted value must read as 8, not 0.
     #[serde(default = "default_checkpoint_growth")]

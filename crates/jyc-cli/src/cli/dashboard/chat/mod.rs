@@ -1868,7 +1868,8 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         // lays its backlog out in it.
         let value_cells = value_width(topic_inner.width, layout);
         // Status row — the topic's live status and the backlog its queue
-        // holds, on one row: `Processing · queue ······ 2 / 10`. The figures
+        // holds, on one row: `Processing · queue ······ 2 / 10` (the first
+        // of the six dots yellow, the split read by colour alone). The figures
         // move to the row under it when the pane is too narrow for them
         // beside the marks.
         let mut status_spans = Vec::with_capacity(8);

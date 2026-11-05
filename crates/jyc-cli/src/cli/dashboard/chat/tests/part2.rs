@@ -2399,10 +2399,10 @@ fn info_pane_shows_a_zero_weight_composition_without_a_bar() {
     assert!(screen.contains("             History ~0 · 0%"), "{screen}");
 }
 
-/// The status row carries the topic's backlog: the marks say how much of
-/// the queue is taken — the queued ones yellow, the free slots gray — and
-/// the word `queue` says what they count, so they cannot be read as the
-/// progress of the turn the status names. The figures share the row.
+/// The status row carries the topic's backlog: yellow dashes say how much of
+/// the queue is taken, dark-gray dots mark the free slots, and the word
+/// `queue` says what they count, so they cannot be read as the progress of
+/// the turn the status names. The figures share the row.
 #[test]
 fn info_pane_draws_the_queue_on_the_status_row() {
     let mut app = info_pane_app(jyc_types::task::TaskList::default());
@@ -2419,25 +2419,33 @@ fn info_pane_draws_the_queue_on_the_status_row() {
         .position(|line| line.contains("Status:"))
         .expect("the status row") as u16;
 
-    // Read colours and weight straight off that row's cells.
-    let marks: Vec<(u16, Color, bool)> = (0..width)
+    // Read glyphs, colours and weight straight off that row's cells. The
+    // colours exclude the uncoloured dot in the separator before `queue`.
+    let marks: Vec<(u16, &str, Color, bool)> = (0..width)
         .filter_map(|x| {
             let cell = &buffer[(x, row)];
-            (cell.symbol() == "-").then_some((x, cell.fg, cell.modifier.contains(Modifier::BOLD)))
+            (matches!(cell.symbol(), "-" | "·")
+                && matches!(cell.fg, Color::Yellow | Color::DarkGray))
+            .then_some((
+                x,
+                cell.symbol(),
+                cell.fg,
+                cell.modifier.contains(Modifier::BOLD),
+            ))
         })
         .collect();
     assert_eq!(marks.len(), 6, "the marks fill the room the row has");
     assert!(
-        marks.iter().all(|(_, _, bold)| *bold),
+        marks.iter().all(|(_, _, _, bold)| *bold),
         "every mark is bold: {marks:?}"
     );
     let queued = marks
         .iter()
-        .filter(|(_, fg, _)| *fg == Color::Yellow)
+        .filter(|(_, symbol, fg, _)| *symbol == "-" && *fg == Color::Yellow)
         .count();
     let free = marks
         .iter()
-        .filter(|(_, fg, _)| *fg == Color::DarkGray)
+        .filter(|(_, symbol, fg, _)| *symbol == "·" && *fg == Color::DarkGray)
         .count();
     assert_eq!(
         queued, 1,
@@ -2447,7 +2455,7 @@ fn info_pane_draws_the_queue_on_the_status_row() {
     // The queued marks come first: the row reads as a queue filling up.
     let first_gray = marks
         .iter()
-        .position(|(_, fg, _)| *fg == Color::DarkGray)
+        .position(|(_, _, fg, _)| *fg == Color::DarkGray)
         .expect("the free slots");
     assert_eq!(first_gray, 1, "the yellow marks lead the row");
 
@@ -2474,6 +2482,7 @@ fn info_pane_omits_the_queue_without_a_capacity() {
         .expect("the status row");
     assert!(!status.contains("queue"), "{status}");
     assert!(!status.contains('-'), "{status}");
+    assert!(!status.contains('·'), "{status}");
 }
 
 /// A pane too narrow for the marks puts the figures under the status
@@ -2493,6 +2502,10 @@ fn info_pane_puts_the_queue_figures_under_the_status_in_a_narrow_pane() {
     assert!(
         !figures.contains('-'),
         "a narrow pane draws no marks:\n{figures}"
+    );
+    assert!(
+        !figures.contains('·'),
+        "a narrow pane draws no free-slot marks:\n{figures}"
     );
     assert!(
         !figures.contains("queue"),

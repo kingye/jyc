@@ -1756,20 +1756,22 @@ pub(crate) fn opens_turn(msg: &serde_json::Value) -> bool {
 ///
 /// More permissive than [`opens_turn`] — a user-authored turn with empty
 /// text still starts the new visible history — but never permissive enough
-/// to accept an Anthropic tool-result carrier: that is `role: "user"` too,
-/// yet it cannot begin a wire payload without the assistant `tool_use` it
-/// answers.
+/// to accept an Anthropic tool-result carrier or a legacy `[History note]`
+/// line: both are `role: "user"` without opening a user-authored turn.
 fn opens_restart_boundary(msg: &serde_json::Value) -> bool {
     if msg.get("role").and_then(|r| r.as_str()) != Some("user") {
         return false;
     }
-    !msg.get("content")
-        .and_then(|content| content.as_array())
-        .is_some_and(|blocks| {
-            blocks
-                .iter()
-                .any(|block| block.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
-        })
+    let text = extract_message_text(msg);
+    !text.starts_with(HISTORY_NOTE_PREFIX)
+        && !msg
+            .get("content")
+            .and_then(|content| content.as_array())
+            .is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .any(|block| block.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+            })
 }
 
 /// Whether one assistant message keeps its turn alive: it carries text or a
@@ -3717,6 +3719,94 @@ mod windowed_load_tests {
         assert_eq!(
             raw[0]["content"], "u1",
             "a stale restart boundary cold-starts instead of opening on tool_result"
+        );
+        assert!(
+            stored_full_restart_offset(&state_dir).await.is_none(),
+            "the rejected full boundary is cleared"
+        );
+
+        let (_, raw) = load_context(topic, tmp.path(), &sliding(10, 0.5)).await;
+        assert_eq!(raw[0]["content"], "u1");
+        assert!(
+            stored_offset(&state_dir).await.is_none(),
+            "the rejected sliding anchor is cleared too"
+        );
+        state_dir::unregister(topic);
+        state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn restart_boundary_accepts_an_empty_text_user_turn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "restart-operation-empty-user-boundary";
+        let mut journal = turns_journal(1, 1);
+        let anchor = journal.len() as u64;
+        journal.push_str(&format!(
+            "{}\n",
+            serde_json::json!({"role": "user", "content": ""})
+        ));
+        journal.push_str(&format!(
+            "{}\n",
+            serde_json::json!({"role": "assistant", "content": "a2"})
+        ));
+        let state_dir = setup(&tmp, topic, &journal).await;
+
+        let mut state = stored_state(&state_dir).await;
+        state.context_offset = Some(anchor);
+        state.full_restart_offset = Some(anchor);
+        save_session_state(topic, &state_dir.join(SESSION_FILE), &state).await;
+
+        let (_, full_raw) = load_context(topic, tmp.path(), &full()).await;
+        assert_eq!(
+            full_raw.len(),
+            2,
+            "the empty-text turn stays at the boundary"
+        );
+        assert_eq!(full_raw[0]["content"], "");
+        assert_eq!(full_raw[1]["content"], "a2");
+        assert_eq!(
+            stored_full_restart_offset(&state_dir).await,
+            Some(anchor),
+            "a valid restart boundary is not cleared"
+        );
+
+        let (_, sliding_raw) = load_context(topic, tmp.path(), &sliding(10, 0.5)).await;
+        assert_eq!(sliding_raw.len(), 2);
+        assert_eq!(sliding_raw[0]["content"], "");
+        assert_eq!(
+            stored_offset(&state_dir).await,
+            Some(anchor),
+            "sliding accepts the same boundary"
+        );
+        state_dir::unregister(topic);
+        state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn restart_boundary_rejects_a_history_note_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "restart-operation-history-note-boundary";
+        let mut journal = turns_journal(1, 1);
+        let anchor = journal.len() as u64;
+        journal.push_str(&format!(
+            "{}\n",
+            serde_json::json!({
+                "role": "user",
+                "content": format!("{} compacted prior context", HISTORY_NOTE_PREFIX),
+            })
+        ));
+        journal.push_str(&turns_journal(2, 2));
+        let state_dir = setup(&tmp, topic, &journal).await;
+
+        let mut state = stored_state(&state_dir).await;
+        state.context_offset = Some(anchor);
+        state.full_restart_offset = Some(anchor);
+        save_session_state(topic, &state_dir.join(SESSION_FILE), &state).await;
+
+        let (_, raw) = load_context(topic, tmp.path(), &full()).await;
+        assert_eq!(
+            raw[0]["content"], "u1",
+            "machine-written history must not open the restarted context"
         );
         assert!(
             stored_full_restart_offset(&state_dir).await.is_none(),

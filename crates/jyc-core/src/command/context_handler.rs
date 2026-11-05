@@ -73,9 +73,9 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///     `/context` call left in the runtime override, so changing one slot
 ///     does not preserve the others you set before it.
 ///   /context restart      Move both full and sliding history boundaries to
-///                         the journal's current end. The next request sees
-///                         zero prior turns; the session, counters, task list,
-///                         and complete journal are preserved.
+///                         the journal's current clean end. The next request
+///                         sees zero prior turns; the session, counters, task
+///                         list, and complete journal are preserved.
 ///   /context reset        Remove runtime override (revert to configured default)
 ///   /context dump [on|off]
 ///     Toggle wire-payload debug dump. When on, every LLM call appends

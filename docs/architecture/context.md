@@ -87,15 +87,14 @@ finds and hands out the window the caller asked for.
   text-bearing user message; a *pair* is a turn that produced an
   assistant reply. The two counts differ (an unanswered user message is
   an opener without a pair), and the strategies read both kinds.
-- **`full` mode normally reads everything; both modes read forward from a
-  restart boundary.** `session::load_context` reads the journal **forward**
-  from `agent-session.json`'s `context_offset` (`ContextReader::read_from`),
-  attaching each message's line-start offset so a slide can advance the
-  anchor without re-scanning. Full mode keeps its own
-  `full_restart_offset`, used only after `/context restart`. The read
-  amount is bounded by how far the window has grown — `max_window` turns
-  (and optionally `max_history_tokens` weight) keep it small; full mode
-  has no upper turn bound.
+- **Each anchored mode reads forward from its own offset.** Sliding mode
+  reads from `agent-session.json`'s `context_offset`; full mode reads from
+  `full_restart_offset` when a restart has happened, and the whole journal
+  otherwise (`ContextReader::read_from`). The forward read attaches each
+  message's line-start offset so a slide can advance the sliding anchor
+  without re-scanning. The read amount is bounded by how far the window has
+  grown — `max_window` turns (and optionally `max_history_tokens` weight)
+  keep it small; full mode has no upper turn bound.
 - **The slice starts at a turn boundary.** A cold start (no anchor, or
   one that no longer lands on a turn opener) reads from the journal's
   head once. It slides only when that read exceeds `max_window` turns,
@@ -471,11 +470,13 @@ clean end without resetting the session. It works in both strategies:
 
 The command writes two mode-specific offsets, `context_offset` and
 `full_restart_offset`, to `agent-session.json`. They are not a pending
-flag: they remain until the next restart, `/reset`, or stale-anchor
-recovery. An offset exactly at the journal's end is valid — it is the
-normal post-restart state — and loads an empty prior. The journal, chat
-history, token counters, cost totals, and task list are untouched, so
-`context_browse` can still recover turns the model no longer sees.
+flag: the full boundary remains until the next restart, `/reset`, or
+stale-anchor recovery, while the sliding anchor additionally advances when
+the window slides. An offset exactly at the journal's end is accepted only
+when it is the shared post-restart boundary; an unmatched EOF anchor is
+treated as stale and cold-starts. The journal, chat history, token
+counters, cost totals, and task list are untouched, so `context_browse`
+can still recover turns the model no longer sees.
 
 ## Token safety nets
 

@@ -15,7 +15,7 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///   /context full         Switch to full context (send everything since the
 ///                         last `/context restart`, or the whole journal when
 ///                         no restart boundary exists)
-///   /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH] [HISTCAP]
+///   /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH]
 ///     Switch to sliding window. Parameters are positional and all
 ///     optional:
 ///
@@ -26,7 +26,6 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///       MAXHIST     int     0..=4000000              0 (off)
 ///       CHECKPOINT  int     0 (off), else any        32
 ///       GROWTH      int     0 (fixed), else any      8
-///       HISTCAP     int     0, or 130..=1048576      0 (off)
 ///
 ///     N is the window's floor in turns: it keeps N turns after a slide.
 ///     EXT is the extension rate: the window grows from N up to
@@ -53,15 +52,9 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///     CHECKPOINT / GROWTH to the next interval (32 and 8 give 32, 36,
 ///     40 …), so a long turn keeps a growing verbatim tail. 0 keeps the
 ///     interval fixed. A small non-zero value widens fast — 1 adds a full
-///     interval per fold (32, 64, 96 …).
-///     HISTCAP is the per-tool-result byte cap on results replayed in the
-///     folded regions (history and the in-turn checkpoint). Unlike TURNCAP
-///     — which trims results that are present by default — this gates
-///     presence itself: 0 (the default) omits folded results entirely,
-///     the payload before the slot existed; a non-zero value replays each
-///     result cut to at most HISTCAP bytes, head and tail kept, and is
-///     refused below `MIN_EDGE_KEEPING_CAP` for the same reason TURNCAP
-///     is.
+///     interval per fold (32, 64, 96 …). A checkpoint's replayed tool
+///     results are bounded by a fixed internal cap — the history fold
+///     never replays results at all.
 ///
 ///     The slots moved when `note_window` was removed (it was the old 4th
 ///     slot, between EXT and TURNCAP), so a command carrying more
@@ -210,7 +203,6 @@ impl CommandHandler for ContextCommandHandler {
                         window: configured.window,
                         extend_rate: configured.extend_rate,
                         turn_tool_result_cap: configured.turn_tool_result_cap,
-                        history_tool_result_cap: configured.history_tool_result_cap,
                         max_history_tokens: configured.max_history_tokens,
                         checkpoint_interval: configured.checkpoint_interval,
                         checkpoint_growth: configured.checkpoint_growth,
@@ -229,11 +221,11 @@ impl CommandHandler for ContextCommandHandler {
                 // 4th slot). A command copied from an older build can
                 // therefore carry one trailing argument too many; refuse it
                 // rather than silently dropping it.
-                if let Some(extra) = context.args.get(8) {
+                if let Some(extra) = context.args.get(7) {
                     return Ok(CommandResult {
                         success: false,
                         message: format!(
-                            "/context: unexpected argument '{extra}' (usage: /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH] [HISTCAP])"
+                            "/context: unexpected argument '{extra}' (usage: /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH])"
                         ),
                         error: None,
                         append_body: None,
@@ -423,52 +415,11 @@ impl CommandHandler for ContextCommandHandler {
                     None
                 };
                 let checkpoint_growth = checkpoint_growth.unwrap_or(configured.checkpoint_growth);
-                // Optional folded-region tool-result byte cap HISTCAP
-                // (args[7]): gates whether results appear in the folded
-                // history and the in-turn checkpoint, and at what size. 0
-                // is the explicit "off" sentinel (same convention as
-                // TURNCAP); absent = keep the configured value, which for a
-                // topic that never set it is None (results omitted).
-                let history_tool_result_cap = if let Some(arg) = context.args.get(7) {
-                    match arg.parse::<usize>() {
-                        Ok(c)
-                            if c == 0
-                                || (MIN_TOOL_RESULT_CAP..=MAX_TOOL_RESULT_CAP).contains(&c) =>
-                        {
-                            Some(Some(c))
-                        }
-                        Ok(_) => {
-                            return Ok(CommandResult {
-                                success: false,
-                                message: format!(
-                                    "/context: history_tool_result_cap must be 0 (off) or between {MIN_TOOL_RESULT_CAP} and {MAX_TOOL_RESULT_CAP} bytes"
-                                ),
-                                error: None,
-                                append_body: None,
-                            });
-                        }
-                        Err(_) => {
-                            return Ok(CommandResult {
-                                success: false,
-                                message: format!(
-                                    "/context: invalid history_tool_result_cap '{arg}', expected a non-negative integer"
-                                ),
-                                error: None,
-                                append_body: None,
-                            });
-                        }
-                    }
-                } else {
-                    None
-                };
-                let history_tool_result_cap =
-                    history_tool_result_cap.unwrap_or(configured.history_tool_result_cap);
                 let cfg = ContextStrategyConfig {
                     mode: ContextStrategy::SlidingWindow,
                     window,
                     extend_rate,
                     turn_tool_result_cap,
-                    history_tool_result_cap,
                     max_history_tokens,
                     checkpoint_interval,
                     checkpoint_growth,
@@ -485,7 +436,7 @@ impl CommandHandler for ContextCommandHandler {
             other => Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/context: unknown argument '{other}'. Use: /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH] [HISTCAP] | full | restart | reset | dump [on|off]"
+                    "/context: unknown argument '{other}'. Use: /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH] | full | restart | reset | dump [on|off]"
                 ),
                 error: None,
                 append_body: None,
@@ -581,24 +532,10 @@ fn describe_strategy(cfg: &ContextStrategyConfig) -> String {
                     ));
                 }
             }
-            if let Some(c) = cfg.history_tool_result_cap {
-                // Same lift as the turn cap: `None`/`Some(0)` mean off,
-                // any non-zero value is at least the edge-keeping floor.
-                let effective = jyc_types::channel::effective_result_cap(Some(c));
-                if effective == 0 {
-                    s.push_str(", history_tool_result_cap=0 (off)");
-                } else if effective == c {
-                    s.push_str(&format!(", history_tool_result_cap={c}"));
-                } else {
-                    s.push_str(&format!(
-                        ", history_tool_result_cap={effective} (lifted from {c})"
-                    ));
-                }
-            }
             if let Some(t) = cfg.max_history_tokens {
                 s.push_str(&format!(", max_history_tokens={t}"));
             }
-            // Always echoed: unlike the two caps above it has a non-off
+            // Always echoed: unlike the turn cap above it has a non-off
             // default, so "absent from the echo" would be ambiguous.
             if cfg.checkpoint_interval == 0 {
                 s.push_str(", checkpoint_interval=0 (off)");
@@ -984,116 +921,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sliding_with_history_tool_result_cap() {
-        // The 7th slot opts in: folded regions replay each turn's tool
-        // results, cut to the cap. Persisted in the override so the choice
-        // survives a restart.
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_sliding_with_history_tool_result_cap";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let handler = ContextCommandHandler;
-        let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec![
-            "sliding".into(),
-            "10".into(),
-            "0.5".into(),
-            "8192".into(),
-            "60000".into(),
-            "3".into(),
-            "7".into(),
-            "4096".into(),
-        ];
-        let result = handler.execute(ctx).await.unwrap();
-        assert!(result.success, "{}", result.message);
-        assert!(
-            result.message.contains("history_tool_result_cap=4096"),
-            "message: {}",
-            result.message
-        );
-        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
-            .await
-            .unwrap();
-        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(v["history_tool_result_cap"], 4096);
-        // The other slots keep their explicit values (positional parse).
-        assert_eq!(v["turn_tool_result_cap"], 8192);
-        assert_eq!(v["checkpoint_interval"], 3);
-    }
-
-    #[tokio::test]
-    async fn test_sliding_history_tool_result_cap_zero_is_explicit_off() {
-        // The 7th slot at 0 is the user's way of turning folded results
-        // back off. Persists as 0 and reads back as off rather than
-        // snapping to the configured value.
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_sliding_history_tool_result_cap_zero_is_explicit_off";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let handler = ContextCommandHandler;
-        let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec![
-            "sliding".into(),
-            "10".into(),
-            "0.5".into(),
-            "8192".into(),
-            "60000".into(),
-            "3".into(),
-            "7".into(),
-            "0".into(),
-        ];
-        let result = handler.execute(ctx).await.unwrap();
-        assert!(result.success, "{}", result.message);
-        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
-            .await
-            .unwrap();
-        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(v["history_tool_result_cap"], 0);
-
-        // Reading it back shows the off state.
-        let mut show = test_context(topic, tmp.path());
-        show.args = vec![];
-        let shown = handler.execute(show).await.unwrap();
-        assert!(
-            shown.message.contains("history_tool_result_cap=0 (off)"),
-            "{}",
-            shown.message
-        );
-    }
-
-    #[tokio::test]
-    async fn test_sliding_history_tool_result_cap_below_minimum_rejected() {
-        // A non-zero value below the edge-keeping floor cannot hold the
-        // paging marker plus both ends, so the command refuses it — the
-        // same rule as TURNCAP, and the error names the slot so a
-        // slot-shifted command is diagnosable.
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_sliding_history_tool_result_cap_below_minimum_rejected";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let handler = ContextCommandHandler;
-        let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec![
-            "sliding".into(),
-            "10".into(),
-            "0.5".into(),
-            "8192".into(),
-            "60000".into(),
-            "3".into(),
-            "7".into(),
-            "3".into(),
-        ];
-        let result = handler.execute(ctx).await.unwrap();
-        assert!(!result.success);
-        assert!(
-            result.message.contains("history_tool_result_cap"),
-            "error must name the slot: {}",
-            result.message
-        );
-        assert!(
-            !tmp.path().join(".jyc/context-strategy.json").exists(),
-            "rejected input must not write an override"
-        );
-    }
-
-    #[tokio::test]
     async fn test_sliding_rejects_extra_positional() {
         // The slots moved when `note_window` was removed; a command copied
         // from an older build carries one argument too many.
@@ -1110,7 +937,6 @@ mod tests {
             "60000".into(),
             "3".into(),
             "7".into(),
-            "4096".into(),
             "9".into(),
         ];
         let result = handler.execute(ctx).await.unwrap();
@@ -1860,63 +1686,13 @@ mod tests {
         // A value at or above the floor is echoed as configured.
         let big = ContextStrategyConfig {
             turn_tool_result_cap: Some(32768),
-            ..cfg.clone()
+            ..cfg
         };
         assert!(describe_strategy(&big).contains("turn_tool_result_cap=32768"));
         assert!(!describe_strategy(&big).contains("lifted"));
     }
 
-    /// The history cap follows the same lift rule as the turn cap: it
-    /// gates presence (None/Some(0) = off) and a small non-zero value is
-    /// lifted to the edge-keeping floor.
-    #[test]
-    fn describe_strategy_shows_the_lifted_history_cap() {
-        let cfg = ContextStrategyConfig {
-            mode: ContextStrategy::SlidingWindow,
-            window: 10,
-            extend_rate: 0.5,
-            history_tool_result_cap: Some(3),
-            ..ContextStrategyConfig::default()
-        };
-        assert!(
-            describe_strategy(&cfg).contains(&format!(
-                "history_tool_result_cap={} (lifted from 3)",
-                jyc_types::channel::MIN_EDGE_KEEPING_CAP
-            )),
-            "{}",
-            describe_strategy(&cfg)
-        );
-
-        // Off states are said outright; the field is optional, so `None`
-        // stays absent from the echo like the turn cap.
-        let zero = ContextStrategyConfig {
-            history_tool_result_cap: Some(0),
-            ..cfg.clone()
-        };
-        assert!(
-            describe_strategy(&zero).contains("history_tool_result_cap=0 (off)"),
-            "{}",
-            describe_strategy(&zero)
-        );
-        let unset = ContextStrategyConfig {
-            history_tool_result_cap: None,
-            ..cfg.clone()
-        };
-        assert!(!describe_strategy(&unset).contains("history_tool_result_cap"));
-
-        let big = ContextStrategyConfig {
-            history_tool_result_cap: Some(4096),
-            ..cfg
-        };
-        assert!(
-            describe_strategy(&big).contains("history_tool_result_cap=4096"),
-            "{}",
-            describe_strategy(&big)
-        );
-        assert!(!describe_strategy(&big).contains("lifted"));
-    }
-
-    /// The checkpoint interval is always echoed, unlike the two caps above it:
+    /// The checkpoint interval is always echoed, unlike the turn cap above it:
     /// it has a non-off default, so its absence from the echo would read as
     /// "not configured" when it is in fact 32. `0` is the off sentinel and
     /// says so.

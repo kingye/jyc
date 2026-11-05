@@ -10,8 +10,8 @@
 //! Every value a command offers is written here, once, on a table its row in
 //! [`super::builtin`] points at: the key, the description the popup shows, and
 //! what it opens. Nothing below repeats a key the usage line or another
-//! command already names — `/context`'s `<sliding|full|reset|dump>` and the
-//! popup rows are the same declaration read twice, by two readers.
+//! command already names — `/context`'s `<sliding|full|restart|reset|dump>`
+//! and the popup rows are the same declaration read twice, by two readers.
 //!
 //! Values come from three places: the command's own contract (the literals
 //! each handler `match`es on), per-topic state the caller already has

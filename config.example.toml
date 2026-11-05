@@ -486,7 +486,8 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # Default context management strategy. Per-pattern `context_strategy`
 # takes priority. Overridden at runtime by the `.jyc/context-strategy.json`
 # file written by `/context`.
-# mode: "full" | "sliding_window" (alias "sliding"). Default: "sliding_window".
+# mode: "full" | "sliding_window" (alias "sliding") | "turn".
+# Default: "sliding_window".
 #
 # sliding_window sends an *anchored* window of the journal: it only ever
 # grows between slides, until it reaches max_window turns, then slides back
@@ -508,20 +509,11 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # the history and the prompt cache stops paying off.
 # turn_tool_result_cap: cap each tool result in the current turn, keeping
 # the head and tail of an oversized result. Unset by default, i.e. uncapped:
-# a result is the evidence for what the model is about to claim, and folded
-# history keeps the claim, not the evidence. 0 means off. A non-zero
-# value below 130 is lifted to 130: below that the drop marker leaves no
-# room for both ends, so the trim would degrade to a head-only cut and
-# gut the result. `/context` refuses such a value instead of lifting it.
-# history_tool_result_cap: replay each folded tool result (history and the
-# current-turn checkpoint), head and tail kept, cut to at most this many
-# bytes. Unset by default — the opposite polarity of turn_tool_result_cap:
-# there unset means "present and uncapped", here unset means "absent". Set
-# it for models that lean on the results they just read: a text-only fold
-# breaks their tool momentum mid-task and they start acting from memory
-# instead of re-reading. 0 means off; a non-zero value below 130 is lifted
-# to 130 (`/context` refuses it instead). It gates presence, not the total:
-# a window of N turns can carry N × calls × cap bytes.
+# a result is the evidence for what the model is about to claim. 0 means
+# off. A non-zero value below 130 is lifted to 130: below that the drop
+# marker leaves no room for both ends, so the trim would degrade to a
+# head-only cut and gut the result. `/context` refuses such a value
+# instead of lifting it.
 # max_history_tokens: optional second trigger for a slide. When the window
 # has reached `max_window` turns and its estimated weight exceeds this, it
 # slides back to `window` turns — the same slide a window over `max_window`
@@ -534,8 +526,9 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # ~1 token, other bytes ~1/4), not a tokenizer. Unset by default.
 # checkpoint_interval: how many completed assistant messages the current
 # turn may reach before its older steps fold into a text-plus-calls
-# checkpoint (tool results drop off the wire; visible text and a `[Tool
-# calls]` note of the calls stay).
+# checkpoint (each folded tool result rides along truncated to 512 bytes,
+# head and tail kept; visible text and a `[Tool calls]` note of the calls
+# stay).
 # It counts assistant messages — every step that produced output, a tool
 # call or a final reply — not turns and not tool calls. Default: 32. 0
 # disables in-turn folding, so the whole current turn rides verbatim and
@@ -553,7 +546,21 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5, max_history_tokens = 30000 }
 # context_strategy = { mode = "sliding_window", window = 10, checkpoint_interval = 64 }
 # context_strategy = { mode = "sliding_window", window = 10, checkpoint_growth = 0 }
-# context_strategy = { mode = "sliding_window", window = 10, history_tool_result_cap = 4096 }
+#
+# turn sends only the current turn: no prior turns ride the wire at all.
+# Every request starts from zero prior turns — the equivalent of
+# `/context restart` before each turn, without touching the journal.
+# The current turn still uses the checkpoint machinery above (interval and
+# growth apply here too); earlier turns remain in the journal and are read
+# back with `context_browse` when needed. The system prompt describes this
+# and points the model at the tool. Trade-off: cross-turn prompt-cache
+# reuse is lost (only the tools + system prefix still hits), in exchange
+# for the smallest possible payload and no accumulated-history failure
+# modes. window/extend_rate/turn_tool_result_cap/max_history_tokens have no
+# object in this mode; `/context turn` resets them in the override it
+# writes.
+# context_strategy = { mode = "turn" }
+# context_strategy = { mode = "turn", checkpoint_interval = 16 }
 
 
 [ai.attachments]
@@ -1272,7 +1279,6 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #   # extend_rate = 0        # 0 = hard window: slide on every turn
 #   # max_history_tokens = 40000  # second slide trigger, at the top of a cycle
 #   # turn_tool_result_cap   # unset = current turn uncapped; 0 = off
-#   # history_tool_result_cap = 4096  # unset = folded results omitted; 0 = off
 #   # checkpoint_interval = 32  # assistant steps before in-turn folding; 0 = off
 #   # checkpoint_growth = 8     # folds per widening step; 0 = fixed interval
 #

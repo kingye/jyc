@@ -439,6 +439,15 @@ pub async fn load_context(
         jyc_types::channel::ContextStrategy::SlidingWindow => {
             load_context_windowed(&reader, &state_dir, topic_name, strategy).await
         }
+        jyc_types::channel::ContextStrategy::Turn => {
+            // Nothing but the current turn rides the wire. The journal is
+            // persisted only at end-of-loop and holds completed turns, so
+            // there is no "current turn" in it to slice out — the projection
+            // is empty by construction, without reading the journal at all.
+            // Nothing is lost: the journal keeps every turn, and
+            // `context_browse` reads them back on demand.
+            (Vec::new(), Vec::new())
+        }
     }
 }
 
@@ -3135,6 +3144,13 @@ mod windowed_load_tests {
         }
     }
 
+    fn turn() -> ContextStrategyConfig {
+        ContextStrategyConfig {
+            mode: ContextStrategy::Turn,
+            ..Default::default()
+        }
+    }
+
     fn turns_journal(from: usize, to: usize) -> String {
         let mut out = String::new();
         for i in from..=to {
@@ -3392,6 +3408,56 @@ mod windowed_load_tests {
         assert!(
             stored_full_restart_offset(&state_dir).await.is_none(),
             "a plain full load does not invent a restart boundary"
+        );
+        state_dir::unregister(topic);
+        state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn turn_mode_projects_an_empty_prior_regardless_of_journal() {
+        // Turn mode sends only the current turn. The journal holds completed
+        // turns only (persistence is end-of-loop), so the projection is
+        // empty by construction — and the journal itself must remain
+        // untouched: `context_browse` still reads every turn from it.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "turn-mode-empty-projection";
+        let journal = turns_journal(1, 3);
+        let state_dir = setup(&tmp, topic, &journal).await;
+
+        let (internal, raw) = load_context(topic, tmp.path(), &turn()).await;
+
+        assert!(raw.is_empty(), "no prior turn rides the wire in turn mode");
+        assert!(internal.is_empty());
+        let (_, raw_again) = load_context(topic, tmp.path(), &turn()).await;
+        assert_eq!(raw_again.len(), 0);
+        assert_eq!(
+            tokio::fs::read_to_string(state_dir.join(AGENT_CONTEXT_FILE))
+                .await
+                .unwrap(),
+            journal,
+            "the journal is not rewritten by a turn-mode load"
+        );
+        state_dir::unregister(topic);
+        state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn turn_mode_accumulates_exactly_one_turn_then_resets() {
+        // The wire-visible sequence across two turns: each turn starts from
+        // an empty prior (no cross-turn accumulation), which is the point of
+        // the mode. The journal keeps both turns for `context_browse`.
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "turn-mode-accumulates";
+        let state_dir = setup(&tmp, topic, &turns_journal(1, 2)).await;
+
+        let (_, raw) = load_context(topic, tmp.path(), &turn()).await;
+        assert!(raw.is_empty(), "turn 3 starts with no prior turns");
+
+        append_turn(&state_dir, 3).await;
+        let (_, raw_next) = load_context(topic, tmp.path(), &turn()).await;
+        assert!(
+            raw_next.is_empty(),
+            "turn 4 also starts empty — no accumulation"
         );
         state_dir::unregister(topic);
         state_dir::clear_closed(topic);

@@ -1206,14 +1206,34 @@ async fn skill_toggle_override_shapes_the_prompt_skill_list() {
     // No toggle and no allow-list: the prompt lists nothing.
     let svc = service_with_skills(vec![], None);
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, None, &[], &[], None)
+        .build_system_prompt(
+            topic,
+            tmp.path(),
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            jyc_types::channel::ContextStrategy::SlidingWindow,
+        )
         .await;
     assert!(!prompt.contains("## Available Skills"), "{prompt}");
 
     // `/skill on beta`: the toggle widens an empty allow-list.
     std::fs::write(&override_file, r#"{"on":["beta"]}"#).unwrap();
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, None, &[], &[], None)
+        .build_system_prompt(
+            topic,
+            tmp.path(),
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            jyc_types::channel::ContextStrategy::SlidingWindow,
+        )
         .await;
     assert!(prompt.contains("- **beta**"), "{prompt}");
     assert!(!prompt.contains("- **alpha**"), "{prompt}");
@@ -1221,7 +1241,17 @@ async fn skill_toggle_override_shapes_the_prompt_skill_list() {
     // `off` wins over `on`: exclusion is applied after inclusion.
     std::fs::write(&override_file, r#"{"on":["beta"],"off":["beta"]}"#).unwrap();
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, None, &[], &[], None)
+        .build_system_prompt(
+            topic,
+            tmp.path(),
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            jyc_types::channel::ContextStrategy::SlidingWindow,
+        )
         .await;
     assert!(!prompt.contains("## Available Skills"), "{prompt}");
 
@@ -1230,7 +1260,17 @@ async fn skill_toggle_override_shapes_the_prompt_skill_list() {
     std::fs::write(&override_file, r#"{"off":["alpha"]}"#).unwrap();
     let svc = service_with_skills(vec![], Some(vec!["alpha".into(), "beta".into()]));
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, None, &[], &[], None)
+        .build_system_prompt(
+            topic,
+            tmp.path(),
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            jyc_types::channel::ContextStrategy::SlidingWindow,
+        )
         .await;
     assert!(!prompt.contains("- **alpha**"), "{prompt}");
     assert!(prompt.contains("- **beta**"), "{prompt}");
@@ -1261,6 +1301,7 @@ async fn global_system_prompt_is_injected_into_the_system_prompt() {
             &[],
             &[],
             None,
+            jyc_types::channel::ContextStrategy::SlidingWindow,
         )
         .await;
     assert!(prompt.contains("## Global Instructions"), "{prompt}");
@@ -1303,7 +1344,17 @@ async fn blank_global_system_prompt_is_skipped() {
     let svc = service_with_skills(vec![], None);
     for value in ["", "   \n\t "] {
         let prompt = svc
-            .build_system_prompt(topic, tmp.path(), None, None, Some(value), &[], &[], None)
+            .build_system_prompt(
+                topic,
+                tmp.path(),
+                None,
+                None,
+                Some(value),
+                &[],
+                &[],
+                None,
+                jyc_types::channel::ContextStrategy::SlidingWindow,
+            )
             .await;
         assert!(!prompt.contains("## Global Instructions"), "{prompt}");
     }
@@ -1408,6 +1459,7 @@ async fn topic_config_instructions_reach_the_system_prompt() {
             &[],
             &[],
             None,
+            jyc_types::channel::ContextStrategy::SlidingWindow,
         )
         .await;
     assert!(prompt.contains("## Topic Instructions"), "{prompt}");
@@ -1461,7 +1513,17 @@ async fn cli_helper_section_lists_exactly_what_is_installed() {
 
     let svc = service_with_skills(vec![], None);
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, None, &[], &[], None)
+        .build_system_prompt(
+            topic,
+            tmp.path(),
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            jyc_types::channel::ContextStrategy::SlidingWindow,
+        )
         .await;
 
     let installed = crate::capabilities::available();
@@ -1514,7 +1576,17 @@ async fn volatile_runtime_state_rides_the_turn_not_the_system_prompt() {
     svc.set_topic_managers(Arc::new(TopicManagers::new()));
 
     let prompt = svc
-        .build_system_prompt(topic, tmp.path(), None, None, None, &[], &[], None)
+        .build_system_prompt(
+            topic,
+            tmp.path(),
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            jyc_types::channel::ContextStrategy::SlidingWindow,
+        )
         .await;
     assert!(
         !prompt.contains("Your subagents"),
@@ -1575,6 +1647,7 @@ async fn the_prompt_mentions_the_loader_only_when_the_registry_has_it() {
             &[],
             &[],
             Some(&registry),
+            jyc_types::channel::ContextStrategy::SlidingWindow,
         )
         .await;
     assert!(
@@ -1595,6 +1668,7 @@ async fn the_prompt_mentions_the_loader_only_when_the_registry_has_it() {
             &[],
             &[],
             Some(&registry),
+            jyc_types::channel::ContextStrategy::SlidingWindow,
         )
         .await;
     assert!(
@@ -2145,6 +2219,7 @@ async fn system_prompt_enumerates_configured_access_roots() {
             &reads,
             &writes,
             None,
+            jyc_types::channel::ContextStrategy::SlidingWindow,
         )
         .await;
     assert!(
@@ -2225,7 +2300,17 @@ mod history_format_section {
 
         let svc = service_with_skills(vec![], None);
         let prompt = svc
-            .build_system_prompt(topic, tmp.path(), None, None, None, &[], &[], None)
+            .build_system_prompt(
+                topic,
+                tmp.path(),
+                None,
+                None,
+                None,
+                &[],
+                &[],
+                None,
+                jyc_types::channel::ContextStrategy::SlidingWindow,
+            )
             .await;
         assert!(prompt.contains(HISTORY_FORMAT_SECTION), "{prompt}");
 

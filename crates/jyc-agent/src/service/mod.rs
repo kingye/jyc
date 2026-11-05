@@ -442,6 +442,25 @@ impl AgentService for JycAgentService {
         let tools = &*tools_arc;
         let t_tools = std::time::Instant::now();
 
+        // 4a. Resolve the context management strategy before the prompt:
+        // the prompt's History Format section is mode-conditional — turn
+        // mode must tell the model where prior turns went, and the sliding
+        // section would there describe a shape that never occurs. Runtime
+        // override (`.jyc/context-strategy.json` written by `/context`)
+        // wins over configured defaults (matched pattern > first pattern >
+        // global [ai] > sliding/window=10).
+        let context_strategy =
+            jyc_core::session_state::read_context_strategy_override(topic_name, topic_path)
+                .await
+                .unwrap_or_else(|| {
+                    jyc_core::session_state::resolve_context_strategy(
+                        &self.config.load(),
+                        &self.channel_name,
+                        message.matched_pattern.as_deref(),
+                        topic_cfg.as_ref().and_then(|c| c.context_strategy.as_ref()),
+                    )
+                });
+
         // 5. Build prompts (image-injection gated by per-pattern flag and
         //    per-model `supports_images`)
         // Resolve access roots first: the system prompt must describe exactly
@@ -463,6 +482,7 @@ impl AgentService for JycAgentService {
                 &additional_read_roots,
                 &additional_write_roots,
                 Some(tools),
+                context_strategy.mode.clone(),
             )
             .await;
         // 5b. The volatile half — the subagent roster — rides the turn's
@@ -563,22 +583,6 @@ impl AgentService for JycAgentService {
         // model/small_model), so the global config is the right source.
         let pricing = jyc_types::pricing::lookup_pricing(&self.config.load(), model_str);
         let billing_mode = jyc_types::pricing::lookup_billing_mode(&self.config.load(), model_str);
-
-        // Resolve the context management strategy. Runtime override
-        // (`.jyc/context-strategy.json` written by `/context`) wins over
-        // configured defaults (matched pattern > first pattern > global
-        // [ai] > full/window=10).
-        let context_strategy =
-            jyc_core::session_state::read_context_strategy_override(topic_name, topic_path)
-                .await
-                .unwrap_or_else(|| {
-                    jyc_core::session_state::resolve_context_strategy(
-                        &self.config.load(),
-                        &self.channel_name,
-                        message.matched_pattern.as_deref(),
-                        topic_cfg.as_ref().and_then(|c| c.context_strategy.as_ref()),
-                    )
-                });
 
         // Ensure the session file exists BEFORE loading context and running
         // the agent loop. Without this, the dashboard and outbound probes

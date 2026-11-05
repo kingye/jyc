@@ -2,9 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use jyc_types::state_dir::resolve_state_dir;
 
-use jyc_types::channel::{
-    ContextStrategy, ContextStrategyConfig, DEFAULT_CHECKPOINT_GROWTH, DEFAULT_CHECKPOINT_INTERVAL,
-};
+use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
@@ -665,6 +663,7 @@ fn describe_strategy(cfg: &ContextStrategyConfig) -> String {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use jyc_types::channel::{DEFAULT_CHECKPOINT_GROWTH, DEFAULT_CHECKPOINT_INTERVAL};
     use std::path::Path;
     use std::sync::Arc;
 

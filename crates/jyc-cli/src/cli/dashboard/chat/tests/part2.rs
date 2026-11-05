@@ -2419,6 +2419,17 @@ fn info_pane_draws_the_queue_on_the_status_row() {
         .position(|line| line.contains("Status:"))
         .expect("the status row") as u16;
 
+    // Pin the separator independently of the mark filter: it is the
+    // uncoloured, non-bold dot two cells before the word `queue`.
+    let queue_x = (0..width)
+        .find(|x| buffer[(*x, row)].symbol() == "q")
+        .expect("the queue label");
+    let separator = &buffer[(queue_x - 2, row)];
+    assert_eq!(separator.symbol(), "·", "{screen}");
+    assert_eq!(separator.fg, Color::Reset);
+    assert!(!separator.modifier.contains(Modifier::BOLD));
+    assert_eq!(buffer[(queue_x - 1, row)].symbol(), " ");
+
     // Read glyphs, colours and weight straight off that row's cells. The
     // colours exclude the uncoloured dot in the separator before `queue`.
     let marks: Vec<(u16, &str, Color, bool)> = (0..width)

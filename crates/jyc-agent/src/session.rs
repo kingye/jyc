@@ -3559,9 +3559,12 @@ mod windowed_load_tests {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "restart-operation-unreadable-journal";
         let state_dir = setup(&tmp, topic, &turns_journal(1, 1)).await;
-        tokio::fs::remove_file(state_dir.join(AGENT_CONTEXT_FILE))
-            .await
-            .unwrap();
+        let journal_path = state_dir.join(AGENT_CONTEXT_FILE);
+        tokio::fs::remove_file(&journal_path).await.unwrap();
+        // A directory at the journal path cannot be read as a journal; a
+        // merely missing journal is a valid empty restart point, so this
+        // test needs a genuinely unreadable one.
+        tokio::fs::create_dir(&journal_path).await.unwrap();
 
         let error = restart_context_window(topic, tmp.path())
             .await

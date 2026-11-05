@@ -87,13 +87,14 @@ finds and hands out the window the caller asked for.
   text-bearing user message; a *pair* is a turn that produced an
   assistant reply. The two counts differ (an unanswered user message is
   an opener without a pair), and the strategies read both kinds.
-- **`full` mode reads everything; `sliding_window` reads forward from
-  the anchor.** `session::load_context` reads the journal **forward**
-  from `agent-session.json`'s `context_offset` (`ContextReader::read_from`),
-  attaching each message's line-start offset so a slide can advance the
-  anchor without re-scanning. The read amount is bounded by how far the
-  window has grown — `max_window` turns (and optionally
-  `max_history_tokens` weight) keep it small.
+- **Each anchored mode reads forward from its own offset.** Sliding mode
+  reads from `agent-session.json`'s `context_offset`; full mode reads from
+  `full_restart_offset` when a restart has happened, and the whole journal
+  otherwise (`ContextReader::read_from`). The forward read attaches each
+  message's line-start offset so a slide can advance the sliding anchor
+  without re-scanning. The read amount is bounded by how far the window has
+  grown — `max_window` turns (and optionally `max_history_tokens` weight)
+  keep it small; full mode has no upper turn bound.
 - **The slice starts at a turn boundary.** A cold start (no anchor, or
   one that no longer lands on a turn opener) reads from the journal's
   head once. It slides only when that read exceeds `max_window` turns,
@@ -132,10 +133,12 @@ changeable at runtime with the `/context` command.
 
 ### `full`
 
-Sends the entire raw context on every request — `build_send_context_cached`
+Sends the raw context on every request. With no `/context restart` on this
+session, that is the entire journal; after a restart, it is the journal
+suffix from `full_restart_offset` onward. `build_send_context_cached`
 returns `Cow::Borrowed`, a zero-copy borrow. Simple, accurate, and grows
-linearly with conversation length until a token safety net fires.
-Not the default — opt in via `context_strategy = { mode = "full" }`.
+linearly from that boundary with conversation length until a token safety
+net fires. Not the default — opt in via `context_strategy = { mode = "full" }`.
 
 ### `sliding_window`
 
@@ -455,6 +458,26 @@ fact which lived in an omitted or truncated tool result must be
 re-checked (re-run the tool, or read it back with `results=true`) rather
 than restated from memory.
 
+## Restarting the visible context
+
+`/context restart` moves the visible context to the journal's current
+clean end without resetting the session. It works in both strategies:
+
+- the next request has zero prior turns;
+- subsequent `full` requests include every turn appended after the restart;
+- subsequent `sliding_window` requests grow the bounded window from the
+  same restart point.
+
+The command writes two mode-specific offsets, `context_offset` and
+`full_restart_offset`, to `agent-session.json`. They are not a pending
+flag: the full boundary remains until the next restart, `/reset`, or
+stale-anchor recovery, while the sliding anchor additionally advances when
+the window slides. An offset exactly at the journal's end is accepted only
+when it is the shared post-restart boundary; an unmatched EOF anchor is
+treated as stale and cold-starts. The journal, chat history, token
+counters, cost totals, and task list are untouched, so `context_browse`
+can still recover turns the model no longer sees.
+
 ## Token safety nets
 
 Two triggers, one action. The window slides (anchor forward, whole turns
@@ -472,9 +495,10 @@ per result, and a checkpoint every `checkpoint_interval` assistant steps
 (default 32) that folds older steps into the text-plus-calls form — but neither
 moves the history head, and the checkpoint intervals widen
 (`checkpoint_growth`), so the current turn's bound grows with the turn.
-`full` mode grows verbatim until the provider's own limit; it has no
-checkpoint and no history window. A session reset (`/reset`) clears the
-context outright; it does not summarize or compact it.
+`full` mode grows verbatim from its restart boundary (or the journal head)
+until the provider's own limit; it has no checkpoint and no history window.
+A session reset (`/reset`) clears the context outright; it does not
+summarize or compact it.
 
 The context-window figures the dashboard and `/info` show come from the
 same place: the most recent LLM call's `usage.input_tokens` plus that
@@ -720,7 +744,8 @@ bounds how much history survives before the next slide.
 | Command | Effect |
 |---------|--------|
 | `/context` | Show current strategy and its source (`override` / `default`) |
-| `/context full` | Send the full context |
+| `/context full` | Send the full context (the whole journal, or everything since the last `/context restart`) |
+| `/context restart` | Restart the visible context at the journal's clean end in the current strategy: the next request has zero prior turns; the journal and session are preserved |
 | `/context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH] [HISTCAP]` | Sliding window, N turns (default 10, max 200); EXT = extend rate (0..10, default 0.5); TURNCAP = per-result byte cap on the current turn (`0`, or 130 B..1 MiB; unset by default); MAXHIST = weight trigger for a slide (0..4M, unset by default); CHECKPOINT = completed assistant messages before the current turn's older steps fold into a text-plus-calls checkpoint (`0` disables folding; default 32); GROWTH = folds per widening step, each checkpoint `CHECKPOINT / GROWTH` steps wider (`0` keeps it fixed; default 8); HISTCAP = per-result byte cap on results replayed in the folded regions (`0` or 130 B..1 MiB; unset omits folded results). An eighth positional (a command written before a slot was added) is refused; an absent slot falls back to the configured value; `0` switches a cap off |
 | `/context reset` | Remove the runtime override, revert to configured default |
 
@@ -730,6 +755,7 @@ bounds how much history survives before the next slide.
 |-----------|----------|
 | Wire payload shaping (`build_send_context_cached`, its `SendContextCache`, `dump_send_context`) | `crates/jyc-agent/src/agent_loop/context.rs` |
 | How much prior the strategy reads (`load_context`, `window_start`) | `crates/jyc-agent/src/session.rs` |
+| Session-preserving context restart (`restart_context_window`) | `crates/jyc-agent/src/session.rs` |
 | Reading the prior back from the journal (`ContextReader`, block scan, parsed tail) | `crates/jyc-agent/src/context_reader.rs` |
 | Turn pairing, rendered tool calls, truncation helpers (`extract_pairs`, `flush_turn`) | `crates/jyc-agent/src/session.rs` |
 | Journal writes (`save_raw_context`) | `crates/jyc-agent/src/session.rs` |

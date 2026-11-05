@@ -382,7 +382,7 @@ builtin_commands! {
         make: |tm| Arc::new(CloseCommandHandler::new(tm))
     },
     "/context" => {
-        desc: "View or change the context strategy, or dump the wire payload",
+        desc: "View or change the context strategy, restart the visible context, or dump the wire payload",
         shape: Shape::Subcommand {
             labels: &[],
             rest: Some("args"),

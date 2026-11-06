@@ -549,13 +549,14 @@ const QUEUE_SEPARATOR: &str = " · ";
 /// The dot is width-ambiguous; the figures carry the exact counts if the
 /// terminal widens it.
 const QUEUE_ACTIVE_MARK: &str = "·";
-/// A bold dark-gray middle dot for a free slot — the same glyph as the
-/// active mark, telling the two apart by colour alone.
+/// A plain dark-gray middle dot for a free slot — the same glyph as the
+/// active mark, telling the two apart by colour and weight.
 const QUEUE_INACTIVE_MARK: &str = "·";
 
 /// Append the status row to `spans` — the topic's live status and the
 /// backlog its queue holds, on one row: `Processing · queue ······ 2 / 10`
-/// (the first of the six dots yellow, the split read by colour alone).
+/// (the first of the six dots yellow and bold, the split read by colour
+/// and weight).
 ///
 /// The marks say how much of the queue is taken (the queued ones yellow,
 /// the free slots dark gray), the figures carry the exact counts, and
@@ -654,9 +655,7 @@ fn push_queue_marks(spans: &mut Vec<Span>, t: &TopicInfo, room: usize) {
     if filled < cells {
         spans.push(Span::styled(
             QUEUE_INACTIVE_MARK.repeat(cells - filled),
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::DarkGray),
         ));
     }
 }
@@ -860,7 +859,10 @@ mod tests {
         assert!(spans[4].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(spans[5].content, QUEUE_INACTIVE_MARK.repeat(3));
         assert_eq!(spans[5].style.fg, Some(Color::DarkGray));
-        assert!(spans[5].style.add_modifier.contains(Modifier::BOLD));
+        assert!(
+            !spans[5].style.add_modifier.contains(Modifier::BOLD),
+            "the free slots are normal weight — they recede, the backlog pops"
+        );
         assert_eq!(spans[6].content, " ");
         assert_eq!(spans[7].content, "3 / 10");
         assert!(figures.is_none(), "the figures share the row");
@@ -951,7 +953,10 @@ mod tests {
         assert_eq!(spans.len(), 7, "{spans:?}");
         assert_eq!(spans[4].content, QUEUE_INACTIVE_MARK.repeat(5));
         assert_eq!(spans[4].style.fg, Some(Color::DarkGray));
-        assert!(spans[4].style.add_modifier.contains(Modifier::BOLD));
+        assert!(
+            !spans[4].style.add_modifier.contains(Modifier::BOLD),
+            "the free slots are normal weight"
+        );
         assert_eq!(spans[6].content, "0 / 10");
         assert!(figures.is_none());
     }

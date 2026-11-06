@@ -2400,8 +2400,8 @@ fn info_pane_shows_a_zero_weight_composition_without_a_bar() {
 }
 
 /// The status row carries the topic's backlog: bold yellow dots say how much
-/// of the queue is taken, bold dark-gray dots mark the free slots — the two
-/// differ in colour alone — and the word `queue` says what they count, so
+/// of the queue is taken, plain dark-gray dots mark the free slots — the
+/// backlog pops, the free slots recede — and the word `queue` says what they count, so
 /// they cannot be read as the progress of the turn the status names. The
 /// figures share the row.
 #[test]
@@ -2448,10 +2448,6 @@ fn info_pane_draws_the_queue_on_the_status_row() {
         })
         .collect();
     assert_eq!(marks.len(), 6, "the marks fill the room the row has");
-    assert!(
-        marks.iter().all(|(_, _, _, bold)| *bold),
-        "every mark is bold: {marks:?}"
-    );
     let queued = marks
         .iter()
         .filter(|(_, _, fg, _)| *fg == Color::Yellow)
@@ -2460,6 +2456,20 @@ fn info_pane_draws_the_queue_on_the_status_row() {
         .iter()
         .filter(|(_, _, fg, _)| *fg == Color::DarkGray)
         .count();
+    assert!(
+        marks
+            .iter()
+            .filter(|(_, _, fg, _)| *fg == Color::Yellow)
+            .all(|(_, _, _, bold)| *bold),
+        "the queued marks are bold",
+    );
+    assert!(
+        marks
+            .iter()
+            .filter(|(_, _, fg, _)| *fg == Color::DarkGray)
+            .all(|(_, _, _, bold)| !bold),
+        "the free-slot marks are normal weight",
+    );
     assert_eq!(
         queued, 1,
         "the two waiting messages round to one yellow mark of six"

@@ -814,7 +814,7 @@ pub async fn read_context_strategy_override(
 /// Priority: the topic's own config (`[context_strategy]`, whether the topic
 /// wrote it or a subagent type expanded into it) > matched pattern > first
 /// pattern > global `[ai].context_strategy` >
-/// `ContextStrategyConfig::default()` (sliding_window / window=10 /
+/// `ContextStrategyConfig::default()` (sliding_window / window=6 /
 /// extend_rate=0.5).
 ///
 /// The topic layer is a *config* layer, not an override: callers must consult
@@ -1664,7 +1664,6 @@ mode = "agent"
             let mode = match g.mode {
                 ContextStrategy::Full => "full",
                 ContextStrategy::SlidingWindow => "sliding_window",
-                ContextStrategy::Turn => "turn",
             };
             let parts = format!(
                 "mode = \"{mode}\", window = {}, extend_rate = {}",
@@ -1681,7 +1680,6 @@ mode = "agent"
                 let mode = match c.mode {
                     ContextStrategy::Full => "full",
                     ContextStrategy::SlidingWindow => "sliding_window",
-                    ContextStrategy::Turn => "turn",
                 };
                 let parts = format!(
                     "mode = \"{mode}\", window = {}, extend_rate = {}",
@@ -1742,11 +1740,11 @@ mode = "agent"
     }
 
     #[test]
-    fn resolve_context_strategy_default_is_sliding_window_10_0() {
+    fn resolve_context_strategy_default_is_sliding_window_6_0() {
         let app = config_with_strategies(vec![], None);
         let resolved = resolve_context_strategy(&app, "c", Some("a"), None);
         assert_eq!(resolved.mode, ContextStrategy::SlidingWindow);
-        assert_eq!(resolved.window, 10);
+        assert_eq!(resolved.window, 6);
     }
 
     /// The topic's own strategy — what a subagent type hands its child — is a

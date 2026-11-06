@@ -295,8 +295,9 @@ pub struct ChannelInfo {
 pub enum ContextRegion {
     /// The whole context, unsplit (`Full` mode).
     Full,
-    /// Prior turns, rendered as their text plus per-turn `[Tool calls]` and
-    /// `[Tool results]` notes (each result cut to a fixed 512-byte cap).
+    /// Prior turns, replayed verbatim with oversized fields (text, tool
+    /// results, call arguments, reasoning) cut to a fixed 512-byte cap
+    /// keeping both ends, and image blocks replaced by a text placeholder.
     History,
     /// The folded older part of the current turn (`SlidingWindow` and
     /// `Turn` modes).

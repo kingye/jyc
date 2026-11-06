@@ -55,10 +55,13 @@ pub(crate) fn http_client() -> Result<reqwest::Client> {
 /// Such messages are invalid for replay — even if they have reasoning_content
 /// (DeepSeek) or other provider-specific fields.
 ///
-/// Also removes assistant messages whose `tool_calls` lack matching tool result
-/// messages (dangling tool_calls), along with all subsequent messages. API
-/// providers reject contexts where a tool_call_id does not have a corresponding
-/// tool/tool_result response.
+/// Also repairs assistant messages whose `tool_calls` lack matching tool
+/// result messages (dangling tool_calls): the rest of *that turn* is dropped
+/// and every later turn is kept. API providers reject contexts where a
+/// tool_call_id does not have a corresponding tool/tool_result response, but
+/// a later turn is a separate exchange and stays valid without the broken
+/// one — dropping it is what used to discard the current turn whenever a
+/// corrupt journal entry preceded it.
 ///
 /// IMPORTANT: `reasoning_content` on real assistant turns is preserved. DeepSeek
 /// reasoner models (with `thinking = enabled`) require that reasoning_content
@@ -117,85 +120,111 @@ pub(crate) fn is_valid_message(m: &serde_json::Value) -> bool {
     has_string_content || has_array_content || has_tool_calls
 }
 
-/// Remove assistant messages whose `tool_calls` lack matching `tool` result
-/// messages, along with all subsequent messages that depend on them.
+/// Drop the remainder of a turn whose tool calls lack results, keeping
+/// every later turn.
 ///
-/// This repairs contexts corrupted by mid-execution cancellation or process
-/// crashes: the assistant message was persisted but not all tool results
-/// were appended, causing the API to reject the next request with
+/// This repairs contexts corrupted by mid-execution cancellation, a process
+/// crash between the call and its result append, or a result line the
+/// journal reader could not parse: the assistant message was persisted but
+/// not all tool results were, and the API rejects the next request with
 /// `"tool_call_ids did not have response messages"`.
 ///
 /// For both OpenAI (`tool_calls` array) and Anthropic (`content` with
-/// `tool_use` blocks) formats, extracts the tool call IDs and checks that
+/// `tool_use` blocks) formats this extracts the call IDs and checks that
 /// each has a corresponding `role: "tool"` (OpenAI) or `tool_result`
-/// (Anthropic) message. If any are missing, the assistant message and
-/// everything after it is dropped — later messages may depend on the
-/// missing tool results and would create cascading errors.
+/// (Anthropic) message later in the slice. The drop is *turn-local*: from
+/// the dangling assistant message up to the next turn opener
+/// ([`crate::session::opens_turn`], the same rule the loader counts and
+/// slides by). A later turn is a separate exchange — it neither depends on
+/// the missing results nor becomes invalid without them — and keeping it is
+/// what lets the window keep counting turns and eventually slide the
+/// corruption out. A suffix drop instead froze the anchored window on the
+/// pre-corruption prefix forever, because the cut slice no longer held the
+/// openers the slide triggers on.
+///
+/// Also returns each kept message's index in the input, so a caller holding
+/// per-message data (the journal reader's line offsets) can realign it.
+pub(crate) fn repair_dangling_tool_calls_with_origin(
+    messages: Vec<serde_json::Value>,
+) -> (Vec<serde_json::Value>, Vec<usize>) {
+    let mut dropped = vec![false; messages.len()];
+    let mut any_dropped = false;
+    let mut i = 0;
+    while i < messages.len() {
+        let ids = if messages[i].get("role").and_then(|r| r.as_str()) == Some("assistant") {
+            extract_tool_call_ids(&messages[i])
+        } else {
+            Vec::new()
+        };
+        let missing: Vec<&String> = ids
+            .iter()
+            .filter(|id| !has_tool_result(&messages[i + 1..], id))
+            .collect();
+        if missing.is_empty() {
+            i += 1;
+            continue;
+        }
+        // The turn's transcript is incomplete from the dangling call on:
+        // its own results (and anything the turn did afterwards) refer to a
+        // call the provider will not accept.
+        let mut end = i + 1;
+        while end < messages.len() && !crate::session::opens_turn(&messages[end]) {
+            end += 1;
+        }
+        tracing::warn!(
+            position = i,
+            dropped = end - i,
+            missing_ids = ?missing,
+            tool_call_ids = ?ids,
+            "Dropping the rest of a turn whose tool_calls have no results; later turns are kept"
+        );
+        for flag in &mut dropped[i..end] {
+            *flag = true;
+        }
+        any_dropped = true;
+        i = end;
+    }
+
+    if !any_dropped {
+        let origin = (0..messages.len()).collect();
+        return (messages, origin);
+    }
+    let mut out = Vec::with_capacity(messages.len());
+    let mut origin = Vec::with_capacity(messages.len());
+    for (index, msg) in messages.into_iter().enumerate() {
+        if !dropped[index] {
+            out.push(msg);
+            origin.push(index);
+        }
+    }
+    (out, origin)
+}
+
+/// [`repair_dangling_tool_calls_with_origin`], discarding the index map.
 pub(crate) fn repair_dangling_tool_calls(
     messages: Vec<serde_json::Value>,
 ) -> Vec<serde_json::Value> {
-    let mut result = Vec::with_capacity(messages.len());
+    repair_dangling_tool_calls_with_origin(messages).0
+}
 
-    for (i, msg) in messages.iter().enumerate() {
-        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
-
-        if role == "assistant" {
-            // Collect tool call IDs from this assistant message.
-            let tool_call_ids: Vec<String> = extract_tool_call_ids(msg);
-
-            if !tool_call_ids.is_empty() {
-                // Check that every tool_call_id has a matching tool result
-                // in the subsequent messages.
-                let remaining = &messages[i + 1..];
-                let all_responded = tool_call_ids.iter().all(|id| {
-                    remaining.iter().any(|m| {
-                        m.get("role").and_then(|r| r.as_str()) == Some("tool")
-                            && m.get("tool_call_id").and_then(|t| t.as_str()) == Some(id.as_str())
-                    }) || remaining.iter().any(|m| {
-                        // Anthropic format: tool_result block in a user message
-                        m.get("role").and_then(|r| r.as_str()) == Some("user")
-                            && m.get("content")
-                                .and_then(|c| c.as_array())
-                                .is_some_and(|blocks| {
-                                    blocks.iter().any(|b| {
-                                        b.get("type").and_then(|t| t.as_str())
-                                            == Some("tool_result")
-                                            && b.get("tool_use_id").and_then(|t| t.as_str())
-                                                == Some(id.as_str())
-                                    })
-                                })
+/// Whether some later message answers `id` — a `role: "tool"` message
+/// (OpenAI) or a `tool_result` block in a user message (Anthropic).
+fn has_tool_result(remaining: &[serde_json::Value], id: &str) -> bool {
+    remaining
+        .iter()
+        .any(|m| match m.get("role").and_then(|r| r.as_str()) {
+            Some("tool") => m.get("tool_call_id").and_then(|t| t.as_str()) == Some(id),
+            Some("user") => m
+                .get("content")
+                .and_then(|c| c.as_array())
+                .is_some_and(|blocks| {
+                    blocks.iter().any(|b| {
+                        b.get("type").and_then(|t| t.as_str()) == Some("tool_result")
+                            && b.get("tool_use_id").and_then(|t| t.as_str()) == Some(id)
                     })
-                });
-
-                if !all_responded {
-                    let missing: Vec<&String> = tool_call_ids
-                        .iter()
-                        .filter(|id| {
-                            !remaining.iter().any(|m| {
-                                m.get("role").and_then(|r| r.as_str()) == Some("tool")
-                                    && m.get("tool_call_id").and_then(|t| t.as_str())
-                                        == Some(id.as_str())
-                            })
-                        })
-                        .collect();
-                    tracing::warn!(
-                        position = i,
-                        total_before = messages.len(),
-                        remaining = remaining.len(),
-                        missing_ids = ?missing,
-                        tool_call_ids = ?tool_call_ids,
-                        "Dropping assistant message with dangling tool_calls and all subsequent messages"
-                    );
-                    // Drop this message and everything after it.
-                    break;
-                }
-            }
-        }
-
-        result.push(msg.clone());
-    }
-
-    result
+                }),
+            _ => false,
+        })
 }
 
 /// Convert Anthropic-format messages in a raw context to OpenAI chat format.
@@ -1325,9 +1354,10 @@ mod dangling_tool_call_tests {
 
     #[test]
     fn anthropic_to_chat_then_filter_drops_dangling() {
-        // Anthropic assistant with tool_use but no tool_result → the whole
-        // tail must be dropped after conversion (same repair semantics as
-        // native chat format).
+        // Anthropic assistant with tool_use but no tool_result: the turn
+        // that carried it goes, after conversion to chat format. The next
+        // turn is a separate exchange and must survive — dropping it would
+        // be the frozen-window bug in miniature.
         let raw = vec![
             serde_json::json!({"role": "user", "content": "hi"}),
             serde_json::json!({
@@ -1341,7 +1371,10 @@ mod dangling_tool_call_tests {
         let filtered = filter_valid_messages(&converted);
         assert_eq!(
             filtered,
-            vec![serde_json::json!({"role": "user", "content": "hi"})]
+            vec![
+                serde_json::json!({"role": "user", "content": "hi"}),
+                serde_json::json!({"role": "user", "content": "follow-up"}),
+            ]
         );
     }
 
@@ -1361,7 +1394,7 @@ mod dangling_tool_call_tests {
     #[test]
     fn openai_dangling_tool_call_dropped() {
         // Assistant with tool_calls but NO matching tool result → dropped
-        // along with all subsequent messages
+        // along with the rest of its own turn (nothing opens a new one).
         let msgs = vec![
             json!({"role": "user", "content": "hello"}),
             json!({"role": "assistant", "content": "working", "tool_calls": [{"id": "bash:57", "type": "function", "function": {"name": "bash", "arguments": "{}"}}]}),
@@ -1371,9 +1404,27 @@ mod dangling_tool_call_tests {
         assert_eq!(
             result.len(),
             1,
-            "dangling assistant + subsequent should be dropped"
+            "the dangling turn's remainder should be dropped"
         );
         assert_eq!(result[0].get("role").and_then(|r| r.as_str()), Some("user"));
+    }
+
+    #[test]
+    fn openai_dangling_turn_does_not_take_later_turns_down() {
+        // A crash between a call and its result leaves the journal ending
+        // on the call; the turn appended afterwards is a new exchange and
+        // must reach the provider. A suffix drop here is what silently
+        // dropped the user's message on every request.
+        let msgs = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}]}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2"}),
+        ];
+        let result = filter_valid_messages(&msgs);
+        assert_eq!(result.len(), 3, "the later turn survives: {result:?}");
+        assert_eq!(result[1]["content"], "u2");
+        assert_eq!(result[2]["content"], "a2");
     }
 
     #[test]

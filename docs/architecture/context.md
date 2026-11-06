@@ -71,7 +71,7 @@ assistant's intermediate steps, tool calls, tool results — is the
 **current turn**. Its most recent interaction is sent verbatim so
 tool_use/tool_result pairing stays valid mid-loop; once a turn passes
 `checkpoint_interval` assistant steps (default 32), the older part folds
-into a text-plus-calls checkpoint, the same shape as prior-turn history. Each
+into a checkpoint of the same raw-message shape as prior-turn history. Each
 further checkpoint is wider than the last (`checkpoint_growth`, default 8:
 32, 36, 40 … assistant steps), so a long turn keeps a growing verbatim
 tail.
@@ -101,10 +101,14 @@ finds and hands out the window the caller asked for.
   and that slide is what persists the new anchor; a journal that fits
   keeps no anchor at all (see below).
 - **Dangling tool calls are repaired on the way out.** The slice drops
-  an assistant message whose tool calls have no tool result, and
-  everything after it, as the whole-file load path did. The repair
-  cannot wait for the wire: there it would also drop the current turn,
-  which sits after the dangling message.
+  an assistant message whose tool calls have no tool result, together
+  with the results answering it, and keeps every later turn. The repair
+  cannot wait for the wire: there it drops everything after the dangling
+  message, the current turn included. It is turn-local rather than a
+  suffix drop for the same reason — the dangling line stays in the
+  journal, so a suffix drop would read the identical cut slice on every
+  later load: the window's turn count would never grow and the anchor
+  could never advance past the corruption.
 - **The pair count stays warm.** The reader keeps how many pairs the
   journal holds in process, keyed by the journal's length and mtime, and
   the writer adds to it as it appends. A turn that changes nothing on
@@ -148,34 +152,43 @@ Anchored, not per-turn sliding. The session state
 retained turn begins — and each load reads the journal **forward** from
 there:
 
-1. **History, text plus calls** — every prior turn in the window as its
-   user text, a `[Tool calls]` note when the turn made any, and its
-   assistant text, reformatted in the active provider's wire format. Each
-   turn's tool results ride too, as a `[Tool results]` note — every
-   result cut to 512 B (head and tail kept, middle replaced by the drop
-   marker), the same shape the checkpoint uses; a fact that lived in the
-   truncated middle is re-read with `context_browse` `results=true`,
-   which replays results in full.
-   The note is a **separate user message**, never merged into the
-   assistant text — the transcript must not teach the model to write its
-   tool use as content — and never a structured `tool_calls` block: a
-   folded turn has no results to answer one, and the send path drops a
-   dangling call together with every message after it. The `[Tool calls]`
-   note's budget is **per turn** (1500 B), never per block: a block-wide
-   budget would let a
-   new turn's calls push an older turn's out of the note, rewriting the
-   middle of a prefix the provider has already cached.
-   This block only ever **grows**: nothing trims its head.
-2. **Current-turn checkpoint, text plus calls** — after `checkpoint_interval`
-   assistant steps (default 32), the older steps fold into one checkpoint
-   in that same shape, with a marker. It contains the turn's
-   opening user message and the folded assistant conclusions; older
-   tool results ride truncated (each cut to 512 B, head and tail
-   kept), while reasoning replays through the provider's wire shape and
-   the folded steps' calls stay visible as notes. Each later
-   checkpoint is wider by `checkpoint_interval /
-   checkpoint_growth` steps (default 32 / 8 = 4), so the verbatim tail
-   grows with the turn.
+1. **History, the messages as sent** — every prior turn in the window,
+   replayed verbatim: its user message, the assistant messages with their
+   structured `tool_calls`, and each tool message that answered a call,
+   all in the shape the journal recorded — chat entries, or Anthropic's
+   block shape, depending on the provider that wrote them (the Responses
+   provider deliberately persists chat shape; conversion to whichever
+   provider serves the request happens once, at send). The only rewrite is
+   a fixed-shape fold: each oversized field — result content, user and
+   assistant text, `tool_calls[].function.arguments` string values,
+   `reasoning_content` and text inside Anthropic content blocks — is cut to
+   512 B with head and tail kept and the middle stated by the paging
+   marker, so the same field is bounded whichever shape wrote it;
+   `tool_use.input` is capped as JSON per value, and an image block becomes
+   a one-line text placeholder instead of replaying its base64 on every
+   request (the current turn's *recent suffix* still carries the image; the
+   in-turn checkpoint is a folded region and substitutes it). A fact
+   that lived in a dropped middle is re-read with `context_browse`
+   `results=true`. Replaying the messages rather than a summary of them is
+   what keeps the model from having to restate (and invent) what an
+   earlier turn observed; a call and its result travel together because
+   the slice ends at a turn boundary, and a call whose result was lost to
+   a torn write or an unparsable line is repaired inside the slice — at
+   worst that costs the rest of that turn, never a later turn (and never
+   the current turn that follows the loaded block).
+   Each message's replay is a function of that message alone, so this
+   block only ever **grows**: nothing trims its head, and no per-turn
+   budget can rewrite a middle the provider has already cached.
+2. **Current-turn checkpoint, messages as sent** — after
+   `checkpoint_interval` assistant steps (default 32), the older steps fold
+   into one checkpoint in that same verbatim shape, with a marker. It
+   contains the turn's opening user message and every folded message
+   (calls, tool results and reasoning included), each oversized field cut
+   to the same 512 B cap; the inline ` Thinking` duplicate of a
+   field-bearing message is stripped from the reply text, so the replay
+   does not teach the inline shape. Each later checkpoint is wider by
+   `checkpoint_interval / checkpoint_growth` steps (default 32 / 8 = 4),
+   so the verbatim tail grows with the turn.
    The boundary is derived from the assistant-message count alone, so it
    holds still between folds.
 3. **Recent current turn, verbatim** — from the first assistant step
@@ -215,10 +228,10 @@ count, with hysteresis — not a per-turn fitter.
 #### What a request looks like
 
 One request with six prior turns (t1…t6) and turn 7 in flight. Nothing
-else is in `messages`: prior history carries text plus per-turn notes of
-the calls made and their results (each result truncated to 512 B), the
-folded checkpoint carries the same shape, and only the recent current
-turn carries tool calls as structure and tool results at full length.
+else is in `messages`: prior history and the folded checkpoint both replay
+the journal's messages as they were sent — structured tool calls and their
+tool results included, oversized fields cut to 512 B — and the recent
+current turn rides verbatim at full length.
 
 ```
 POST /v1/messages
@@ -227,22 +240,21 @@ POST /v1/messages
  tools      [ bash, read, write, edit, grep, ... ] <- no history
  messages   |
 
- 0  user        "[History messages] earlier conversation follows - text plus
-                 tool calls (name and arguments) and their results,
-                 truncated when oversized."
+ 0  user        "[History messages] earlier conversation follows - the
+                 messages as they were sent, oversized fields truncated."
                  -- only added when the history block is non-empty
 
  1  user        t1: what the user said
- 2  user        t1: "[Tool calls] bash(...)"               |  history block
- 3  user        t1: "[Tool results] ..." (each ≤ 512 B)    |
- 4  assistant   t1: the reply text                         |
- 5  user        t2: what the user said                     |  t1-t6 fold to their
- 6  assistant   t2: the reply text                         |  text plus notes of
- 7  user        t3: what the user said                     |  the calls made and
- 8  user        t3: "[Tool calls] ..."                     |  their results
- 9  assistant   t3: the reply text                         |  (results cut to 512 B)
+ 2  assistant   t1: the reply, with tool_calls[bash(...)]   |  history block:
+ 3  tool        t1: the result (fields > 512 B truncated)   |  the messages as
+ 4  assistant   t1: the reply text                           |  they were sent
+ 5  user        t2: what the user said                       |
+ 6  assistant   t2: the reply text                           |  t1-t6 replay
+ 7  user        t3: what the user said                       |  verbatim, with
+ 8  assistant   t3: tool_calls[bash(...)]                    |  structured calls
+ 9  tool        t3: the result                               |  and results
  ...
-18  assistant   t6: the reply text                         |
+17  assistant   t6: the reply text                           |
 
 18  user        "turn 7"                                  -- current turn
     ...         checkpoint marker + folded older steps       (only after the
@@ -258,24 +270,23 @@ for:
 - **The history block is a byte-stable prefix from one turn to the next.**
   Turn k+1's history is turn k's history plus that turn's own pair:
   nothing before it is rewritten, so the provider's cache carries.
-- **Only the recent current turn is structured.** A prior turn's tool calls
-  are never replayed as calls, and neither are the current turn's once
-  they age past a checkpoint, so an old result cannot look like something
-  the model is still working on. What survives of an aged turn is its
-  text plus the note of what it ran - the conclusions, with each result
-  brought back truncated - and `context_browse` (`results=true`) is
-  where the full results are read back.
+- **Every region keeps its structure; only the field sizes differ.** A
+  prior turn's calls and results replay as calls and results, so an aged
+  result still reads as something the model observed — not as a summary it
+  might re-read as an instruction. The cap is what keeps the block cheap:
+  an oversized field keeps head and tail, and `context_browse`
+  (`results=true`) is where the full text is read back.
 
 ```mermaid
 flowchart TB
-    subgraph R1["History — text plus calls"]
+    subgraph R1["History — messages as sent"]
         R1U["user: 'u1'"]
-        R1A["assistant: 'a1'<br/><i>pure text, no tools</i>"]
-        R1N["'[Tool calls] …' note"]
+        R1A["assistant: 'a1'"]
+        R1N["assistant: tool_calls + tool result<br/><i>oversized fields cut to 512 B</i>"]
     end
-    subgraph R3["Current-turn checkpoint — text plus calls"]
+    subgraph R3["Current-turn checkpoint — messages as sent"]
         R3M["marker + folded older steps"]
-        R3N["reasoning replayed · results truncated to 512 B<br/>calls kept as notes"]
+        R3N["calls, results and reasoning replayed<br/>oversized fields cut to 512 B"]
     end
     subgraph R2["Recent current turn — verbatim"]
         R2U["user: 'u2'"]
@@ -338,8 +349,9 @@ Every request starts with zero prior turns — the equivalent of running
 without losing the journal. Because the prior is empty, the history block
 never exists and the checkpoint is the only fold: once the turn passes
 `checkpoint_interval` assistant steps, older steps fold exactly as in
-`sliding_window` (reasoning replayed, calls kept as notes, results
-truncated to 512 B each), while the recent suffix rides verbatim. The
+`sliding_window` (reasoning replayed, calls and results kept
+structured, each oversized field truncated to 512 B), while the recent
+suffix rides verbatim. The
 checkpoint knobs stay live here; `window`, `extend_rate`,
 `turn_tool_result_cap` and `max_history_tokens` have no object — nothing
 is windowed and no prior history exists — and `/context turn` resets them
@@ -366,27 +378,27 @@ predictability. Opt in via `context_strategy = { mode = "turn" }` or
 
 #### Turn pairing (`extract_pairs`, `crates/jyc-agent/src/session.rs`)
 
-The pairing unit is the **turn**, not the single message:
+The pairing unit is the **turn**, not the single message. Pairing is what
+`context_browse`'s page and the transcript dump render; the folded wire
+regions do not go through it — they replay the journal's messages directly.
 
 - A **text-bearing user message opens a turn**; the next one (or end of
   context) closes it.
-- **All assistant messages in a turn are merged into one entry** holding
-  their visible text plus the turn's `reasoning_content` — intermediate
-  tool-call steps and the final reply alike. The turn's last
-  non-empty step's `reasoning_content` survives the merge (the fold
-  replays it through the provider's wire shape), one
-  leading inline block that
-  duplicates it is stripped, and `tool_calls` are kept out of the
-  assistant entry, so the history block carries no call structure. A
-  leading block without that field is stripped on the replay path too —
-  parity with the Responses wire's send-time strip; no in-tree builder
-  writes that shape, so the rule covers legacy or hand-edited entries —
-  while the transcript view keeps it as visible text.
+- **All assistant messages in a turn are merged into one entry** for the
+  view, holding their visible text plus the turn's last non-empty step's
+  `reasoning_content` — intermediate tool-call steps and the final reply
+  alike. One leading inline block that duplicates that field is stripped
+  from the entry's text, and `tool_calls` are kept out of the assistant
+  entry. A leading block without the field is stripped too — the same rule
+  the wire replay applies; no in-tree builder writes that shape, so the
+  rule covers legacy or hand-edited entries.
 - **The turn's tool calls are collected separately** (`TurnPair::tool_calls`,
   one `name(args)` string per call — at most 20 per turn, the rest counted
-  in `TurnPair::omitted_tool_calls` and rendered as `…(N more calls)`) for
-  the transcript view; they never enter the assistant's own text and never
-  reach the wire.
+  in `TurnPair::omitted_tool_calls` and rendered as `…(N more calls)`), as
+  are its tool-result texts (`TurnPair::results`, each cut to the caller's
+  cap at collection). Neither enters the assistant's own text; the wire
+  replay carries the same calls and results as the structured messages
+  they were.
 - **Anthropic `tool_result` user-role wrappers** carry no text, so they
   don't open turns.
 - Assistant messages seen before any user message are dropped; a trailing
@@ -399,9 +411,11 @@ The pairing unit is the **turn**, not the single message:
   own formatter (`format_user_message` / `build_raw_assistant_message`),
   so both `content: "..."` (OpenAI-compat) and `content: [...]`
   (Anthropic) shapes stay valid.
-- **Empty text blocks are never emitted** — messages with no extractable
-  text are skipped, because Anthropic rejects empty blocks, especially
-  under `cache_control`.
+- **Empty text blocks are never synthesized** — the only message this
+  layer builds is the region marker, which always carries text. Replayed
+  messages pass through unchanged, so an empty block can only come from
+  the journal, where `filter_valid_messages` drops an assistant message
+  with neither content nor calls.
 - **A journal written on another provider is normalized before it is
   sent.** The journal stores the *active* provider's wire format, so after
   a `/model` switch the history still holds the other family's messages.
@@ -448,7 +462,7 @@ Each line of `wire-payload.jsonl` is one JSON object:
 }
 ```
 
-`regions` is a parallel `Vec<u8>` to `wire_payload`: `1` = text-plus-calls
+`regions` is a parallel `Vec<u8>` to `wire_payload`: `1` = replayed
 history, `2` = recent current turn verbatim, `3` = folded current-turn
 checkpoint. `1` for `Full` mode means "one block, no windowing". Use it to
 partition the payload when reconstructing what each LLM call looked like.
@@ -535,7 +549,7 @@ The slide is the only way **history** shrinks; nothing trims between slides,
 which is what keeps the wire prefix byte-stable and the provider cache
 alive. The current turn has its own two bounds — `turn_tool_result_cap`
 per result, and a checkpoint every `checkpoint_interval` assistant steps
-(default 32) that folds older steps into the text-plus-calls form — but neither
+(default 32) that folds older steps into the history block's replayed form — but neither
 moves the history head, and the checkpoint intervals widen
 (`checkpoint_growth`), so the current turn's bound grows with the turn.
 `full` mode grows verbatim from its restart boundary (or the journal head)
@@ -571,7 +585,7 @@ rows):
 | `extend_rate` | `0.5` | Growth allowed before a slide: `max_window = window + round(extend_rate × window)`; `0` = hard window (slides every turn) |
 | `turn_tool_result_cap` | unset | Per-result byte cap on the recent current-turn suffix — see below |
 | `max_history_tokens` | unset | Second slide trigger, at the top of the extension cycle — see below |
-| `checkpoint_interval` | `32` | Completed assistant messages before the current turn's older steps fold into a text-plus-calls checkpoint; `0` disables folding — see below |
+| `checkpoint_interval` | `32` | Completed assistant messages before the current turn's older steps fold into the history block's replayed shape; `0` disables folding — see below |
 | `checkpoint_growth` | `8` | Folds per widening step: each checkpoint is `checkpoint_interval / checkpoint_growth` steps wider than the last, so a long turn keeps a growing verbatim tail; `0` keeps the interval fixed — see below |
 
 ## `turn_tool_result_cap` — bounding the current turn
@@ -652,8 +666,8 @@ growing instead of staying 32 steps. The first checkpoint is always exactly
 When `folded` is 0 the turn is sent exactly as before (no checkpoint).
 Otherwise the first `folded` steps — from the turn's opening user message
 through the result before the first retained assistant step — are folded
-with the same `extract_pairs` representation as prior history (text plus
-the per-turn `[Tool calls]` note). The rest of the turn stays verbatim, so the latest
+as the same verbatim replay prior history uses (each message as sent,
+oversized fields capped). The rest of the turn stays verbatim, so the latest
 `tool_use`/`tool_result` sequence and any provider-specific reasoning
 fields are intact.
 
@@ -667,12 +681,10 @@ cache-aware:
   the folded prefix never shrinks.
 - Full mode does not checkpoint.
 
-What the folded part keeps is the opening user message, assistant
-visible text and the turn's reasoning. Like prior-turn history, it
-replaces tool calls with a bounded `[Tool calls]` note carrying their
-names and arguments, and each older tool result rides along truncated
-to a fixed 512 B. The journal and `context_browse` still
-hold the raw steps.
+What the folded part keeps is the opening user message and every folded
+message — assistant text, reasoning, structured calls and their tool
+results — with each oversized field truncated to a fixed 512 B. The
+journal and `context_browse` still hold the raw steps.
 
 **Tradeoff:** an older result is replayed within the cap; the full
 exact output is gone from the wire. If the model needs it again, it
@@ -771,6 +783,17 @@ bounds how much history survives before the next slide.
 
 Key changes, newest first (see CHANGELOG.md for full entries):
 
+- **Verbatim replay of folded messages (2026-11-06)** — folded regions
+  (history and checkpoint) now replay the journal's messages themselves
+  instead of `[Tool calls]`/`[Tool results]` notes: structured calls,
+  tool results, `reasoning_content` and block content all survive, with
+  only oversized fields (result content, text, call-argument string
+  values, reasoning, text blocks) cut to 512 B keeping head and tail, and
+  images replaced by a placeholder. One message = one replay, so the
+  block stays append-only without per-turn budgets, and a call and its
+  result travel together: a folded slice ends at a turn boundary, and a
+  dangling call is repaired turn-locally inside the slice. Replaces the note shape entirely.
+
 - **`[Tool calls]` note + `context_browse results=true`** — a folded turn
   keeps its conclusions but lost its evidence, so a model asked about an
   earlier turn could only restate (and invent) what it once said. Folded
@@ -785,12 +808,12 @@ Key changes, newest first (see CHANGELOG.md for full entries):
   to write their process as content. The note's budget is per turn, so the
   history block stays a byte-stable prefix between slides (#1057).
 - **current-turn checkpoint** — the sliding-window payload has three parts:
-  text-plus-calls history, an optional checkpoint for older
+  replayed history, an optional checkpoint for older
   steps of a long current turn, and the verbatim recent suffix. The checkpoint folds
   the first `floor((n-1)/interval)×interval` assistant steps once a turn
-  passes the interval (default 32), truncating their tool
-  results to a fixed 512 B each while their reasoning
-  replays through the provider's wire shape. It advances only at whole
+  passes the interval (default 32), replaying their raw messages with each
+  oversized field cut to the same 512 B cap the history block uses and
+  images replaced by a placeholder. It advances only at whole
   interval boundaries, so it is byte-stable between advances; the journal
   is untouched and the latest steps remain raw. `regions` in the wire dump
   marks it `3`, and the `LLM call started` log carries `checkpoint_rebuilt`.
@@ -820,7 +843,9 @@ Key changes, newest first (see CHANGELOG.md for full entries):
   `tool_calls` + results) instead of user-role text history notes — text
   notes taught thinking models to write their process as content (the
   thinking-content leak). Older turns still compact to their text plus the
-  `[Tool calls]` note described above.
+  `[Tool calls]` note described above. (Since 2026-11-06 folded regions
+  replay the journal's messages instead — see the newest entry above; the
+  note shape is gone.)
 - **#647** — windowed history-note format clarity: `[History note]`
   is emitted before the assistant text (was after); truncated args
   and results carry an explicit `… [truncated N bytes]` marker (was

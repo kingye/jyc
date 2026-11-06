@@ -46,8 +46,8 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///     window has reached its turn bound and estimates over it, the window
 ///     slides back to N turns — the same slide the turn bound performs.
 ///     CHECKPOINT is how many completed assistant messages the current
-///     turn may reach before its older steps fold into a text-plus-calls
-///     checkpoint. It counts assistant messages — steps that produced
+///     turn may reach before its older steps fold into a checkpoint in the
+///     history block's raw-message shape. It counts assistant messages — steps that produced
 ///     output, tool call or reply — not turns or tool calls, and 0
 ///     disables in-turn folding so the whole current turn rides verbatim.
 ///     Raise it when a long read-heavy turn keeps re-reading what it just
@@ -57,9 +57,11 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///     CHECKPOINT / GROWTH to the next interval (32 and 8 give 32, 36,
 ///     40 …), so a long turn keeps a growing verbatim tail. 0 keeps the
 ///     interval fixed. A small non-zero value widens fast — 1 adds a full
-///     interval per fold (32, 64, 96 …). Both folds replay a turn's tool
-///     results as a `[Tool results]` note, each result truncated to a
-///     fixed internal cap.
+///     interval per fold (32, 64, 96 …). Both folds replay the turn's raw
+///     messages verbatim, each oversized field (tool results, user and
+///     assistant text, call arguments, reasoning) truncated to a fixed cap
+///     keeping both ends; image blocks become a short placeholder naming
+///     their media type.
 ///
 ///     The slots moved when `note_window` was removed (it was the old 4th
 ///     slot, between EXT and TURNCAP), so a command carrying more
@@ -444,7 +446,7 @@ impl CommandHandler for ContextCommandHandler {
                     max_history_tokens.unwrap_or(configured.max_history_tokens);
                 // Optional current-turn checkpoint interval CHECKPOINT
                 // (args[5]): completed assistant messages before the turn's
-                // older steps fold to a text-plus-calls checkpoint. 0 is the
+                // older steps fold into the raw-message checkpoint. 0 is the
                 // explicit "off" sentinel (same convention as CAP and
                 // MAXHIST) and leaves the whole turn verbatim; absent = keep
                 // the configured value, which defaults to

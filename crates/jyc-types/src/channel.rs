@@ -884,12 +884,15 @@ pub fn effective_result_cap(configured: Option<usize>) -> usize {
 /// head between them (a per-turn trim would rewrite the wire prefix every
 /// turn and destroy the cache hit).
 ///
-/// The payload itself is append-only: the windowed turns are sent as their
-/// text plus two per-turn notes — `[Tool calls]` (name and arguments, 1500
-/// B budget) and `[Tool results]` (each result cut to 512 B keeping both
-/// ends, 1500 B budget per turn) — that only ever grow, so the provider's
-/// cached prefix extends from one turn to the next, and the current turn
-/// follows verbatim with its tool calls and results.
+/// The payload itself is append-only: the windowed turns are replayed as the
+/// raw messages they were sent as — text, structured tool calls and their
+/// results — with each oversized field (result content, text, call
+/// arguments, reasoning, Anthropic text blocks) cut to a fixed cap keeping
+/// both ends, and image blocks replaced by a text placeholder. Each
+/// message's replay is a function of that message alone, so the block only
+/// ever grows, the provider's cached prefix extends from one turn to the
+/// next, and the current turn follows with its calls and results — its
+/// recent suffix verbatim, its older part folded like history.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ContextStrategyConfig {
     /// Context strategy mode. Default: `sliding_window`.
@@ -952,9 +955,9 @@ pub struct ContextStrategyConfig {
     pub max_history_tokens: Option<usize>,
     /// Completed assistant messages per current-turn checkpoint
     /// (`sliding_window` and `turn` modes): once the current turn passes
-    /// this many assistant messages, the older ones fold into a
-    /// text-plus-calls checkpoint (each result replayed truncated to 512 B,
-    /// head and tail kept, its calls as a note) and the recent suffix stays
+    /// this many assistant messages, the older ones fold into a checkpoint
+    /// in the history block's shape (the raw messages, each oversized field
+    /// cut to 512 B keeping head and tail) and the recent suffix stays
     /// verbatim. Counting is by assistant
     /// message — every step that produced output, tool call or final reply —
     /// not by turn or by tool call. Default:

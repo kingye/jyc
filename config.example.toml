@@ -494,10 +494,12 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # to `window` turns. Slides are the only way history shrinks.
 #
 # History folds each prior turn to its text plus a `[Tool calls]` note (name
-# and arguments, 1500 B per turn), so the payload is append-only: every turn
-# appends to the end and the provider's prefix cache keeps matching. Tool
-# results stay in the journal; `context_browse` with `results=true` replays
-# them. Only the current turn is sent verbatim, with its calls and results.
+# and arguments, 1500 B per turn) and a `[Tool results]` note (each result
+# cut to 512 B, head and tail kept), so the payload is append-only: every
+# turn appends to the end and the provider's prefix cache keeps matching.
+# A fact that lived in a truncated middle is replayed in full by
+# `context_browse` with `results=true`. Only the current turn is sent
+# verbatim, with its calls and results.
 #
 # window: the number of turns the window keeps after a slide — its floor.
 # Default: 10. 0 is treated as 1 (a window holds at least one turn);
@@ -1190,9 +1192,10 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # window / extend_rate: the sliding window keeps `window` turns after a
 # slide and may grow to window + round(extend_rate * window) before it
 # slides back (defaults 10 and 0.5).
-# History carries each prior turn's text plus a note of the calls it made
-# (never their results); only the current turn carries calls and results
-# verbatim. See `[ai].context_strategy` above for the full field list.
+# History carries each prior turn's text plus notes of the calls it made
+# and their results (each result truncated to 512 B); only the current
+# turn carries calls and results verbatim. See `[ai].context_strategy`
+# above for the full field list.
 # context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5 }
 # attachments = { enabled = true, allowed_extensions = [".pdf", ".md"] }
 #

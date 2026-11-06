@@ -166,7 +166,7 @@ impl SendContextCache {
 /// logic.
 ///
 /// Region labels:
-/// - `1` = folded history, text plus calls — results never reach it
+/// - `1` = folded history, text plus calls and truncated results
 ///   (`SlidingWindow`), or the whole context (`Full` mode, no split).
 ///   `Turn` mode has no history at all, so label `1` never occurs there.
 /// - `2` = verbatim current-turn suffix (`SlidingWindow` and `Turn`).
@@ -183,11 +183,9 @@ impl SendContextCache {
 /// reasoning over those tool results mid-loop, so they must stay complete
 /// — and bounded by the opt-in `strategy.turn_tool_result_cap`, which
 /// keeps head and tail instead of the head alone. `Some(0)` or `None`
-/// disables capping. The two folded regions follow different rules: the
-/// history never replays results (a result the model can re-run is
-/// cheaper than one replayed forever), while a checkpoint replays each of
-/// its results cut to [`CHECKPOINT_RESULT_REPLAY_CAP`], head and tail
-/// kept.
+/// disables capping. The two folded regions follow the same rules: each
+/// replays its results cut to [`FOLDED_RESULT_REPLAY_CAP`], head and
+/// tail kept.
 ///
 /// `cache` lets a turn's calls reuse the history and checkpoint blocks
 /// instead of rebuilding them per call (see [`SendContextCache`]).
@@ -344,7 +342,7 @@ pub(crate) fn context_composition(
 /// Wire-only marker inserted at the start of a folded current-turn
 /// checkpoint. Not persisted to `raw_context`. The checkpoint always
 /// replays its tool results — each cut to
-/// [`CHECKPOINT_RESULT_REPLAY_CAP`], head and tail kept — so the marker
+/// [`FOLDED_RESULT_REPLAY_CAP`], head and tail kept — so the marker
 /// says so.
 pub(crate) const TURN_CHECKPOINT_MARKER_TEXT: &str = "[Current-turn checkpoint] earlier work in this turn follows — text plus \
      tool calls and their results, truncated when oversized.";
@@ -453,39 +451,62 @@ fn folded_assistant_count(n: usize, interval: usize, growth: usize) -> usize {
 /// pure function of that turn's calls, so it can only be appended.
 const REGION_TOOL_CALLS_MAX: usize = 1500;
 
-/// Per-result byte bound for the tool results a checkpoint fold replays.
+/// Per-turn byte budget for a folded region's `[Tool results]` note — the
+/// same rule [`REGION_TOOL_CALLS_MAX`] states for the calls note, applied
+/// to the results note: per turn, so the note is a pure function of that
+/// turn and the history block it feeds stays append-only. Overflow drops
+/// whole results from the end and keeps the `…(N more results)` count.
+const REGION_TOOL_RESULTS_MAX: usize = 1500;
+
+const _: () = assert!(
+    REGION_TOOL_RESULTS_MAX
+        >= "[Tool results] ".len()
+            + " …(1 more result)".len()
+            + jyc_types::channel::MIN_EDGE_KEEPING_CAP,
+    "the results budget must hold the prefix, the overflow marker and one floor-sized result",
+);
+
+/// Per-result byte bound for the tool results a folded region replays —
+/// both the history block and the current-turn checkpoint.
 ///
 /// The checkpoint's job is to hold still: the model saw these results
 /// verbatim earlier this turn, so the replay is a reminder and an index,
-/// not the payload — small enough that folding stays cheaper than the
-/// verbatim steps it replaces, large enough to say which call it answers
-/// and what came back (head and tail kept, the middle replaced by the
-/// result's own paging marker). The full text stays one
-/// `context_browse results=true` away. Not a knob: the checkpoint shape is
-/// a strategy invariant, and a second tunable beside `checkpoint_interval`
+/// not the payload. The history's job is the same one turn back: the
+/// conclusion survives, and the replay says what was checked to reach it
+/// without re-riding every byte. In both, small enough that folding stays
+/// cheaper than the verbatim steps it replaces, large enough to say which
+/// call it answers and what came back (head and tail kept, the middle
+/// replaced by the result's own paging marker). The full text stays one
+/// `context_browse results=true` away. Not a knob: the folded shape is a
+/// strategy invariant, and a second tunable beside `checkpoint_interval`
 /// would be one more wire shape to keep honest.
-const CHECKPOINT_RESULT_REPLAY_CAP: usize = 512;
+const FOLDED_RESULT_REPLAY_CAP: usize = 512;
 
 const _: () = assert!(
-    CHECKPOINT_RESULT_REPLAY_CAP >= jyc_types::channel::MIN_EDGE_KEEPING_CAP,
-    "checkpoint replay cap must hold the paging marker plus both ends",
+    FOLDED_RESULT_REPLAY_CAP >= jyc_types::channel::MIN_EDGE_KEEPING_CAP,
+    "folded replay cap must hold the paging marker plus both ends",
 );
 
 /// Build the history block from the prior window: the history
 /// marker, then every turn as user text, a `[Tool calls]` note when the turn
-/// made calls, and the assistant text.
+/// made calls, a `[Tool results]` note replaying each result cut to
+/// [`FOLDED_RESULT_REPLAY_CAP`], and the assistant text.
 ///
 /// Nothing here trims: the prior is already the anchored window the loader
 /// bounded, and any head-trim here would rewrite the wire prefix on every
 /// turn — the bug this shape exists to avoid. The block only grows, so the
 /// payload is append-only from one turn to the next.
 ///
-/// By default the tool **results** do not reach the wire — they are the bulk
-/// of a transcript, and a result the model can re-run is cheaper than one
-/// replayed forever. The calls do, as a text note: a conclusion without a
-/// trace of how it was checked is what an agent restates from memory. The
-/// note is a separate user message rather than structured `tool_calls`: a
-/// call without its result is dropped by the send path's dangling-call
+/// The tool **calls** always reach the wire, as a text note: a conclusion
+/// without a trace of how it was checked is what an agent restates from
+/// memory. The **results** do too, each truncated: replaying the verdict
+/// ("read OK", "the file says X") keeps the model from re-deriving or
+/// re-stating it, which is the failure mode a window pays for. Full texts
+/// stay a `context_browse results=true` away — cheaper than re-running a
+/// call, and the cap keeps a megabyte read from riding the whole window.
+///
+/// The note is a separate user message rather than structured `tool_calls`:
+/// a call without its result is dropped by the send path's dangling-call
 /// repair, and a result would have to be fabricated to keep it.
 ///
 /// Each turn's note depends only on that turn, which is what keeps the block
@@ -494,7 +515,12 @@ fn build_history_region(
     provider: &dyn Provider,
     prior: &[serde_json::Value],
 ) -> Vec<serde_json::Value> {
-    build_text_region(provider, prior, crate::session::HISTORY_MARKER_TEXT, None)
+    build_text_region(
+        provider,
+        prior,
+        crate::session::HISTORY_MARKER_TEXT,
+        FOLDED_RESULT_REPLAY_CAP,
+    )
 }
 
 /// Compact the older part of the current turn into the same folded
@@ -507,7 +533,7 @@ fn build_checkpoint_region(
         provider,
         prefix,
         TURN_CHECKPOINT_MARKER_TEXT,
-        Some(CHECKPOINT_RESULT_REPLAY_CAP),
+        FOLDED_RESULT_REPLAY_CAP,
     )
 }
 
@@ -515,17 +541,17 @@ fn build_checkpoint_region(
 /// checkpoints.
 ///
 /// Each turn renders as: its user text, a `[Tool calls]` note when it made
-/// calls, its assistant text. The note is a *separate user message*, never
-/// merged into the assistant text — the transcript must not teach the model
-/// to write its tool use as content — and never a structured `tool_calls`
-/// block, because a folded turn has no results to answer one: the send path
-/// drops a dangling call together with everything after it.
+/// calls, a `[Tool results]` note when it produced results, its assistant
+/// text. The notes are *separate user messages*, never merged into the
+/// assistant text — the transcript must not teach the model to write its
+/// tool use as content — and never a structured `tool_calls` block, because
+/// the send path drops a dangling call together with everything after it.
 ///
-/// `result_cap` splits the two callers: `Some(bound)` collects each turn's
-/// tool results, cut to the bound and replayed as a `[Tool results]` note
-/// after the calls note; `None` never clones results off the transcript
-/// (the history fold — a result the model can re-run is cheaper than one
-/// replayed forever).
+/// `result_cap` is the per-result byte bound: each turn's tool results are
+/// collected cut to the bound (head and tail kept) and replayed as the
+/// `[Tool results]` note after the calls note. Both callers pass
+/// [`FOLDED_RESULT_REPLAY_CAP`]; the parameter stays so the bound travels
+/// with the call site that chose it.
 ///
 /// The note depends only on its own turn ([`crate::session::TurnPair`] is
 /// built from that turn's messages alone), and its budget is per turn, never
@@ -537,25 +563,21 @@ fn build_text_region(
     provider: &dyn Provider,
     raw: &[serde_json::Value],
     marker: &str,
-    result_cap: Option<usize>,
+    result_cap: usize,
 ) -> Vec<serde_json::Value> {
-    // `None` never clones results; `Some(bound)` collects them here, already
-    // cut to the bound by `truncate_text_keeping_edges` — keeping head and
-    // tail for the same reason the current-turn cap does (what a result is
-    // read for usually sits at the ends).
-    let pairs = if let Some(bound) = result_cap {
-        crate::session::extract_pairs_with_results(
-            raw,
-            bound,
-            crate::session::truncate_text_keeping_edges,
-        )
-    } else {
-        crate::session::extract_pairs(raw)
-    };
+    // Results are collected here, already cut to the bound by
+    // `truncate_text_keeping_edges` — keeping head and tail for the same
+    // reason the current-turn cap does (what a result is read for usually
+    // sits at the ends).
+    let pairs = crate::session::extract_pairs_with_results(
+        raw,
+        result_cap,
+        crate::session::truncate_text_keeping_edges,
+    );
 
     // The block leads with its marker and keeps it: it explains the folded
-    // form the compacted pairs come in (calls noted; results only where the
-    // caller passes a cap, replayed truncated).
+    // form the compacted pairs come in (calls noted; results replayed
+    // truncated).
     let mut region: Vec<serde_json::Value> = Vec::new();
     if !pairs.is_empty() {
         region.push(provider.format_user_message(&[ContentBlock::Text {
@@ -576,7 +598,9 @@ fn build_text_region(
                 text: format!("{} {calls}", crate::session::TOOL_CALLS_NOTE_PREFIX),
             }]));
         }
-        if let Some(results) = crate::session::render_turn_tool_results(pair) {
+        if let Some(results) =
+            crate::session::render_turn_tool_results_bounded(pair, REGION_TOOL_RESULTS_MAX)
+        {
             region.push(provider.format_user_message(&[ContentBlock::Text {
                 text: format!("{} {results}", crate::session::TOOL_RESULTS_NOTE_PREFIX),
             }]));
@@ -809,7 +833,7 @@ fn append_region_summary(
     // "current turn" — never a numbered shorthand, so a dump can be read
     // without a legend.
     let region_headers = [
-        (1u8, "History — text plus calls, results folded out"),
+        (1u8, "History — text plus calls, truncated results"),
         (3u8, "Current-turn checkpoint — older work, text plus calls"),
         (2u8, "Current turn — recent suffix, verbatim"),
     ];
@@ -1157,7 +1181,7 @@ mod render_raw_context_tests {
             "inline think tags leaked: {folded}"
         );
         // The checkpoint replays results (truncated to
-        // CHECKPOINT_RESULT_REPLAY_CAP when oversized; these 8-byte
+        // FOLDED_RESULT_REPLAY_CAP when oversized; these 8-byte
         // fixtures ride whole) — the fold drops full-size payloads, not
         // the evidence itself.
         assert!(folded.contains("RESULT-"), "results replay: {folded}");
@@ -1553,7 +1577,7 @@ mod render_raw_context_tests {
         assert!(rendered.contains("USER: fix bug"));
         // One turn → one merged ASSISTANT block: first step's text, the
         // turn's tool calls, then the reply. Tool results are not part of
-        // the transcript: no note machinery renders them any more.
+        // the transcript view: no note machinery renders them there.
         assert!(rendered.contains("ASSISTANT: I'll start"));
         assert!(rendered.contains("bash()"));
         assert!(!rendered.contains("output"));
@@ -1637,8 +1661,10 @@ mod render_raw_context_tests {
         let mut ctx = prior.clone();
         ctx.extend(current.clone());
 
-        // Every prior turn — u1/a1, u2 with its tool call, u3/a3 — folds
-        // to text plus a note naming the calls; the results stay out.
+        // Every prior turn — u1/a1, u2 with its tool call and result, u3/a3 —
+        // folds to text plus one note naming the calls and one replaying the
+        // result, both between the calling turn's own user text and its
+        // answer.
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 2,
@@ -1651,9 +1677,9 @@ mod render_raw_context_tests {
         let sent = sent.into_owned();
 
         // 1. History marker, then every prior turn as text, with the one
-        //    call-making turn's note between its own user text and its
-        //    answer. Nothing trims the history block: the window bound is
-        //    the loader's, not this function's.
+        //    call-making turn's two notes (calls, then results) between its
+        //    own user text and its answer. Nothing trims the history block:
+        //    the window bound is the loader's, not this function's.
         assert_eq!(
             sent[0],
             json!({"role": "user", "content": crate::session::HISTORY_MARKER_TEXT})
@@ -1666,14 +1692,19 @@ mod render_raw_context_tests {
             json!({"role": "user", "content": "[Tool calls] bash()"}),
             "the call-making turn keeps a trace of what it ran"
         );
-        assert_eq!(sent[5], json!({"role": "assistant", "content": "a2"}));
-        assert_eq!(sent[6], json!({"role": "user", "content": "u3"}));
-        assert_eq!(sent[7], json!({"role": "assistant", "content": "a3"}));
+        assert_eq!(
+            sent[5],
+            json!({"role": "user", "content": "[Tool results] out"}),
+            "and of what came back"
+        );
+        assert_eq!(sent[6], json!({"role": "assistant", "content": "a2"}));
+        assert_eq!(sent[7], json!({"role": "user", "content": "u3"}));
+        assert_eq!(sent[8], json!({"role": "assistant", "content": "a3"}));
 
         // 2. Current turn verbatim (structured tool_calls preserved).
-        assert_eq!(sent[8], current[0]);
-        assert_eq!(sent[9], current[1]);
-        assert_eq!(sent[10], current[2]);
+        assert_eq!(sent[9], current[0]);
+        assert_eq!(sent[10], current[1]);
+        assert_eq!(sent[11], current[2]);
     }
 
     #[test]
@@ -1755,8 +1786,8 @@ mod render_raw_context_tests {
         assert!(region1_5 > 0, "the marker and four turns");
         assert_eq!(
             region1_6,
-            region1_5 + 3,
-            "history grew by exactly one turn: its text, its note, its answer"
+            region1_5 + 4,
+            "history grew by exactly one turn: its text, its two notes, its answer"
         );
         assert_eq!(
             at_6[..region1_5],
@@ -1765,13 +1796,14 @@ mod render_raw_context_tests {
         );
         // Everything past the history block is the current turn, and the
         // history block's own tail is the turn that just graduated into it —
-        // note and all, rendered exactly as it was while it was current.
+        // notes and all, rendered exactly as it was while it was current.
         assert_eq!(at_6[region1_5]["content"], "u5");
         assert_eq!(
             at_6[region1_5 + 1]["content"],
             r#"[Tool calls] bash(command="c5")"#
         );
-        assert_eq!(at_6[region1_5 + 2]["content"], "a5");
+        assert_eq!(at_6[region1_5 + 2]["content"], "[Tool results] R5");
+        assert_eq!(at_6[region1_5 + 3]["content"], "a5");
         assert_eq!(at_5[region1_5]["content"], "u5");
         assert_eq!(at_6[region1_6]["content"], "u6");
     }
@@ -1876,12 +1908,13 @@ mod render_raw_context_tests {
     }
 
     /// A prior turn's calls reach the wire as a `[Tool calls]` text note —
-    /// never as structured `tool_calls` (a folded turn has no results to
-    /// answer them, and the send path would drop the whole block), and never
-    /// merged into the assistant text. Its results stay out: re-running a
-    /// tool is cheaper than replaying every result forever.
+    /// never as structured `tool_calls` (the send path would drop the whole
+    /// block alongside a dangling call), and never merged into the
+    /// assistant text. Its results ride as a second note, each truncated to
+    /// the fixed cap — the paging-friendly middle ground between replaying
+    /// every byte forever and a re-run round trip.
     #[test]
-    fn history_carries_tool_calls_as_a_note_but_not_results() {
+    fn history_carries_tool_calls_and_results_as_notes() {
         let prior = vec![
             json!({"role": "user", "content": "u1"}),
             json!({"role": "assistant", "content": "a1"}),
@@ -1908,7 +1941,8 @@ mod render_raw_context_tests {
             .into_owned();
 
         // History: marker, then both prior turns — the call-making one
-        // with its note between the user text and the merged answer.
+        // with a calls note and a results note between the user text and
+        // the merged answer.
         assert_eq!(
             sent,
             vec![
@@ -1917,13 +1951,11 @@ mod render_raw_context_tests {
                 json!({"role": "assistant", "content": "a1"}),
                 json!({"role": "user", "content": "u2"}),
                 json!({"role": "user", "content": "[Tool calls] bash(command=\"ls\")"}),
+                json!({"role": "user", "content": "[Tool results] file.txt"}),
                 json!({"role": "assistant", "content": "calling bash\ndone"}),
                 current[0].clone(),
             ]
         );
-        // The result itself never reaches the wire.
-        let dumped = serde_json::to_string(&sent).unwrap();
-        assert!(!dumped.contains("file.txt"), "tool result leaked: {dumped}");
     }
 
     /// Each checkpoint result is cut at collection with the same
@@ -1945,7 +1977,7 @@ mod render_raw_context_tests {
             .strip_prefix("[Tool results] ")
             .expect("results note prefix");
         assert!(
-            text.len() <= CHECKPOINT_RESULT_REPLAY_CAP,
+            text.len() <= FOLDED_RESULT_REPLAY_CAP,
             "result over its own cap: {} bytes",
             text.len()
         );
@@ -1999,15 +2031,16 @@ mod render_raw_context_tests {
         assert_eq!(region[3]["content"], "[Tool results] file.txt");
     }
 
-    /// End to end: the history region never replays results — the folded
-    /// turn keeps text plus the calls note, and the marker says results
-    /// are omitted.
+    /// End to end: the history region replays results, each cut to the
+    /// fixed cap — the marker states the truncation, and an oversized
+    /// result keeps head and tail with the middle stated.
     #[test]
-    fn build_send_context_history_never_replays_results() {
+    fn build_send_context_history_replays_results_cut_to_the_cap() {
+        let result = format!("HEAD-{}{}-TAIL", "h".repeat(300), "m".repeat(4000));
         let prior = vec![
             json!({"role": "user", "content": "u1"}),
             json!({"role": "assistant", "content": "a1", "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
-            json!({"role": "tool", "tool_call_id": "1", "content": "file.txt"}),
+            json!({"role": "tool", "tool_call_id": "1", "content": result}),
             json!({"role": "assistant", "content": "done"}),
         ];
         let current = vec![json!({"role": "user", "content": "u2"})];
@@ -2020,10 +2053,69 @@ mod render_raw_context_tests {
             .into_owned();
 
         assert_eq!(sent[0]["content"], crate::session::HISTORY_MARKER_TEXT);
-        let dumped = serde_json::to_string(&sent).unwrap();
+        let note = sent
+            .iter()
+            .find_map(|m| {
+                m["content"]
+                    .as_str()
+                    .filter(|c| c.starts_with("[Tool results] "))
+            })
+            .expect("history must replay the truncated result");
+        let body = note.strip_prefix("[Tool results] ").unwrap();
         assert!(
-            !dumped.contains("file.txt"),
-            "history must not replay results: {dumped}"
+            body.len() <= FOLDED_RESULT_REPLAY_CAP,
+            "the cut result fits in the cap, marker included: {} bytes",
+            body.len()
+        );
+        // Conservation over the stated gap: head + announced middle + tail
+        // must account for every byte of the original result — a cut that
+        // lost or duplicated an end fails here whatever the sizes are.
+        let (head, rest) = body.split_once("\n… [").expect("marker opener");
+        let (dropped, rest) = rest
+            .split_once(" bytes dropped from the middle")
+            .expect("marker body");
+        let dropped: usize = dropped.parse().unwrap();
+        let tail = rest.split_once("] …\n").expect("marker closer").1;
+        assert_eq!(
+            head.len() + dropped + tail.len(),
+            result.len(),
+            "the cut conserves bytes: {head_len} head + {dropped} gap + {tail_len} tail \
+             != {} original",
+            result.len(),
+            head_len = head.len(),
+            tail_len = tail.len(),
+        );
+        assert!(head.starts_with("HEAD-h"), "the head survives: {head:?}");
+        assert!(tail.ends_with("-TAIL"), "the tail survives: {tail:?}");
+    }
+
+    /// A short result rides the history verbatim: the cap only bites
+    /// oversized ones.
+    #[test]
+    fn history_keeps_a_short_result_verbatim() {
+        let prior = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1", "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": "file.txt"}),
+            json!({"role": "assistant", "content": "done"}),
+        ];
+        let region = build_history_region(&prov(), &prior);
+        assert_eq!(region[3]["content"], "[Tool results] file.txt");
+    }
+
+    /// A turn that made no calls gets no results note: the fold must not
+    /// emit an empty `[Tool results]` block for a text-only turn.
+    #[test]
+    fn history_adds_no_results_note_without_calls() {
+        let prior = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+        ];
+        let region = build_history_region(&prov(), &prior);
+        let dumped = serde_json::to_string(&region).unwrap();
+        assert!(
+            !dumped.contains(crate::session::TOOL_RESULTS_NOTE_PREFIX),
+            "text-only turn must not get a results note: {dumped}"
         );
     }
 
@@ -2052,7 +2144,11 @@ mod render_raw_context_tests {
         let short_region = build_history_region(&prov, &short);
         let long_region = build_history_region(&prov, &long);
 
-        assert_eq!(short_region.len(), 6, "marker + note + two turns");
+        assert_eq!(
+            short_region.len(),
+            7,
+            "marker + calls note + results note + two turns"
+        );
         assert_eq!(
             short_region,
             long_region[..short_region.len()],
@@ -2540,8 +2636,8 @@ mod render_raw_context_tests {
             "the lift must keep both ends at the floor: {content:?}"
         );
         assert!(
-            !wire.contains("truncated"),
-            "a head-only cut would say 'truncated' instead: {wire}"
+            !content.contains("truncated"),
+            "a head-only cut would say 'truncated' inside the tool content itself: {content:?}"
         );
         // The dump reports the applied cap, not the configured one, and says
         // where it came from — printing `turn_cap=3` would describe a turn

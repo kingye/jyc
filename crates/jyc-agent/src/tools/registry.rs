@@ -359,18 +359,17 @@ impl ToolRegistry {
             // reaching for the on-demand group under a typo: name the right
             // spelling and the loader so the failure self-corrects instead of
             // sending the model hunting through the advertised list.
-            if let Some(ext) = &self.extended {
-                if let Some(nearest) = ext
+            if let Some(ext) = &self.extended
+                && let Some(nearest) = ext
                     .names()
                     .iter()
                     .filter(|n| levenshtein(name, n) <= 2)
                     .min_by_key(|n| levenshtein(name, n))
-                {
-                    msg.push_str(&format!(
-                        ". Did you mean '{nearest}'? It is an extended tool — call \
-                         load_extended_tools to make it callable."
-                    ));
-                }
+            {
+                msg.push_str(&format!(
+                    ". Did you mean '{nearest}'? It is an extended tool — call \
+                     load_extended_tools to make it callable."
+                ));
             }
             anyhow::anyhow!(msg)
         })?;

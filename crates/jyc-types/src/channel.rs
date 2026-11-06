@@ -884,12 +884,13 @@ pub fn effective_result_cap(configured: Option<usize>) -> usize {
 /// head between them (a per-turn trim would rewrite the wire prefix every
 /// turn and destroy the cache hit).
 ///
-/// The payload itself is append-only: the windowed turns are sent as their
-/// text plus two per-turn notes — `[Tool calls]` (name and arguments, 1500
-/// B budget) and `[Tool results]` (each result cut to 512 B keeping both
-/// ends, 1500 B budget per turn) — that only ever grow, so the provider's
-/// cached prefix extends from one turn to the next, and the current turn
-/// follows verbatim with its tool calls and results.
+/// The payload itself is append-only: the windowed turns are replayed as the
+/// raw messages they were sent as — text, structured tool calls and their
+/// results — with each oversized field (result content, call arguments,
+/// reasoning) cut to a fixed cap keeping both ends. Each message's replay is
+/// a function of that message alone, so the block only ever grows, the
+/// provider's cached prefix extends from one turn to the next, and the
+/// current turn follows verbatim with its tool calls and results.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ContextStrategyConfig {
     /// Context strategy mode. Default: `sliding_window`.

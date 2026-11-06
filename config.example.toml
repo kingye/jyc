@@ -493,13 +493,14 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # grows between slides, until it reaches max_window turns, then slides back
 # to `window` turns. Slides are the only way history shrinks.
 #
-# History folds each prior turn to its text plus a `[Tool calls]` note (name
-# and arguments, 1500 B per turn) and a `[Tool results]` note (each result
-# cut to 512 B, head and tail kept), so the payload is append-only: every
-# turn appends to the end and the provider's prefix cache keeps matching.
+# History replays each prior turn's raw messages — text, structured tool
+# calls and their tool results — with each oversized field (result content,
+# call arguments, reasoning) cut to 512 B, head and tail kept, so the
+# payload is append-only: every turn appends to the end and the provider's
+# prefix cache keeps matching.
 # A fact that lived in a truncated middle is replayed in full by
-# `context_browse` with `results=true`. Only the current turn is sent
-# verbatim, with its calls and results.
+# `context_browse` with `results=true`. The current turn is sent verbatim,
+# with its calls and results.
 #
 # window: the number of turns the window keeps after a slide — its floor.
 # Default: 10. 0 is treated as 1 (a window holds at least one turn);
@@ -527,10 +528,9 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # weight by triggering the slide. The estimate is heuristic (CJK characters
 # ~1 token, other bytes ~1/4), not a tokenizer. Unset by default.
 # checkpoint_interval: how many completed assistant messages the current
-# turn may reach before its older steps fold into a text-plus-calls
-# checkpoint (each folded tool result rides along truncated to 512 bytes,
-# head and tail kept; visible text and a `[Tool calls]` note of the calls
-# stay).
+# turn may reach before its older steps fold into a verbatim checkpoint
+# (the folded messages replay as sent — calls and results included — with
+# each oversized field cut to 512 B, head and tail kept).
 # It counts assistant messages — every step that produced output, a tool
 # call or a final reply — not turns and not tool calls. Default: 32. 0
 # disables in-turn folding, so the whole current turn rides verbatim and

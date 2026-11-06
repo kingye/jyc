@@ -1302,7 +1302,12 @@ pub(crate) fn extract_assistant_transcript_text(msg: &serde_json::Value) -> Stri
 /// Drop one leading inline block that duplicates `reasoning`, plus the
 /// single blank-line separator the raw builder writes after it. Returns
 /// `text` unchanged unless every piece matches.
-fn strip_duplicated_inline_reasoning(text: &str, reasoning: &str) -> String {
+///
+/// Shared by the transcript view ([`extract_assistant_transcript_text`])
+/// and the wire fold's replay path
+/// ([`crate::agent_loop::context`]'s `cap_folded_fields`): both must not
+/// replay reasoning as reply text.
+pub(crate) fn strip_duplicated_inline_reasoning(text: &str, reasoning: &str) -> String {
     if reasoning.is_empty() {
         return text.to_string();
     }
@@ -1515,35 +1520,16 @@ fn truncate_json_value(value: &serde_json::Value, max: usize) -> String {
 /// Wire-only marker inserted at the start of the history block.
 /// It is **not** persisted to `raw_context`, so `extract_pairs` must never
 /// recognize it as a real user message.
-pub(crate) const HISTORY_MARKER_TEXT: &str = "[History messages] earlier conversation follows — text plus tool calls \
-     (name and arguments) and their results, truncated when oversized.";
-
-/// Leading text of the wire-only note that carries one turn's tool calls in
-/// a folded region.
-///
-/// The note is a separate user message, never part of the assistant's own
-/// text: the transcript must not teach the model to write its tool use as
-/// content. It is also never a structured `tool_calls` block — those have no
-/// results in a folded region, and the send path drops a dangling call
-/// together with every message after it.
-pub(crate) const TOOL_CALLS_NOTE_PREFIX: &str = "[Tool calls]";
-
-/// Leading text of the wire-only note that carries one turn's tool results
-/// in a folded region (history and checkpoint alike).
-///
-/// A separate user message after the calls note, for the same reason: tool
-/// output never rides the assistant's own text. Each result is already cut
-/// to the fixed folded replay cap at collection, its own paging marker
-/// stating what was dropped — the note adds no bound of its own.
-pub(crate) const TOOL_RESULTS_NOTE_PREFIX: &str = "[Tool results]";
+pub(crate) const HISTORY_MARKER_TEXT: &str = "[History messages] earlier conversation follows — the messages of each \
+     turn as they were sent (text, tool calls and their results), with oversized fields truncated in the middle.";
 
 /// One user→assistant turn extracted from raw context.
 ///
 /// The assistant entry holds the assistant's own text plus the turn's
-/// `reasoning_content` (the fold replays it through the provider's wire
-/// shape); the turn's tool calls are kept separately in
-/// [`Self::tool_calls`] — never merged into that text, so the transcript
-/// view cannot teach the model to write its tool use as content.
+/// `reasoning_content` (the transcript view renders it); the turn's tool
+/// calls are kept separately in [`Self::tool_calls`] — never merged into
+/// that text, so the transcript view cannot teach the model to write its
+/// tool use as content.
 pub(crate) struct TurnPair {
     /// The turn-opening user message (original wire format).
     pub user: serde_json::Value,
@@ -1643,69 +1629,16 @@ pub(crate) fn render_turn_tool_calls_bounded(pair: &TurnPair, limit: usize) -> O
     }
 }
 
-/// The turn's rendered tool-result list for a folded-region note: results
-/// joined in call order with a `---` line between (keeps two consecutive
-/// results from reading as one — a result's text is free-form, so a newline
-/// alone would be ambiguous), under a per-turn byte budget. `None` when the
-/// turn has no collected results.
-///
-/// The budget mirrors [`render_turn_tool_calls_bounded`]'s: whole results
-/// are dropped from the end — never cut mid-marker, which would leave a
-/// head without its tail looking like a real one — and the overflow marker
-/// absorbs the count, so "how many are hidden" survives any budget that can
-/// hold the marker itself. A single result wider than the whole budget keeps
-/// its head alone (the per-result cap has already cut it to 512 bytes with
-/// both ends intact at collection time; cutting its head again only trims a
-/// result that is already bounded).
-pub(crate) fn render_turn_tool_results_bounded(pair: &TurnPair, limit: usize) -> Option<String> {
-    if pair.results.is_empty() {
-        return None;
-    }
-    let marker = |dropped: usize| -> String {
-        match dropped {
-            0 => String::new(),
-            1 => " …(1 more result)".to_string(),
-            n => format!(" …({n} more results)"),
-        }
-    };
-    let total = pair.results.len();
-    let mut keep = total;
-    loop {
-        let body = pair.results[..keep].join("\n---\n");
-        let suffix = marker(pair.omitted_results + (total - keep));
-        if body.len() + suffix.len() <= limit {
-            return Some(format!("{body}{suffix}"));
-        }
-        if keep == 1 {
-            // Nothing left to drop: one result alone is over budget. Keep
-            // its head — already edge-truncated at collection, so what is
-            // lost here is bounded middle bytes — rather than degrading to
-            // the bare count, which would hide that the turn produced
-            // anything at all.
-            let one = pair.results[0].as_str();
-            let head = |room: usize| one.floor_char_boundary(room.min(one.len()));
-            let tail = match suffix.trim_start() {
-                "" => "…",
-                marker => marker,
-            };
-            return Some(match limit.checked_sub(tail.len()) {
-                Some(room) => format!("{}{tail}", &one[..head(room)]),
-                None => one[..head(limit)].to_string(),
-            });
-        }
-        keep -= 1;
-    }
-}
-
 /// Flush the accumulated turn into `pairs`: merge every assistant message
 /// of the turn (tool-call steps included) into a single assistant entry
 /// holding ONLY the steps' text, and collect the turn's tool calls into
 /// [`TurnPair::tool_calls`]. Always clears the turn state.
 ///
 /// A turn with no assistant reply yet (interrupted between user message
-/// and first response) produces no pair; the history builder keeps the last
-/// user message for that case. Assistant messages seen before any user
-/// message (no pairing anchor) are dropped.
+/// and first response) produces no pair; the wire fold replays that user
+/// message verbatim regardless, and only this pair view drops it.
+/// Assistant messages seen before any user message (no pairing anchor) are
+/// dropped here for the same reason.
 fn flush_turn(
     pairs: &mut Vec<TurnPair>,
     cur_user: &mut Option<serde_json::Value>,
@@ -1870,16 +1803,16 @@ pub(crate) type TruncateFn = fn(&str, usize) -> String;
 /// transcripts) still count as the step they were, but render no tool call.
 ///
 /// Assistant messages are cleaned to role + content + reasoning_content
-/// (the fold replays it; `tool_calls` are stripped); the calls themselves
+/// (the view renders it; `tool_calls` are stripped); the calls themselves
 /// are rendered into [`TurnPair::tool_calls`], never into the assistant's
 /// own text. Returns pairs in oldest→newest order.
 ///
 /// A trailing turn whose user message has no assistant reply yet is
-/// dropped — a completed turn only (the history builder keeps the last user
-/// message for the no-pairs case).
+/// dropped — a completed turn only.
 ///
-/// Shared by the sliding-window payload and the `context_browse` built-in
-/// tool.
+/// Used by the `context_browse` built-in tool. The wire's folded regions
+/// replay raw messages instead of pairs
+/// ([`crate::agent_loop::context`]'s `build_verbatim_region`).
 pub(crate) fn extract_pairs(raw_context: &[serde_json::Value]) -> Vec<TurnPair> {
     extract_pairs_inner(raw_context, None)
 }
@@ -1888,18 +1821,15 @@ pub(crate) fn extract_pairs(raw_context: &[serde_json::Value]) -> Vec<TurnPair> 
 /// ([`TurnPair::results`]), each cut to `result_max` bytes **as it is
 /// collected** by `truncate`.
 ///
-/// The wire's history folds, checkpoint folds and `context_browse` are the
-/// readers: the first two replay each turn's results with each one cut by
-/// the fixed folded replay cap (and pass [`truncate_text_keeping_edges`], so
-/// each result keeps its head and tail); the latter always shows what a
-/// tool returned when asked to (`results=true`) and passes
-/// [`truncate_text`], the head-only cut it has always used. The bound
-/// belongs here rather than at render time because
+/// The `context_browse` built-in tool is the only caller: with `results=true`
+/// it shows each turn's results, each cut head-only by [`truncate_text`].
+/// The bound belongs here rather than at render time because
 /// the page shows at most fifty pairs while the extraction window is
 /// `offset + limit` pairs deep — `offset` is unbounded, so a deep page
 /// would otherwise clone the whole journal's results (uncapped since
 /// `turn_tool_result_cap` defaults to off) to print a bounded page. The
 /// walk, the turn boundaries and the keep rules are the same function as
+/// [`extract_pairs`]
 /// above, so a result can never be attributed to a different turn than its
 /// calls.
 pub(crate) fn extract_pairs_with_results(

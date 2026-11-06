@@ -1471,6 +1471,10 @@ mod render_raw_context_tests {
     /// duplicate, and applying it to every role erased real messages. A
     /// `role:"tool"` answer with no text would take its call's only result
     /// with it, leaving exactly the orphan shape the fold is there to avoid.
+    ///
+    /// This is about the fold only: an empty assistant message is still
+    /// dropped later by `filter_valid_messages` at send time, which is a
+    /// different layer.
     #[test]
     fn folded_keeps_messages_whose_content_was_already_empty() {
         let cap = FOLDED_FIELD_REPLAY_CAP;
@@ -2331,8 +2335,13 @@ mod render_raw_context_tests {
             .0
             .into_owned();
 
-        // sent[0] is the history marker; the prior follows.
-        assert_eq!(sent[0]["content"], crate::session::HISTORY_MARKER_TEXT);
+        // sent[0] is the history marker; the prior follows. The provider
+        // shapes a text-only user message as a string (chat) or as a block
+        // array (Anthropic), so read it through the shape-agnostic helper.
+        assert_eq!(
+            crate::session::extract_message_text(&sent[0]),
+            crate::session::HISTORY_MARKER_TEXT
+        );
         let hist = &sent[1..1 + prior_len];
         let text = hist[0]["content"][0]["text"].as_str().unwrap();
         assert!(

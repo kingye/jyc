@@ -882,8 +882,13 @@ mod tests {
         assert_eq!(spans.len(), 6, "{spans:?}");
         assert_eq!(spans[4].content, QUEUE_ACTIVE_MARK.repeat(3));
         assert_eq!(spans[4].style.fg, Some(Color::Yellow));
+        assert!(spans[4].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(spans[5].content, QUEUE_INACTIVE_MARK.repeat(6));
         assert_eq!(spans[5].style.fg, Some(Color::DarkGray));
+        assert!(
+            !spans[5].style.add_modifier.contains(Modifier::BOLD),
+            "the free slots are normal weight"
+        );
         assert_eq!(figures.unwrap().content, "3 / 10");
     }
 

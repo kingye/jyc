@@ -2399,11 +2399,11 @@ fn info_pane_shows_a_zero_weight_composition_without_a_bar() {
     assert!(screen.contains("             History ~0 · 0%"), "{screen}");
 }
 
-/// The status row carries the topic's backlog: bold yellow dots say how much
-/// of the queue is taken, plain dark-gray dots mark the free slots — the
-/// backlog pops, the free slots recede — and the word `queue` says what they count, so
-/// they cannot be read as the progress of the turn the status names. The
-/// figures share the row.
+/// The status row carries the topic's backlog: bold yellow dots say how
+/// much of the queue is taken, plain dark-gray dots mark the free slots —
+/// the backlog pops, the free slots recede — and the word `queue` says
+/// what they count, so they cannot be read as the progress of the turn
+/// the status names. The figures share the row.
 #[test]
 fn info_pane_draws_the_queue_on_the_status_row() {
     let mut app = info_pane_app(jyc_types::task::TaskList::default());

@@ -98,7 +98,7 @@ fn already_available(loader: &ToolDefinition) -> Vec<&str> {
 const BUDGETS: &[(&str, usize, usize)] = &[
     ("ask_user", 330, 290),
     ("bash", 128, 46),
-    ("context_browse", 300, 150),
+    ("context_browse", 302, 150),
     ("edit", 222, 124),
     ("grep", 117, 113),
     ("jyc_publish_file", 211, 224),
@@ -166,9 +166,9 @@ const BUDGETS: &[(&str, usize, usize)] = &[
 ///
 /// The `context_browse` `results` flag raised it by exactly +129 (187 → 269
 /// description, 92 → 139 parameter text). The description has to say both what
-/// the flag does and *when* to reach for it: folded history keeps a turn's
-/// conclusions and calls but not its results, which is the one fact this flag
-/// exists to recover.
+/// the flag does and *when* to reach for it: the folded regions carry a turn's
+/// results truncated to 512 B, and the flag is the way back to the full text,
+/// which is the one fact this flag exists to recover.
 /// The `grep` `path` parameter grew by +5 when the tool learned to name a
 /// regular file (`Directory to search in (default: working directory)` →
 /// `File or directory to search (default: working directory)`). `grep` is in

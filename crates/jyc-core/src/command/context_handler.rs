@@ -57,9 +57,9 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///     CHECKPOINT / GROWTH to the next interval (32 and 8 give 32, 36,
 ///     40 …), so a long turn keeps a growing verbatim tail. 0 keeps the
 ///     interval fixed. A small non-zero value widens fast — 1 adds a full
-///     interval per fold (32, 64, 96 …). A checkpoint's replayed tool
-///     results are bounded by a fixed internal cap — the history fold
-///     never replays results at all.
+///     interval per fold (32, 64, 96 …). Both folds replay a turn's tool
+///     results as a `[Tool results]` note, each result truncated to a
+///     fixed internal cap.
 ///
 ///     The slots moved when `note_window` was removed (it was the old 4th
 ///     slot, between EXT and TURNCAP), so a command carrying more

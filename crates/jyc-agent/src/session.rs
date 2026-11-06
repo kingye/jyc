@@ -1506,7 +1506,7 @@ fn truncate_json_value(value: &serde_json::Value, max: usize) -> String {
 /// It is **not** persisted to `raw_context`, so `extract_pairs` must never
 /// recognize it as a real user message.
 pub(crate) const HISTORY_MARKER_TEXT: &str = "[History messages] earlier conversation follows — text plus tool calls \
-     (name and arguments); tool results omitted.";
+     (name and arguments) and their results, truncated when oversized.";
 
 /// Leading text of the wire-only note that carries one turn's tool calls in
 /// a folded region.
@@ -1519,11 +1519,11 @@ pub(crate) const HISTORY_MARKER_TEXT: &str = "[History messages] earlier convers
 pub(crate) const TOOL_CALLS_NOTE_PREFIX: &str = "[Tool calls]";
 
 /// Leading text of the wire-only note that carries one turn's tool results
-/// in a checkpoint fold.
+/// in a folded region (history and checkpoint alike).
 ///
 /// A separate user message after the calls note, for the same reason: tool
 /// output never rides the assistant's own text. Each result is already cut
-/// to the fixed checkpoint replay cap at collection, its own paging marker
+/// to the fixed folded replay cap at collection, its own paging marker
 /// stating what was dropped — the note adds no bound of its own.
 pub(crate) const TOOL_RESULTS_NOTE_PREFIX: &str = "[Tool results]";
 
@@ -1553,8 +1553,9 @@ pub(crate) struct TurnPair {
     /// The turn's tool-result texts, in the order the results were
     /// recorded (which is the order the calls were issued). Populated by
     /// [`extract_pairs_with_results`] only: a plain [`extract_pairs`] fold
-    /// never carries results — the wire history omits them. Each text is
-    /// already cut to the caller's byte bound at collection.
+    /// leaves the list empty (e.g. the transcript view, which renders calls
+    /// only). Each text is already cut to the caller's byte bound at
+    /// collection.
     pub results: Vec<String>,
 }
 
@@ -1829,9 +1830,9 @@ pub(crate) fn extract_pairs(raw_context: &[serde_json::Value]) -> Vec<TurnPair> 
 /// ([`TurnPair::results`]), each cut to `result_max` bytes **as it is
 /// collected** by `truncate`.
 ///
-/// The wire's checkpoint folds and `context_browse` are the readers: the
-/// former replay the current turn's earlier steps with each result cut by
-/// the fixed checkpoint cap (and pass [`truncate_text_keeping_edges`], so
+/// The wire's history folds, checkpoint folds and `context_browse` are the
+/// readers: the first two replay each turn's results with each one cut by
+/// the fixed folded replay cap (and pass [`truncate_text_keeping_edges`], so
 /// each result keeps its head and tail); the latter always shows what a
 /// tool returned when asked to (`results=true`) and passes
 /// [`truncate_text`], the head-only cut it has always used. The bound
@@ -2404,8 +2405,9 @@ mod tests {
         assert_eq!(pairs[0].user, ctx[0]);
         assert_eq!(pairs[0].assistant.as_ref().unwrap()["content"], "a1\ndone");
         assert_eq!(pairs[0].tool_calls, vec![r#"bash(command="ls")"#]);
-        // The plain extractor carries no results: only the context_browse
-        // read-back path asks for them.
+        // The plain extractor carries no results: the folded regions take
+        // them from `pairs_with_results`, and only the context_browse
+        // read-back path asks for the full text.
         assert!(pairs[0].results.is_empty());
     }
 

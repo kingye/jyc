@@ -40,6 +40,22 @@ use crate::tools::{Tool, ToolContext, ToolOutput};
 use jyc_core::command::spawn_handler;
 use jyc_types::AppConfig;
 
+/// The suffix appended to a refusal whose cause is a name that is taken.
+///
+/// A name that is taken usually means the caller wanted to reach the
+/// existing topic, not create a new one — say which tool does that instead
+/// of leaving the refusal bare. The `contains("already exists")` contract is
+/// with the spawn handler's wording; `existing_topic_hint_pins_the_coupling`
+/// fails if either side drifts.
+fn existing_topic_hint(refusal: &str) -> &'static str {
+    if refusal.contains("already exists") {
+        " If you meant to message that existing topic, use \
+         jyc_send_to_topic instead — spawn only creates new topics."
+    } else {
+        ""
+    }
+}
+
 /// Tool for spawning a subagent topic that inherits this topic's state.
 pub struct SpawnSubagentTool {
     /// The service's shared config, so a `type` is resolved against the config
@@ -63,7 +79,9 @@ impl Tool for SpawnSubagentTool {
          below say what else it inherits, and a type may set its own default for either — \
          passing the flag explicitly overrides. Pass type=\"<name>\" to start it as a configured \
          role — its model, skills, disabled tools, mode and instructions go into the child's \
-         state. The types you can pass are listed in this tool's `type` argument. Seed its \
+         state. The types you can pass are listed in this tool's `type` argument. Reach an \
+         existing agent with `jyc_send_to_topic`, send a channel message with \
+         `jyc_send_message`; spawn only when neither fits. Seed its \
          directory with `write`, then send the task with \
          `jyc_send_to_topic` (require_reply=true); reconfigure it by sending a command body \
          (`/build`, `/plan`, `/model`, …), which spends none of its turns. When the subagent \
@@ -189,7 +207,10 @@ impl Tool for SpawnSubagentTool {
         )
         .await
         {
-            Err(refusal) => Ok(ToolOutput::error(refusal)),
+            Err(refusal) => {
+                let hint = existing_topic_hint(&refusal);
+                Ok(ToolOutput::error(format!("{refusal}{hint}")))
+            }
             Ok(child) => {
                 let dir = tm
                     .topic_path(&child)
@@ -221,6 +242,17 @@ mod tests {
         SpawnSubagentTool {
             config: Arc::new(ArcSwap::from_pointee(AppConfig::default())),
         }
+    }
+
+    #[test]
+    fn existing_topic_hint_pins_the_coupling() {
+        use super::existing_topic_hint;
+        assert!(
+            existing_topic_hint("/spawn: topic 'invoice' already exists. Give it another name.")
+                .contains("jyc_send_to_topic"),
+            "the handler's taken-name wording changed, or the hint broke"
+        );
+        assert_eq!(existing_topic_hint("some other refusal"), "");
     }
 
     /// Without a channel context there is nothing to resolve, and the tool says

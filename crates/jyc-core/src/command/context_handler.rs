@@ -58,8 +58,10 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///     40 …), so a long turn keeps a growing verbatim tail. 0 keeps the
 ///     interval fixed. A small non-zero value widens fast — 1 adds a full
 ///     interval per fold (32, 64, 96 …). Both folds replay the turn's raw
-///     messages verbatim, each oversized field (tool results, call
-///     arguments, reasoning) truncated to a fixed cap keeping both ends.
+///     messages verbatim, each oversized field (tool results, user and
+///     assistant text, call arguments, reasoning) truncated to a fixed cap
+///     keeping both ends; image blocks become a short placeholder naming
+///     their media type.
 ///
 ///     The slots moved when `note_window` was removed (it was the old 4th
 ///     slot, between EXT and TURNCAP), so a command carrying more

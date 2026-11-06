@@ -288,8 +288,11 @@ pub(crate) fn context_composition(
 /// Wire-only marker inserted at the start of a folded current-turn
 /// checkpoint. Not persisted to `raw_context`. The checkpoint replays the
 /// turn's own messages — oversized fields (tool results, text, call
-/// arguments, reasoning) cut to [`FOLDED_FIELD_REPLAY_CAP`], head and tail
-/// kept, images replaced by a placeholder — so the marker says so.
+/// arguments and their string values, reasoning, Anthropic text blocks) cut
+/// to [`FOLDED_FIELD_REPLAY_CAP`] with head and tail kept, images replaced
+/// by a placeholder naming their media type — so the marker's "truncated in
+/// the middle" describes the fields, and the placeholder states the
+/// substitution itself.
 pub(crate) const TURN_CHECKPOINT_MARKER_TEXT: &str = "[Current-turn checkpoint] earlier work in this turn follows — the \
      messages as they were sent, oversized fields truncated in the middle.";
 
@@ -541,9 +544,12 @@ fn build_verbatim_region(
 /// well-formed inline block loses that block — mirroring the Responses
 /// wire's unconditional send-time strip, because no in-tree builder writes
 /// a block without the field and replaying reasoning as reply text is what
-/// taught models to inline it. A block-only fieldless message is dropped
-/// unless it carries structured calls (dropping it would orphan the
-/// results). The strip runs against the field's original value, before the
+/// taught models to inline it. A message whose content *was* that inline
+/// block is dropped unless it carries structured calls (dropping it would
+/// orphan the results); a content that was already empty before the strip
+/// is never dropped — no strip produced it, and a `role:"tool"` answer can
+/// legitimately be empty (dropping it would orphan its call the same way).
+/// The strip runs against the field's original value, before the
 /// cap — a capped field no longer matches the inline block it duplicates.
 /// Block-shaped content is never inline-stripped: the builders never
 /// inlined there, and a block list's text blocks are capped instead.
@@ -618,20 +624,28 @@ fn cap_folded_fields(msg: &serde_json::Value, cap: usize) -> Option<serde_json::
                 _ => crate::session::strip_well_formed_leading_block(&text).unwrap_or(text),
             };
         }
-        if text.is_empty() {
-            // A block-only reasoning turn carries nothing; but a message
-            // with structured calls must stay, or its results become
-            // orphans. `null` content beside calls is the shape the
-            // builders write.
-            if !has_tool_calls(obj) {
-                return None;
-            }
-            obj.insert("content".into(), serde_json::Value::Null);
-        } else {
+        // Only the assistant strip above can empty a field; a `content` that
+        // was empty to begin with (a legacy journal line, a user turn whose
+        // blocks carried no text) is replayed exactly as the builders wrote
+        // it. Dropping it instead would erase a turn boundary — and a
+        // `role:"tool"` answer carries no text at all when the tool returned
+        // an empty string, so dropping it would orphan the call its
+        // assistant side keeps.
+        let stripped_empty = text.is_empty() && !original.is_empty();
+        if !text.is_empty() {
             let cut = crate::session::truncate_text_keeping_edges(&text, cap);
             if cut != original {
                 obj.insert("content".into(), serde_json::Value::String(cut));
             }
+        } else if stripped_empty {
+            // The inline duplicate was the whole content: a block-only
+            // reasoning turn. Keep the message when it carries calls
+            // (dropping it would orphan the results); `null` beside calls is
+            // the shape the builders write.
+            if !has_tool_calls(obj) {
+                return None;
+            }
+            obj.insert("content".into(), serde_json::Value::Null);
         }
     }
 
@@ -1450,6 +1464,26 @@ mod render_raw_context_tests {
             folded["content"].as_str().unwrap(),
             format!("{open}why and the answer")
         );
+    }
+
+    /// A `content` that was empty to begin with is replayed, never dropped:
+    /// the drop rule exists for a turn whose text *was* the inline reasoning
+    /// duplicate, and applying it to every role erased real messages. A
+    /// `role:"tool"` answer with no text would take its call's only result
+    /// with it, leaving exactly the orphan shape the fold is there to avoid.
+    #[test]
+    fn folded_keeps_messages_whose_content_was_already_empty() {
+        let cap = FOLDED_FIELD_REPLAY_CAP;
+
+        for msg in [
+            json!({"role": "tool", "tool_call_id": "c1", "content": ""}),
+            json!({"role": "user", "content": ""}),
+            json!({"role": "assistant", "content": ""}),
+        ] {
+            let folded = cap_folded_fields(&msg, cap)
+                .unwrap_or_else(|| panic!("an empty-but-real message was dropped: {msg}"));
+            assert_eq!(folded, msg, "an empty field must replay verbatim");
+        }
     }
 
     /// Structured calls survive the fold, and their argument *values* are
@@ -2288,6 +2322,9 @@ mod render_raw_context_tests {
             extend_rate: 0.5,
             turn_tool_result_cap: None,
             max_history_tokens: None,
+            // Off, so every capped field below belongs to the history region:
+            // the assertion must not be able to pass on a checkpoint instead.
+            checkpoint_interval: 0,
             ..ContextStrategyConfig::default()
         };
         let sent = build_send_context_with_regions(&anthropic(), &ctx, prior_len, &cfg)
@@ -2295,6 +2332,7 @@ mod render_raw_context_tests {
             .into_owned();
 
         // sent[0] is the history marker; the prior follows.
+        assert_eq!(sent[0]["content"], crate::session::HISTORY_MARKER_TEXT);
         let hist = &sent[1..1 + prior_len];
         let text = hist[0]["content"][0]["text"].as_str().unwrap();
         assert!(

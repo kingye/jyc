@@ -57,8 +57,14 @@ pub const LOAD_EXTENDED_TOOLS: &str = "load_extended_tools";
 /// announced the list does not, and once history has slid past it nothing else
 /// brings the list back.
 pub const EXTENDED_TOOLS: &[(&str, &str)] = &[
-    ("jyc_spawn_subagent", "delegate a task to a subagent topic"),
-    ("jyc_send_to_topic", "message another topic"),
+    (
+        "jyc_spawn_subagent",
+        "create a subagent topic for a task; reach an existing one with jyc_send_to_topic",
+    ),
+    (
+        "jyc_send_to_topic",
+        "message another topic by name — no channel parameter; for a channel send use jyc_send_message",
+    ),
     ("list_topics", "list the channels and their active topics"),
     (
         "request_access",

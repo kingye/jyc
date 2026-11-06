@@ -33,9 +33,9 @@ impl Tool for SendToThreadTool {
     }
 
     fn description(&self) -> &str {
-        "Send a message to another agent: its own topic by default, or one of its \
-         topics with 'topic'. The topic must already exist — a name no topic owns is \
-         an error, so create the agent first with jyc_spawn_subagent."
+        "Send a message to another agent's topic — its own by default, or one of its topics \
+         with 'topic' — for agent processing. Addressing is by name; this tool has no \
+         'channel' parameter (for that, jyc_send_message). The topic must already exist."
     }
 
     fn input_schema(&self) -> Value {
@@ -78,7 +78,20 @@ impl Tool for SendToThreadTool {
     }
 
     async fn execute(&self, input: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput> {
-        let agent = input.get("agent").and_then(|v| v.as_str()).unwrap_or("");
+        let agent = input
+            .get("agent")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or("");
+        if agent.is_empty() {
+            // The usual cause is a boundary mix-up: the caller shaped the call
+            // like jyc_send_message (recipient + channel) or skipped `agent`.
+            // Point at the right tool instead of a bare schema complaint.
+            return Ok(ToolOutput::error(
+                "jyc_send_to_topic requires `agent` — the name of an existing topic. \
+                 To send directly through a channel instead, use jyc_send_message.",
+            ));
+        }
         let topic = input.get("topic").and_then(|v| v.as_str());
         let message = input.get("message").and_then(|v| v.as_str()).unwrap_or("");
         let attachments: Vec<String> = input

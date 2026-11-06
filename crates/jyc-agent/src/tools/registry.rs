@@ -14,6 +14,43 @@ use jyc_utils::hooks::{HookCtx, HookOutcome, HookSet};
 use super::{Tool, ToolContext, ToolOutput};
 use crate::types::ToolDefinition;
 
+/// Character-level edit distance between two short strings — enough to
+/// recognize a typo'd tool name against the extended group's index without
+/// pulling in a dependency for it.
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0; b.len() + 1];
+    for (i, &ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            cur[j + 1] = (prev[j + 1] + 1)
+                .min(cur[j] + 1)
+                .min(prev[j] + usize::from(ca != cb));
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+/// True when `requested` looks like `candidate` mistyped — a small edit
+/// distance, or one more edit when the two share a long prefix (the
+/// real-world slips are prefixes like `jyc_spawn_agent` for
+/// `jyc_spawn_subagent`, one word shorter)
+fn near_miss(requested: &str, candidate: &str) -> bool {
+    let dist = levenshtein(requested, candidate);
+    if dist <= 2 {
+        return true;
+    }
+    let shared_prefix = requested
+        .chars()
+        .zip(candidate.chars())
+        .take_while(|(a, b)| a == b)
+        .count();
+    dist <= 3 && shared_prefix >= 8
+}
+
 /// The group of tools that stay out of the advertised tool list until the
 /// model asks for them (`load_extended_tools`).
 ///
@@ -330,11 +367,28 @@ impl ToolRegistry {
         ctx: &ToolContext<'_>,
     ) -> Result<ToolOutput> {
         let tool = self.tools.get(name).ok_or_else(|| {
-            anyhow::anyhow!(
+            let mut msg = format!(
                 "Tool '{}' not found. Available: {:?}",
                 name,
                 self.tools.keys().collect::<Vec<_>>()
-            )
+            );
+            // A near-miss against an extended name is almost always the caller
+            // reaching for the on-demand group under a typo: name the right
+            // spelling and the loader so the failure self-corrects instead of
+            // sending the model hunting through the advertised list.
+            if let Some(ext) = &self.extended
+                && let Some(nearest) = ext
+                    .names()
+                    .iter()
+                    .filter(|n| near_miss(name, n))
+                    .min_by_key(|n| levenshtein(name, n))
+            {
+                msg.push_str(&format!(
+                    ". Did you mean '{nearest}'? It is an extended tool — call \
+                     load_extended_tools to make it callable."
+                ));
+            }
+            anyhow::anyhow!(msg)
         })?;
 
         let Some(hooks) = self.hooks.clone() else {
@@ -833,6 +887,47 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Tool 'missing' not found"));
+    }
+
+    #[tokio::test]
+    async fn execute_typo_of_extended_tool_names_the_fix() {
+        let mut reg = ToolRegistry::new();
+        reg.set_extended(Arc::new(ExtendedTools::new(vec![
+            "jyc_send_to_topic".to_string(),
+        ])));
+        let ctx = ToolContext::new(std::path::Path::new("/tmp"));
+        let err = reg
+            .execute("jyc_send_to_topc", Value::Null, &ctx)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Did you mean 'jyc_send_to_topic'?"),
+            "got: {err}"
+        );
+        assert!(err.contains("load_extended_tools"), "got: {err}");
+    }
+
+    #[test]
+    fn levenshtein_counts_edits() {
+        assert_eq!(super::levenshtein("abc", "abc"), 0);
+        assert_eq!(super::levenshtein("abc", "abd"), 1);
+        assert_eq!(
+            super::levenshtein("jyc_send_to_topc", "jyc_send_to_topic"),
+            1
+        );
+        assert_eq!(super::levenshtein("missing", "jyc_send_to_topic"), 15);
+    }
+
+    #[test]
+    fn near_miss_catches_the_real_slips() {
+        use super::near_miss;
+        assert!(near_miss("jyc_send_to_topc", "jyc_send_to_topic"));
+        // the prefix slip that actually looped an agent: one word shorter
+        assert!(near_miss("jyc_spawn_agent", "jyc_spawn_subagent"));
+        assert!(!near_miss("missing", "jyc_send_to_topic"));
+        // a shared prefix alone is not enough when the distance is large
+        assert!(!near_miss("jyc_do_things", "jyc_send_to_topic"));
     }
 
     fn hook_cfg(event: &str, script: &str) -> jyc_types::config::HookConfig {

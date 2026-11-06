@@ -2437,7 +2437,7 @@ fn info_pane_draws_the_queue_on_the_status_row() {
     let marks: Vec<(u16, &str, Color, bool)> = (0..width)
         .filter_map(|x| {
             let cell = &buffer[(x, row)];
-            (cell.symbol() == "·" && matches!(cell.fg, Color::Yellow | Color::DarkGray)).then_some(
+            (cell.symbol() == "•" && matches!(cell.fg, Color::Yellow | Color::DarkGray)).then_some(
                 (
                     x,
                     cell.symbol(),

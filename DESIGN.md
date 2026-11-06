@@ -2360,9 +2360,10 @@ JYC uses the following subset of the agent service API:
      assistant steps (32 by default), the older steps fold into a
      verbatim checkpoint (the same representation as history: the raw
      messages, structured `tool_calls` and their tool results together,
-     with each oversized field — result content, call arguments,
-     reasoning — cut to a fixed 512-byte cap keeping both ends, middle
-     replaced by a paging marker);
+     with each oversized field — result content, text, call arguments,
+     reasoning, text inside Anthropic content blocks — cut to a fixed
+     512-byte cap keeping both ends, middle replaced by a paging marker,
+     and image blocks replaced by a text placeholder);
      the assistant reasoning travels on the message itself — the
      `reasoning_content` field on the OpenAI-compatible wire, a native
      `reasoning` item on Responses, dropped by the Anthropic conversion —
@@ -2483,17 +2484,21 @@ JYC uses the following subset of the agent service API:
    own. Replaying the messages themselves — role, `tool_calls`,
    `tool_call_id`, `reasoning_content`, block content — says the same
    thing with one layer fewer to keep honest: the model reads back what it
-   actually wrote, and the only rewrite left is a per-field byte cap
-   (result content, call-argument string values, `reasoning_content`:
-   512 B, head and tail kept, middle stated by the paging marker). A
+   actually wrote, and the only rewrite left is a fixed-shape fold
+   (result content, text, call-argument string values, `reasoning_content`,
+   Anthropic text blocks: 512 B, head and tail kept, middle stated by the
+   paging marker; image blocks become a text placeholder). A
    message's replay is a function of that message alone, so the block is
    append-only for free — no per-turn budget can rewrite a cached middle,
    because there is no per-turn budget. Structured `tool_calls` are safe
    here where they were not for a note: a folded slice always ends at a
    turn boundary, so a call and its result travel together; a call whose
    result was lost to a torn write or an unparsable line is repaired
-   inside the loaded slice, which costs the rest of that block at worst —
-   never the current turn after it. The
+   inside the loaded slice, which costs the rest of that turn at worst —
+   never a later turn. The repair is turn-local on purpose: dropping the
+   suffix would leave the anchored window reading the same cut slice on
+   every later load, so the slide could never advance past the
+   corruption. The
    anti-mimicry rules survive as message edits — the inline ` Thinking`
    duplicate of a non-empty `reasoning_content` is stripped from the reply
    text, a fieldless leading block strips too, a block-only entry drops —

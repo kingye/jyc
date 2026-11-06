@@ -158,8 +158,8 @@ impl ContextReader {
     /// re-scanning.
     ///
     /// The returned slice is repaired like the backward scan's: a dangling
-    /// tool call at the journal's tail takes its own message down, never
-    /// the messages appended after the read.
+    /// tool call takes its own turn's remainder down (never a later turn,
+    /// including the one appended after this read).
     pub(crate) async fn read_from(&self, offset: u64) -> PriorSlice {
         let Some((file_len, _)) = self.stat().await else {
             return PriorSlice {
@@ -215,14 +215,14 @@ impl ContextReader {
         // The same contract as the backward scan: an assistant `tool_calls`
         // message whose results are missing (a crash between the two
         // appends, or a corrupt result line skipped above) must not reach
-        // the fold, because the send path's repair would then drop that
-        // message *and everything after it* — the current turn included, on
-        // every request. Repaired here, the drop is confined to the
-        // journal's already-unusable tail, and anything appended later
-        // (this turn's messages) is unaffected. `repair` drops a suffix,
-        // so the offsets stay aligned with a truncated tail.
-        let messages = crate::provider::repair_dangling_tool_calls(messages);
-        offsets.truncate(messages.len());
+        // the fold, because the send path's repair would otherwise have to
+        // take it down on every request. The repair is turn-local: it drops
+        // that turn's remainder and keeps every later turn, so a journal
+        // that crashed once and then kept appending does not freeze the
+        // window on the pre-crash prefix. The origin map realigns the line
+        // offsets with the messages that survived.
+        let (messages, origin) = crate::provider::repair_dangling_tool_calls_with_origin(messages);
+        let offsets: Vec<u64> = origin.iter().map(|&index| offsets[index]).collect();
         PriorSlice {
             messages,
             // A read from a non-zero offset starts mid-journal: the head it
@@ -373,8 +373,11 @@ impl ContextReader {
         // The appended messages are this turn: its user message and its
         // assistant reply are both in here, so the turn is counted whole.
         // The reader repairs the journal as it reads it; applying the same
-        // repair here keeps the count from including a turn that will be
-        // cut away.
+        // turn-local repair here keeps the count from including a turn that
+        // will be cut away. The scope is this chunk: a call left dangling by
+        // a result line the *reader* could not parse was counted when it
+        // was appended, so the cached count can stay one turn high until the
+        // journal is re-read — an over-count slides sooner, never later.
         let appended = crate::provider::repair_dangling_tool_calls(appended.to_vec());
         let added = crate::session::pairs_tail_start(&appended, usize::MAX).1;
         entry.total_pairs += added;
@@ -448,9 +451,8 @@ impl ContextReader {
         }
         // The whole-file load path repaired dangling tool calls before the
         // strategies saw the context; the append-only reader must do the
-        // same, or the repair would only run on the wire — where it drops
-        // the dangling assistant *and everything after it*, the current
-        // turn included.
+        // same, or the repair would only run on the wire — with the same
+        // turn-local rule (the dangling turn goes, later turns stay).
         acc.messages = crate::provider::repair_dangling_tool_calls(acc.messages);
         acc
     }
@@ -1000,11 +1002,12 @@ mod tests {
     }
 
     /// The forward read must repair a dangling call before the fold sees
-    /// it. Unrepaired, the *send path's* repair drops the dangling
-    /// assistant and everything after it — including the turn this read
-    /// precedes, on every request until the window slides past it.
+    /// it, without ever cutting a turn appended after it. A suffix drop
+    /// here freezes the anchored window: the slice never holds the later
+    /// opener, so `turns` never grows and the slide can never move past the
+    /// corruption — the model would see the pre-crash prefix forever.
     #[tokio::test]
-    async fn read_from_repairs_a_dangling_tool_call_so_the_next_turn_survives() {
+    async fn read_from_repairs_a_dangling_call_and_keeps_turns_appended_after_it() {
         let tmp = tempfile::tempdir().unwrap();
         let body = format!(
             "{}\n{}\n{}\n",
@@ -1017,30 +1020,52 @@ mod tests {
             ]}),
         );
         let reader = reader_for(&tmp, &body).await;
-        let slice = reader.read_from(0).await;
-
+        let first = reader.read_from(0).await;
         assert_eq!(
-            slice.messages.len(),
+            first.messages.len(),
             2,
             "the dangling call is dropped: {:?}",
-            slice.messages
-        );
-        assert_eq!(
-            slice.offsets.len(),
-            slice.messages.len(),
-            "offsets must stay aligned after the repair"
+            first.messages
         );
 
-        // The next turn is appended *after* the read; with the tail already
-        // repaired, the wire repair has nothing to drop.
-        let mut wire = slice.messages;
-        wire.push(json!({"role": "user", "content": "next turn"}));
-        let sent = crate::provider::filter_valid_messages(&wire);
-        assert_eq!(
-            sent.last().and_then(|m| m["content"].as_str()),
-            Some("next turn"),
-            "the current turn must survive the wire repair: {sent:?}"
+        // The next turn is appended to the *journal*, exactly as
+        // `save_raw_context` does — after the dangling line, which stays.
+        let journal_path = tmp.path().join(".jyc").join(AGENT_CONTEXT_FILE);
+        let mut appended = tokio::fs::read(&journal_path).await.unwrap();
+        appended.extend_from_slice(
+            format!(
+                "{}\n{}\n",
+                json!({"role": "user", "content": "u2"}),
+                json!({"role": "assistant", "content": "a2"}),
+            )
+            .as_bytes(),
         );
+        tokio::fs::write(&journal_path, appended).await.unwrap();
+
+        let second = reader.read_from(0).await;
+        assert_eq!(
+            second.messages.len(),
+            4,
+            "the turn appended after the dangling call must survive: {:?}",
+            second
+                .messages
+                .iter()
+                .map(|m| m["content"].clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(second.messages[2]["content"], "u2");
+        assert_eq!(second.messages[3]["content"], "a2");
+
+        // The offsets must name the surviving lines: read the line each one
+        // points at and compare with the message it labels.
+        assert_eq!(second.offsets.len(), second.messages.len());
+        let bytes = tokio::fs::read(&journal_path).await.unwrap();
+        for (msg, &offset) in second.messages.iter().zip(&second.offsets) {
+            let start = offset as usize;
+            let end = start + bytes[start..].iter().position(|&b| b == b'\n').unwrap();
+            let line: serde_json::Value = serde_json::from_slice(&bytes[start..end]).unwrap();
+            assert_eq!(&line, msg, "offset {offset} must label its own line");
+        }
     }
 
     #[tokio::test]

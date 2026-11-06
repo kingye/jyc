@@ -495,13 +495,16 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 #
 # History replays each prior turn's raw messages — text, structured tool
 # calls and their tool results — with each oversized field (result content,
-# call arguments, reasoning) cut to 512 B, head and tail kept. Image blocks
-# become a short text placeholder (the current turn keeps the image
-# itself). The payload is append-only: every turn appends to the end and
-# the provider's prefix cache keeps matching.
+# user and assistant text, call arguments, reasoning, Anthropic text
+# blocks) cut to 512 B, head and tail kept. Image blocks become a short
+# text placeholder; only the current turn's recent suffix keeps them (the
+# in-turn checkpoint folds like history, images included). The payload is
+# append-only: every turn appends to the end and the provider's prefix
+# cache keeps matching.
 # A fact that lived in a truncated middle is replayed in full by
-# `context_browse` with `results=true`. The current turn is sent verbatim,
-# with its calls and results.
+# `context_browse` with `results=true`. The current turn's recent messages
+# (the latest assistant step and its results) follow verbatim; the older
+# part of a long turn is folded the same way history is.
 #
 # window: the number of turns the window keeps after a slide — its floor.
 # Default: 10. 0 is treated as 1 (a window holds at least one turn);

@@ -101,10 +101,14 @@ finds and hands out the window the caller asked for.
   and that slide is what persists the new anchor; a journal that fits
   keeps no anchor at all (see below).
 - **Dangling tool calls are repaired on the way out.** The slice drops
-  an assistant message whose tool calls have no tool result, and
-  everything after it, as the whole-file load path did. The repair
-  cannot wait for the wire: there it would also drop the current turn,
-  which sits after the dangling message.
+  an assistant message whose tool calls have no tool result, together
+  with the results answering it, and keeps every later turn. The repair
+  cannot wait for the wire: there it drops everything after the dangling
+  message, the current turn included. It is turn-local rather than a
+  suffix drop for the same reason — the dangling line stays in the
+  journal, so a suffix drop would read the identical cut slice on every
+  later load: the window's turn count would never grow and the anchor
+  could never advance past the corruption.
 - **The pair count stays warm.** The reader keeps how many pairs the
   journal holds in process, keyed by the journal's length and mtime, and
   the writer adds to it as it appends. A turn that changes nothing on
@@ -151,23 +155,27 @@ there:
 1. **History, the messages as sent** — every prior turn in the window,
    replayed verbatim: its user message, the assistant messages with their
    structured `tool_calls`, and each tool message that answered a call,
-   all in the shape the journal recorded — the *active provider's* wire
-   shape, since that is what was written (conversion to whichever provider
-   serves the request happens once, at send). The only rewrite is a
-   per-field cap: result content, `tool_calls[].function.arguments` string
-   values, `reasoning_content` and text inside Anthropic content blocks
-   over 512 B are cut with head and tail kept and the middle stated by the
-   paging marker; `tool_use.input` is capped as JSON, and an image block
-   becomes a one-line text placeholder (the current turn still carries the
-   image itself) instead of replaying its base64 on every request. A fact
+   all in the shape the journal recorded — chat entries, or Anthropic's
+   block shape, depending on the provider that wrote them (the Responses
+   provider deliberately persists chat shape; conversion to whichever
+   provider serves the request happens once, at send). The only rewrite is
+   a fixed-shape fold: each oversized field — result content, user and
+   assistant text, `tool_calls[].function.arguments` string values,
+   `reasoning_content` and text inside Anthropic content blocks — is cut to
+   512 B with head and tail kept and the middle stated by the paging
+   marker, so the same field is bounded whichever shape wrote it;
+   `tool_use.input` is capped as JSON per value, and an image block becomes
+   a one-line text placeholder instead of replaying its base64 on every
+   request (the current turn's *recent suffix* still carries the image; the
+   in-turn checkpoint is a folded region and substitutes it). A fact
    that lived in a dropped middle is re-read with `context_browse`
    `results=true`. Replaying the messages rather than a summary of them is
    what keeps the model from having to restate (and invent) what an
    earlier turn observed; a call and its result travel together because
    the slice ends at a turn boundary, and a call whose result was lost to
    a torn write or an unparsable line is repaired inside the slice — at
-   worst that costs the rest of the block, never the current turn after
-   it.
+   worst that costs the rest of that turn, never a later turn (and never
+   the current turn that follows the loaded block).
    Each message's replay is a function of that message alone, so this
    block only ever **grows**: nothing trims its head, and no per-turn
    budget can rewrite a middle the provider has already cached.
@@ -779,11 +787,12 @@ Key changes, newest first (see CHANGELOG.md for full entries):
   (history and checkpoint) now replay the journal's messages themselves
   instead of `[Tool calls]`/`[Tool results]` notes: structured calls,
   tool results, `reasoning_content` and block content all survive, with
-  only oversized fields (result content, call-argument string values,
-  reasoning) cut to 512 B keeping head and tail. One message = one
-  replay, so the block stays append-only without per-turn budgets, and a
-  call and its result always travel together because a folded slice ends
-  at a turn boundary. Replaces the note shape entirely.
+  only oversized fields (result content, text, call-argument string
+  values, reasoning, text blocks) cut to 512 B keeping head and tail, and
+  images replaced by a placeholder. One message = one replay, so the
+  block stays append-only without per-turn budgets, and a call and its
+  result travel together: a folded slice ends at a turn boundary, and a
+  dangling call is repaired turn-locally inside the slice. Replaces the note shape entirely.
 
 - **`[Tool calls]` note + `context_browse results=true`** — a folded turn
   keeps its conclusions but lost its evidence, so a model asked about an

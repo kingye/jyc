@@ -442,13 +442,13 @@ impl AgentService for JycAgentService {
         let tools = &*tools_arc;
         let t_tools = std::time::Instant::now();
 
-        // 4a. Resolve the context management strategy before the prompt:
-        // the prompt's History Format section is mode-conditional — turn
-        // mode must tell the model where prior turns went, and the sliding
-        // section would there describe a shape that never occurs. Runtime
-        // override (`.jyc/context-strategy.json` written by `/context`)
-        // wins over configured defaults (matched pattern > first pattern >
-        // global [ai] > sliding/window=10).
+        // 4a. Resolve the context management strategy before the prompt: the
+        // loader's projection follows it. (The History Format section the
+        // prompt appends is unconditional — it has not depended on the
+        // mode since the turn strategy was removed.) Runtime override
+        // (`.jyc/context-strategy.json` written by `/context`) wins over
+        // configured defaults (matched pattern > first pattern > global
+        // [ai] > sliding/window=6).
         let context_strategy =
             jyc_core::session_state::read_context_strategy_override(topic_name, topic_path)
                 .await
@@ -482,7 +482,6 @@ impl AgentService for JycAgentService {
                 &additional_read_roots,
                 &additional_write_roots,
                 Some(tools),
-                context_strategy.mode.clone(),
             )
             .await;
         // 5b. The volatile half — the subagent roster — rides the turn's

@@ -486,7 +486,7 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # Default context management strategy. Per-pattern `context_strategy`
 # takes priority. Overridden at runtime by the `.jyc/context-strategy.json`
 # file written by `/context`.
-# mode: "full" | "sliding_window" (alias "sliding") | "turn".
+# mode: "full" | "sliding_window" (alias "sliding").
 # Default: "sliding_window".
 #
 # sliding_window sends an *anchored* window of the journal: it only ever
@@ -507,11 +507,11 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # part of a long turn is folded the same way history is.
 #
 # window: the number of turns the window keeps after a slide — its floor.
-# Default: 10. 0 is treated as 1 (a window holds at least one turn);
+# Default: 6. 0 is treated as 1 (a window holds at least one turn);
 # `/context sliding 0` is rejected instead of silently floored.
 # extend_rate: the window may grow past `window` up to
 # max_window = window + round(extend_rate * window) before it slides back.
-# Default: 0.5 (window 10 -> grows to 15, then slides to 10). 0 makes
+# Default: 0.5 (window 6 -> grows to 9, then slides to 6). 0 makes
 # `window` a hard cap that slides on every turn — every turn then re-encodes
 # the history and the prompt cache stops paying off.
 # turn_tool_result_cap: cap each tool result in the current turn, keeping
@@ -548,25 +548,10 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # grows instead of staying a fixed size. Default: 8. 0 keeps the interval
 # fixed (the behaviour before this knob existed); 1 adds a full interval per
 # fold (32, 64, 96 …), which quickly makes the checkpoint bound nothing.
-# context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5 }
-# context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5, max_history_tokens = 30000 }
-# context_strategy = { mode = "sliding_window", window = 10, checkpoint_interval = 64 }
-# context_strategy = { mode = "sliding_window", window = 10, checkpoint_growth = 0 }
-#
-# turn sends only the current turn: no prior turns ride the wire at all.
-# Every request starts from zero prior turns — the equivalent of
-# `/context restart` before each turn, without touching the journal.
-# The current turn still uses the checkpoint machinery above (interval and
-# growth apply here too); earlier turns remain in the journal and are read
-# back with `context_browse` when needed. The system prompt describes this
-# and points the model at the tool. Trade-off: cross-turn prompt-cache
-# reuse is lost (only the tools + system prefix still hits), in exchange
-# for the smallest possible payload and no accumulated-history failure
-# modes. window/extend_rate/turn_tool_result_cap/max_history_tokens have no
-# object in this mode; `/context turn` resets them in the override it
-# writes.
-# context_strategy = { mode = "turn" }
-# context_strategy = { mode = "turn", checkpoint_interval = 16 }
+# context_strategy = { mode = "sliding_window", window = 6, extend_rate = 0.5 }
+# context_strategy = { mode = "sliding_window", window = 6, extend_rate = 0.5, max_history_tokens = 30000 }
+# context_strategy = { mode = "sliding_window", window = 6, checkpoint_interval = 64 }
+# context_strategy = { mode = "sliding_window", window = 6, checkpoint_growth = 0 }
 
 
 [ai.attachments]
@@ -1195,13 +1180,13 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # mode = "build"
 # window / extend_rate: the sliding window keeps `window` turns after a
 # slide and may grow to window + round(extend_rate * window) before it
-# slides back (defaults 10 and 0.5).
+# slides back (defaults 6 and 0.5).
 # History carries each prior turn's raw messages — text, calls and their
 # results, each oversized field truncated to 512 B and image blocks replaced
 # by a placeholder; the current turn's recent suffix rides verbatim (its
 # in-turn checkpoint folds the same way). See `[ai].context_strategy`
 # above for the full field list.
-# context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5 }
+# context_strategy = { mode = "sliding_window", window = 6, extend_rate = 0.5 }
 # attachments = { enabled = true, allowed_extensions = [".pdf", ".md"] }
 #
 # --- Per-agent `[[commands]]` ---

@@ -44,6 +44,7 @@ impl JycAgentService {
     // boundaries are, and which tools this turn has. They are one list
     // because they are read together, and the repo's other long builders
     // keep theirs in one list too.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn build_system_prompt(
         &self,
         topic_name: &str,

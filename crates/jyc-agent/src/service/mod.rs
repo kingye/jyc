@@ -443,10 +443,12 @@ impl AgentService for JycAgentService {
         let t_tools = std::time::Instant::now();
 
         // 4a. Resolve the context management strategy before the prompt: the
-        // loader's projection and the prompt's History Format section both
-        // follow it. Runtime override (`.jyc/context-strategy.json` written
-        // by `/context`) wins over configured defaults (matched pattern >
-        // first pattern > global [ai] > sliding/window=6).
+        // loader's projection follows it. (The History Format section the
+        // prompt appends is unconditional — it has not depended on the
+        // mode since the turn strategy was removed.) Runtime override
+        // (`.jyc/context-strategy.json` written by `/context`) wins over
+        // configured defaults (matched pattern > first pattern > global
+        // [ai] > sliding/window=6).
         let context_strategy =
             jyc_core::session_state::read_context_strategy_override(topic_name, topic_path)
                 .await

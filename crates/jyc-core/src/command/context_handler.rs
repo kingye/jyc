@@ -447,7 +447,7 @@ impl CommandHandler for ContextCommandHandler {
             other => Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/context: unknown argument '{other}'. Use: /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH] | turn | full | restart | reset | dump [on|off]"
+                    "/context: unknown argument '{other}'. Use: /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH] | full | restart | reset | dump [on|off]"
                 ),
                 error: None,
                 append_body: None,
@@ -749,8 +749,9 @@ mod tests {
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(v["mode"], "sliding_window");
-        // No explicit window → falls back to the configured default (10).
-        assert_eq!(v["window"], 10);
+        // No explicit window → falls back to the configured default (pinned
+        // by the `default_context_window_size` test in jyc-types).
+        assert_eq!(v["window"], ContextStrategyConfig::default().window);
     }
 
     #[tokio::test]

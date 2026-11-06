@@ -948,7 +948,7 @@ pub struct ContextStrategyConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_history_tokens: Option<usize>,
     /// Completed assistant messages per current-turn checkpoint
-    /// (`sliding_window` and `turn` modes): once the current turn passes
+    /// (`sliding_window` mode): once the current turn passes
     /// this many assistant messages, the older ones fold into a checkpoint
     /// in the history block's shape (the raw messages, each oversized field
     /// cut to 512 B keeping head and tail) and the recent suffix stays

@@ -197,9 +197,9 @@ there:
    pairing stays legal mid-flight and provider-specific replay fields
    survive where they matter.
 
-`window` (default `10`) is the number of turns the window keeps after a
+`window` (default `6`) is the number of turns the window keeps after a
 slide. `extend_rate` (default `0.5`) is how far it may grow first:
-`max_window = window + round(extend_rate × window)` = 15 turns. The
+`max_window = window + round(extend_rate × window)` = 9 turns. The
 window grows by pure append until it holds more than `max_window` turns,
 then **slides**: the anchor moves forward so the last `window` turns
 remain, whole turns at a time (never splitting a `tool_use` from its
@@ -538,7 +538,7 @@ rows):
 
 | Field | Default | Meaning |
 |-------|---------|---------|
-| `window` | `10` | Turns kept after a slide — the window's floor |
+| `window` | `6` | Turns kept after a slide — the window's floor |
 | `extend_rate` | `0.5` | Growth allowed before a slide: `max_window = window + round(extend_rate × window)`; `0` = hard window (slides every turn) |
 | `turn_tool_result_cap` | unset | Per-result byte cap on the recent current-turn suffix — see below |
 | `max_history_tokens` | unset | Second slide trigger, at the top of the extension cycle — see below |

@@ -169,7 +169,12 @@ const BUDGETS: &[(&str, usize, usize)] = &[
 /// the flag does and *when* to reach for it: folded history keeps a turn's
 /// conclusions and calls but not its results, which is the one fact this flag
 /// exists to recover.
-const TOTAL_BUDGET: usize = 8_691;
+/// The `grep` `path` parameter grew by +5 when the tool learned to name a
+/// regular file (`Directory to search in (default: working directory)` →
+/// `File or directory to search (default: working directory)`). `grep` is in
+/// the advertised core set, so both totals below move by exactly that stated
+/// delta rather than absorbing the growth into existing slack.
+const TOTAL_BUDGET: usize = 8_696;
 
 /// The advertised set — the core tools plus the loader's index — in
 /// characters. This is the standing per-call cost after the extended group
@@ -188,7 +193,7 @@ const TOTAL_BUDGET: usize = 8_691;
 /// extended group, so an ordinary request never carries its schema. What it
 /// does cost is one more one-liner in the loader's index, +77 characters —
 /// and that line is in the advertised set. The ceiling moves by exactly that.
-const ADVERTISED_TOTAL_BUDGET: usize = 3_127;
+const ADVERTISED_TOTAL_BUDGET: usize = 3_132;
 
 /// `jyc_spawn_subagent`'s `type` description ends with the catalog of roles
 /// configured *on this machine*, so its length is configuration rather than

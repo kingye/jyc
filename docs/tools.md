@@ -99,8 +99,10 @@ Search file contents using regular expressions.
 
 **Parameters:**
 - `pattern` (string, required): Regex pattern to search for
-- `path` (string, optional): Directory to search in (default: working directory)
+- `path` (string, optional): File or directory to search (default: working directory)
 - `include` (string, optional): File pattern filter (e.g., `*.rs`, `*.{ts,tsx}`)
+
+**Behavior:** An explicit file is searched directly, and `include` filtering still applies to it. Recursive directory traversal skips hidden directories and common non-source directories (`node_modules`, `target`, `vendor`); those directory-entry skips do not apply to an explicit file.
 
 **Limits:** Maximum 100 results returned; truncates with count if more.
 

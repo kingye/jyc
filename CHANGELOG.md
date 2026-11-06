@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-06
+
 ### Added
 
 - `turn` context strategy (`context_strategy = { mode = "turn" }` / `/context turn`): every request sends only the current turn — the loader projects an empty prior (the journal holds completed turns only, so there is nothing to slice), no history block ever exists, and the checkpoint is the only fold. Earlier turns stay in `.jyc/agent-context.jsonl`, readable via `context_browse`; the system prompt swaps its History Format section for a pointer to the tool. `/context restart` is a no-op in this mode. The trade is deliberate: cross-turn prompt-cache reuse is lost (only `system` + `tools` stays cacheable) in exchange for the smallest possible payload and immunity to accumulated-history failure modes

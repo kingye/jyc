@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+### Changed
+
+- Default sliding-window `window` is 6 turns (was 10); `extend_rate` 0.5, `turn_tool_result_cap` unset, `checkpoint_interval` 32, `checkpoint_growth` 8, and the anchor/budget slide mechanics are unchanged, so the window still grows to `window + round(extend_rate × window)` = 9 turns before sliding back to 6
+
+### Removed
+
+- The `turn` context strategy (`context_strategy = { mode = "turn" }` / `/context turn`) and its `/context restart` no-op branch: the mode never justified its keep, and `/context restart` gives the same zero-prior restart on demand. The History Format prompt section is again unconditional. A stale `.jyc/context-strategy.json` override carrying `mode = "turn"` fails to parse and falls back to the configured strategy, while the main config / subagent-type files reject the value outright — replace it with `/context restart` or a sliding window
+
 ## [0.9.0] - 2026-11-06
 
 ### Added

@@ -15,17 +15,12 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///   /context full         Switch to full context (send everything since the
 ///                         last `/context restart`, or the whole journal when
 ///                         no restart boundary exists)
-///   /context turn         Switch to current-turn-only: no prior turn reaches
-///                         the wire, earlier turns stay in the journal and are
-///                         readable via `context_browse`; `/context restart`
-///                         becomes a no-op. The checkpoint still bounds a long
-///                         turn.
 ///   /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH]
 ///     Switch to sliding window. Parameters are positional and all
 ///     optional:
 ///
 ///       slot        type    accepted range           default
-///       N           int     1..=200                  10
+///       N           int     1..=200                  6
 ///       EXT         float   0.0..=10.0               0.5
 ///       TURNCAP     int     0, or 130..=1048576      0 (off)
 ///       MAXHIST     int     0..=4000000              0 (off)
@@ -145,8 +140,9 @@ impl CommandHandler for ContextCommandHandler {
         // strategy is consulted — the agent loop's load and this command's
         // echo alike (see `session_state.rs` on `resolve_context_strategy`)
         // — so resolve it once, up front, and judge "the current mode" by
-        // it: `/context turn` only writes the override, and a mode check
-        // against `configured` would miss what the user just switched to.
+        // it: a switch like `/context sliding N` only writes the override,
+        // and a mode check against `configured` would miss what the user
+        // just switched to.
         let effective = crate::session_state::read_context_strategy_override(
             &context.topic_name,
             &context.topic_path,
@@ -176,24 +172,6 @@ impl CommandHandler for ContextCommandHandler {
                     return Ok(CommandResult::refusal(format!(
                         "/context: unexpected argument '{extra}' (usage: /context restart)"
                     )));
-                }
-                // Judge the no-op by the same effective mode the agent loop
-                // loads with: the override outranks the config chain, and a
-                // mode check against `configured` alone would skip the no-op
-                // right after `/context turn`, writing a dead boundary file
-                // that silently truncates a later full/sliding session.
-                if effective.mode == ContextStrategy::Turn {
-                    // Every request already starts with zero prior turns in
-                    // this mode; writing the boundary would be a dead side
-                    // effect, so report instead of doing it.
-                    return Ok(CommandResult {
-                        success: true,
-                        message: "/context: restart is a no-op in turn mode — \
-                                  every request already starts with 0 prior turns."
-                            .into(),
-                        error: None,
-                        append_body: None,
-                    });
                 }
                 let Some(agent) = context.agent.as_ref() else {
                     return Ok(CommandResult::refusal(
@@ -245,52 +223,6 @@ impl CommandHandler for ContextCommandHandler {
                 Ok(CommandResult {
                     success: true,
                     message: "/context: switched to full (history since the last restart, or all history)".into(),
-                    error: None,
-                    append_body: None,
-                })
-            }
-            "turn" => {
-                // Same guard as `sliding`: a trailing positional is a
-                // slot-shifted or stale command, refused rather than
-                // silently dropped. This subcommand takes no knobs — the
-                // checkpoint knobs carry over from the effective values.
-                if let Some(extra) = context.args.get(1) {
-                    return Ok(CommandResult {
-                        success: false,
-                        message: format!(
-                            "/context: unexpected argument '{extra}' (usage: /context turn)"
-                        ),
-                        error: None,
-                        append_body: None,
-                    });
-                }
-                write_override(
-                    &state_dir,
-                    &override_path,
-                    ContextStrategyConfig {
-                        mode: ContextStrategy::Turn,
-                        // The checkpoint still bounds a long turn in this
-                        // mode, so its knobs carry over from the *effective*
-                        // values (override included) — dropping a just-set
-                        // interval because it lives only in the override
-                        // would be the same silent reset the dead sliding
-                        // knobs get. The sliding-only knobs (window,
-                        // extend_rate, turn cap, max_history_tokens) have no
-                        // object here — nothing is windowed and no prior
-                        // history exists — and are reset to their defaults
-                        // so the override never carries values that cannot
-                        // take effect.
-                        checkpoint_interval: effective.checkpoint_interval,
-                        checkpoint_growth: effective.checkpoint_growth,
-                        ..ContextStrategyConfig::default()
-                    },
-                )
-                .await?;
-                Ok(CommandResult {
-                    success: true,
-                    message: "/context: switched to turn (current turn only; \
-                              earlier turns stay in the journal, readable via context_browse)"
-                        .into(),
                     error: None,
                     append_body: None,
                 })
@@ -515,7 +447,7 @@ impl CommandHandler for ContextCommandHandler {
             other => Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/context: unknown argument '{other}'. Use: /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH] | turn | full | restart | reset | dump [on|off]"
+                    "/context: unknown argument '{other}'. Use: /context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH] | full | restart | reset | dump [on|off]"
                 ),
                 error: None,
                 append_body: None,
@@ -626,29 +558,6 @@ fn describe_strategy(cfg: &ContextStrategyConfig) -> String {
                 // Only meaningful while folding is on, so it is echoed only
                 // then: `growth=8` next to `interval=0 (off)` would suggest a
                 // widening that never happens.
-                if cfg.checkpoint_growth == 0 {
-                    s.push_str(", checkpoint_growth=0 (fixed)");
-                } else {
-                    s.push_str(&format!(", checkpoint_growth={}", cfg.checkpoint_growth));
-                }
-            }
-            s.push(')');
-            s
-        }
-        ContextStrategy::Turn => {
-            let mut s = "turn (current turn only; prior turns via context_browse".to_string();
-            // The checkpoint is the ONLY fold in this mode, so its knobs are
-            // the live knobs and get the sliding branch's echo rules:
-            // interval is always echoed (its default is non-off, so absence
-            // would read as "not configured"), growth only while interval is
-            // on, and a fixed interval is labeled as such.
-            if cfg.checkpoint_interval == 0 {
-                s.push_str(", checkpoint_interval=0 (off)");
-            } else {
-                s.push_str(&format!(
-                    ", checkpoint_interval={}",
-                    cfg.checkpoint_interval
-                ));
                 if cfg.checkpoint_growth == 0 {
                     s.push_str(", checkpoint_growth=0 (fixed)");
                 } else {
@@ -801,125 +710,9 @@ mod tests {
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(v["mode"], "full");
-        // full preserves the configured window (default 10) so toggling
+        // full preserves the configured window (default 6) so toggling
         // full → sliding later still has a sensible default.
-        assert_eq!(v["window"], 10);
-    }
-
-    #[tokio::test]
-    async fn test_turn_switch_resets_dead_sliding_knobs() {
-        // `/context turn` keeps only the knobs that still act in turn mode
-        // (the checkpoint pair); the sliding-only ones are reset, so the
-        // persisted override never carries values that cannot take effect.
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_turn_switch_resets_dead_sliding_knobs";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let handler = ContextCommandHandler;
-        let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec!["turn".into()];
-        let result = handler.execute(ctx).await.unwrap();
-        assert!(result.success);
-        assert!(result.message.contains("turn (current turn only"));
-        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
-            .await
-            .unwrap();
-        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(v["mode"], "turn");
-        assert_eq!(v["window"], 10, "reset to the default, not preserved");
-        assert_eq!(v["turn_tool_result_cap"], serde_json::Value::Null);
-        assert_eq!(v["max_history_tokens"], serde_json::Value::Null);
-        // The checkpoint knobs are live in this mode, so they default here.
-        assert_eq!(
-            v["checkpoint_interval"],
-            serde_json::json!(jyc_types::channel::DEFAULT_CHECKPOINT_INTERVAL)
-        );
-    }
-
-    #[tokio::test]
-    async fn test_turn_switch_keeps_checkpoint_knobs_from_the_override() {
-        // The checkpoint pair carries over from the *effective* values:
-        // an interval set through a live `/context sliding` override must
-        // survive the switch to turn — dropping it back to the config-chain
-        // 32 would be the same silent reset the dead sliding knobs get.
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_turn_switch_keeps_checkpoint_knobs";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let handler = ContextCommandHandler;
-        let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec![
-            "sliding".into(),
-            "10".into(),
-            "0.5".into(),
-            "0".into(),
-            "0".into(),
-            "16".into(),
-        ];
-        let result = handler.execute(ctx).await.unwrap();
-        assert!(result.success);
-
-        let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec!["turn".into()];
-        let result = handler.execute(ctx).await.unwrap();
-        assert!(result.success);
-
-        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
-            .await
-            .unwrap();
-        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(v["mode"], "turn");
-        assert_eq!(
-            v["checkpoint_interval"], 16,
-            "the override's interval survives the switch, not the config 32"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_turn_rejects_extra_positional() {
-        // `/context turn` takes no knobs — its checkpoint pair carries over
-        // from the effective values. A trailing positional is a stale or
-        // slot-shifted command; refused like `sliding` refuses its extras.
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_turn_rejects_extra_positional";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let handler = ContextCommandHandler;
-        let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec!["turn".into(), "7".into()];
-        let result = handler.execute(ctx).await.unwrap();
-        assert!(!result.success);
-        assert!(result.message.contains("unexpected argument '7'"));
-        assert!(
-            !tmp.path().join(".jyc/context-strategy.json").exists(),
-            "a refused command must not write the override"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_turn_restart_is_a_noop() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_turn_restart_is_a_noop";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        // Persist a turn-mode override, then run restart under it.
-        let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec!["turn".into()];
-        let handler = ContextCommandHandler;
-        let result = handler.execute(ctx).await.unwrap();
-        assert!(result.success);
-
-        let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec!["restart".into()];
-        let result = handler.execute(ctx).await.unwrap();
-        assert!(result.success);
-        assert!(
-            result.message.contains("restart is a no-op in turn mode"),
-            "restart reports instead of writing a boundary: {}",
-            result.message
-        );
-        // No session state was touched: no restart anchor exists.
-        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
-            .await
-            .unwrap();
-        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(v["mode"], "turn");
+        assert_eq!(v["window"], 6);
     }
 
     #[tokio::test]
@@ -956,8 +749,9 @@ mod tests {
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(v["mode"], "sliding_window");
-        // No explicit window → falls back to the configured default (10).
-        assert_eq!(v["window"], 10);
+        // No explicit window → falls back to the configured default (pinned
+        // by the `default_context_window_size` test in jyc-types).
+        assert_eq!(v["window"], ContextStrategyConfig::default().window);
     }
 
     #[tokio::test]

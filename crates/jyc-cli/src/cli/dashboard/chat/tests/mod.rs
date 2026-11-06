@@ -2915,7 +2915,7 @@ fn poll_sync_appends_each_live_entry_by_unique_id() {
     // that motivated the fix.
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
-    let text = "/context: current strategy is sliding_window (window=10) (default)".to_string();
+    let text = "/context: current strategy is sliding_window (window=6) (default)".to_string();
     push_live_chat(
         &mut app,
         "agents",
@@ -3090,7 +3090,7 @@ fn poll_sync_command_repeats_with_historical_backdrop() {
     // User types /context three times. Each typing pushes a local echo; the
     // server echoes the message back through live_chat with a fresh id and
     // the echo's client id, followed by the AI reply.
-    let ai_text = "/context: current strategy is sliding_window (window=10) (default)".to_string();
+    let ai_text = "/context: current strategy is sliding_window (window=6) (default)".to_string();
     for round in 0..3 {
         app.chat.send_message_inner("/context".into());
         let client_id = app

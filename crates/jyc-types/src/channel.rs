@@ -797,12 +797,6 @@ pub enum ContextStrategy {
     /// kept verbatim.
     #[serde(alias = "sliding")]
     SlidingWindow,
-    /// Send nothing but the current turn. The journal keeps every earlier
-    /// turn and `context_browse` can read them back, but no prior turn
-    /// reaches the wire — each request starts as if `/context restart`
-    /// had just run. Long turns still fold through the checkpoint, so the
-    /// wire stays bounded; the cost is the cross-turn prefix cache.
-    Turn,
 }
 
 /// Bytes reserved inside a cap for the edge-keeping trim's drop marker.
@@ -899,13 +893,13 @@ pub struct ContextStrategyConfig {
     #[serde(default = "default_context_strategy")]
     pub mode: ContextStrategy,
     /// Number of latest turns the window keeps after a slide — its floor.
-    /// Default: 10. Only meaningful when `mode = "sliding_window"`.
+    /// Default: 6. Only meaningful when `mode = "sliding_window"`.
     #[serde(default = "default_context_window_size")]
     pub window: usize,
     /// How far the window may grow past `window` before it slides:
     /// `max_window = window + round(extend_rate × window)`. Default: 0.5
-    /// (with `window = 10`, the window grows to 15 turns and then slides
-    /// back to 10). `0.0` makes the window a hard cap — it slides on every
+    /// (with `window = 6`, the window grows to 9 turns and then slides
+    /// back to 6). `0.0` makes the window a hard cap — it slides on every
     /// turn, which re-encodes the history every turn and defeats the
     /// prompt cache; raise it (or `window`) when the cache matters.
     /// Only meaningful when `mode = "sliding_window"`.
@@ -933,8 +927,8 @@ pub struct ContextStrategyConfig {
     /// `None` (the default) bounds the history by turns alone — `window`
     /// and `extend_rate` decide. `Some(0)` means the same.
     ///
-    /// `window` counts turns, so a window of 10 still costs whatever those
-    /// 10 turns happen to weigh — a handful of small ones, or a few turns
+    /// `window` counts turns, so a window of 6 still costs whatever those
+    /// 6 turns happen to weigh — a handful of small ones, or a few turns
     /// carrying megabyte-sized tool results. This budget is the second
     /// trigger for the same slide: when the window's estimated weight
     /// exceeds it *and* the window has reached `max_window` turns, it
@@ -954,7 +948,7 @@ pub struct ContextStrategyConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_history_tokens: Option<usize>,
     /// Completed assistant messages per current-turn checkpoint
-    /// (`sliding_window` and `turn` modes): once the current turn passes
+    /// (`sliding_window` mode): once the current turn passes
     /// this many assistant messages, the older ones fold into a checkpoint
     /// in the history block's shape (the raw messages, each oversized field
     /// cut to 512 B keeping head and tail) and the recent suffix stays
@@ -972,7 +966,7 @@ pub struct ContextStrategyConfig {
     /// long read-heavy turns loop, so raise it rather than lower it when the
     /// model keeps re-reading what it just read.
     ///
-    /// Only meaningful when `mode = "sliding_window"` or `mode = "turn"`.
+    /// Only meaningful when `mode = "sliding_window"`.
     /// Always serialized
     /// (unlike the two `Option` caps above) because unlike them it has a
     /// non-off default: a reader that omitted it gets 32, not "off".
@@ -994,7 +988,7 @@ pub struct ContextStrategyConfig {
     /// interval per fold (32, 64, 96, 128 …), which quickly makes the
     /// checkpoint bound nothing.
     ///
-    /// Only meaningful when `mode = "sliding_window"` or `mode = "turn"`,
+    /// Only meaningful when `mode = "sliding_window"`,
     /// and [`Self::checkpoint_interval`] is non-zero. Always serialized for the
     /// same reason as `checkpoint_interval`: it has a non-off default, so an
     /// omitted value must read as 8, not 0.
@@ -1045,7 +1039,7 @@ fn default_checkpoint_growth() -> usize {
 }
 
 fn default_context_window_size() -> usize {
-    10
+    6
 }
 
 fn default_extend_rate() -> f64 {
@@ -1252,13 +1246,13 @@ topic_path = "~/projects/jyc"
             let cfg: ContextStrategyConfig = toml::from_str(&format!(r#"mode = "{s}""#)).unwrap();
             assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
             // window falls back to the default when omitted.
-            assert_eq!(cfg.window, 10);
+            assert_eq!(cfg.window, 6);
         }
 
         let cfg: ContextStrategyConfig = toml::from_str(r#"mode = "full""#).unwrap();
         assert_eq!(cfg.mode, ContextStrategy::Full);
 
-        // Default for an empty table is sliding_window / window 10.
+        // Default for an empty table is sliding_window / window 6.
         let cfg: ContextStrategyConfig = toml::from_str("").unwrap();
         assert_eq!(cfg, ContextStrategyConfig::default());
     }
@@ -1269,10 +1263,10 @@ topic_path = "~/projects/jyc"
         // `ContextStrategyConfig::default()` surfaces immediately.
         let cfg = ContextStrategyConfig::default();
         assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
-        assert_eq!(cfg.window, 10);
+        assert_eq!(cfg.window, 6);
         assert_eq!(cfg.extend_rate, 0.5);
-        // window 10 + round(0.5 × 10) = 15 turns before a slide.
-        assert_eq!(cfg.max_window(), 15);
+        // window 6 + round(0.5 × 6) = 9 turns before a slide.
+        assert_eq!(cfg.max_window(), 9);
     }
 
     #[test]
@@ -1335,7 +1329,7 @@ topic_path = "~/projects/jyc"
         // config would silently change the payload shape.
         let cfg: ContextStrategyConfig = toml::from_str(r#"mode = "sliding_window""#).unwrap();
         assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
-        assert_eq!(cfg.window, 10);
+        assert_eq!(cfg.window, 6);
         assert_eq!(cfg.extend_rate, 0.5);
     }
 

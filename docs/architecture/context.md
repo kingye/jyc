@@ -197,9 +197,9 @@ there:
    pairing stays legal mid-flight and provider-specific replay fields
    survive where they matter.
 
-`window` (default `10`) is the number of turns the window keeps after a
+`window` (default `6`) is the number of turns the window keeps after a
 slide. `extend_rate` (default `0.5`) is how far it may grow first:
-`max_window = window + round(extend_rate × window)` = 15 turns. The
+`max_window = window + round(extend_rate × window)` = 9 turns. The
 window grows by pure append until it holds more than `max_window` turns,
 then **slides**: the anchor moves forward so the last `window` turns
 remain, whole turns at a time (never splitting a `tool_use` from its
@@ -335,46 +335,6 @@ The journal still holds each turn's raw messages, tool calls and results
 included — nothing is lost, it is just not replayed. `context_browse` is
 the way back to them, and it renders each turn's calls on its own
 `[n] TOOLS:` line.
-
-### `turn`
-
-Sends only the current turn: no prior turns ride the wire at all. The
-loader projects an empty prior — the journal holds completed turns only
-(persistence is end-of-loop), so there is nothing to slice out, and
-`load_context` returns empty without reading the journal. The journal
-itself keeps every turn, and `context_browse` reads them back on demand.
-
-Every request starts with zero prior turns — the equivalent of running
-`/context restart` before each turn, without writing a boundary and
-without losing the journal. Because the prior is empty, the history block
-never exists and the checkpoint is the only fold: once the turn passes
-`checkpoint_interval` assistant steps, older steps fold exactly as in
-`sliding_window` (reasoning replayed, calls and results kept
-structured, each oversized field truncated to 512 B), while the recent
-suffix rides verbatim. The
-checkpoint knobs stay live here; `window`, `extend_rate`,
-`turn_tool_result_cap` and `max_history_tokens` have no object — nothing
-is windowed and no prior history exists — and `/context turn` resets them
-in the override it writes instead of carrying dead values.
-
-The system prompt changes with the mode: the `## History Format` section
-(describing the folded history block and the `[History messages]`
-divider) is replaced by two sentences stating that prior turns are not in
-the context and that `context_browse` reads them back. A prompt section
-describing a block that cannot appear would violate the same rule the
-section itself ends with — never describe what did not happen.
-
-**Trade-off.** Cross-turn prompt-cache reuse is lost: each turn's payload
-starts after `system` + `tools`, so only that prefix stays cacheable, and
-the first request of every turn re-encodes from there. What is bought:
-the smallest possible payload (one turn, not a window), immunity to the
-accumulated-history failure mode (weak models imitating bare Q→A shapes
-folded history tends to accumulate), and a constant-shape wire for
-providers that misbehave on long transcripts. Strong models work fine
-without prior turns in the window — they reach for `context_browse` —
-and weak ones degrade either way, so the mode trades cache for
-predictability. Opt in via `context_strategy = { mode = "turn" }` or
-`/context turn`.
 
 #### Turn pairing (`extract_pairs`, `crates/jyc-agent/src/session.rs`)
 
@@ -522,9 +482,6 @@ it works the same way:
 - subsequent `sliding_window` requests grow the bounded window from the
   same restart point.
 
-In `turn` mode it is a no-op: every request already starts with zero
-prior turns, so the command reports that and writes nothing.
-
 The command writes two mode-specific offsets, `context_offset` and
 `full_restart_offset`, to `agent-session.json`. They are not a pending
 flag: the full boundary remains until the next restart, `/reset`, or
@@ -567,7 +524,7 @@ will carry — against the model's context window.
 ```toml
 # Global default for all channels/topics
 [ai]
-context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5 }
+context_strategy = { mode = "sliding_window", window = 6, extend_rate = 0.5 }
 
 # Per-pattern override (takes priority over [ai])
 [channels.jyc_repo.patterns."**"]
@@ -581,7 +538,7 @@ rows):
 
 | Field | Default | Meaning |
 |-------|---------|---------|
-| `window` | `10` | Turns kept after a slide — the window's floor |
+| `window` | `6` | Turns kept after a slide — the window's floor |
 | `extend_rate` | `0.5` | Growth allowed before a slide: `max_window = window + round(extend_rate × window)`; `0` = hard window (slides every turn) |
 | `turn_tool_result_cap` | unset | Per-result byte cap on the recent current-turn suffix — see below |
 | `max_history_tokens` | unset | Second slide trigger, at the top of the extension cycle — see below |
@@ -698,7 +655,7 @@ result to a file and adding a retrieval API.
 
 ## `max_history_tokens` — the weight trigger for a slide
 
-`window` counts turns, so the same `window = 10` costs 2k tokens on a
+`window` counts turns, so the same `window = 6` costs 2k tokens on a
 quiet topic and 200k on one whose turns carry megabyte-sized tool
 results. `max_history_tokens` bounds that weight: when the window's
 estimate exceeds it **and the window has already reached `max_window`
@@ -730,7 +687,7 @@ per-message constant. Object keys are ignored. This bounds history
 weight — it is not billing, and a few percent of drift is fine for
 that.
 
-Set it from a command: `/context sliding 10 0.5 0 30000` (fourth
+Set it from a command: `/context sliding 6 0.5 0 30000` (fourth
 positional; `0` switches it off, omitting it keeps the configured value,
 ceiling 4M tokens). Unset by default: the window is bounded by turns
 alone.
@@ -747,7 +704,7 @@ bounds how much history survives before the next slide.
 3. Matched pattern's `context_strategy` (or synthesized `[agents.<name>]`)
 4. First pattern fallback
 5. Global `[ai].context_strategy`
-6. Built-in default: `sliding_window` / `window = 10` / `extend_rate = 0.5` / `max_history_tokens` unset / `checkpoint_interval = 32` / `checkpoint_growth = 8`
+6. Built-in default: `sliding_window` / `window = 6` / `extend_rate = 0.5` / `max_history_tokens` unset / `checkpoint_interval = 32` / `checkpoint_growth = 8`
 
 **Runtime commands:**
 
@@ -755,9 +712,8 @@ bounds how much history survives before the next slide.
 |---------|--------|
 | `/context` | Show current strategy and its source (`override` / `default`) |
 | `/context full` | Send the full context (the whole journal, or everything since the last `/context restart`) |
-| `/context turn` | Send only the current turn: the loader projects an empty prior (the journal holds completed turns only, so there is nothing to slice) and the checkpoint is the only fold. `/context restart` is a no-op in this mode; earlier turns stay in the journal, readable via `context_browse` |
-| `/context restart` | Restart the visible context at the journal's clean end in the current strategy: the next request has zero prior turns; the journal and session are preserved. No-op in `turn` mode |
-| `/context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH]` | Sliding window, N turns (default 10, max 200); EXT = extend rate (0..10, default 0.5); TURNCAP = per-result byte cap on the current turn (`0`, or 130 B..1 MiB; unset by default); MAXHIST = weight trigger for a slide (0..4M, unset by default); CHECKPOINT = completed assistant messages before the current turn's older steps fold into a checkpoint (`0` disables folding; default 32); GROWTH = folds per widening step, each checkpoint `CHECKPOINT / GROWTH` steps wider (`0` keeps it fixed; default 8). A seventh positional is refused; an absent slot falls back to the configured value; `0` switches a cap off |
+| `/context restart` | Restart the visible context at the journal's clean end in the current strategy: the next request has zero prior turns; the journal and session are preserved |
+| `/context sliding [N] [EXT] [TURNCAP] [MAXHIST] [CHECKPOINT] [GROWTH]` | Sliding window, N turns (default 6, max 200); EXT = extend rate (0..10, default 0.5); TURNCAP = per-result byte cap on the current turn (`0`, or 130 B..1 MiB; unset by default); MAXHIST = weight trigger for a slide (0..4M, unset by default); CHECKPOINT = completed assistant messages before the current turn's older steps fold into a checkpoint (`0` disables folding; default 32); GROWTH = folds per widening step, each checkpoint `CHECKPOINT / GROWTH` steps wider (`0` keeps it fixed; default 8). A seventh positional is refused; an absent slot falls back to the configured value; `0` switches a cap off |
 | `/context reset` | Remove the runtime override, revert to configured default |
 
 ## Code map

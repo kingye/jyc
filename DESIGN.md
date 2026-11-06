@@ -2337,9 +2337,9 @@ JYC uses the following subset of the agent service API:
    file always stores the full raw context unchanged; only the request
    payload is shaped. Configured per-pattern / per-agent / globally
    (`context_strategy`), overridable at runtime via `.jyc/context-strategy.json`
-   (written by `/context full | sliding [N] | turn | reset`).
+   (written by `/context full | sliding [N] | restart | reset`).
 
-   * `full` (default) — send the whole `agent-context.jsonl`, or the suffix
+   * `full` — send the whole `agent-context.jsonl`, or the suffix
      after the last `/context restart` (`agent-session.json`'s
      `full_restart_offset`). `/context restart` itself writes the clean
      journal end to both mode-specific offsets without touching the
@@ -2404,28 +2404,6 @@ JYC uses the following subset of the agent service API:
      cold start (fresh topic, reset, no anchor, or an anchor no longer on
      a turn boundary) reads the journal once from its head and drops the
      bad anchor; the next slide persists a fresh one.
-   * `turn` — send only the current turn: the loader projects an empty
-     prior (the journal holds completed turns only — persistence is
-     end-of-loop — so there is nothing to slice, and the journal is not
-     even read), no history block ever exists, and the checkpoint is the
-     only fold. Every request is the equivalent of a `/context restart`
-     without writing a boundary; earlier turns stay in the journal for
-     `context_browse`, and the system prompt swaps its History Format
-     section for a pointer to that tool. The checkpoint knobs stay live;
-     the sliding-only ones (`window`, `extend_rate`,
-     `turn_tool_result_cap`, `max_history_tokens`) have no object and
-     `/context turn` resets them in the override it writes.
-     **Trade-off (2026-11-05):** cross-turn prompt-cache reuse is lost —
-     each turn's payload starts after `system` + `tools`, so only that
-     prefix stays cacheable and the first request of every turn
-     re-encodes from there. Bought in exchange: the smallest possible
-     payload, and immunity to the accumulated-history failure mode where
-     a weak model imitates the bare Q→A shapes a folded history window
-     tends to accumulate (the shape that motivated the restart in the
-     first place). Chosen for predictability over cache economy on
-     weak-model topics; strong models lose little, since they reach for
-     `context_browse` instead of leaning on the transcript.
-
    Resolution chain: runtime override file > the topic's own config
    (`[context_strategy]` in `<topic>/.jyc/config.toml` — including one a
    subagent type expanded into the child at spawn time, which is how a role

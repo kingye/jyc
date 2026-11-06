@@ -14,7 +14,7 @@
 
 - The sliding-window history replays each prior turn's tool results as a `[Tool results]` note, every result cut to the same fixed 512-byte cap the checkpoint uses, instead of carrying text and call names only — the same evidence-loss argument that moved the checkpoint, one step earlier: a weak model reasoning over the window leans on what its earlier turns actually observed, and a truncated replay it can page past (`context_browse results=true`) stays cheaper than a re-run. The note carries a 1500-byte per-turn budget like the calls note — whole results drop from the end behind a `…(N more results)` count, and a turn collects at most 8 result texts — so a many-call turn cannot balloon the windowed payload. The history block keeps its append-only, byte-stable prefix (per-turn truncation reads only that turn's journal entries) and no config knob (#1070)
 
-- The TUI topic info pane draws queue occupancy with bold yellow `·` dots for active messages and dark-gray `·` dots for free slots instead of `▊` blocks — the two marks share one glyph and differ by colour. The row's word, figures, narrow-pane fallback, and all other progress bars stay unchanged (#1063, #1065, #1067)
+- The TUI topic info pane draws queue occupancy with bold yellow `•` bullets for active messages and plain dark-gray `•` bullets for free slots instead of `▊` blocks — the two marks share one glyph and differ by colour and weight. The row's word, figures, narrow-pane fallback, and all other progress bars stay unchanged (#1063, #1065, #1067, #1072)
 
 ### Fixed
 

@@ -3708,15 +3708,16 @@ Not connected: connection refused
   honest one, not only in a wide terminal. The **Status** row carries the
   topic's status and its backlog: the status word, then the marks that
   say how much of the topic's queue is taken — one mark per message the
-  queue can hold, a bold yellow `·` for a message waiting for a turn of
-  its own, a bold dark-gray `·` for a free slot — so the row shows both
-  what the topic holds and the room it has left. Both marks are bold — a
-  deliberate exception to the bars' weight convention — and the active and
-  free marks are the same glyph, telling the two apart by colour alone.
+  queue can hold, a bold yellow `•` for a message waiting for a turn of
+  its own, a plain dark-gray `•` for a free slot, so the row shows both
+  what the topic holds and the room it has left. The two marks share one
+  glyph and differ by colour and weight.
   The dots are width-ambiguous; the figures still carry the exact counts
   if the terminal widens them. The word `queue` names the marks, so they
   cannot be read as the progress of the turn the status word names:
-  `Status: Processing · queue ······ 2 / 10` (the first of the six dots yellow, the split read by colour alone). The word and the marks are
+  `Status: Processing · queue •••••• 2 / 10` (the first of the six dots
+  yellow and bold, the split read by colour and weight). The word and
+  the marks are
   what the row gives up as the column narrows: first the figures (`2 /
   10`) move to the row under it, then the marks go — and the word with
   them, for it names marks that are no longer there — then the figures

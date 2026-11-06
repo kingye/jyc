@@ -75,7 +75,7 @@ impl Tool for ContextBrowseTool {
         "Browse the conversation transcript — user/assistant text pairs, including \
          turns outside your sliding context window. Pair numbers count from the oldest \
          (1 = first). Returns oldest→newest. `results=true` also replays tool results \
-         (2000 B each, not the folded region's 512-byte field cap)."
+         (2000 B each, not the folded 512-byte field cap)."
     }
 
     fn input_schema(&self) -> Value {

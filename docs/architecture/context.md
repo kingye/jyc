@@ -71,7 +71,7 @@ assistant's intermediate steps, tool calls, tool results — is the
 **current turn**. Its most recent interaction is sent verbatim so
 tool_use/tool_result pairing stays valid mid-loop; once a turn passes
 `checkpoint_interval` assistant steps (default 32), the older part folds
-into a text-plus-calls checkpoint, the same shape as prior-turn history. Each
+into a checkpoint of the same raw-message shape as prior-turn history. Each
 further checkpoint is wider than the last (`checkpoint_growth`, default 8:
 32, 36, 40 … assistant steps), so a long turn keeps a growing verbatim
 tail.
@@ -151,17 +151,23 @@ there:
 1. **History, the messages as sent** — every prior turn in the window,
    replayed verbatim: its user message, the assistant messages with their
    structured `tool_calls`, and each tool message that answered a call,
-   all in the shape the journal recorded (chat-shaped; conversion to the
-   active provider happens once, at send). The only rewrite is a per-field
-   cap: result content, `tool_calls[].function.arguments` string values
-   and `reasoning_content` over 512 B are cut with head and tail kept and
-   the middle stated by the paging marker; a fact that lived in the
-   dropped middle is re-read with `context_browse` `results=true`.
-   Replaying the messages rather than a summary of them is what keeps the
-   model from having to restate (and invent) what an earlier turn
-   observed; a call never appears without its result because the slice
-   ends at a turn boundary, so the send path's dangling-call repair has
-   nothing to drop inside the block.
+   all in the shape the journal recorded — the *active provider's* wire
+   shape, since that is what was written (conversion to whichever provider
+   serves the request happens once, at send). The only rewrite is a
+   per-field cap: result content, `tool_calls[].function.arguments` string
+   values, `reasoning_content` and text inside Anthropic content blocks
+   over 512 B are cut with head and tail kept and the middle stated by the
+   paging marker; `tool_use.input` is capped as JSON, and an image block
+   becomes a one-line text placeholder (the current turn still carries the
+   image itself) instead of replaying its base64 on every request. A fact
+   that lived in a dropped middle is re-read with `context_browse`
+   `results=true`. Replaying the messages rather than a summary of them is
+   what keeps the model from having to restate (and invent) what an
+   earlier turn observed; a call and its result travel together because
+   the slice ends at a turn boundary, and a call whose result was lost to
+   a torn write or an unparsable line is repaired inside the slice — at
+   worst that costs the rest of the block, never the current turn after
+   it.
    Each message's replay is a function of that message alone, so this
    block only ever **grows**: nothing trims its head, and no per-turn
    budget can rewrite a middle the provider has already cached.
@@ -448,7 +454,7 @@ Each line of `wire-payload.jsonl` is one JSON object:
 }
 ```
 
-`regions` is a parallel `Vec<u8>` to `wire_payload`: `1` = text-plus-calls
+`regions` is a parallel `Vec<u8>` to `wire_payload`: `1` = replayed
 history, `2` = recent current turn verbatim, `3` = folded current-turn
 checkpoint. `1` for `Full` mode means "one block, no windowing". Use it to
 partition the payload when reconstructing what each LLM call looked like.
@@ -535,7 +541,7 @@ The slide is the only way **history** shrinks; nothing trims between slides,
 which is what keeps the wire prefix byte-stable and the provider cache
 alive. The current turn has its own two bounds — `turn_tool_result_cap`
 per result, and a checkpoint every `checkpoint_interval` assistant steps
-(default 32) that folds older steps into the text-plus-calls form — but neither
+(default 32) that folds older steps into the history block's replayed form — but neither
 moves the history head, and the checkpoint intervals widen
 (`checkpoint_growth`), so the current turn's bound grows with the turn.
 `full` mode grows verbatim from its restart boundary (or the journal head)
@@ -571,7 +577,7 @@ rows):
 | `extend_rate` | `0.5` | Growth allowed before a slide: `max_window = window + round(extend_rate × window)`; `0` = hard window (slides every turn) |
 | `turn_tool_result_cap` | unset | Per-result byte cap on the recent current-turn suffix — see below |
 | `max_history_tokens` | unset | Second slide trigger, at the top of the extension cycle — see below |
-| `checkpoint_interval` | `32` | Completed assistant messages before the current turn's older steps fold into a text-plus-calls checkpoint; `0` disables folding — see below |
+| `checkpoint_interval` | `32` | Completed assistant messages before the current turn's older steps fold into the history block's replayed shape; `0` disables folding — see below |
 | `checkpoint_growth` | `8` | Folds per widening step: each checkpoint is `checkpoint_interval / checkpoint_growth` steps wider than the last, so a long turn keeps a growing verbatim tail; `0` keeps the interval fixed — see below |
 
 ## `turn_tool_result_cap` — bounding the current turn
@@ -793,12 +799,12 @@ Key changes, newest first (see CHANGELOG.md for full entries):
   to write their process as content. The note's budget is per turn, so the
   history block stays a byte-stable prefix between slides (#1057).
 - **current-turn checkpoint** — the sliding-window payload has three parts:
-  text-plus-calls history, an optional checkpoint for older
+  replayed history, an optional checkpoint for older
   steps of a long current turn, and the verbatim recent suffix. The checkpoint folds
   the first `floor((n-1)/interval)×interval` assistant steps once a turn
-  passes the interval (default 32), truncating their tool
-  results to a fixed 512 B each while their reasoning
-  replays through the provider's wire shape. It advances only at whole
+  passes the interval (default 32), replaying their raw messages with each
+  oversized field cut to the same 512 B cap the history block uses and
+  images replaced by a placeholder. It advances only at whole
   interval boundaries, so it is byte-stable between advances; the journal
   is untouched and the latest steps remain raw. `regions` in the wire dump
   marks it `3`, and the `LLM call started` log carries `checkpoint_rebuilt`.

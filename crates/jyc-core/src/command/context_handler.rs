@@ -46,8 +46,8 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///     window has reached its turn bound and estimates over it, the window
 ///     slides back to N turns — the same slide the turn bound performs.
 ///     CHECKPOINT is how many completed assistant messages the current
-///     turn may reach before its older steps fold into a text-plus-calls
-///     checkpoint. It counts assistant messages — steps that produced
+///     turn may reach before its older steps fold into a checkpoint in the
+///     history block's raw-message shape. It counts assistant messages — steps that produced
 ///     output, tool call or reply — not turns or tool calls, and 0
 ///     disables in-turn folding so the whole current turn rides verbatim.
 ///     Raise it when a long read-heavy turn keeps re-reading what it just
@@ -444,7 +444,7 @@ impl CommandHandler for ContextCommandHandler {
                     max_history_tokens.unwrap_or(configured.max_history_tokens);
                 // Optional current-turn checkpoint interval CHECKPOINT
                 // (args[5]): completed assistant messages before the turn's
-                // older steps fold to a text-plus-calls checkpoint. 0 is the
+                // older steps fold into the raw-message checkpoint. 0 is the
                 // explicit "off" sentinel (same convention as CAP and
                 // MAXHIST) and leaves the whole turn verbatim; absent = keep
                 // the configured value, which defaults to

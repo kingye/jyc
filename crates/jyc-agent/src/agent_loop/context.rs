@@ -86,10 +86,11 @@ impl SendContextCache {
 /// * `SlidingWindow` — three parts, in order:
 ///   1. The prior turns replayed **verbatim**: the raw messages as they
 ///      were sent — text, structured `tool_calls` and their results — with
-///      oversized fields cut to [`FOLDED_FIELD_REPLAY_CAP`]. The block is
-///      provider-independent (the raw journal is chat-shaped whatever
-///      provider is active; conversion happens once, at send) and only
-///      ever grows: nothing trims its head.
+///      oversized fields cut to [`FOLDED_FIELD_REPLAY_CAP`] and image
+///      blocks replaced by a text placeholder. The block is
+///      provider-independent: the journal keeps the active provider's wire
+///      shape, and both the chat shape and Anthropic's block shape are
+///      capped field by field. It only ever grows: nothing trims its head.
 ///   2. A checkpoint for the older part of a long current turn, in the
 ///      same replayed form. It appears once the turn has more than
 ///      [`ContextStrategyConfig::checkpoint_interval`] assistant messages
@@ -468,9 +469,13 @@ fn build_checkpoint_region(
 /// Each message depends only on itself, so the block is append-only: a new
 /// turn appends its own messages and cannot rewrite an earlier one — that
 /// is what keeps the provider's cached prefix intact from turn to turn.
-/// Structured `tool_calls` are safe here because a call and its result are
-/// always replayed together (the caller's slice ends at a turn boundary),
-/// so the send path's dangling-call repair never fires inside the block.
+/// A call and its result travel together because the caller's slice ends at
+/// a turn boundary, so the dangling-call repair cannot fire in the middle of
+/// the block. It can fire at the end: a journal entry lost to a torn write
+/// or an unparsable line leaves a call without its result, and
+/// [`crate::context_reader::ContextReader::read_from`] repairs that on the
+/// way in — the cost is the rest of the block, never the current turn that
+/// follows it.
 fn build_verbatim_region(
     provider: &dyn Provider,
     raw: &[serde_json::Value],
@@ -496,18 +501,27 @@ fn build_verbatim_region(
 /// One folded-region message with its oversized text fields cut to `cap`;
 /// `None` when nothing is left to replay.
 ///
-/// Three field classes carry the bulk of a transcript and are the only ones
-/// capped:
+/// The field classes that carry the bulk of a transcript are capped:
 ///
 /// - tool-result content, in both wire shapes (delegated to
 ///   [`cap_tool_result_content_with`]);
 /// - each `tool_calls[].function.arguments` string: parsed and re-serialized
 ///   so the inner argument values cap individually; arguments that are not
 ///   JSON (legacy or hand-edited) have their raw string capped instead;
-/// - `reasoning_content`.
+/// - `reasoning_content`;
+/// - block-shaped content: `text` blocks and every `tool_use.input` string
+///   value ([`cap_block_fields`]).
 ///
 /// Everything else — roles, ids, tool names, short strings — rides
-/// untouched.
+/// untouched. Each field's inner strings are capped individually, so a
+/// message with many short arguments keeps them all; the bound is per
+/// field, not per message (`chunked`/`truncated` and the paging marker are
+/// the per-item story, not an aggregate budget).
+///
+/// One substitution is not a cut: an `image` / `image_url` block becomes a
+/// short text placeholder, because a base64 payload replayed on every
+/// folded request is not history the model can use. The current turn keeps
+/// its images verbatim — only folded regions substitute.
 ///
 /// The one deletion is the replay-only reasoning rule, applied to string
 /// content: the inline duplicate of a non-empty `reasoning_content` is
@@ -516,9 +530,12 @@ fn build_verbatim_region(
 /// well-formed inline block loses that block — mirroring the Responses
 /// wire's unconditional send-time strip, because no in-tree builder writes
 /// a block without the field and replaying reasoning as reply text is what
-/// taught models to inline it. A block-only fieldless message is dropped.
-/// Anthropic-shaped block content is left as it is: the builders never
-/// inlined there, and editing a block list is not this layer's call.
+/// taught models to inline it. A block-only fieldless message is dropped
+/// unless it carries structured calls (dropping it would orphan the
+/// results). The strip runs against the field's original value, before the
+/// cap — a capped field no longer matches the inline block it duplicates.
+/// Block-shaped content is never inline-stripped: the builders never
+/// inlined there, and a block list's text blocks are capped instead.
 ///
 /// Key order: `serde_json` without the `preserve_order` feature stores
 /// objects as a `BTreeMap`, so an arguments string that had to be rebuilt
@@ -531,13 +548,17 @@ fn cap_folded_fields(msg: &serde_json::Value, cap: usize) -> Option<serde_json::
         return Some(capped);
     };
 
-    if let Some(reasoning) = obj
+    // The inline duplicate is stripped against the field's *original* value:
+    // the capped one carries the paging marker, which no inline block
+    // contains, so a prefix match against it can never succeed.
+    let original_reasoning = obj
         .get("reasoning_content")
         .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
-    {
-        let cut = crate::session::truncate_text_keeping_edges(&reasoning, cap);
-        if cut != reasoning {
+        .map(str::to_owned);
+
+    if let Some(reasoning) = &original_reasoning {
+        let cut = crate::session::truncate_text_keeping_edges(reasoning, cap);
+        if cut != *reasoning {
             obj.insert("reasoning_content".into(), serde_json::Value::String(cut));
         }
     }
@@ -561,16 +582,19 @@ fn cap_folded_fields(msg: &serde_json::Value, cap: usize) -> Option<serde_json::
         }
     }
 
+    // Block-shaped content (the Anthropic wire shape) is capped block by
+    // block: text blocks, each `tool_use.input` value, and images replaced
+    // by a placeholder — a base64 payload would otherwise ride every folded
+    // replay untouched.
+    cap_block_fields(obj, cap);
+
     if obj.get("role").and_then(serde_json::Value::as_str) == Some("assistant")
         && let Some(text) = obj
             .get("content")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
     {
-        match obj
-            .get("reasoning_content")
-            .and_then(serde_json::Value::as_str)
-        {
+        match original_reasoning.as_deref() {
             Some(reasoning) if !reasoning.is_empty() => {
                 let stripped = crate::session::strip_duplicated_inline_reasoning(&text, reasoning);
                 if stripped != text {
@@ -580,15 +604,127 @@ fn cap_folded_fields(msg: &serde_json::Value, cap: usize) -> Option<serde_json::
             _ => {
                 if let Some(remainder) = crate::session::strip_well_formed_leading_block(&text) {
                     if remainder.is_empty() {
-                        return None;
+                        // A block-only reasoning turn carries nothing; but a
+                        // message with structured calls must stay, or its
+                        // results become orphans. `null` content beside
+                        // calls is the shape the builders write.
+                        if !has_structured_calls(obj) {
+                            return None;
+                        }
+                        obj.insert("content".into(), serde_json::Value::Null);
+                    } else {
+                        obj.insert("content".into(), serde_json::Value::String(remainder));
                     }
-                    obj.insert("content".into(), serde_json::Value::String(remainder));
                 }
             }
         }
     }
 
     Some(capped)
+}
+
+/// Whether the message carries structured tool calls — OpenAI's
+/// `tool_calls` array or Anthropic's `tool_use` blocks.
+fn has_structured_calls(obj: &serde_json::Map<String, serde_json::Value>) -> bool {
+    obj.get("tool_calls")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|calls| !calls.is_empty())
+        || obj
+            .get("content")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .any(|b| b.get("type").and_then(serde_json::Value::as_str) == Some("tool_use"))
+            })
+}
+
+/// Cap one folded message's block-shaped `content` in place.
+///
+/// Handles the Anthropic wire shape, which the journal keeps when Claude is
+/// the active provider: `text` blocks are cut like string content,
+/// `tool_use.input` has its string values capped (a `write` call's file
+/// body is the payload that matters), and `image` / `image_url` blocks are
+/// replaced by a short text placeholder — their base64 rides the request
+/// on every replay otherwise, and a folded region cannot usefully re-show
+/// the image anyway.
+fn cap_block_fields(obj: &mut serde_json::Map<String, serde_json::Value>, cap: usize) {
+    let Some(blocks) = obj.get_mut("content").and_then(|c| c.as_array_mut()) else {
+        return;
+    };
+    cap_block_list(blocks, cap);
+}
+
+/// [`cap_block_fields`] over one block list, recursing into a
+/// `tool_result`'s nested block list (a tool may answer with an image).
+fn cap_block_list(blocks: &mut [serde_json::Value], cap: usize) {
+    for block in blocks.iter_mut() {
+        let Some(kind) = block
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        match kind.as_str() {
+            "text" => {
+                let Some(text) = block
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                else {
+                    continue;
+                };
+                let cut = crate::session::truncate_text_keeping_edges(&text, cap);
+                if cut != text
+                    && let Some(obj) = block.as_object_mut()
+                {
+                    obj.insert("text".into(), serde_json::Value::String(cut));
+                }
+            }
+            "tool_use" => {
+                if let Some(input) = block.get_mut("input") {
+                    cap_json_strings(input, cap);
+                }
+            }
+            "tool_result" => {
+                if let Some(nested) = block
+                    .get_mut("content")
+                    .and_then(serde_json::Value::as_array_mut)
+                {
+                    cap_block_list(nested, cap);
+                }
+            }
+            "image" | "image_url" => {
+                *block = image_placeholder(block);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The text block a folded replay shows in place of an image.
+///
+/// Deterministic in the block it replaces (media type only, no size or
+/// random component) so the folded region stays byte-stable from turn to
+/// turn.
+fn image_placeholder(block: &serde_json::Value) -> serde_json::Value {
+    let media = block
+        .pointer("/source/media_type")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            let url = block.pointer("/image_url/url")?.as_str()?;
+            let rest = url.strip_prefix("data:")?;
+            let (media, _) = rest.split_once(';')?;
+            Some(media).filter(|m| !m.is_empty())
+        });
+    serde_json::json!({
+        "type": "text",
+        "text": format!(
+            "[image omitted from folded replay: {}]",
+            media.unwrap_or("image")
+        ),
+    })
 }
 
 /// One `tool_calls[].function.arguments` string with every inner string value
@@ -1057,6 +1193,13 @@ mod render_raw_context_tests {
         }));
     }
 
+    /// A reasoning longer than the replay cap — the size the strip exists
+    /// for. A short fixture never gets capped, so it cannot catch a strip
+    /// that runs against the capped value and silently does nothing.
+    fn long_reasoning() -> String {
+        format!("secret {}", "r".repeat(FOLDED_FIELD_REPLAY_CAP * 2))
+    }
+
     fn current_with_interactions(n: usize, reasoning: &str) -> Vec<serde_json::Value> {
         let mut ctx = vec![json!({"role": "user", "content": "task"})];
         for i in 0..n {
@@ -1140,7 +1283,11 @@ mod render_raw_context_tests {
 
     #[test]
     fn current_turn_checkpoint_folds_older_interactions_only() {
-        let ctx = current_with_interactions(33, "secret");
+        // Reasoning past the cap: the realistic legacy value. With a short
+        // one the field is never cut, so the inline-strip assertion below
+        // would pass whether or not the strip can still match.
+        let reasoning = long_reasoning();
+        let ctx = current_with_interactions(33, &reasoning);
         let (cold, cold_regions) =
             build_send_context_with_regions(&prov(), &ctx, 0, &sliding_cfg());
         let mut cache = SendContextCache::default();
@@ -1213,6 +1360,30 @@ mod render_raw_context_tests {
         assert_eq!(folded["content"].as_str().unwrap(), "answer");
         assert_eq!(folded["reasoning_content"].as_str().unwrap(), "why");
 
+        // The same shape above the cap: the field gets cut, and the strip
+        // must still fire. It runs against the field's original value —
+        // matching against the capped one can never succeed, so the whole
+        // inline block (the full reasoning with it) would ride as reply
+        // text.
+        let wide = format!("why {}", "w".repeat(cap * 2));
+        let msg = json!({
+            "role": "assistant",
+            "content": format!("{open}{wide}{close}\n\nanswer"),
+            "reasoning_content": wide,
+        });
+        let folded = cap_folded_fields(&msg, cap).expect("reply text survives");
+        assert_eq!(
+            folded["content"].as_str().unwrap(),
+            "answer",
+            "a capped field must not defeat the strip"
+        );
+        let field = folded["reasoning_content"].as_str().unwrap();
+        assert!(
+            field.len() <= cap && field.starts_with("why "),
+            "the field is cut, keeping its head: {} bytes",
+            field.len()
+        );
+
         // Field without an inline prefix: content untouched.
         let msg = json!({
             "role": "assistant",
@@ -1243,6 +1414,20 @@ mod render_raw_context_tests {
             "content": format!("{open}why{close}"),
         });
         assert!(cap_folded_fields(&msg, cap).is_none());
+
+        // …unless it carries calls: dropping it would leave its `role:
+        // "tool"` results orphaned, which no repair removes (the repair
+        // only walks assistant messages). Empty content beside calls is
+        // the shape the builders write.
+        let msg = json!({
+            "role": "assistant",
+            "content": format!("{open}why{close}"),
+            "tool_calls": [{"id": "c1", "type": "function",
+                            "function": {"name": "bash", "arguments": "{}"}}],
+        });
+        let folded = cap_folded_fields(&msg, cap).expect("a call must not be dropped");
+        assert!(folded["content"].is_null(), "{}", folded["content"]);
+        assert_eq!(folded["tool_calls"][0]["id"], "c1");
 
         // An unclosed leading block is not well-formed: preserved verbatim
         // (guessing where the block ends would eat real text).
@@ -1320,6 +1505,110 @@ mod render_raw_context_tests {
         );
     }
 
+    /// The Anthropic wire shape carries the same payloads in blocks: text
+    /// blocks and `tool_use.input` values must be capped too, or a `write`
+    /// call's file body rides both folded regions whole.
+    #[test]
+    fn folded_anthropic_blocks_cap_text_and_tool_use_input() {
+        let cap = FOLDED_FIELD_REPLAY_CAP;
+        let wide = "w".repeat(cap * 4);
+        let msg = json!({
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": wide},
+                {"type": "tool_use", "id": "t1", "name": "write",
+                 "input": {"path": "src/main.rs", "content": wide}},
+            ],
+        });
+        let folded = cap_folded_fields(&msg, cap).expect("the message survives");
+        let blocks = folded["content"].as_array().expect("blocks stay blocks");
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "text");
+        let text = blocks[0]["text"].as_str().expect("text stays text");
+        assert!(text.len() <= cap, "text block over the cap: {}", text.len());
+        assert!(
+            text.contains("bytes dropped from the middle"),
+            "the cut must be stated: {text}"
+        );
+        // The call itself survives — id, name, and its short argument.
+        assert_eq!(blocks[1]["type"], "tool_use");
+        assert_eq!(blocks[1]["id"], "t1");
+        assert_eq!(blocks[1]["name"], "write");
+        assert_eq!(
+            blocks[1]["input"]["path"], "src/main.rs",
+            "short argument values ride untouched"
+        );
+        let body = blocks[1]["input"]["content"]
+            .as_str()
+            .expect("the argument stays a string");
+        assert!(
+            body.len() <= cap,
+            "input value over the cap: {}",
+            body.len()
+        );
+    }
+
+    /// Images have no usable folded form: their base64 would ride every
+    /// replay of the region, and the cap cannot help because the payload is
+    /// one string. Folded regions substitute a deterministic placeholder;
+    /// the current turn still carries the image verbatim.
+    #[test]
+    fn folded_images_become_a_deterministic_placeholder() {
+        let cap = FOLDED_FIELD_REPLAY_CAP;
+        let blob = "QUJD".repeat(cap);
+        let msg = json!({"role": "user", "content": [
+            {"type": "text", "text": "look at this"},
+            {"type": "image", "source": {
+                "type": "base64", "media_type": "image/png", "data": blob}},
+        ]});
+        let folded = cap_folded_fields(&msg, cap).expect("the message survives");
+        let blocks = folded["content"].as_array().expect("blocks stay blocks");
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["text"], "look at this");
+        assert_eq!(blocks[1]["type"], "text", "the image becomes text");
+        assert!(
+            blocks[1]["text"].as_str().unwrap().contains("image/png"),
+            "the placeholder names what was dropped: {}",
+            blocks[1]["text"]
+        );
+        let wire = serde_json::to_string(&folded).unwrap();
+        assert!(
+            !wire.contains(&blob[..64]),
+            "the base64 payload must not ride the folded replay"
+        );
+        // Deterministic — the same block folds to the same bytes, which is
+        // what keeps the replayed prefix byte-stable.
+        assert_eq!(cap_folded_fields(&msg, cap).unwrap(), folded);
+
+        // OpenAI's `image_url` shape: the media type comes off the data URL.
+        let msg = json!({"role": "user", "content": [
+            {"type": "image_url", "image_url": {
+                "url": format!("data:image/jpeg;base64,{blob}")}},
+        ]});
+        let folded = cap_folded_fields(&msg, cap).expect("the message survives");
+        assert!(
+            folded["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("image/jpeg")
+        );
+
+        // A tool result may answer with an image too — the nested list is
+        // walked as well.
+        let msg = json!({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": [
+                {"type": "text", "text": "screenshot"},
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/webp", "data": blob}},
+            ]},
+        ]});
+        let folded = cap_folded_fields(&msg, cap).expect("the message survives");
+        let nested = &folded["content"][0]["content"];
+        assert_eq!(nested[0]["text"], "screenshot");
+        assert_eq!(nested[1]["type"], "text");
+        assert!(nested[1]["text"].as_str().unwrap().contains("image/webp"));
+    }
+
     #[test]
     fn current_turn_checkpoint_is_stable_between_boundaries() {
         let mut ctx = current_with_interactions(33, "secret");
@@ -1390,9 +1679,10 @@ mod render_raw_context_tests {
     }
 
     #[test]
-    // The folded checkpoint replays the messages' own (chat) shape whatever
-    // provider is active — the raw journal is chat-shaped, and conversion
-    // happens once, at send. The Anthropic conversion then drops the folded
+    // The folded checkpoint replays the messages' own shape whatever
+    // provider is active — the journal holds that provider's wire shape,
+    // and Anthropic's block content is capped field by field like the chat
+    // shape's strings. The Anthropic conversion then drops the folded
     // reasoning: `assistant_blocks` builds blocks from `content` alone and
     // ignores `reasoning_content` (a thinking block cannot be forged
     // without an API signature). The compat wire keeps the field — that is
@@ -1428,9 +1718,10 @@ mod render_raw_context_tests {
             }
         }
 
-        // The retained raw suffix is still chat-shaped (the journal may predate
-        // a provider switch), so exercising both conversions covers the mixed
-        // payload the agent loop actually sends.
+        // The fixture's raw suffix is chat-shaped (a journal can mix shapes
+        // after a provider switch, and this fixture predates one), so
+        // exercising both conversions covers the mixed payload the agent
+        // loop actually sends.
         let openai = serde_json::to_string(&crate::provider::filter_valid_messages(&sent)).unwrap();
         let anthropic = serde_json::to_string(&crate::provider::filter_valid_messages(
             &crate::provider::chat_to_anthropic_messages(&sent),
@@ -1791,9 +2082,9 @@ mod render_raw_context_tests {
         let cfg = ContextStrategyConfig {
             ..ContextStrategyConfig::default()
         };
-        // Every turn makes a call, so the note is part of what has to stay
-        // byte-stable — a shape that only folds plain text would never
-        // exercise the property the note has to satisfy.
+        // Every turn makes a call, so its structured `tool_calls` and
+        // result are part of what has to stay byte-stable — a shape that
+        // only folds plain text would never exercise that property.
         let turn = |i: usize| {
             [
                 json!({"role": "user", "content": format!("u{i}")}),
@@ -1821,9 +2112,18 @@ mod render_raw_context_tests {
         let region1_5 = regions_5.iter().take_while(|&&r| r == 1).count();
         let region1_6 = regions_6.iter().take_while(|&&r| r == 1).count();
 
+        // The current turn is three raw messages: assert the whole tail,
+        // not two elements of it — `ends_with(&[2, 2])` holds for a tail of
+        // any length at least two.
+        assert_eq!(
+            regions_5.len() - region1_5,
+            3,
+            "the current turn is three messages: {regions_5:?}"
+        );
         assert!(
-            regions_5.ends_with(&[2, 2]) && regions_6.ends_with(&[2, 2]),
-            "the current turn is the only region-2 block"
+            regions_5[region1_5..].iter().all(|&r| r == 2)
+                && regions_6[region1_6..].iter().all(|&r| r == 2),
+            "the current turn is the only region-2 block: {regions_5:?} / {regions_6:?}"
         );
         assert!(region1_5 > 0, "the marker and four turns");
         assert_eq!(
@@ -1974,7 +2274,7 @@ mod render_raw_context_tests {
         assert_eq!(sent, expected);
     }
 
-    /// Each checkpoint result is cut at collection with the same
+    /// Each replayed result is cut when the region is built, with the
     /// edge-keeping truncation the current-turn cap uses: head and tail
     /// survive, the dropped middle is stated, and the result never exceeds
     /// the fixed cap (the marker lives inside the budget).

@@ -953,9 +953,9 @@ pub struct ContextStrategyConfig {
     pub max_history_tokens: Option<usize>,
     /// Completed assistant messages per current-turn checkpoint
     /// (`sliding_window` and `turn` modes): once the current turn passes
-    /// this many assistant messages, the older ones fold into a
-    /// text-plus-calls checkpoint (each result replayed truncated to 512 B,
-    /// head and tail kept, its calls as a note) and the recent suffix stays
+    /// this many assistant messages, the older ones fold into a checkpoint
+    /// in the history block's shape (the raw messages, each oversized field
+    /// cut to 512 B keeping head and tail) and the recent suffix stays
     /// verbatim. Counting is by assistant
     /// message — every step that produced output, tool call or final reply —
     /// not by turn or by tool call. Default:

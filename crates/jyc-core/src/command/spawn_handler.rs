@@ -1516,9 +1516,9 @@ mod tests {
         // errand at a time. `window = 1` with `extend_rate = 0` is a hard
         // one-turn window — the prior is the previous turn and it slides on
         // every turn — so the task survives into a second turn without the
-        // history growing past a turn. That history carries text plus notes
-        // of the calls and the results (the results cut to the folded
-        // replay cap), and the 512-byte cap bounds the turn being run,
+        // history growing past a turn. That history carries the prior turn's
+        // raw messages with each oversized field cut to the folded replay
+        // cap, and the same cap bounds the turn being run,
         // which is where the poll output actually rides, so the poll and the
         // report inside one errand still see each other.
         let strategy = watch

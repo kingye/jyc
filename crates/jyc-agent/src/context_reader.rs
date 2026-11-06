@@ -767,9 +767,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_dangling_tool_call_is_repaired_out_of_the_slice() {
-        // The wire-side repair drops a dangling assistant and everything
-        // after it — the current turn included. The slice must be clean
-        // before it gets there.
+        // The wire-side repair drops the dangling call's own turn — the
+        // assistant message and the results answering it — and keeps every
+        // later turn. The slice must be clean before it gets there.
         let body = format!(
             "{}\n{}\n{}\n",
             json!({"role": "user", "content": "u1"}),

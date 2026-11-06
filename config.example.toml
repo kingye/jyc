@@ -1197,8 +1197,9 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # slide and may grow to window + round(extend_rate * window) before it
 # slides back (defaults 10 and 0.5).
 # History carries each prior turn's raw messages — text, calls and their
-# results, each oversized field truncated to 512 B; only the current turn
-# rides verbatim. See `[ai].context_strategy`
+# results, each oversized field truncated to 512 B and image blocks replaced
+# by a placeholder; the current turn's recent suffix rides verbatim (its
+# in-turn checkpoint folds the same way). See `[ai].context_strategy`
 # above for the full field list.
 # context_strategy = { mode = "sliding_window", window = 10, extend_rate = 0.5 }
 # attachments = { enabled = true, allowed_extensions = [".pdf", ".md"] }

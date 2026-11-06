@@ -69,10 +69,10 @@ impl Tool for GrepTool {
 
         // Security: only check boundary when an explicit search_path is
         // provided (i.e. different from the default working_dir).
-        if search_path != ctx.working_dir {
-            if let Err(msg) = ctx.check_path_boundary(display_path, &search_path) {
-                return Ok(ToolOutput::error(msg));
-            }
+        if search_path != ctx.working_dir
+            && let Err(msg) = ctx.check_path_boundary(display_path, &search_path)
+        {
+            return Ok(ToolOutput::error(msg));
         }
 
         if explicit_path.is_some() && !search_path.exists() {
@@ -164,17 +164,17 @@ fn search_recursive(
                 results,
                 files_searched,
             )?;
-        } else if path.is_file() {
-            if let Err(error) = search_file(
+        } else if path.is_file()
+            && let Err(error) = search_file(
                 &path,
                 regex,
                 include_pattern,
                 working_dir,
                 results,
                 files_searched,
-            ) {
-                tracing::debug!(path = %path.display(), %error, "skipping unreadable file");
-            }
+            )
+        {
+            tracing::debug!(path = %path.display(), %error, "skipping unreadable file");
         }
     }
 

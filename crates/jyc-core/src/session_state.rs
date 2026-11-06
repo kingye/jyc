@@ -792,10 +792,10 @@ pub const WIRE_PAYLOAD_DUMP_MAX_LINES: usize = 50;
 /// Read the runtime context-strategy override if it exists.
 ///
 /// Returns `None` when the file is missing, malformed, or `window == 0`.
-/// A zero-window prior context would degrade to a single fallback user
-/// message (see `build_text_region`), which is almost
-/// certainly not what the user wants; we silently fall back to the
-/// configured default rather than persist a broken strategy.
+/// A zero window keeps no prior turns at all (the folded region is the raw
+/// prefix, see `build_verbatim_region`), which is almost certainly not what
+/// the user wants; we silently fall back to the configured default rather
+/// than persist a broken strategy.
 pub async fn read_context_strategy_override(
     topic_name: &str,
     topic_path: &Path,

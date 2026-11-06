@@ -75,7 +75,7 @@ impl Tool for ContextBrowseTool {
         "Browse the conversation transcript — user/assistant text pairs, including \
          turns outside your sliding context window. Pair numbers count from the oldest \
          (1 = first). Returns oldest→newest. `results=true` also replays tool results \
-         (2000 B each, not the 512-byte fold)."
+         (2000 B each, not the folded 512-byte field cap)."
     }
 
     fn input_schema(&self) -> Value {
@@ -237,7 +237,9 @@ fn format_pair(n: usize, pair: &TurnPair, with_results: bool) -> String {
 /// Each result already carries its own [`RESULT_TEXT_MAX`] truncation from
 /// collection — see [`crate::session::extract_pairs_with_results`] — so this
 /// only drops whole results from the end. The overflow count survives, so
-/// the reader can always tell how many results it is not seeing.
+/// the reader can always tell how many results it is not seeing: both the
+/// ones dropped here and the ones the per-turn collection cap left out
+/// ([`TurnPair::omitted_results`]).
 fn render_turn_results_bounded(pair: &TurnPair) -> Option<String> {
     if pair.results.is_empty() {
         return None;
@@ -253,7 +255,7 @@ fn render_turn_results_bounded(pair: &TurnPair) -> Option<String> {
     let mut keep = total;
     loop {
         let body = pair.results[..keep].join(" | ");
-        let suffix = marker(total - keep);
+        let suffix = marker(pair.omitted_results + (total - keep));
         if body.len() + suffix.len() <= RESULTS_LINE_MAX {
             return Some(format!("{body}{suffix}"));
         }

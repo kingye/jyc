@@ -7,6 +7,8 @@
 
 ### Changed
 
+- The `grep` tool accepts a regular file for `path` as well as a directory: an explicit file is searched directly unless `include` excludes it, while match formatting and recursive directory traversal behave as before (#1068)
+
 - The current-turn checkpoint replays each folded tool result truncated to a fixed 512-byte cap (head and tail kept, middle replaced by the drop marker) instead of dropping folded results entirely — the checkpoint's older steps are exactly where a model that leans on the results it just read loses its evidence, and a truncated note it can page past (`context_browse results=true`) is cheaper than a re-read round trip. The sliding-window history stays text-plus-calls: prior turns' results remain journal-only. This replaces the never-released `history_tool_result_cap` knob (#1062), which is removed together with its `/context sliding` seventh positional — folded regions no longer carry a replay knob, and the checkpoint marker no longer switches text
 
 - The TUI topic info pane draws queue occupancy with bold yellow `·` dots for active messages and dark-gray `·` dots for free slots instead of `▊` blocks — the two marks share one glyph and differ by colour. The row's word, figures, narrow-pane fallback, and all other progress bars stay unchanged (#1063, #1065, #1067)

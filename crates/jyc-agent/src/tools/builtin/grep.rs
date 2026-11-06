@@ -34,7 +34,7 @@ impl Tool for GrepTool {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory to search in (default: working directory)"
+                    "description": "File or directory to search (default: working directory)"
                 },
                 "include": {
                     "type": "string",
@@ -51,7 +51,7 @@ impl Tool for GrepTool {
             .and_then(|p| p.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'pattern' parameter"))?;
 
-        let search_dir = input
+        let search_path = input
             .get("path")
             .and_then(|p| p.as_str())
             .map(|p| {
@@ -64,31 +64,53 @@ impl Tool for GrepTool {
             .unwrap_or_else(|| ctx.working_dir.to_path_buf());
 
         let include_pattern = input.get("include").and_then(|i| i.as_str());
+        let explicit_path = input.get("path").and_then(|p| p.as_str());
+        let display_path = explicit_path.unwrap_or("");
 
-        // Security: only check boundary when an explicit search_dir is
+        // Security: only check boundary when an explicit search_path is
         // provided (i.e. different from the default working_dir).
-        if search_dir != ctx.working_dir {
-            let display = input.get("path").and_then(|p| p.as_str()).unwrap_or("");
-            if let Err(msg) = ctx.check_path_boundary(display, &search_dir) {
-                return Ok(ToolOutput::error(msg));
-            }
+        if search_path != ctx.working_dir
+            && let Err(msg) = ctx.check_path_boundary(display_path, &search_path)
+        {
+            return Ok(ToolOutput::error(msg));
+        }
+
+        if explicit_path.is_some() && !search_path.exists() {
+            return Ok(ToolOutput::error(format!(
+                "Path not found: '{display_path}'"
+            )));
         }
 
         let regex = Regex::new(pattern)
             .map_err(|e| anyhow::anyhow!("Invalid regex pattern '{}': {e}", pattern))?;
 
-        // Use ripgrep-style search: walk directory, read files, match lines
+        // Search one explicit file or walk the directory recursively.
         let mut results = Vec::new();
         let mut files_searched = 0;
 
-        search_recursive(
-            &search_dir,
-            &regex,
-            include_pattern,
-            ctx.working_dir,
-            &mut results,
-            &mut files_searched,
-        )?;
+        if search_path.is_file() {
+            if let Err(e) = search_file(
+                &search_path,
+                &regex,
+                include_pattern,
+                ctx.working_dir,
+                &mut results,
+                &mut files_searched,
+            ) {
+                return Ok(ToolOutput::error(format!(
+                    "Failed to read file '{display_path}': {e}"
+                )));
+            }
+        } else {
+            search_recursive(
+                &search_path,
+                &regex,
+                include_pattern,
+                ctx.working_dir,
+                &mut results,
+                &mut files_searched,
+            )?;
+        }
 
         if results.is_empty() {
             Ok(ToolOutput::success(format!(
@@ -142,29 +164,48 @@ fn search_recursive(
                 results,
                 files_searched,
             )?;
-        } else if path.is_file() {
-            // Check include pattern
-            if let Some(pattern) = include_pattern {
-                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if !matches_include_pattern(file_name, pattern) {
-                    continue;
-                }
-            }
+        } else if path.is_file()
+            && let Err(error) = search_file(
+                &path,
+                regex,
+                include_pattern,
+                working_dir,
+                results,
+                files_searched,
+            )
+        {
+            tracing::debug!(path = %path.display(), %error, "skipping unreadable file");
+        }
+    }
 
-            // Read and search file
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                *files_searched += 1;
-                let rel_path = path
-                    .strip_prefix(working_dir)
-                    .unwrap_or(&path)
-                    .to_string_lossy();
+    Ok(())
+}
 
-                for (line_num, line) in content.lines().enumerate() {
-                    if regex.is_match(line) {
-                        results.push(format!("{}:{}: {}", rel_path, line_num + 1, line.trim()));
-                    }
-                }
-            }
+fn search_file(
+    path: &Path,
+    regex: &Regex,
+    include_pattern: Option<&str>,
+    working_dir: &Path,
+    results: &mut Vec<String>,
+    files_searched: &mut usize,
+) -> std::io::Result<()> {
+    if let Some(pattern) = include_pattern {
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !matches_include_pattern(file_name, pattern) {
+            return Ok(());
+        }
+    }
+
+    let content = std::fs::read_to_string(path)?;
+    *files_searched += 1;
+    let rel_path = path
+        .strip_prefix(working_dir)
+        .unwrap_or(path)
+        .to_string_lossy();
+
+    for (line_num, line) in content.lines().enumerate() {
+        if regex.is_match(line) {
+            results.push(format!("{}:{}: {}", rel_path, line_num + 1, line.trim()));
         }
     }
 
@@ -183,5 +224,145 @@ fn matches_include_pattern(filename: &str, pattern: &str) -> bool {
         filename.ends_with(&format!(".{}", ext))
     } else {
         filename.contains(pattern)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_fixture(tmp: &tempfile::TempDir) {
+        std::fs::create_dir(tmp.path().join("docs")).unwrap();
+        std::fs::write(tmp.path().join("notes.md"), "alpha\nneedle one\nneedle two").unwrap();
+        std::fs::write(tmp.path().join("sibling.md"), "needle sibling").unwrap();
+        std::fs::write(tmp.path().join("docs/code.rs"), "needle code").unwrap();
+    }
+
+    #[tokio::test]
+    async fn explicit_file_path_searches_only_that_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(&tmp);
+        let absolute = tmp.path().join("notes.md");
+
+        for path in ["notes.md", absolute.to_str().unwrap()] {
+            let out = GrepTool
+                .execute(
+                    json!({"pattern": "needle", "path": path}),
+                    &ToolContext::new(tmp.path()),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                out.content,
+                "notes.md:2: needle one\nnotes.md:3: needle two"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_file_path_honors_include_pattern() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(&tmp);
+        let ctx = ToolContext::new(tmp.path());
+
+        let excluded = GrepTool
+            .execute(
+                json!({"pattern": "needle", "path": "notes.md", "include": "*.rs"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            excluded.content,
+            "No matches for 'needle' (searched 0 files)"
+        );
+
+        let included = GrepTool
+            .execute(
+                json!({"pattern": "needle", "path": "notes.md", "include": "*.md"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            included.content,
+            "notes.md:2: needle one\nnotes.md:3: needle two"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_explicit_path_reports_a_named_error() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let out = GrepTool
+            .execute(
+                json!({"pattern": "needle", "path": "missing.md"}),
+                &ToolContext::new(tmp.path()),
+            )
+            .await
+            .unwrap();
+
+        assert!(out.is_error);
+        assert_eq!(out.content, "Path not found: 'missing.md'");
+    }
+
+    #[tokio::test]
+    async fn unreadable_explicit_file_reports_a_named_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("binary.log"), b"needle \xff").unwrap();
+
+        let out = GrepTool
+            .execute(
+                json!({"pattern": "needle", "path": "binary.log"}),
+                &ToolContext::new(tmp.path()),
+            )
+            .await
+            .unwrap();
+
+        assert!(out.is_error);
+        assert!(
+            out.content.starts_with("Failed to read file 'binary.log':"),
+            "unexpected output: {}",
+            out.content
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn explicit_file_path_still_enforces_the_boundary() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", tmp.path().join("escape")).unwrap();
+
+        let out = GrepTool
+            .execute(
+                json!({"pattern": "root", "path": "escape"}),
+                &ToolContext::new(tmp.path()),
+            )
+            .await
+            .unwrap();
+
+        assert!(out.is_error);
+        assert!(
+            out.content.contains("Access denied"),
+            "unexpected output: {}",
+            out.content
+        );
+    }
+
+    #[tokio::test]
+    async fn directory_search_still_honors_include_pattern() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(&tmp);
+
+        let out = GrepTool
+            .execute(
+                json!({"pattern": "needle", "include": "*.rs"}),
+                &ToolContext::new(tmp.path()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(out.content, "docs/code.rs:1: needle code");
     }
 }

@@ -63,7 +63,10 @@ impl Tool for SpawnSubagentTool {
          below say what else it inherits, and a type may set its own default for either — \
          passing the flag explicitly overrides. Pass type=\"<name>\" to start it as a configured \
          role — its model, skills, disabled tools, mode and instructions go into the child's \
-         state. The types you can pass are listed in this tool's `type` argument. Seed its \
+         state. The types you can pass are listed in this tool's `type` argument. Spawn only \
+         when no existing agent fits — to reach one that already exists, `jyc_send_to_topic` \
+         alone is enough; to message a user through a channel without agent processing, use \
+         `jyc_send_message`. Seed its \
          directory with `write`, then send the task with \
          `jyc_send_to_topic` (require_reply=true); reconfigure it by sending a command body \
          (`/build`, `/plan`, `/model`, …), which spends none of its turns. When the subagent \
@@ -189,7 +192,18 @@ impl Tool for SpawnSubagentTool {
         )
         .await
         {
-            Err(refusal) => Ok(ToolOutput::error(refusal)),
+            Err(refusal) => {
+                // A name that is taken usually means the caller wanted to reach
+                // the existing topic, not create a new one — say which tool does
+                // that instead of leaving the refusal bare.
+                let hint = if refusal.contains("already exists") {
+                    " If you meant to message that existing topic, use \
+                     jyc_send_to_topic instead — spawn only creates new topics."
+                } else {
+                    ""
+                };
+                Ok(ToolOutput::error(format!("{refusal}{hint}")))
+            }
             Ok(child) => {
                 let dir = tm
                     .topic_path(&child)

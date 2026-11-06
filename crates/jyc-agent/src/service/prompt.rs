@@ -246,7 +246,10 @@ impl JycAgentService {
             prompt.push_str(
                 "\n## Cross-Topic Communication\n\n\
                  You can send messages to another agent — its own topic by default, or one of its \
-                 topics with `topic` — using the `jyc_send_to_topic` tool.\n",
+                 topics with `topic` — using the `jyc_send_to_topic` tool. Addressing is by agent \
+                 or topic name: this tool has no `channel` parameter and the target topic must \
+                 already exist — a name no topic owns is an error, so create the agent first with \
+                 `jyc_spawn_subagent`.\n",
             );
             // The addressing tools are extended: the group is loaded on demand
             // instead of being advertised. Say so only when the loader is

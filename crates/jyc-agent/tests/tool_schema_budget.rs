@@ -106,8 +106,8 @@ const BUDGETS: &[(&str, usize, usize)] = &[
     ("read_image", 327, 196),
     ("request_access", 350, 225),
     ("jyc_send_message", 131, 430),
-    ("jyc_send_to_topic", 230, 562),
-    ("jyc_spawn_subagent", 1173, 380),
+    ("jyc_send_to_topic", 460, 562),
+    ("jyc_spawn_subagent", 1280, 380),
     ("lesson_add", 220, 0),
     ("lesson_read", 114, 0),
     ("list_topics", 240, 0),
@@ -174,7 +174,16 @@ const BUDGETS: &[(&str, usize, usize)] = &[
 /// `File or directory to search (default: working directory)`). `grep` is in
 /// the advertised core set, so both totals below move by exactly that stated
 /// delta rather than absorbing the growth into existing slack.
-const TOTAL_BUDGET: usize = 8_696;
+///
+/// The #1073 disambiguation pass raised the two cross-topic tools' ceilings
+/// by +303 in total: `jyc_send_to_topic` +212 (230 → 442 — it now says it
+/// has no `channel` parameter and names `jyc_send_message` as the direct
+/// channel send) and `jyc_spawn_subagent` +91 (1173 → 1264 — it now names
+/// `jyc_send_to_topic` as the way to reach an existing topic and
+/// `jyc_send_message` as the way to reach a user). Both are in the extended
+/// group, so an ordinary request never carries them; the raise is paid only
+/// by topics that delegate. The per-call advertised set below is untouched.
+const TOTAL_BUDGET: usize = 8_999;
 
 /// The advertised set — the core tools plus the loader's index — in
 /// characters. This is the standing per-call cost after the extended group
@@ -193,7 +202,13 @@ const TOTAL_BUDGET: usize = 8_696;
 /// extended group, so an ordinary request never carries its schema. What it
 /// does cost is one more one-liner in the loader's index, +77 characters —
 /// and that line is in the advertised set. The ceiling moves by exactly that.
-const ADVERTISED_TOTAL_BUDGET: usize = 3_132;
+///
+/// #1073 grew the two cross-topic one-liners by +117 in total
+/// (`jyc_spawn_subagent` +45, `jyc_send_to_topic` +72): the index is where
+/// the model first meets the group, so each line now says which of the three
+/// send-shaped tools it is — reach an existing topic vs create one vs send
+/// through a channel. The ceiling moves by exactly that delta.
+const ADVERTISED_TOTAL_BUDGET: usize = 3_249;
 
 /// `jyc_spawn_subagent`'s `type` description ends with the catalog of roles
 /// configured *on this machine*, so its length is configuration rather than

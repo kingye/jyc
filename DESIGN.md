@@ -2351,10 +2351,9 @@ JYC uses the following subset of the agent service API:
      there. The wire payload is the history block — the prior turns
      replayed as the messages they were sent as, structured tool calls and
      their results included, with each oversized field (result content,
-     call arguments' string values, reasoning, text inside Anthropic content
-     blocks) cut to
-     a fixed 512 B keeping both ends and image blocks replaced by a text
-     placeholder —
+     message text, call arguments' string values, reasoning, text inside
+     Anthropic content blocks) cut to a fixed 512 B keeping both ends and
+     image blocks replaced by a text placeholder —
      append-only, never trimmed —
      followed by the
      current turn in two parts: once it passes `checkpoint_interval`

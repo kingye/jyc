@@ -150,15 +150,19 @@ there:
 
 1. **History, text plus calls** — every prior turn in the window as its
    user text, a `[Tool calls]` note when the turn made any, and its
-   assistant text, reformatted in the active provider's wire format. Tool
-   results never ride in the folded history — the journal keeps them, and
-   `context_browse` with `results=true` replays them.
+   assistant text, reformatted in the active provider's wire format. Each
+   turn's tool results ride too, as a `[Tool results]` note — every
+   result cut to 512 B (head and tail kept, middle replaced by the drop
+   marker), the same shape the checkpoint uses; a fact that lived in the
+   truncated middle is re-read with `context_browse` `results=true`,
+   which replays results in full.
    The note is a **separate user message**, never merged into the
    assistant text — the transcript must not teach the model to write its
    tool use as content — and never a structured `tool_calls` block: a
    folded turn has no results to answer one, and the send path drops a
-   dangling call together with every message after it. Its budget is
-   **per turn** (1500 B), never per block: a block-wide budget would let a
+   dangling call together with every message after it. The `[Tool calls]`
+   note's budget is **per turn** (1500 B), never per block: a block-wide
+   budget would let a
    new turn's calls push an older turn's out of the note, rewriting the
    middle of a prefix the provider has already cached.
    This block only ever **grows**: nothing trims its head.
@@ -211,10 +215,10 @@ count, with hysteresis — not a per-turn fitter.
 #### What a request looks like
 
 One request with six prior turns (t1…t6) and turn 7 in flight. Nothing
-else is in `messages`: prior history carries text plus a per-turn note of
-the calls made, the folded checkpoint carries each aged result truncated,
-and only the recent current turn carries tool calls as structure and
-tool results at full length.
+else is in `messages`: prior history carries text plus per-turn notes of
+the calls made and their results (each result truncated to 512 B), the
+folded checkpoint carries the same shape, and only the recent current
+turn carries tool calls as structure and tool results at full length.
 
 ```
 POST /v1/messages
@@ -224,19 +228,21 @@ POST /v1/messages
  messages   |
 
  0  user        "[History messages] earlier conversation follows - text plus
-                 tool calls (name and arguments); tool results omitted."
+                 tool calls (name and arguments) and their results,
+                 truncated when oversized."
                  -- only added when the history block is non-empty
 
  1  user        t1: what the user said
  2  user        t1: "[Tool calls] bash(...)"               |  history block
- 3  assistant   t1: the reply text                         |
- 4  user        t2: what the user said                     |  t1-t6 fold to their
- 5  assistant   t2: the reply text                         |  text plus a note of
- 6  user        t3: what the user said                     |  the calls made: tool
- 7  user        t3: "[Tool calls] ..."                     |  messages and results
- 8  assistant   t3: the reply text                         |  are dropped by default
+ 3  user        t1: "[Tool results] ..." (each ≤ 512 B)    |
+ 4  assistant   t1: the reply text                         |
+ 5  user        t2: what the user said                     |  t1-t6 fold to their
+ 6  assistant   t2: the reply text                         |  text plus notes of
+ 7  user        t3: what the user said                     |  the calls made and
+ 8  user        t3: "[Tool calls] ..."                     |  their results
+ 9  assistant   t3: the reply text                         |  (results cut to 512 B)
  ...
-17  assistant   t6: the reply text                         |
+18  assistant   t6: the reply text                         |
 
 18  user        "turn 7"                                  -- current turn
     ...         checkpoint marker + folded older steps       (only after the
@@ -472,11 +478,10 @@ full transcript (shared `extract_pairs` view):
 
 - `offset` — pairs to skip from the **newest** end (0 = most recent).
 - `limit` — page size (default 10, max 50).
-- `results` — also replay each turn's tool results (default `false`). A
-  folded region keeps a turn's text and its `[Tool calls]` note but not
-  what the calls returned (a checkpointed step keeps its results only
-  truncated to 512 B). This is the way back to the full evidence of a
-  turn that has aged out. Each
+- `results` — replay each turn's tool results in full (default `false`).
+  The folded regions already carry every result truncated to 512 B; the
+  page is the way back to the untruncated evidence of a turn that has
+  aged out. Each
   result keeps 2000 B and the whole `RESULTS:` line 4000 B, whole results
   dropped from the end with a `…(N more results)` count.
 - Returns numbered `USER:` / `ASSISTANT:` / `TOOLS:` (`RESULTS:` when
@@ -487,8 +492,8 @@ full transcript (shared `extract_pairs` view):
 
 The system prompt tells the agent to use `context_browse` whenever it
 needs earlier turns of the current conversation, and — because a folded
-turn keeps its conclusions but, by default, not its evidence — that a
-fact which lived in an omitted or truncated tool result must be
+turn's results arrive truncated — that a fact which lived in a
+truncated tool result must be
 re-checked (re-run the tool, or read it back with `results=true`) rather
 than restated from memory.
 

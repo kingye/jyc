@@ -74,8 +74,8 @@ impl Tool for ContextBrowseTool {
     fn description(&self) -> &str {
         "Browse the conversation transcript — user/assistant text pairs, including \
          turns outside your sliding context window. Pair numbers count from the oldest \
-         (1 = first). Returns oldest→newest. `results=true` also replays each turn's \
-         tool results, which the history fold always omits."
+         (1 = first). Returns oldest→newest. `results=true` also replays tool results \
+         (2000 B each, not the 512-byte fold)."
     }
 
     fn input_schema(&self) -> Value {
@@ -94,7 +94,7 @@ impl Tool for ContextBrowseTool {
                 },
                 "results": {
                     "type": "boolean",
-                    "description": "Also replay each turn's tool results (bounded).",
+                    "description": "Replay each turn's tool results (2000 B each).",
                     "default": false
                 }
             }

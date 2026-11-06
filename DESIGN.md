@@ -2349,12 +2349,14 @@ JYC uses the following subset of the agent service API:
      `context_offset`, the journal byte offset where the window's oldest
      retained turn begins, and each load reads the journal forward from
      there. The wire payload is the history block — the prior turns as
-     their text plus a per-turn `[Tool calls]` note (name and arguments,
-     1500 B per turn), append-only, never trimmed — followed by the
+     their text plus two per-turn notes, `[Tool calls]` (name and
+     arguments) and `[Tool results]` (each result cut to 512 B keeping
+     both ends; 1500 B budget per note), append-only, never trimmed —
+     followed by the
      current turn in two parts: once it passes `checkpoint_interval`
      assistant steps (32 by default), the older steps fold into a
      text-plus-calls checkpoint (same representation as history, so their
-     tool results leave the wire except for a fixed 512-byte truncated
+     tool results appear on the wire only as a fixed 512-byte truncated
      replay per result — head and tail kept, middle replaced by a paging
      marker — while their calls stay visible as notes;
      the assistant reasoning replays through the provider's wire shape —
@@ -2438,16 +2440,20 @@ JYC uses the following subset of the agent service API:
    Full mechanism reference (turn pairing, what a request looks like,
    token safety nets, configuration): [docs/architecture/context.md](docs/architecture/context.md).
 
-   **Folded turns keep the calls, not the results (2026-11-03).** Folding
+   **Folded turns keep the calls, and replay the results truncated
+   (2026-11-03; extended to history 2026-11-06).** Folding
    a turn to its text alone kept the model's own conclusions and dropped
    the evidence for them, so a question about an earlier turn could only
    be answered by restating — and, when the restatement did not fit, by
    inventing a plausible detail (a file that does not exist, a line number
    that does not exist). Two additions close that gap without touching the
    prefix invariant. Folded regions (history and the current-turn
-   checkpoint) now carry a per-turn `[Tool calls]` note — the calls' names
+   checkpoint) carry a per-turn `[Tool calls]` note — the calls' names
    and arguments, 1500 B per turn, whole calls dropped from the end with a
-   `…(N more calls)` count — and `context_browse` grew `results=true`,
+   `…(N more calls)` count — and a per-turn `[Tool results]` note — each
+   result cut to 512 B keeping both ends, 1500 B per turn, whole results
+   dropped from the end with a `…(N more results)` count. `context_browse`
+   grew `results=true`,
    which replays each turn's tool results from the journal (2000 B per
    result, 4000 B per `RESULTS:` line). The note is a separate **user**
    message: never merged into the assistant text (that would teach the
@@ -2651,9 +2657,10 @@ tokens ↓
 │  · Skills 清单 + AGENTS.md(项目指令)             │
 │  · Reply instructions / History format / VCS     │
 ├─ messages ──────────────────────────────────────┤
-│  历史 旧轮次 (text + [Tool calls] note)          │
-│  └ user/assistant 文本原样, result 丢弃;         │ ← 只追加: 前缀字节不变
-│     tool call 以注记保留(名字+参数, 每轮 1500B)  │
+│  历史 旧轮次 (text + 两注记)                      │
+│  └ user/assistant 文本原样;                       │ ← 只追加: 前缀字节不变
+│     [Tool calls] 名字+参数, [Tool results]        │
+│     512B/条 保头尾(两注记各每轮 1500B)            │
 │                                                   │    ★不做任何裁剪★
 │                                                   │
 │  ⟵ 窗口超 max_window 轮, 或已到 max_window 且超   │
@@ -2662,7 +2669,7 @@ tokens ↓
 │  当前轮            0 → 增长                      │
 │  ├ user: <runtime-state> 参考块 ~300B ★易变★     │ ★新位置★
 │  │        + 入站消息(含 <mode> 块) + 附件          │
-│  ├ 每个 checkpoint: 旧步折叠为 text+调用注记      │ ★checkpoint★
+│  ├ 每个 checkpoint: 旧步折叠为 text+两注记        │ ★checkpoint★
 │  │     checkpoint (result 丢弃; reasoning 回放)   │   32步起递增
 │  ├ recent suffix: assistant/tool 原样             │ ◇断点3 (n-3)
 │  ├ tool: result                                 │ ◇断点4 (n-2)

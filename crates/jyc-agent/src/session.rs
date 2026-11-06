@@ -1354,6 +1354,16 @@ const TOOL_ARG_MAX: usize = 200;
 /// transcript cannot balloon into megabytes.
 const TOOL_CALLS_PER_TURN_MAX: usize = 20;
 
+/// Max tool results collected for one turn's folded replay
+/// ([`TurnPair::results`]). A single assistant message can carry many tool
+/// calls and their answers arrive together; past this count, whole results
+/// are dropped from the end of the turn's list and the renderer's overflow
+/// marker `…(N more results)` states the hidden count — the same rule
+/// [`TOOL_CALLS_PER_TURN_MAX`] uses for calls. Bounded per turn, the note
+/// stays a pure function of that turn, so the history block it feeds stays
+/// append-only.
+const TOOL_RESULTS_PER_TURN_MAX: usize = 8;
+
 /// Leading text of the history-note message that builds of the past wrote
 /// into `raw_context`.
 ///
@@ -1550,12 +1560,16 @@ pub(crate) struct TurnPair {
     /// Calls beyond [`TOOL_CALLS_PER_TURN_MAX`], absent from
     /// [`Self::tool_calls`]. Renderers append `…(N more calls)`.
     pub omitted_tool_calls: usize,
+    /// Results beyond [`TOOL_RESULTS_PER_TURN_MAX`], absent from
+    /// [`Self::results`]. Renderers append `…(N more results)`.
+    pub omitted_results: usize,
     /// The turn's tool-result texts, in the order the results were
     /// recorded (which is the order the calls were issued). Populated by
     /// [`extract_pairs_with_results`] only: a plain [`extract_pairs`] fold
     /// leaves the list empty (e.g. the transcript view, which renders calls
     /// only). Each text is already cut to the caller's byte bound at
-    /// collection.
+    /// collection, and the list itself to [`TOOL_RESULTS_PER_TURN_MAX`]
+    /// entries.
     pub results: Vec<String>,
 }
 
@@ -1630,17 +1644,57 @@ pub(crate) fn render_turn_tool_calls_bounded(pair: &TurnPair, limit: usize) -> O
 }
 
 /// The turn's rendered tool-result list for a folded-region note: results
-/// joined in call order, each already cut to the configured cap at
-/// collection (its own paging marker states what was dropped), so this adds
-/// no bound of its own. `None` when the turn has no collected results.
+/// joined in call order with a `---` line between (keeps two consecutive
+/// results from reading as one — a result's text is free-form, so a newline
+/// alone would be ambiguous), under a per-turn byte budget. `None` when the
+/// turn has no collected results.
 ///
-/// The `---` line keeps two consecutive results from reading as one — a
-/// result's text is free-form, so a newline alone would be ambiguous.
-pub(crate) fn render_turn_tool_results(pair: &TurnPair) -> Option<String> {
+/// The budget mirrors [`render_turn_tool_calls_bounded`]'s: whole results
+/// are dropped from the end — never cut mid-marker, which would leave a
+/// head without its tail looking like a real one — and the overflow marker
+/// absorbs the count, so "how many are hidden" survives any budget that can
+/// hold the marker itself. A single result wider than the whole budget keeps
+/// its head alone (the per-result cap has already cut it to 512 bytes with
+/// both ends intact at collection time; cutting its head again only trims a
+/// result that is already bounded).
+pub(crate) fn render_turn_tool_results_bounded(pair: &TurnPair, limit: usize) -> Option<String> {
     if pair.results.is_empty() {
         return None;
     }
-    Some(pair.results.join("\n---\n"))
+    let marker = |dropped: usize| -> String {
+        match dropped {
+            0 => String::new(),
+            1 => " …(1 more result)".to_string(),
+            n => format!(" …({n} more results)"),
+        }
+    };
+    let total = pair.results.len();
+    let mut keep = total;
+    loop {
+        let body = pair.results[..keep].join("\n---\n");
+        let suffix = marker(pair.omitted_results + (total - keep));
+        if body.len() + suffix.len() <= limit {
+            return Some(format!("{body}{suffix}"));
+        }
+        if keep == 1 {
+            // Nothing left to drop: one result alone is over budget. Keep
+            // its head — already edge-truncated at collection, so what is
+            // lost here is bounded middle bytes — rather than degrading to
+            // the bare count, which would hide that the turn produced
+            // anything at all.
+            let one = pair.results[0].as_str();
+            let head = |room: usize| one.floor_char_boundary(room.min(one.len()));
+            let tail = match suffix.trim_start() {
+                "" => "…",
+                marker => marker,
+            };
+            return Some(match limit.checked_sub(tail.len()) {
+                Some(room) => format!("{}{tail}", &one[..head(room)]),
+                None => one[..head(limit)].to_string(),
+            });
+        }
+        keep -= 1;
+    }
 }
 
 /// Flush the accumulated turn into `pairs`: merge every assistant message
@@ -1706,6 +1760,9 @@ fn flush_turn(
     }
     let omitted_tool_calls = tool_calls.len().saturating_sub(TOOL_CALLS_PER_TURN_MAX);
     tool_calls.truncate(TOOL_CALLS_PER_TURN_MAX);
+    let omitted_results = results.len().saturating_sub(TOOL_RESULTS_PER_TURN_MAX);
+    let mut results = results;
+    results.truncate(TOOL_RESULTS_PER_TURN_MAX);
     // Drop only when the assistant truly had nothing — no text AND no tool
     // calls (`keeps_turn_alive`, the rule the tail scan shares). The call
     // list can be empty while the turn still counts: a step whose every
@@ -1732,6 +1789,7 @@ fn flush_turn(
         assistant,
         tool_calls,
         omitted_tool_calls,
+        omitted_results,
         results,
     });
 }

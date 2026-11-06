@@ -451,6 +451,21 @@ fn folded_assistant_count(n: usize, interval: usize, growth: usize) -> usize {
 /// pure function of that turn's calls, so it can only be appended.
 const REGION_TOOL_CALLS_MAX: usize = 1500;
 
+/// Per-turn byte budget for a folded region's `[Tool results]` note — the
+/// same rule [`REGION_TOOL_CALLS_MAX`] states for the calls note, applied
+/// to the results note: per turn, so the note is a pure function of that
+/// turn and the history block it feeds stays append-only. Overflow drops
+/// whole results from the end and keeps the `…(N more results)` count.
+const REGION_TOOL_RESULTS_MAX: usize = 1500;
+
+const _: () = assert!(
+    REGION_TOOL_RESULTS_MAX
+        >= "[Tool results] ".len()
+            + " …(1 more result)".len()
+            + jyc_types::channel::MIN_EDGE_KEEPING_CAP,
+    "the results budget must hold the prefix, the overflow marker and one floor-sized result",
+);
+
 /// Per-result byte bound for the tool results a folded region replays —
 /// both the history block and the current-turn checkpoint.
 ///
@@ -583,7 +598,9 @@ fn build_text_region(
                 text: format!("{} {calls}", crate::session::TOOL_CALLS_NOTE_PREFIX),
             }]));
         }
-        if let Some(results) = crate::session::render_turn_tool_results(pair) {
+        if let Some(results) =
+            crate::session::render_turn_tool_results_bounded(pair, REGION_TOOL_RESULTS_MAX)
+        {
             region.push(provider.format_user_message(&[ContentBlock::Text {
                 text: format!("{} {results}", crate::session::TOOL_RESULTS_NOTE_PREFIX),
             }]));
@@ -816,7 +833,7 @@ fn append_region_summary(
     // "current turn" — never a numbered shorthand, so a dump can be read
     // without a legend.
     let region_headers = [
-        (1u8, "History — text plus calls, results folded out"),
+        (1u8, "History — text plus calls, truncated results"),
         (3u8, "Current-turn checkpoint — older work, text plus calls"),
         (2u8, "Current turn — recent suffix, verbatim"),
     ];
@@ -1560,7 +1577,7 @@ mod render_raw_context_tests {
         assert!(rendered.contains("USER: fix bug"));
         // One turn → one merged ASSISTANT block: first step's text, the
         // turn's tool calls, then the reply. Tool results are not part of
-        // the transcript: no note machinery renders them any more.
+        // the transcript view: no note machinery renders them there.
         assert!(rendered.contains("ASSISTANT: I'll start"));
         assert!(rendered.contains("bash()"));
         assert!(!rendered.contains("output"));
@@ -1644,8 +1661,10 @@ mod render_raw_context_tests {
         let mut ctx = prior.clone();
         ctx.extend(current.clone());
 
-        // Every prior turn — u1/a1, u2 with its tool call, u3/a3 — folds
-        // to text plus a note naming the calls; the results stay out.
+        // Every prior turn — u1/a1, u2 with its tool call and result, u3/a3 —
+        // folds to text plus one note naming the calls and one replaying the
+        // result, both between the calling turn's own user text and its
+        // answer.
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 2,
@@ -1658,9 +1677,9 @@ mod render_raw_context_tests {
         let sent = sent.into_owned();
 
         // 1. History marker, then every prior turn as text, with the one
-        //    call-making turn's note between its own user text and its
-        //    answer. Nothing trims the history block: the window bound is
-        //    the loader's, not this function's.
+        //    call-making turn's two notes (calls, then results) between its
+        //    own user text and its answer. Nothing trims the history block:
+        //    the window bound is the loader's, not this function's.
         assert_eq!(
             sent[0],
             json!({"role": "user", "content": crate::session::HISTORY_MARKER_TEXT})
@@ -1673,14 +1692,19 @@ mod render_raw_context_tests {
             json!({"role": "user", "content": "[Tool calls] bash()"}),
             "the call-making turn keeps a trace of what it ran"
         );
-        assert_eq!(sent[5], json!({"role": "assistant", "content": "a2"}));
-        assert_eq!(sent[6], json!({"role": "user", "content": "u3"}));
-        assert_eq!(sent[7], json!({"role": "assistant", "content": "a3"}));
+        assert_eq!(
+            sent[5],
+            json!({"role": "user", "content": "[Tool results] out"}),
+            "and of what came back"
+        );
+        assert_eq!(sent[6], json!({"role": "assistant", "content": "a2"}));
+        assert_eq!(sent[7], json!({"role": "user", "content": "u3"}));
+        assert_eq!(sent[8], json!({"role": "assistant", "content": "a3"}));
 
         // 2. Current turn verbatim (structured tool_calls preserved).
-        assert_eq!(sent[8], current[0]);
-        assert_eq!(sent[9], current[1]);
-        assert_eq!(sent[10], current[2]);
+        assert_eq!(sent[9], current[0]);
+        assert_eq!(sent[10], current[1]);
+        assert_eq!(sent[11], current[2]);
     }
 
     #[test]
@@ -1762,8 +1786,8 @@ mod render_raw_context_tests {
         assert!(region1_5 > 0, "the marker and four turns");
         assert_eq!(
             region1_6,
-            region1_5 + 3,
-            "history grew by exactly one turn: its text, its note, its answer"
+            region1_5 + 4,
+            "history grew by exactly one turn: its text, its two notes, its answer"
         );
         assert_eq!(
             at_6[..region1_5],
@@ -1772,13 +1796,14 @@ mod render_raw_context_tests {
         );
         // Everything past the history block is the current turn, and the
         // history block's own tail is the turn that just graduated into it —
-        // note and all, rendered exactly as it was while it was current.
+        // notes and all, rendered exactly as it was while it was current.
         assert_eq!(at_6[region1_5]["content"], "u5");
         assert_eq!(
             at_6[region1_5 + 1]["content"],
             r#"[Tool calls] bash(command="c5")"#
         );
-        assert_eq!(at_6[region1_5 + 2]["content"], "a5");
+        assert_eq!(at_6[region1_5 + 2]["content"], "[Tool results] R5");
+        assert_eq!(at_6[region1_5 + 3]["content"], "a5");
         assert_eq!(at_5[region1_5]["content"], "u5");
         assert_eq!(at_6[region1_6]["content"], "u6");
     }
@@ -2028,20 +2053,40 @@ mod render_raw_context_tests {
             .into_owned();
 
         assert_eq!(sent[0]["content"], crate::session::HISTORY_MARKER_TEXT);
-        let dumped = serde_json::to_string(&sent).unwrap();
+        let note = sent
+            .iter()
+            .find_map(|m| {
+                m["content"]
+                    .as_str()
+                    .filter(|c| c.starts_with("[Tool results] "))
+            })
+            .expect("history must replay the truncated result");
+        let body = note.strip_prefix("[Tool results] ").unwrap();
         assert!(
-            dumped.contains("[Tool results] HEAD-h"),
-            "history must replay the truncated result: {dumped}"
+            body.len() <= FOLDED_RESULT_REPLAY_CAP,
+            "the cut result fits in the cap, marker included: {} bytes",
+            body.len()
         );
-        assert!(
-            dumped.contains("bytes dropped from the middle"),
-            "the cut must be stated: {dumped}"
+        // Conservation over the stated gap: head + announced middle + tail
+        // must account for every byte of the original result — a cut that
+        // lost or duplicated an end fails here whatever the sizes are.
+        let (head, rest) = body.split_once("\n… [").expect("marker opener");
+        let (dropped, rest) = rest
+            .split_once(" bytes dropped from the middle")
+            .expect("marker body");
+        let dropped: usize = dropped.parse().unwrap();
+        let tail = rest.split_once("] …\n").expect("marker closer").1;
+        assert_eq!(
+            head.len() + dropped + tail.len(),
+            result.len(),
+            "the cut conserves bytes: {head_len} head + {dropped} gap + {tail_len} tail \
+             != {} original",
+            result.len(),
+            head_len = head.len(),
+            tail_len = tail.len(),
         );
-        assert!(dumped.contains("-TAIL"), "the tail must survive: {dumped}");
-        assert!(
-            !dumped.contains(&"m".repeat(100)),
-            "the oversized middle must not survive: {dumped}"
-        );
+        assert!(head.starts_with("HEAD-h"), "the head survives: {head:?}");
+        assert!(tail.ends_with("-TAIL"), "the tail survives: {tail:?}");
     }
 
     /// A short result rides the history verbatim: the cap only bites
@@ -2099,7 +2144,11 @@ mod render_raw_context_tests {
         let short_region = build_history_region(&prov, &short);
         let long_region = build_history_region(&prov, &long);
 
-        assert_eq!(short_region.len(), 6, "marker + note + two turns");
+        assert_eq!(
+            short_region.len(),
+            7,
+            "marker + calls note + results note + two turns"
+        );
         assert_eq!(
             short_region,
             long_region[..short_region.len()],
@@ -2587,8 +2636,8 @@ mod render_raw_context_tests {
             "the lift must keep both ends at the floor: {content:?}"
         );
         assert!(
-            !wire.contains("truncated"),
-            "a head-only cut would say 'truncated' instead: {wire}"
+            !content.contains("truncated"),
+            "a head-only cut would say 'truncated' inside the tool content itself: {content:?}"
         );
         // The dump reports the applied cap, not the configured one, and says
         // where it came from — printing `turn_cap=3` would describe a turn

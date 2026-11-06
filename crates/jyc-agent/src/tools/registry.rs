@@ -34,6 +34,23 @@ fn levenshtein(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
+/// True when `requested` looks like `candidate` mistyped — a small edit
+/// distance, or one more edit when the two share a long prefix (the
+/// real-world slips are prefixes like `jyc_spawn_agent` for
+/// `jyc_spawn_subagent`, one word shorter)
+fn near_miss(requested: &str, candidate: &str) -> bool {
+    let dist = levenshtein(requested, candidate);
+    if dist <= 2 {
+        return true;
+    }
+    let shared_prefix = requested
+        .chars()
+        .zip(candidate.chars())
+        .take_while(|(a, b)| a == b)
+        .count();
+    dist <= 3 && shared_prefix >= 8
+}
+
 /// The group of tools that stay out of the advertised tool list until the
 /// model asks for them (`load_extended_tools`).
 ///
@@ -363,7 +380,7 @@ impl ToolRegistry {
                 && let Some(nearest) = ext
                     .names()
                     .iter()
-                    .filter(|n| levenshtein(name, n) <= 2)
+                    .filter(|n| near_miss(name, n))
                     .min_by_key(|n| levenshtein(name, n))
             {
                 msg.push_str(&format!(
@@ -899,7 +916,18 @@ mod tests {
             super::levenshtein("jyc_send_to_topc", "jyc_send_to_topic"),
             1
         );
-        assert_eq!(super::levenshtein("missing", "jyc_send_to_topic"), 12);
+        assert_eq!(super::levenshtein("missing", "jyc_send_to_topic"), 15);
+    }
+
+    #[test]
+    fn near_miss_catches_the_real_slips() {
+        use super::near_miss;
+        assert!(near_miss("jyc_send_to_topc", "jyc_send_to_topic"));
+        // the prefix slip that actually looped an agent: one word shorter
+        assert!(near_miss("jyc_spawn_agent", "jyc_spawn_subagent"));
+        assert!(!near_miss("missing", "jyc_send_to_topic"));
+        // a shared prefix alone is not enough when the distance is large
+        assert!(!near_miss("jyc_do_things", "jyc_send_to_topic"));
     }
 
     fn hook_cfg(event: &str, script: &str) -> jyc_types::config::HookConfig {

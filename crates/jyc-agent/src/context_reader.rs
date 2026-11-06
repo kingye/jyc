@@ -156,6 +156,10 @@ impl ContextReader {
     /// carries its line-start offset in [`PriorSlice::offsets`], so the
     /// caller can advance the anchor a whole turn at a time without
     /// re-scanning.
+    ///
+    /// The returned slice is repaired like the backward scan's: a dangling
+    /// tool call at the journal's tail takes its own message down, never
+    /// the messages appended after the read.
     pub(crate) async fn read_from(&self, offset: u64) -> PriorSlice {
         let Some((file_len, _)) = self.stat().await else {
             return PriorSlice {
@@ -207,6 +211,18 @@ impl ContextReader {
         }
         // A trailing line without a newline is a torn tail — the writer's
         // `clean_end` owns that repair; the reader drops it.
+        //
+        // The same contract as the backward scan: an assistant `tool_calls`
+        // message whose results are missing (a crash between the two
+        // appends, or a corrupt result line skipped above) must not reach
+        // the fold, because the send path's repair would then drop that
+        // message *and everything after it* — the current turn included, on
+        // every request. Repaired here, the drop is confined to the
+        // journal's already-unusable tail, and anything appended later
+        // (this turn's messages) is unaffected. `repair` drops a suffix,
+        // so the offsets stay aligned with a truncated tail.
+        let messages = crate::provider::repair_dangling_tool_calls(messages);
+        offsets.truncate(messages.len());
         PriorSlice {
             messages,
             // A read from a non-zero offset starts mid-journal: the head it
@@ -980,6 +996,50 @@ mod tests {
         assert!(
             !slice.reached_head,
             "an offset past the end never reached the head — only offset 0 did"
+        );
+    }
+
+    /// The forward read must repair a dangling call before the fold sees
+    /// it. Unrepaired, the *send path's* repair drops the dangling
+    /// assistant and everything after it — including the turn this read
+    /// precedes, on every request until the window slides past it.
+    #[tokio::test]
+    async fn read_from_repairs_a_dangling_tool_call_so_the_next_turn_survives() {
+        let tmp = tempfile::tempdir().unwrap();
+        let body = format!(
+            "{}\n{}\n{}\n",
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            // A crash between the call and its result: the journal's last
+            // message is a call nothing answers.
+            json!({"role": "assistant", "content": "calling", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+            ]}),
+        );
+        let reader = reader_for(&tmp, &body).await;
+        let slice = reader.read_from(0).await;
+
+        assert_eq!(
+            slice.messages.len(),
+            2,
+            "the dangling call is dropped: {:?}",
+            slice.messages
+        );
+        assert_eq!(
+            slice.offsets.len(),
+            slice.messages.len(),
+            "offsets must stay aligned after the repair"
+        );
+
+        // The next turn is appended *after* the read; with the tail already
+        // repaired, the wire repair has nothing to drop.
+        let mut wire = slice.messages;
+        wire.push(json!({"role": "user", "content": "next turn"}));
+        let sent = crate::provider::filter_valid_messages(&wire);
+        assert_eq!(
+            sent.last().and_then(|m| m["content"].as_str()),
+            Some("next turn"),
+            "the current turn must survive the wire repair: {sent:?}"
         );
     }
 

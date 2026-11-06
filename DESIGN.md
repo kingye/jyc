@@ -2351,7 +2351,9 @@ JYC uses the following subset of the agent service API:
      there. The wire payload is the history block — the prior turns
      replayed as the messages they were sent as, structured tool calls and
      their results included, with each oversized field (result content,
-     call arguments, reasoning) cut to a fixed 512 B keeping both ends —
+     call arguments, reasoning, text inside Anthropic content blocks) cut to
+     a fixed 512 B keeping both ends and image blocks replaced by a text
+     placeholder —
      append-only, never trimmed —
      followed by the
      current turn in two parts: once it passes `checkpoint_interval`
@@ -2444,7 +2446,9 @@ JYC uses the following subset of the agent service API:
    token safety nets, configuration): [docs/architecture/context.md](docs/architecture/context.md).
 
    **Folded turns keep the calls, and replay the results truncated
-   (2026-11-03; extended to history 2026-11-06).** Folding
+   (2026-11-03; extended to history 2026-11-06; superseded later the same
+   day by the raw-message replay below, kept as the rationale for keeping
+   the calls and their evidence).** Folding
    a turn to its text alone kept the model's own conclusions and dropped
    the evidence for them, so a question about an earlier turn could only
    be answered by restating — and, when the restatement did not fit, by
@@ -2486,8 +2490,10 @@ JYC uses the following subset of the agent service API:
    append-only for free — no per-turn budget can rewrite a cached middle,
    because there is no per-turn budget. Structured `tool_calls` are safe
    here where they were not for a note: a folded slice always ends at a
-   turn boundary, so a call and its result travel together and the send
-   path's dangling-call repair cannot fire inside the block. The
+   turn boundary, so a call and its result travel together; a call whose
+   result was lost to a torn write or an unparsable line is repaired
+   inside the loaded slice, which costs the rest of that block at worst —
+   never the current turn after it. The
    anti-mimicry rules survive as message edits — the inline ` Thinking`
    duplicate of a non-empty `reasoning_content` is stripped from the reply
    text, a fieldless leading block strips too, a block-only entry drops —

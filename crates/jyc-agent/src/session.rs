@@ -390,8 +390,8 @@ pub async fn append_wire_payload_dump(
 /// the journal forward from the anchor stored in the session state
 /// ([`SessionState::context_offset`]), so the window only ever grows between
 /// slides — the loader never trims its head. The wire payload that follows
-/// from this is append-only: the history block (turn text plus each turn's
-/// tool-call note) grows by append and only the current turn is re-sent (see
+/// from this is append-only: the history block (each turn's raw messages,
+/// oversized fields capped) grows by append and only the current turn is re-sent (see
 /// `build_send_context_cached`). The window slides (anchor moves forward,
 /// whole turns dropped) when it holds
 /// more than [`ContextStrategyConfig::max_window`] turns, or when it has

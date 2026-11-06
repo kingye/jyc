@@ -296,8 +296,9 @@ pub enum ContextRegion {
     /// The whole context, unsplit (`Full` mode).
     Full,
     /// Prior turns, replayed verbatim with oversized fields (tool results,
-    /// call arguments, reasoning) cut to a fixed 512-byte cap keeping both
-    /// ends.
+    /// call arguments, reasoning, text inside Anthropic content blocks) cut
+    /// to a fixed 512-byte cap keeping both ends, and image blocks replaced
+    /// by a text placeholder.
     History,
     /// The folded older part of the current turn (`SlidingWindow` and
     /// `Turn` modes).

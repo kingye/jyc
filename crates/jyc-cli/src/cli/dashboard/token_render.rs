@@ -545,16 +545,16 @@ const QUEUE_WORD: &str = "queue ";
 /// The separator between the status word and the queue's part of the row.
 const QUEUE_SEPARATOR: &str = " · ";
 
-/// A bold yellow middle dot for a message waiting for a turn of its own.
-/// The dot is width-ambiguous; the figures carry the exact counts if the
+/// A bold yellow bullet for a message waiting for a turn of its own. The
+/// bullet is width-ambiguous; the figures carry the exact counts if the
 /// terminal widens it.
-const QUEUE_ACTIVE_MARK: &str = "·";
-/// A plain dark-gray middle dot for a free slot — the same glyph as the
-/// active mark, telling the two apart by colour and weight.
-const QUEUE_INACTIVE_MARK: &str = "·";
+const QUEUE_ACTIVE_MARK: &str = "•";
+/// A plain dark-gray bullet for a free slot — the same glyph as the active
+/// mark, telling the two apart by colour and weight.
+const QUEUE_INACTIVE_MARK: &str = "•";
 
 /// Append the status row to `spans` — the topic's live status and the
-/// backlog its queue holds, on one row: `Processing · queue ······ 2 / 10`
+/// backlog its queue holds, on one row: `Processing · queue •••••• 2 / 10`
 /// (the first of the six dots yellow and bold, the split read by colour
 /// and weight).
 ///

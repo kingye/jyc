@@ -2348,21 +2348,24 @@ JYC uses the following subset of the agent service API:
    * `sliding_window` — anchored: `agent-session.json` persists
      `context_offset`, the journal byte offset where the window's oldest
      retained turn begins, and each load reads the journal forward from
-     there. The wire payload is the history block — the prior turns as
-     their text plus two per-turn notes, `[Tool calls]` (name and
-     arguments) and `[Tool results]` (each result cut to 512 B keeping
-     both ends; 1500 B budget per note), append-only, never trimmed —
+     there. The wire payload is the history block — the prior turns
+     replayed as the messages they were sent as, structured tool calls and
+     their results included, with each oversized field (result content,
+     call arguments, reasoning) cut to a fixed 512 B keeping both ends —
+     append-only, never trimmed —
      followed by the
      current turn in two parts: once it passes `checkpoint_interval`
      assistant steps (32 by default), the older steps fold into a
-     text-plus-calls checkpoint (same representation as history, so their
-     tool results appear on the wire only as a fixed 512-byte truncated
-     replay per result — head and tail kept, middle replaced by a paging
-     marker — while their calls stay visible as notes;
-     the assistant reasoning replays through the provider's wire shape —
-     the `reasoning_content` field on the OpenAI-compatible wire, a native
-     `reasoning` item on Responses, dropped by the Anthropic builder —
-     with the inline `<think>` duplicate stripped; a leading block with
+     verbatim checkpoint (the same representation as history: the raw
+     messages, structured `tool_calls` and their tool results together,
+     with each oversized field — result content, call arguments,
+     reasoning — cut to a fixed 512-byte cap keeping both ends, middle
+     replaced by a paging marker);
+     the assistant reasoning travels on the message itself — the
+     `reasoning_content` field on the OpenAI-compatible wire, a native
+     `reasoning` item on Responses, dropped by the Anthropic conversion —
+     with the inline ` Thinking` duplicate stripped from the reply text
+     when the field matches it; a leading block with
      no field strips on the replay path too — parity with the Responses
      wire's send-time strip; no in-tree builder writes that shape (every
      builder that inlined also set the field), so the rule covers legacy
@@ -2371,10 +2374,10 @@ JYC uses the following subset of the agent service API:
      outright, as the reasoning-only turn it is.
      Whether a provider that emits thinking inline (MiniMax M3) reads
      the `reasoning_content` field on input is unverified. The folded
-     reasoning is not size-capped: it enlarges the payload and the
-     region's reported bytes/tokens, and nothing trims it — the slide
-     triggers are computed on the journal slice before the fold, so the
-     reported growth never feeds back into the trigger decision), and
+     reasoning is capped like every other field, so it cannot grow the
+     payload without bound; the slide triggers are computed on the
+     journal slice before the fold, so the reported growth never feeds
+     back into the trigger decision), and
      the recent suffix
      stays verbatim with structured tool calls and results intact. Each
      later checkpoint is `checkpoint_interval / checkpoint_growth` steps
@@ -2468,6 +2471,30 @@ JYC uses the following subset of the agent service API:
    the byte-stability with calls in every turn. The note is not the
    removed `note_window`: that carried results and text, was configurable
    per window, and taught models to write their process as content.
+
+   **Folded turns replay their messages, not a summary (2026-11-06).**
+   The notes above were a second representation of a turn: they carried
+   the conclusions and the evidence, but re-derived both from the journal
+   on every build and paid for it with budgets and drop counts of their
+   own. Replaying the messages themselves — role, `tool_calls`,
+   `tool_call_id`, `reasoning_content`, block content — says the same
+   thing with one layer fewer to keep honest: the model reads back what it
+   actually wrote, and the only rewrite left is a per-field byte cap
+   (result content, call-argument string values, `reasoning_content`:
+   512 B, head and tail kept, middle stated by the paging marker). A
+   message's replay is a function of that message alone, so the block is
+   append-only for free — no per-turn budget can rewrite a cached middle,
+   because there is no per-turn budget. Structured `tool_calls` are safe
+   here where they were not for a note: a folded slice always ends at a
+   turn boundary, so a call and its result travel together and the send
+   path's dangling-call repair cannot fire inside the block. The
+   anti-mimicry rules survive as message edits — the inline ` Thinking`
+   duplicate of a non-empty `reasoning_content` is stripped from the reply
+   text, a fieldless leading block strips too, a block-only entry drops —
+   and the collection caps that bound `context_browse`
+   (`TOOL_CALLS_PER_TURN_MAX`, `TOOL_RESULTS_PER_TURN_MAX`, 2000 B per
+   result) stay, now serving only the view. The `[Tool calls]` /
+   `[Tool results]` note constants and the wire-side budgets are gone.
 
    **`max_history_tokens` (2026-10-18; corrected 2026-10-28).** `window`
    counts turns, so `window = 10` costs 2k tokens on a quiet topic and
@@ -2657,10 +2684,10 @@ tokens ↓
 │  · Skills 清单 + AGENTS.md(项目指令)             │
 │  · Reply instructions / History format / VCS     │
 ├─ messages ──────────────────────────────────────┤
-│  历史 旧轮次 (text + 两注记)                      │
+│  历史 旧轮次 (消息原样回放)                       │
 │  └ user/assistant 文本原样;                       │ ← 只追加: 前缀字节不变
-│     [Tool calls] 名字+参数, [Tool results]        │
-│     512B/条 保头尾(两注记各每轮 1500B)            │
+│     工具调用/结果按原消息回放                     │
+│     超长字段→512B 保头尾                          │
 │                                                   │    ★不做任何裁剪★
 │                                                   │
 │  ⟵ 窗口超 max_window 轮, 或已到 max_window 且超   │
@@ -2669,8 +2696,8 @@ tokens ↓
 │  当前轮            0 → 增长                      │
 │  ├ user: <runtime-state> 参考块 ~300B ★易变★     │ ★新位置★
 │  │        + 入站消息(含 <mode> 块) + 附件          │
-│  ├ 每个 checkpoint: 旧步折叠为 text+两注记        │ ★checkpoint★
-│  │     checkpoint (result 丢弃; reasoning 回放)   │   32步起递增
+│  ├ 每个 checkpoint: 旧步回放原消息                │ ★checkpoint★
+│  │     checkpoint (字段超长→512B 保头尾)          │   32步起递增
 │  ├ recent suffix: assistant/tool 原样             │ ◇断点3 (n-3)
 │  ├ tool: result                                 │ ◇断点4 (n-2)
 │  │     默认原样携带 ★turn_tool_result_cap★       │  ★置了则 ≤ N 字节:

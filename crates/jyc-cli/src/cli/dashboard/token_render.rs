@@ -749,6 +749,7 @@ mod tests {
             call_count: None,
             avg_turn_call_ms: None,
             turn_call_count: None,
+            turn_total_call_duration_ms: None,
             activity: vec![],
             last_active_at: None,
             skills: vec![],

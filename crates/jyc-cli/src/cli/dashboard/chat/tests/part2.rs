@@ -663,6 +663,7 @@ fn topic_detail_for(name: &str, channel: &str) -> jyc_types::TopicInfo {
         call_count: None,
         avg_turn_call_ms: None,
         turn_call_count: None,
+        turn_total_call_duration_ms: None,
         activity: vec![],
         last_active_at: None,
         skills: vec![],
@@ -774,6 +775,7 @@ fn files_section_colors_uncommitted_paths_yellow() {
         call_count: None,
         avg_turn_call_ms: None,
         turn_call_count: None,
+        turn_total_call_duration_ms: None,
         activity: vec![],
         last_active_at: None,
         skills: vec![],
@@ -1036,6 +1038,7 @@ fn info_scroll_is_clamped_after_render() {
         call_count: None,
         avg_turn_call_ms: None,
         turn_call_count: None,
+        turn_total_call_duration_ms: None,
         activity: vec![],
         last_active_at: None,
         skills: vec![],
@@ -1285,6 +1288,7 @@ fn compact_status_detail() -> jyc_types::TopicInfo {
     detail.turn_reasoning_tokens = Some(0);
     detail.avg_turn_call_ms = Some(858);
     detail.turn_call_count = Some(9);
+    detail.turn_total_call_duration_ms = Some(7722);
     detail
 }
 
@@ -1331,6 +1335,33 @@ fn compact_status_chip_carries_the_hidden_info_pane_metrics() {
         .find(|span| span.content == "━".repeat(3))
         .expect("three-cell current segment");
     assert_eq!(current.style.fg, Some(Color::Cyan));
+}
+
+#[test]
+fn compact_status_latency_uses_the_exact_turn_total() {
+    // The persisted average truncates 10 ms / 3 calls to 3 ms, which would
+    // reconstruct as 9 ms. The chip must use the persisted exact total.
+    let mut detail = topic_detail_for("jyc", "agents");
+    detail.model = Some("gpt-5.5".to_string());
+    detail.avg_turn_call_ms = Some(3);
+    detail.turn_call_count = Some(3);
+    detail.turn_total_call_duration_ms = Some(10);
+    let ctx = ChatHeaderCtx {
+        mode: "plan",
+        topic: Some("jyc"),
+        branch: None,
+        model: detail.model.as_deref(),
+        pct: None,
+        info_visible: false,
+        detail: Some(&detail),
+    };
+
+    let text = line_text(&build_status_line(60, &ctx));
+
+    assert!(
+        text.ends_with("[ gpt-5.5 · 10ms/3c ]"),
+        "latency must preserve the total that average reconstruction loses: {text:?}"
+    );
 }
 
 #[test]
@@ -2115,6 +2146,7 @@ fn info_pane_app(tasks: jyc_types::task::TaskList) -> App {
         call_count: None,
         avg_turn_call_ms: None,
         turn_call_count: None,
+        turn_total_call_duration_ms: None,
         activity: vec![],
         last_active_at: None,
         skills: vec![],
@@ -3156,6 +3188,7 @@ fn info_pane_end_reaches_the_last_wrapped_row() {
         call_count: None,
         avg_turn_call_ms: None,
         turn_call_count: None,
+        turn_total_call_duration_ms: None,
         activity: vec![],
         last_active_at: None,
         skills: vec![],

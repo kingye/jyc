@@ -460,6 +460,12 @@ pub struct TopicInfo {
     /// `TopicSummary::turn_call_count` for the full description.
     #[serde(default)]
     pub turn_call_count: Option<u64>,
+    /// Exact wall-clock time across every LLM call in the latest turn, in
+    /// milliseconds. Kept separate from the derived average so surfaces
+    /// reporting turn totals do not lose the remainder dropped by integer
+    /// division. `None` before the turn has made a call.
+    #[serde(default)]
+    pub turn_total_call_duration_ms: Option<u64>,
     /// Recent activity events (newest first, max ~20)
     #[serde(default)]
     pub activity: Vec<ActivityEntry>,
@@ -811,6 +817,7 @@ mod tests {
                 call_count: None,
                 avg_turn_call_ms: None,
                 turn_call_count: None,
+                turn_total_call_duration_ms: None,
                 total_reasoning_tokens: None,
                 turn_cache_hit_tokens: None,
                 turn_input_tokens: None,

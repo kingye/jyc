@@ -3504,7 +3504,7 @@ fn minimal_progress_mode_renders_one_animated_row() {
 /// contribute to this chat.
 #[test]
 fn minimal_progress_counts_only_the_shown_topics_queue() {
-    let entry = r#"{"type":"tool","tool_name":"bash","status":"running"}"#;
+    let entry = r#"{"type":"tool_started","tool_name":"bash","status":"running"}"#;
 
     let mut shown = topic_detail_for("pr-1", "github");
     shown.queued = 2;

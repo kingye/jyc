@@ -1259,8 +1259,8 @@ fn status_line_renders_partial_chip_with_model_only() {
 }
 
 /// A detail carrying every compact-chip figure: 80/20 history/current
-/// composition, 2% context usage, 1.04M turn input tokens at a 93% cache hit
-/// rate, 948 reasoning tokens with 2.91K output, and nine 858 ms calls
+/// composition, 2% context usage, 1,090,519 turn input tokens at a 93% cache
+/// hit rate, 948 reasoning tokens with 2,980 output, and nine 858 ms calls
 /// (7.72 s in total).
 fn compact_status_detail() -> jyc_types::TopicInfo {
     let mut detail = topic_detail_for("jyc", "agents");
@@ -1313,7 +1313,7 @@ fn compact_status_chip_carries_the_hidden_info_pane_metrics() {
         "left segment must stay unchanged: {text:?}"
     );
     let expected = format!(
-        "[ gpt-5.5 · {} · 2% · ↑1.04M 93% · ↓948/2.91K · 7.72s/9c ]",
+        "[ gpt-5.5 · {} · 2% · ↑1.0M 93% · ↓948/2.9K · 7.7s/9c ]",
         "━".repeat(10)
     );
     assert!(
@@ -1340,13 +1340,15 @@ fn compact_status_chip_carries_the_hidden_info_pane_metrics() {
 
 #[test]
 fn compact_status_latency_uses_the_exact_turn_total() {
-    // The persisted average truncates 10 ms / 3 calls to 3 ms, which would
-    // reconstruct as 9 ms. The chip must use the persisted exact total.
+    // The persisted average would reconstruct 340 ms × 3 calls as 1.02 s,
+    // which rounds to 1.0s. The chip must use the persisted exact 900 ms
+    // total even though one-decimal seconds can no longer show millisecond
+    // precision.
     let mut detail = topic_detail_for("jyc", "agents");
     detail.model = Some("gpt-5.5".to_string());
-    detail.avg_turn_call_ms = Some(3);
+    detail.avg_turn_call_ms = Some(340);
     detail.turn_call_count = Some(3);
-    detail.turn_total_call_duration_ms = Some(10);
+    detail.turn_total_call_duration_ms = Some(900);
     let ctx = ChatHeaderCtx {
         mode: "plan",
         topic: Some("jyc"),
@@ -1358,9 +1360,10 @@ fn compact_status_latency_uses_the_exact_turn_total() {
     };
 
     let text = line_text(&build_status_line(60, &ctx));
+    let bar = "━".repeat(10);
 
     assert!(
-        text.ends_with("[ gpt-5.5 · 10ms/3c ]"),
+        text.ends_with(&format!("[ gpt-5.5 · {bar} · 0.9s/3c ]")),
         "latency must preserve the total that average reconstruction loses: {text:?}"
     );
 }
@@ -1391,6 +1394,51 @@ fn visible_info_pane_keeps_the_terse_status_chip() {
 }
 
 #[test]
+fn compact_status_chip_renders_zero_metrics_and_empty_composition() {
+    let mut t = topic_detail_for("jyc", "agents");
+    t.model = Some("kimi/k3.1-pro".to_string());
+    t.branch = Some("main".to_string());
+    t.context_composition.clear();
+    t.context_input_tokens = Some(0);
+    t.context_output_tokens = Some(0);
+    t.max_tokens = Some(200_000);
+    t.turn_input_tokens = Some(0);
+    t.turn_cache_hit_tokens = Some(0);
+    t.turn_reasoning_tokens = Some(0);
+    t.turn_output_tokens = Some(0);
+    t.turn_total_call_duration_ms = Some(0);
+    t.turn_call_count = Some(3);
+    let ctx = ChatHeaderCtx {
+        mode: "plan",
+        topic: Some("jyc"),
+        branch: t.branch.as_deref(),
+        model: t.model.as_deref(),
+        pct: None,
+        info_visible: false,
+        detail: Some(&t),
+    };
+
+    let line = build_status_line(120, &ctx);
+    let text = line_text(&line);
+    assert!(text.starts_with("plan · jyc · main"));
+    let expected = format!(
+        "[ kimi/k3.1-pro · {} · ↑0 0% · ↓0/0 · 0s/3c ]",
+        "━".repeat(10)
+    );
+    assert!(
+        text.ends_with(&expected),
+        "zero turn metrics keep the chip's full shape: {text:?}"
+    );
+    let bar = line
+        .spans
+        .iter()
+        .find(|span| span.content == "━".repeat(10))
+        .expect("ten-cell zero-composition bar");
+    assert_eq!(bar.style.fg, Some(Color::DarkGray));
+    assert!(!text.contains("0.0"), "zero metrics stay integers: {text}");
+}
+
+#[test]
 fn compact_status_chip_omits_missing_turn_metrics() {
     let detail = topic_detail_for("jyc", "agents");
     let ctx = ChatHeaderCtx {
@@ -1405,9 +1453,10 @@ fn compact_status_chip_omits_missing_turn_metrics() {
     let line = build_status_line(80, &ctx);
     let text = line_text(&line);
 
+    let bar = "━".repeat(10);
     assert!(
-        text.ends_with("[ claude-opus-4-6 · 10% ]"),
-        "an empty detail contributes no extra segments: {text:?}"
+        text.ends_with(&format!("[ claude-opus-4-6 · {bar} · 10% ]")),
+        "missing turn metrics are omitted, but the empty composition placeholder remains: {text:?}"
     );
 }
 

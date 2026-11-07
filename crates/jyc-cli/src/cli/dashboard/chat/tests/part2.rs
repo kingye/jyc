@@ -1098,6 +1098,8 @@ fn ctx_with_full_data() -> ChatHeaderCtx<'static> {
         branch: None,
         model: Some("claude-opus-4-6"),
         pct: Some(10),
+        info_visible: true,
+        detail: None,
     }
 }
 
@@ -1170,6 +1172,8 @@ fn status_line_with_no_state_is_just_mode() {
         branch: None,
         model: None,
         pct: None,
+        info_visible: true,
+        detail: None,
     };
     let line = build_status_line(80, &ctx);
     let text = line_text(&line);
@@ -1251,6 +1255,151 @@ fn status_line_renders_partial_chip_with_model_only() {
     );
 }
 
+/// A detail carrying every compact-chip figure: 80/20 history/current
+/// composition, 2% context usage, 2% turn cache, 501 output tokens with no
+/// reasoning, and nine 858 ms calls (7.72 s in total).
+fn compact_status_detail() -> jyc_types::TopicInfo {
+    let mut detail = topic_detail_for("jyc", "agents");
+    detail.model = Some("gpt-5.5".to_string());
+    detail.mode = Some("plan".to_string());
+    detail.context_input_tokens = Some(2_000);
+    detail.context_output_tokens = Some(0);
+    detail.max_tokens = Some(100_000);
+    detail.context_composition = vec![
+        jyc_types::ContextRegionInfo {
+            region: jyc_types::ContextRegion::History,
+            messages: 8,
+            bytes: 8_000,
+            estimated_tokens: 8_000,
+        },
+        jyc_types::ContextRegionInfo {
+            region: jyc_types::ContextRegion::Current,
+            messages: 2,
+            bytes: 2_000,
+            estimated_tokens: 2_000,
+        },
+    ];
+    detail.turn_cache_hit_tokens = Some(200);
+    detail.turn_input_tokens = Some(10_000);
+    detail.turn_output_tokens = Some(501);
+    detail.turn_reasoning_tokens = Some(0);
+    detail.avg_turn_call_ms = Some(858);
+    detail.turn_call_count = Some(9);
+    detail
+}
+
+#[test]
+fn compact_status_chip_carries_the_hidden_info_pane_metrics() {
+    let detail = compact_status_detail();
+    let ctx = ChatHeaderCtx {
+        mode: "plan",
+        topic: Some("jyc"),
+        branch: None,
+        model: detail.model.as_deref(),
+        pct: Some(2),
+        info_visible: false,
+        detail: Some(&detail),
+    };
+    let line = build_status_line(90, &ctx);
+    let text = line_text(&line);
+
+    assert!(
+        text.starts_with("plan · jyc"),
+        "left segment must stay unchanged: {text:?}"
+    );
+    let expected = format!(
+        "[ gpt-5.5 · {} · 2% · ↑2% · 501/0 · 7.72s/9c ]",
+        "━".repeat(10)
+    );
+    assert!(
+        text.ends_with(&expected),
+        "compact chip must show composition, usage, cache, output and latency: {text:?}"
+    );
+    assert_eq!(text.width(), 90, "the status line fills its row: {text:?}");
+
+    // The composition keeps the info pane's fixed ten region cells and their
+    // colours: seven green history cells, three cyan current-turn cells.
+    let history = line
+        .spans
+        .iter()
+        .find(|span| span.content == "━".repeat(7))
+        .expect("seven-cell history segment");
+    assert_eq!(history.style.fg, Some(Color::Green));
+    let current = line
+        .spans
+        .iter()
+        .find(|span| span.content == "━".repeat(3))
+        .expect("three-cell current segment");
+    assert_eq!(current.style.fg, Some(Color::Cyan));
+}
+
+#[test]
+fn visible_info_pane_keeps_the_terse_status_chip() {
+    let detail = compact_status_detail();
+    let ctx = ChatHeaderCtx {
+        mode: "plan",
+        topic: Some("jyc"),
+        branch: None,
+        model: detail.model.as_deref(),
+        pct: Some(2),
+        info_visible: true,
+        detail: Some(&detail),
+    };
+    let line = build_status_line(90, &ctx);
+    let text = line_text(&line);
+
+    assert!(
+        text.ends_with("[ gpt-5.5 · 2% ]"),
+        "a visible info pane owns the detail, so the chip stays terse: {text:?}"
+    );
+    assert!(
+        !text.contains('↑') && !text.contains("/9c"),
+        "turn metrics must not duplicate the visible info pane: {text:?}"
+    );
+}
+
+#[test]
+fn compact_status_chip_omits_missing_turn_metrics() {
+    let detail = topic_detail_for("jyc", "agents");
+    let ctx = ChatHeaderCtx {
+        mode: "plan",
+        topic: Some("jyc"),
+        branch: None,
+        model: Some("claude-opus-4-6"),
+        pct: Some(10),
+        info_visible: false,
+        detail: Some(&detail),
+    };
+    let line = build_status_line(80, &ctx);
+    let text = line_text(&line);
+
+    assert!(
+        text.ends_with("[ claude-opus-4-6 · 10% ]"),
+        "an empty detail contributes no extra segments: {text:?}"
+    );
+}
+
+#[test]
+fn compact_status_chip_is_dropped_when_narrow() {
+    let detail = compact_status_detail();
+    let ctx = ChatHeaderCtx {
+        mode: "plan",
+        topic: Some("jyc"),
+        branch: None,
+        model: detail.model.as_deref(),
+        pct: Some(2),
+        info_visible: false,
+        detail: Some(&detail),
+    };
+    let line = build_status_line(40, &ctx);
+    let text = line_text(&line);
+
+    assert_eq!(
+        text, "plan · jyc",
+        "the expanded chip must give way first: {text:?}"
+    );
+}
+
 #[test]
 fn status_line_drops_chip_when_narrow() {
     // Width that fits the left segment but not the chip — chip
@@ -1278,6 +1427,8 @@ fn status_line_never_emits_dangling_separator() {
         branch: None,
         model: None,
         pct: None,
+        info_visible: true,
+        detail: None,
     };
     let line = build_status_line(10, &ctx);
     let text = line_text(&line);

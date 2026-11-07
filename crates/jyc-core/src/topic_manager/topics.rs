@@ -815,6 +815,7 @@ impl TopicManager {
                 turn_input_tokens: token_state.turn_input_tokens,
                 turn_output_tokens: token_state.turn_output_tokens,
                 turn_reasoning_tokens: token_state.turn_reasoning_tokens,
+                turn_total_call_duration_ms: token_state.turn_total_call_duration_ms,
                 // The day's spend across every topic, per currency — the
                 // same ledger the per-topic cost came from.
                 today_all: today_totals

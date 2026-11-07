@@ -208,6 +208,10 @@ pub struct TokenState {
     /// The reasoning tokens of the LLM calls in the latest turn — the
     /// turn-scoped twin of `total_reasoning_tokens`.
     pub turn_reasoning_tokens: Option<u64>,
+    /// Exact wall-clock time across every LLM call in the latest turn.
+    /// Unlike the derived average, this preserves the milliseconds lost to
+    /// integer division when an average is reconstructed from it.
+    pub turn_total_call_duration_ms: Option<u64>,
     /// How the last completed call's wire messages split into context
     /// regions. Empty when no call has completed or the session file
     /// predates the field.
@@ -247,6 +251,8 @@ pub async fn read_token_state(topic_name: &str, topic_path: &Path) -> TokenState
             .then_some(state.total_reasoning_tokens),
         turn_reasoning_tokens: (state.turn_reasoning_tokens > 0)
             .then_some(state.turn_reasoning_tokens),
+        turn_total_call_duration_ms: (state.turn_total_call_duration_ms > 0)
+            .then_some(state.turn_total_call_duration_ms),
         context_composition: state.context_composition,
     }
 }
@@ -1009,7 +1015,7 @@ mod tests {
         tokio::fs::create_dir_all(&state_dir).await.unwrap();
         tokio::fs::write(
             state_dir.join("agent-session.json"),
-            r#"{"context_input_tokens":1500,"context_output_tokens":250,"total_output_tokens":400,"total_input_tokens":9000,"total_cache_hit_tokens":3500,"context_window":10000}"#,
+            r#"{"context_input_tokens":1500,"context_output_tokens":250,"total_output_tokens":400,"total_input_tokens":9000,"total_cache_hit_tokens":3500,"context_window":10000,"turn_total_call_duration_ms":7722}"#,
         )
         .await
         .unwrap();
@@ -1021,6 +1027,9 @@ mod tests {
         assert_eq!(state.total_input_tokens, Some(9000));
         assert_eq!(state.total_cache_hit_tokens, Some(3500));
         assert_eq!(state.total_cache_creation_tokens, None);
+        assert_eq!(state.turn_total_call_duration_ms, Some(7722));
+        jyc_types::state_dir::unregister(topic);
+        jyc_types::state_dir::clear_closed(topic);
     }
 
     #[tokio::test]

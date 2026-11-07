@@ -1259,8 +1259,9 @@ fn status_line_renders_partial_chip_with_model_only() {
 }
 
 /// A detail carrying every compact-chip figure: 80/20 history/current
-/// composition, 2% context usage, 2% turn cache, 501 output tokens with no
-/// reasoning, and nine 858 ms calls (7.72 s in total).
+/// composition, 2% context usage, 1.04M turn input tokens at a 93% cache hit
+/// rate, 948 reasoning tokens with 2.91K output, and nine 858 ms calls
+/// (7.72 s in total).
 fn compact_status_detail() -> jyc_types::TopicInfo {
     let mut detail = topic_detail_for("jyc", "agents");
     detail.model = Some("gpt-5.5".to_string());
@@ -1282,10 +1283,10 @@ fn compact_status_detail() -> jyc_types::TopicInfo {
             estimated_tokens: 2_000,
         },
     ];
-    detail.turn_cache_hit_tokens = Some(200);
-    detail.turn_input_tokens = Some(10_000);
-    detail.turn_output_tokens = Some(501);
-    detail.turn_reasoning_tokens = Some(0);
+    detail.turn_cache_hit_tokens = Some(1_014_183);
+    detail.turn_input_tokens = Some(1_090_519);
+    detail.turn_output_tokens = Some(2_980);
+    detail.turn_reasoning_tokens = Some(948);
     detail.avg_turn_call_ms = Some(858);
     detail.turn_call_count = Some(9);
     detail.turn_total_call_duration_ms = Some(7722);
@@ -1312,7 +1313,7 @@ fn compact_status_chip_carries_the_hidden_info_pane_metrics() {
         "left segment must stay unchanged: {text:?}"
     );
     let expected = format!(
-        "[ gpt-5.5 · {} · 2% · ↑2% · 501/0 · 7.72s/9c ]",
+        "[ gpt-5.5 · {} · 2% · ↑1.04M 93% · ↓948/2.91K · 7.72s/9c ]",
         "━".repeat(10)
     );
     assert!(

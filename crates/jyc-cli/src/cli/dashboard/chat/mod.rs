@@ -2498,8 +2498,8 @@ fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
 /// Build the chat status line — the pane's bottom row: "{mode} · {topic}[ ·
 /// {branch}]" left-aligned, a right-aligned chip showing the current model
 /// and context-window usage. With the info pane hidden, the chip also
-/// carries its compact turn metrics: context composition, turn cache,
-/// output/reasoning and total turn latency; with the pane visible the chip
+/// carries its compact turn metrics: context composition, turn input/cache hit
+/// rate, reasoning/output and total turn latency; with the pane visible the chip
 /// stays terse and the pane owns those figures. Both segments are one dim
 /// gray except the composition cells, which keep the pane's region colours:
 /// it is a footer, not a rule, so it carries no ─ padding (the input field
@@ -2569,8 +2569,8 @@ fn build_status_line(width: usize, ctx: &ChatHeaderCtx<'_>) -> Line<'static> {
 /// Build the status line's right chip. The info pane's visible form stays
 /// exactly the old "[ {model} · {pct}% ]"; its hidden form is the compact
 /// mirror of the pane: fixed-width context composition, overall usage, turn
-/// cache, turn output/reasoning and total turn latency. Missing segments are
-/// skipped rather than zero-filled.
+/// input/cache hit rate, turn reasoning/output counts, and total turn latency.
+/// Missing segments are skipped rather than zero-filled.
 fn build_status_chip(ctx: &ChatHeaderCtx<'_>, style: Style) -> Option<Vec<Span<'static>>> {
     if ctx.info_visible {
         // Omit the chip entirely when both fields are missing (e.g., before
@@ -2607,7 +2607,12 @@ fn build_status_chip(ctx: &ChatHeaderCtx<'_>, style: Style) -> Option<Vec<Span<'
             && input > 0
         {
             let pct = jyc_types::cache_util_pct(t.turn_cache_hit_tokens, Some(input)).unwrap_or(0);
-            push_chip_text(&mut inner, &mut has_segment, style, format!("↑{pct}%"));
+            push_chip_text(
+                &mut inner,
+                &mut has_segment,
+                style,
+                format!("↑{} {pct}%", jyc_types::format_token_count(input)),
+            );
         }
         if t.turn_output_tokens.is_some() || t.turn_reasoning_tokens.is_some() {
             let output = t.turn_output_tokens.unwrap_or(0);
@@ -2617,9 +2622,9 @@ fn build_status_chip(ctx: &ChatHeaderCtx<'_>, style: Style) -> Option<Vec<Span<'
                 &mut has_segment,
                 style,
                 format!(
-                    "{}/{}",
-                    jyc_types::format_token_count(output),
-                    jyc_types::format_token_count(reasoning)
+                    "↓{}/{}",
+                    jyc_types::format_token_count(reasoning),
+                    jyc_types::format_token_count(output)
                 ),
             );
         }

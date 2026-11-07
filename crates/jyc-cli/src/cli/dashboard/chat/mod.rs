@@ -2571,12 +2571,12 @@ fn build_status_line(width: usize, ctx: &ChatHeaderCtx<'_>) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Build the status line's right chip. The info pane's visible form stays
-/// exactly the old "[ {model} · {pct}% ]"; its hidden form is the compact
-/// mirror of the pane: fixed-width context composition, overall usage, turn
-/// input/cache hit rate, reasoning/output counts, and total turn latency.
-/// Missing measurements render as zero so the full form never degenerates into
-/// a narrower chip. Non-empty subagent and changed-file counts follow when
+/// Build the status line's right chip. The info pane's visible form is the
+/// terse "[ {model} · {pct}% ]"; its hidden form is the compact mirror of the
+/// pane: fixed-width context composition, overall usage, turn input/cache hit
+/// rate, reasoning/output counts, and total turn latency. Missing
+/// measurements render as zero so the full form never degenerates into a
+/// narrower chip. Non-empty subagent and changed-file counts follow when
 /// present.
 fn build_status_chip(ctx: &ChatHeaderCtx<'_>, style: Style) -> Option<Vec<Span<'static>>> {
     if ctx.info_visible {
@@ -2598,7 +2598,8 @@ fn build_status_chip(ctx: &ChatHeaderCtx<'_>, style: Style) -> Option<Vec<Span<'
     let mut inner: Vec<Span<'static>> = Vec::new();
     let mut has_segment = false;
     if let Some(model) = ctx.model {
-        push_chip_text(&mut inner, &mut has_segment, style, model.to_string());
+        inner.push(Span::styled(model.to_string(), style));
+        has_segment = true;
     }
     // Context composition — the same region-colored bar the pane draws, at a
     // fixed ten cells so the chip never grows with the pane width. No
@@ -2628,7 +2629,7 @@ fn build_status_chip(ctx: &ChatHeaderCtx<'_>, style: Style) -> Option<Vec<Span<'
         &mut has_segment,
         style,
         format!(
-            "→{}/{}",
+            "↓{}/{}",
             format_chip_token_count(t.turn_reasoning_tokens.unwrap_or(0)),
             format_chip_token_count(t.turn_output_tokens.unwrap_or(0))
         ),
@@ -2655,15 +2656,15 @@ fn build_status_chip(ctx: &ChatHeaderCtx<'_>, style: Style) -> Option<Vec<Span<'
             );
         }
     }
-    if let Some(files) = t.changed_files.as_deref() {
-        if !files.is_empty() {
-            push_chip_text(
-                &mut inner,
-                &mut has_segment,
-                style,
-                format!("≡{}", files.len()),
-            );
-        }
+    if let Some(files) = t.changed_files.as_deref()
+        && !files.is_empty()
+    {
+        push_chip_text(
+            &mut inner,
+            &mut has_segment,
+            style,
+            format!("≡{}", files.len()),
+        );
     }
 
     let mut spans = Vec::with_capacity(inner.len() + 2);
@@ -2712,6 +2713,8 @@ fn format_chip_turn_duration(total_ms: u64) -> String {
     }
 }
 
+/// Insert the model-to-composition bullet only when a model already occupies
+/// the chip.
 fn push_chip_separator(spans: &mut Vec<Span<'static>>, has_segment: &mut bool, style: Style) {
     if *has_segment {
         spans.push(Span::styled(" · ", style));
@@ -2719,13 +2722,19 @@ fn push_chip_separator(spans: &mut Vec<Span<'static>>, has_segment: &mut bool, s
     *has_segment = true;
 }
 
+/// Append a compact chip segment. Turn metrics use a plain space, not the
+/// model/composition bullet.
 fn push_chip_text(
     spans: &mut Vec<Span<'static>>,
     has_segment: &mut bool,
     style: Style,
     text: String,
 ) {
-    push_chip_separator(spans, has_segment, style);
+    if *has_segment {
+        spans.push(Span::styled(" ", style));
+    } else {
+        *has_segment = true;
+    }
     spans.push(Span::styled(text, style));
 }
 

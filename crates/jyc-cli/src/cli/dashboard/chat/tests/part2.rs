@@ -1320,7 +1320,7 @@ fn compact_status_chip_carries_the_hidden_info_pane_metrics() {
         "left segment must stay unchanged: {text:?}"
     );
     let expected = format!(
-        "[ gpt-5.5 · {} · 2% ↑1.0M/93% ↓948/2.9K →7.7s/9 ]",
+        "[ gpt-5.5 · {} 2% ↑1.0M/93% ↓948/2.9K →7.7s/9 ]",
         "━".repeat(10)
     );
     assert!(
@@ -1370,7 +1370,7 @@ fn compact_status_latency_uses_the_exact_turn_total() {
     let bar = "━".repeat(10);
 
     assert!(
-        text.ends_with(&format!("[ gpt-5.5 · {bar} · 0% ↑0/0% ↓0/0 →0.9s/3 ]")),
+        text.ends_with(&format!("[ gpt-5.5 · {bar} 0% ↑0/0% ↓0/0 →0.9s/3 ]")),
         "latency must preserve the total that average reconstruction loses: {text:?}"
     );
 }
@@ -1429,10 +1429,7 @@ fn compact_status_chip_renders_zero_metrics_and_empty_composition() {
     let line = build_status_line(120, &ctx);
     let text = line_text(&line);
     assert!(text.starts_with("plan · jyc · main"));
-    let expected = format!(
-        "[ kimi/k3.1-pro · {} · 0% ↑0/0% ↓0/0 →0s/3 ]",
-        "━".repeat(10)
-    );
+    let expected = format!("[ kimi/k3.1-pro · {} 0% ↑0/0% ↓0/0 →0s/3 ]", "━".repeat(10));
     assert!(
         text.ends_with(&expected),
         "zero turn metrics keep the chip's full shape: {text:?}"
@@ -1449,9 +1446,11 @@ fn compact_status_chip_renders_zero_metrics_and_empty_composition() {
 #[test]
 fn compact_status_chip_counts_active_subagents_and_changed_files() {
     let mut detail = compact_status_detail();
-    let mut running = subagent_node("ci-watch", vec![]);
+    let mut child = subagent_node("review", vec![subagent_node("review-child", vec![])]);
+    child.status = jyc_types::TopicStatus::Processing;
+    let mut running = subagent_node("ci-watch", vec![child]);
     running.status = jyc_types::TopicStatus::Processing;
-    detail.subagents = Some(vec![running, subagent_node("review", vec![])]);
+    detail.subagents = Some(vec![running]);
     detail.changed_files = Some(vec![
         changed_file_entry("src/lib.rs"),
         changed_file_entry("README.md"),
@@ -1468,7 +1467,7 @@ fn compact_status_chip_counts_active_subagents_and_changed_files() {
 
     let text = line_text(&build_status_line(110, &ctx));
     let expected = format!(
-        "[ gpt-5.5 · {} · 2% ↑1.0M/93% ↓948/2.9K →7.7s/9 ✦1/2 ≡2 ]",
+        "[ gpt-5.5 · {} 2% ↑1.0M/93% ↓948/2.9K →7.7s/9 ✦2/3 ≡2 ]",
         "━".repeat(10)
     );
     assert!(
@@ -1494,7 +1493,7 @@ fn compact_status_chip_shows_changed_files_without_subagents() {
     let text = line_text(&build_status_line(110, &ctx));
     assert!(
         text.ends_with(&format!(
-            "[ gpt-5.5 · {} · 2% ↑1.0M/93% ↓948/2.9K →7.7s/9 ≡1 ]",
+            "[ gpt-5.5 · {} 2% ↑1.0M/93% ↓948/2.9K →7.7s/9 ≡1 ]",
             "━".repeat(10)
         )),
         "changed-file count follows turn metrics when there are no subagents: {text:?}"
@@ -1517,7 +1516,7 @@ fn compact_status_chip_omits_empty_changed_file_list() {
 
     let text = line_text(&build_status_line(100, &ctx));
     let expected = format!(
-        "[ gpt-5.5 · {} · 2% ↑1.0M/93% ↓948/2.9K →7.7s/9 ]",
+        "[ gpt-5.5 · {} 2% ↑1.0M/93% ↓948/2.9K →7.7s/9 ]",
         "━".repeat(10)
     );
     assert!(
@@ -1543,9 +1542,7 @@ fn compact_status_chip_zeroes_missing_turn_metrics() {
 
     let bar = "━".repeat(10);
     assert!(
-        text.ends_with(&format!(
-            "[ claude-opus-4-6 · {bar} · 10% ↑0/0% ↓0/0 →0s/0 ]"
-        )),
+        text.ends_with(&format!("[ claude-opus-4-6 · {bar} 10% ↑0/0% ↓0/0 →0s/0 ]")),
         "missing turn metrics render as zero, keeping the full chip shape: {text:?}"
     );
 }

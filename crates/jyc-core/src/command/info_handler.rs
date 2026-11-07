@@ -320,6 +320,7 @@ mod tests {
             call_count: Some(37),
             avg_turn_call_ms: Some(1100),
             turn_call_count: Some(3),
+            turn_total_call_duration_ms: None,
             commands: vec![],
             subagents: None,
         }

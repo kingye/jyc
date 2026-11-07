@@ -5,9 +5,9 @@
 use super::super::*;
 
 #[test]
-fn opens_with_info_and_status_visible() {
-    // Topic info pane and status bar default to visible; activity,
-    // explorer and zen mode stay opt-in.
+fn constructor_uses_standard_pane_defaults_before_any_chat_is_opened() {
+    // Before a chat is opened the constructor starts from the standard
+    // layout; `ChatState::open` enters zen mode from there.
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let app = App::new(rx, None);
     assert!(app.chat.info_visible);
@@ -348,27 +348,42 @@ fn toggle_resets_after_zen_mode() {
     assert_eq!(app.chat.activity_split, 1);
 }
 
-/// Opening a chat restores the chat screen's own defaults: the topic info
-/// pane and the status block are there, the activity pane is not. Those
-/// flags are the chat screen's only — the overview keeps all three panes
-/// and offers no way to close them — so each chat starts from them rather
-/// than from whatever the previous one left closed.
+/// Opening a chat starts in zen mode: the chat screen hides its topic info,
+/// explorer, and activity panes by default. Exiting through the normal `z`
+/// toggle restores the standard layout — info and status visible, explorer
+/// and activity hidden — regardless of the panes a previous chat left open.
 #[test]
-fn opening_a_chat_restores_the_chat_screens_own_pane_defaults() {
+fn opening_a_chat_enters_zen_and_exiting_restores_the_standard_panes() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
-    // Close what `Ctrl+P` can close; the activity pane already starts closed.
+    app.chat.toggle_explorer();
     app.chat.toggle_info_pane();
     app.chat.toggle_status_bar();
+    assert!(app.chat.explorer_visible);
     assert!(!app.chat.info_visible);
     assert!(!app.chat.status_visible);
     assert_eq!(app.chat.activity_split, 0);
 
+    // Reopening normally starts from a chat that is already in zen; reset must
+    // discard this snapshot and take a fresh standard-layout one instead.
+    app.chat.toggle_zen_mode();
+    assert!(app.chat.zen_saved.is_some());
+
     app.chat.reset_chat_state("topic-a");
 
+    assert!(!app.chat.explorer_visible);
+    assert!(!app.chat.info_visible);
+    assert!(!app.chat.status_visible);
+    assert_eq!(app.chat.activity_split, 0);
+    assert!(app.chat.zen_saved.is_some());
+
+    app.chat.toggle_zen_mode();
+
+    assert!(!app.chat.explorer_visible);
     assert!(app.chat.info_visible);
     assert!(app.chat.status_visible);
     assert_eq!(app.chat.activity_split, 0);
+    assert!(app.chat.zen_saved.is_none());
 }
 
 /// Regression: the explorer row under the cursor marks the selection with the
@@ -3146,25 +3161,59 @@ fn tail_screen(text: &str, expanded: bool) -> (Vec<String>, usize) {
 }
 
 fn tail_screen_mode(text: &str, expanded: bool, minimal: bool) -> (Vec<String>, usize) {
+    tail_screen_mode_detail(text, expanded, minimal, None)
+}
+
+fn tail_screen_mode_detail(
+    text: &str,
+    expanded: bool,
+    minimal: bool,
+    detail: Option<jyc_types::TopicInfo>,
+) -> (Vec<String>, usize) {
+    let entry = jyc_types::ActivityEntry {
+        event: serde_json::Value::Null,
+        text: Some(text.to_string()),
+        timestamp: None,
+        id: 1,
+    };
+    tail_screen_entries_detail(vec![entry], expanded, minimal, detail)
+}
+
+fn tail_screen_entries_detail(
+    entries: Vec<jyc_types::ActivityEntry>,
+    expanded: bool,
+    minimal: bool,
+    detail: Option<jyc_types::TopicInfo>,
+) -> (Vec<String>, usize) {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.channel = Some("github".into());
     app.chat.topic = Some("pr-1".into());
-    // No server state, so the tail shows on the local optimistic flag.
+    // Progress renders on the local optimistic flag; topic-detail lookup also
+    // needs the seeded overview topic below.
     app.chat.awaiting_response = true;
     app.chat.tool_detail_expanded = expanded;
     app.chat.minimal_progress = minimal;
-    app.chat.seed_live(
-        "github",
-        "pr-1",
-        vec![jyc_types::ActivityEntry {
-            event: serde_json::Value::Null,
-            text: Some(text.into()),
-            timestamp: None,
-            id: 1,
+    app.chat.visible = true;
+    app.state = Some(jyc_types::InspectOverview {
+        topics: vec![jyc_types::TopicSummary {
+            name: "pr-1".to_string(),
+            channel: "github".to_string(),
+            agent: None,
+            pattern: Some("pr-1".to_string()),
+            status: jyc_types::TopicStatus::Idle,
+            context_input_tokens: None,
+            context_output_tokens: None,
+            max_tokens: None,
+            last_active_at: None,
+            topic_path: None,
+            parent: None,
+            commands: vec![],
         }],
-        vec![],
-    );
+        ..Default::default()
+    });
+    app.topic_detail = detail;
+    app.chat.seed_live("github", "pr-1", entries, vec![]);
 
     let (width, height) = (40, 20);
     use ratatui::Terminal;
@@ -3452,6 +3501,40 @@ fn minimal_progress_mode_renders_one_animated_row() {
             .any(|r| r.contains('💭') || r.contains("a.rs") || r.contains('x')),
         "no thinking row and no tool detail reaches the screen:\n{}",
         rows.join("\n")
+    );
+}
+
+/// The queue count on the minimal row comes from the detail for the topic
+/// actually on screen; a stale detail left over from another fetch does not
+/// contribute to this chat.
+#[test]
+fn minimal_progress_counts_only_the_shown_topics_queue() {
+    let event: serde_json::Value =
+        serde_json::from_str(r#"{"type":"tool_started","tool_name":"bash","status":"running"}"#)
+            .expect("valid tool-started event");
+    let entry = jyc_types::ActivityEntry {
+        event,
+        text: None,
+        timestamp: None,
+        id: 1,
+    };
+
+    let mut shown = topic_detail_for("pr-1", "github");
+    shown.queued = 2;
+    let (rows, total) = tail_screen_entries_detail(vec![entry.clone()], true, true, Some(shown));
+    let pane = rows[..total].join("\n");
+    assert!(
+        pane.contains("bash · ⋮ 2"),
+        "the shown topic's queue count reaches the minimal row:\n{pane}"
+    );
+
+    let mut stale = topic_detail_for("other", "github");
+    stale.queued = 2;
+    let (rows, total) = tail_screen_entries_detail(vec![entry], true, true, Some(stale));
+    let pane = rows[..total].join("\n");
+    assert!(
+        !pane.contains('⋮'),
+        "another topic's queue count must not reach this chat:\n{pane}"
     );
 }
 

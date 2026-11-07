@@ -187,13 +187,12 @@ does not answer the mouse wheel.
 The overview has no way to close any of its three panes: the visibility
 toggles belong to the chat screen, which is the only screen offering them.
 
-Chat mode (`c` toggled on). The channel bar is hidden; chat, topic info
-pane, activity pane, explorer pane, and the info pane's status block are
-individually togglable (`Ctrl+P` then `i` / `a` / `e` / `s`). The topic
-info pane and status block are visible by default, the activity pane is
-not; opening a chat restores those defaults, so each one starts from them.
-zen mode (`Ctrl+P` then `z`) hides all auxiliary UI and restores the
-previous state when pressed again. `Ctrl+P` then `c` focuses the message
+Chat mode (`c` toggled on). The channel bar is hidden. Chat opens in zen
+mode; `Ctrl+P` then `z` exits zen into the standard layout, with the topic
+info pane and its status block visible and the explorer and activity panes
+hidden. Those four are individually togglable (`Ctrl+P` then `i` / `a` / `e`
+/ `s`), and pressing `z` again returns to zen from the current layout. `Ctrl+P`
+then `c` focuses the message
 area for keyboard
 scrolling; from any focused pane (message area, topic info, activity,
 explorer) pressing any key refocuses the input; the first keypress is
@@ -202,7 +201,13 @@ only a top time rule and a bottom right-aligned duration rule — there
 are no side borders or middle dividers.
 
 ```
-Default (info + status shown):
+Zen mode (opening default):
+┌────────────────────────┐
+│ Chat conversation      │
+│ (borderless, full size)│
+└────────────────────────┘
+
+Standard layout (`Ctrl+P` `z`; info + status shown):
 ┌────────────────────────┐
 │ Chat conversation      │┌─────────────┐
 │ (borderless)           ││ Topic Info │
@@ -210,12 +215,6 @@ Default (info + status shown):
 │                        ││             │
 └────────────────────────┘└─────────────┘
  Help bar (1 line)
-
-Zen mode (`Ctrl+P` `z`):
-┌────────────────────────┐
-│ Chat conversation      │
-│ (borderless, full size)│
-└────────────────────────┘
 
 After `Ctrl+P` `a` (activity 20% bottom):
 ┌────────────────────────┐

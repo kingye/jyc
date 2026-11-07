@@ -2,9 +2,9 @@
 
 ### Changed
 
-- Darken the TUI chat user-message background to `#393552`; the compact chat status chip now labels turn input/cache hit rate and turn reasoning/output counts (`↑input pct%`, `↓reasoning/output`)
+- Darken the TUI chat user-message background to `#393552`; the compact chat status chip now labels turn input/cache hit rate and turn reasoning/output counts (`↑input/hit%`, `↓reasoning/output →latency/calls`)
 - Round the compact chat status chip's token and second figures to one decimal while zero values stay integer, keep an all-zero context composition as a ten-cell dark-gray bar, and brighten the chat selection background to `#005F87` (#1078)
-- With the TUI chat topic-info pane hidden, the input-footer status chip mirrors its figures compactly: a fixed ten-cell, region-colored context-composition bar, overall context usage, turn input/cache hit rate, turn reasoning/output counts, and exact total turn latency/call count. With the pane visible the chip stays as before, and narrowing the terminal still drops the chip before truncating the left segment
+- With the TUI chat topic-info pane hidden, the input-footer status chip mirrors its figures compactly: a fixed ten-cell, region-colored context-composition bar, overall context usage, turn input/cache hit rate, turn reasoning/output counts, and exact total turn latency/call count. Missing measurements render as zero rather than shrinking the chip, and non-empty subagent and changed-file counts are appended when present. With the pane visible the chip stays as before, and narrowing the terminal still drops the chip before truncating the left segment
 - Default sliding-window `window` is 6 turns (was 10); `extend_rate` 0.5, `turn_tool_result_cap` unset, `checkpoint_interval` 32, `checkpoint_growth` 8, and the anchor/budget slide mechanics are unchanged, so the window still grows to `window + round(extend_rate × window)` = 9 turns before sliding back to 6
 
 ### Removed

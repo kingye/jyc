@@ -708,6 +708,17 @@ fn subagent_node(name: &str, children: Vec<jyc_types::TopicNode>) -> jyc_types::
     }
 }
 
+/// A changed-file entry for chip tests; kind/line metadata does not affect
+/// the compact count.
+fn changed_file_entry(path: &str) -> jyc_types::ChangedFileEntry {
+    jyc_types::ChangedFileEntry {
+        path: path.to_string(),
+        uncommitted: true,
+        change: Default::default(),
+        lines: None,
+    }
+}
+
 /// Regression: the Files section must color `uncommitted: true`
 /// entries yellow and leave `uncommitted: false` entries plain,
 /// and must prefix each row with the kind glyph (`+` Added,
@@ -1242,19 +1253,15 @@ fn status_line_omits_branch_segment_when_none() {
 
 #[test]
 fn status_line_renders_partial_chip_with_model_only() {
-    // pct missing (e.g., session hasn't recorded context yet) — the
-    // chip should still render with just the model name.
+    // pct missing (e.g., session hasn't recorded context yet) — the terse
+    // chip keeps its fixed shape and renders the percentage as zero.
     let mut ctx = ctx_with_full_data();
     ctx.pct = None;
     let line = build_status_line(80, &ctx);
     let text = line_text(&line);
     assert!(
-        text.contains("[ claude-opus-4-6 ]"),
+        text.contains("[ claude-opus-4-6 · 0% ]"),
         "partial chip with model only: {text:?}"
-    );
-    assert!(
-        !text.contains('%'),
-        "no pct placeholder when pct is None: {text:?}"
     );
 }
 
@@ -1313,7 +1320,7 @@ fn compact_status_chip_carries_the_hidden_info_pane_metrics() {
         "left segment must stay unchanged: {text:?}"
     );
     let expected = format!(
-        "[ gpt-5.5 · {} · 2% · ↑1.0M 93% · ↓948/2.9K · 7.7s/9c ]",
+        "[ gpt-5.5 · {} · 2% ↑1.0M/93% ↓948/2.9K →7.7s/9 ]",
         "━".repeat(10)
     );
     assert!(
@@ -1363,14 +1370,15 @@ fn compact_status_latency_uses_the_exact_turn_total() {
     let bar = "━".repeat(10);
 
     assert!(
-        text.ends_with(&format!("[ gpt-5.5 · {bar} · 0.9s/3c ]")),
+        text.ends_with(&format!("[ gpt-5.5 · {bar} · 0% ↑0/0% ↓0/0 →0.9s/3 ]")),
         "latency must preserve the total that average reconstruction loses: {text:?}"
     );
 }
 
 #[test]
 fn visible_info_pane_keeps_the_terse_status_chip() {
-    let detail = compact_status_detail();
+    let mut detail = compact_status_detail();
+    detail.subagents = Some(vec![subagent_node("ci-watch", vec![])]);
     let ctx = ChatHeaderCtx {
         mode: "plan",
         topic: Some("jyc"),
@@ -1388,7 +1396,7 @@ fn visible_info_pane_keeps_the_terse_status_chip() {
         "a visible info pane owns the detail, so the chip stays terse: {text:?}"
     );
     assert!(
-        !text.contains('↑') && !text.contains("/9c"),
+        !text.contains('↑') && !text.contains("7.7s") && !text.contains('✦'),
         "turn metrics must not duplicate the visible info pane: {text:?}"
     );
 }
@@ -1422,7 +1430,7 @@ fn compact_status_chip_renders_zero_metrics_and_empty_composition() {
     let text = line_text(&line);
     assert!(text.starts_with("plan · jyc · main"));
     let expected = format!(
-        "[ kimi/k3.1-pro · {} · ↑0 0% · ↓0/0 · 0s/3c ]",
+        "[ kimi/k3.1-pro · {} · 0% ↑0/0% ↓0/0 →0s/3 ]",
         "━".repeat(10)
     );
     assert!(
@@ -1439,7 +1447,87 @@ fn compact_status_chip_renders_zero_metrics_and_empty_composition() {
 }
 
 #[test]
-fn compact_status_chip_omits_missing_turn_metrics() {
+fn compact_status_chip_counts_active_subagents_and_changed_files() {
+    let mut detail = compact_status_detail();
+    let mut running = subagent_node("ci-watch", vec![]);
+    running.status = jyc_types::TopicStatus::Processing;
+    detail.subagents = Some(vec![running, subagent_node("review", vec![])]);
+    detail.changed_files = Some(vec![
+        changed_file_entry("src/lib.rs"),
+        changed_file_entry("README.md"),
+    ]);
+    let ctx = ChatHeaderCtx {
+        mode: "plan",
+        topic: Some("jyc"),
+        branch: None,
+        model: detail.model.as_deref(),
+        pct: Some(2),
+        info_visible: false,
+        detail: Some(&detail),
+    };
+
+    let text = line_text(&build_status_line(110, &ctx));
+    let expected = format!(
+        "[ gpt-5.5 · {} · 2% ↑1.0M/93% ↓948/2.9K →7.7s/9 ✦1/2 ≡2 ]",
+        "━".repeat(10)
+    );
+    assert!(
+        text.ends_with(&expected),
+        "subagent counts come before changed-file counts: {text:?}"
+    );
+}
+
+#[test]
+fn compact_status_chip_shows_changed_files_without_subagents() {
+    let mut detail = compact_status_detail();
+    detail.changed_files = Some(vec![changed_file_entry("src/lib.rs")]);
+    let ctx = ChatHeaderCtx {
+        mode: "plan",
+        topic: Some("jyc"),
+        branch: None,
+        model: detail.model.as_deref(),
+        pct: Some(2),
+        info_visible: false,
+        detail: Some(&detail),
+    };
+
+    let text = line_text(&build_status_line(110, &ctx));
+    assert!(
+        text.ends_with(&format!(
+            "[ gpt-5.5 · {} · 2% ↑1.0M/93% ↓948/2.9K →7.7s/9 ≡1 ]",
+            "━".repeat(10)
+        )),
+        "changed-file count follows turn metrics when there are no subagents: {text:?}"
+    );
+}
+
+#[test]
+fn compact_status_chip_omits_empty_changed_file_list() {
+    let mut detail = compact_status_detail();
+    detail.changed_files = Some(vec![]);
+    let ctx = ChatHeaderCtx {
+        mode: "plan",
+        topic: Some("jyc"),
+        branch: None,
+        model: detail.model.as_deref(),
+        pct: Some(2),
+        info_visible: false,
+        detail: Some(&detail),
+    };
+
+    let text = line_text(&build_status_line(100, &ctx));
+    let expected = format!(
+        "[ gpt-5.5 · {} · 2% ↑1.0M/93% ↓948/2.9K →7.7s/9 ]",
+        "━".repeat(10)
+    );
+    assert!(
+        text.ends_with(&expected),
+        "an empty resolved changed-file list must not render as a zero segment: {text:?}"
+    );
+}
+
+#[test]
+fn compact_status_chip_zeroes_missing_turn_metrics() {
     let detail = topic_detail_for("jyc", "agents");
     let ctx = ChatHeaderCtx {
         mode: "plan",
@@ -1455,8 +1543,10 @@ fn compact_status_chip_omits_missing_turn_metrics() {
 
     let bar = "━".repeat(10);
     assert!(
-        text.ends_with(&format!("[ claude-opus-4-6 · {bar} · 10% ]")),
-        "missing turn metrics are omitted, but the empty composition placeholder remains: {text:?}"
+        text.ends_with(&format!(
+            "[ claude-opus-4-6 · {bar} · 10% ↑0/0% ↓0/0 →0s/0 ]"
+        )),
+        "missing turn metrics render as zero, keeping the full chip shape: {text:?}"
     );
 }
 

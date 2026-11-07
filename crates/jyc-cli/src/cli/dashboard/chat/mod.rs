@@ -2498,14 +2498,18 @@ fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
 
 /// Build the chat status line — the pane's bottom row: "{mode} · {topic}[ ·
 /// {branch}]" left-aligned, a right-aligned chip showing the current model
-/// and context-window usage. With the info pane hidden, the chip also
-/// carries its compact turn metrics: context composition, turn input/cache hit
-/// rate, reasoning/output and total turn latency; with the pane visible the chip
-/// stays terse and the pane owns those figures. Both segments are one dim
-/// gray except the composition cells, which keep the pane's region colours:
-/// it is a footer, not a rule, so it carries no ─ padding (the input field
-/// has its own rules above). Falls back gracefully when any field is
-/// missing — the chip is dropped before the left segment starts truncating.
+/// and context-window usage. With the info pane hidden, the chip also carries
+/// its compact turn metrics: context composition, overall usage, turn
+/// input/cache hit rate, reasoning/output and total turn latency, plus
+/// non-empty subagent and changed-file counts when present; with the
+/// pane visible the chip stays terse and the pane owns those figures. The
+/// full form uses plain arrow separators for the turn metrics and renders
+/// a missing measurement as zero rather than dropping its segment. Both
+/// segments are one dim gray except the
+/// composition cells, which keep the pane's region colours: it is a footer,
+/// not a rule, so it carries no ─ padding (the input field has its own rules
+/// above). Falls back gracefully when the width cannot hold the chip —
+/// the chip is dropped before the left segment starts truncating.
 fn build_status_line(width: usize, ctx: &ChatHeaderCtx<'_>) -> Line<'static> {
     let style = Style::default().fg(Color::Gray);
 
@@ -2570,85 +2574,114 @@ fn build_status_line(width: usize, ctx: &ChatHeaderCtx<'_>) -> Line<'static> {
 /// Build the status line's right chip. The info pane's visible form stays
 /// exactly the old "[ {model} · {pct}% ]"; its hidden form is the compact
 /// mirror of the pane: fixed-width context composition, overall usage, turn
-/// input/cache hit rate, turn reasoning/output counts, and total turn latency.
-/// Missing segments are skipped rather than zero-filled; a segment that is
-/// present stays visible even when its measured value is zero.
+/// input/cache hit rate, reasoning/output counts, and total turn latency.
+/// Missing measurements render as zero so the full form never degenerates into
+/// a narrower chip. Non-empty subagent and changed-file counts follow when
+/// present.
 fn build_status_chip(ctx: &ChatHeaderCtx<'_>, style: Style) -> Option<Vec<Span<'static>>> {
     if ctx.info_visible {
-        // Omit the chip entirely when both fields are missing (e.g., before
-        // the first poll). When only one is set, render a partial chip
-        // showing the available side. Matches the info-pane convention of
-        // skipping rows for missing data.
-        let text = match (ctx.model, ctx.pct) {
-            (Some(m), Some(p)) => format!("[ {m} · {p}% ]"),
-            (Some(m), None) => format!("[ {m} ]"),
-            (None, Some(p)) => format!("[ {p}% ]"),
-            (None, None) => return None,
+        // The visible form is the fixed two-segment model/percentage chip. A
+        // missing percentage reads as zero; only a missing model (and thus no
+        // percentage source before the first detail poll) drops the chip.
+        let text = match ctx.model {
+            Some(m) => format!("[ {m} · {}% ]", ctx.pct.unwrap_or(0)),
+            None if ctx.pct.is_some() => format!("[ {}% ]", ctx.pct.unwrap_or(0)),
+            None => return None,
         };
         return Some(vec![Span::styled(text, style)]);
     }
 
+    // The full form reads every metric from the selected topic's detail; the
+    // app resolves model and percentage from that same detail, so a missing
+    // detail means the first poll has not arrived yet and the chip is absent.
+    let t = ctx.detail?;
     let mut inner: Vec<Span<'static>> = Vec::new();
     let mut has_segment = false;
     if let Some(model) = ctx.model {
         push_chip_text(&mut inner, &mut has_segment, style, model.to_string());
     }
-    if let Some(t) = ctx.detail {
-        // Context composition — the same region-colored bar the pane draws,
-        // at a fixed ten cells so the chip never grows with the pane width.
-        // No estimated context still owns the row: the full bar remains,
-        // rendered dark gray by the composition helper. A region estimate of
-        // zero owns zero cells; `0` is not promoted into a visible share.
-        push_chip_separator(&mut inner, &mut has_segment, style);
-        push_context_composition_bar_spans_or_empty(&mut inner, t, 10);
+    // Context composition — the same region-colored bar the pane draws, at a
+    // fixed ten cells so the chip never grows with the pane width. No
+    // estimated context still owns the row: the full bar remains, rendered
+    // dark gray by the composition helper. A region estimate of zero owns
+    // zero cells; `0` is not promoted into a visible share.
+    push_chip_separator(&mut inner, &mut has_segment, style);
+    push_context_composition_bar_spans_or_empty(&mut inner, t, 10);
+    // The composition bar and percentage are one visual unit, separated by a
+    // plain space rather than the segment bullet.
+    if has_segment {
+        inner.push(Span::styled(" ", style));
     }
-    if let Some(pct) = ctx.pct {
-        push_chip_text(&mut inner, &mut has_segment, style, format!("{pct}%"));
-    }
-    if let Some(t) = ctx.detail {
-        if let Some(input) = t.turn_input_tokens {
-            let pct = jyc_types::cache_util_pct(t.turn_cache_hit_tokens, Some(input)).unwrap_or(0);
+    inner.push(Span::styled(format!("{}%", ctx.pct.unwrap_or(0)), style));
+    has_segment = true;
+
+    let input = t.turn_input_tokens.unwrap_or(0);
+    let cache_pct = jyc_types::cache_util_pct(t.turn_cache_hit_tokens, Some(input)).unwrap_or(0);
+    push_chip_text(
+        &mut inner,
+        &mut has_segment,
+        style,
+        format!("↑{}/{cache_pct}%", format_chip_token_count(input)),
+    );
+    push_chip_text(
+        &mut inner,
+        &mut has_segment,
+        style,
+        format!(
+            "→{}/{}",
+            format_chip_token_count(t.turn_reasoning_tokens.unwrap_or(0)),
+            format_chip_token_count(t.turn_output_tokens.unwrap_or(0))
+        ),
+    );
+    push_chip_text(
+        &mut inner,
+        &mut has_segment,
+        style,
+        format!(
+            "→{}/{}",
+            format_chip_turn_duration(t.turn_total_call_duration_ms.unwrap_or(0)),
+            t.turn_call_count.unwrap_or(0)
+        ),
+    );
+    if let Some(subagents) = t.subagents.as_deref() {
+        let total = node_count(subagents);
+        if total > 0 {
+            let active = active_subagent_count(subagents);
             push_chip_text(
                 &mut inner,
                 &mut has_segment,
                 style,
-                format!("↑{} {pct}%", format_chip_token_count(input)),
+                format!("✦{active}/{total}"),
             );
         }
-        if t.turn_output_tokens.is_some() || t.turn_reasoning_tokens.is_some() {
-            let output = t.turn_output_tokens.unwrap_or(0);
-            let reasoning = t.turn_reasoning_tokens.unwrap_or(0);
+    }
+    if let Some(files) = t.changed_files.as_deref() {
+        if !files.is_empty() {
             push_chip_text(
                 &mut inner,
                 &mut has_segment,
                 style,
-                format!(
-                    "↓{}/{}",
-                    format_chip_token_count(reasoning),
-                    format_chip_token_count(output)
-                ),
+                format!("≡{}", files.len()),
             );
-        }
-        if let Some(total_ms) = t.turn_total_call_duration_ms {
-            let calls = t.turn_call_count.unwrap_or(0);
-            let duration = format_chip_turn_duration(total_ms);
-            let latency = if t.turn_call_count.is_some() {
-                format!("{duration}/{calls}c")
-            } else {
-                duration
-            };
-            push_chip_text(&mut inner, &mut has_segment, style, latency);
         }
     }
 
-    if inner.is_empty() {
-        return None;
-    }
     let mut spans = Vec::with_capacity(inner.len() + 2);
     spans.push(Span::styled("[ ", style));
     spans.extend(inner);
     spans.push(Span::styled(" ]", style));
     Some(spans)
+}
+
+/// Count subagents currently executing a turn, including nested descendants.
+fn active_subagent_count(nodes: &[jyc_types::TopicNode]) -> usize {
+    nodes
+        .iter()
+        .map(|n| {
+            usize::from(n.status == jyc_types::TopicStatus::Processing)
+                + active_subagent_count(&n.children)
+        })
+        .sum()
 }
 
 /// Format one compact-chip token count: raw below 1024, otherwise one decimal

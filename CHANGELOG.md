@@ -2,8 +2,8 @@
 
 ### Changed
 
-- Opening a TUI chat now starts in zen mode with the topic info, explorer, and activity panes hidden; exiting zen restores the standard chat layout
-- When a chat turn is processing and later messages are still queued, the minimal TUI progress line appends a muted `· ⋮ N` queue-count suffix; the row is unchanged when the queue is empty
+- Opening a TUI chat now starts in zen mode with the topic info, explorer, and activity panes hidden; exiting zen restores the standard chat layout (#1080)
+- When a chat turn is processing and later messages are still queued, the minimal TUI progress line appends a muted `· ⋮ N` queue-count suffix; the row is unchanged when the queue is empty (#1080)
 - Darken the TUI chat user-message background to `#393552`; the compact chat status chip now labels turn input/cache hit rate and turn reasoning/output counts (`↑input/hit%`, `↓reasoning/output →latency/calls`)
 - Round the compact chat status chip's token and second figures to one decimal while zero values stay integer, keep an all-zero context composition as a ten-cell dark-gray bar, and brighten the chat selection background to `#005F87` (#1078)
 - With the TUI chat topic-info pane hidden, the input-footer status chip mirrors its figures compactly: a fixed ten-cell, region-colored context-composition bar, overall context usage, turn input/cache hit rate, turn reasoning/output counts, and exact total turn latency/call count. Missing measurements render as zero rather than shrinking the chip, and non-empty subagent and changed-file counts are appended when present. With the pane visible the chip stays terse, and narrowing the terminal still drops the chip before truncating the left segment

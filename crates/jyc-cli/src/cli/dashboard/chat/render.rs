@@ -121,24 +121,21 @@ pub(super) fn history_fingerprint(
 
 /// Background of a human turn's block (see [`render_history_lines`]).
 ///
-/// `#343541` — the shade pi's dark theme paints its own user turns with
-/// (`userMsgBg` in `theme/dark.json`), so the block matches what the eye is
-/// already used to. It is a hardcoded RGB on purpose: ANSI palette slot 8 was
-/// the previous answer, and it turned out to be the theme's *bright* black,
-/// lighter than this block wants.
+/// `#393552` — the muted violet backdrop for human turns. It is a hardcoded
+/// RGB on purpose: the value stays independent of the terminal's ANSI palette.
 ///
 /// The block sets **no foreground** — the text keeps the terminal's own color,
 /// which is what makes a human turn read at exactly the same brightness as the
 /// agent's reply.
-pub(super) const USER_BG: Color = Color::Rgb(52, 53, 65);
+pub(super) const USER_BG: Color = Color::Rgb(0x39, 0x35, 0x52);
 
 /// Background for the message-pane highlight: the same bar for the cursor row and
 /// for every selected row (`Shift+J` to start a selection, any movement key to
 /// extend it), so a selection reads as one thing instead of two.
 ///
-/// A dim navy, far enough from [`USER_BG`]'s neutral gray to read as a highlight
+/// A dim navy, far enough from [`USER_BG`]'s dark violet to read as a highlight
 /// rather than as part of a message. Unlike [`USER_BG`] it cannot be an ANSI name
-/// — no theme color is both distinct from the message gray and light-theme safe —
+/// — no theme color is both distinct from the message background and light-theme safe —
 /// so a *selected* row additionally forces a light foreground (on a light-theme
 /// terminal the default foreground is black, which would vanish on this navy),
 /// while the cursor row gives up its background alone — it is the highlight that

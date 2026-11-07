@@ -2623,19 +2623,15 @@ fn build_status_chip(ctx: &ChatHeaderCtx<'_>, style: Style) -> Option<Vec<Span<'
                 ),
             );
         }
-        if let Some((avg_ms, calls)) = t.avg_turn_call_ms.zip(t.turn_call_count)
-            && calls > 0
-        {
-            push_chip_text(
-                &mut inner,
-                &mut has_segment,
-                style,
-                format!(
-                    "{}/{}c",
-                    format_duration_ms(avg_ms.saturating_mul(calls), DurationStyle::Millis),
-                    calls
-                ),
-            );
+        if let Some(total_ms) = t.turn_total_call_duration_ms {
+            let calls = t.turn_call_count.unwrap_or(0);
+            let duration = format_duration_ms(total_ms, DurationStyle::Millis);
+            let latency = if calls > 0 {
+                format!("{duration}/{calls}c")
+            } else {
+                duration
+            };
+            push_chip_text(&mut inner, &mut has_segment, style, latency);
         }
     }
 

@@ -2473,6 +2473,11 @@ struct ChatHeaderCtx<'a> {
     branch: Option<&'a str>,
     model: Option<&'a str>,
     pct: Option<u32>,
+    /// Whether the topic info pane is visible. When it is, the status chip
+    /// stays terse; when hidden, the chip carries the pane's compact metrics.
+    info_visible: bool,
+    /// The selected topic's detail — the metrics source for the compact chip.
+    detail: Option<&'a jyc_types::TopicInfo>,
 }
 
 fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
@@ -2485,16 +2490,21 @@ fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
         branch: t.and_then(|t| t.branch.as_deref()),
         model: t.and_then(|t| t.model.as_deref()),
         pct: t.and_then(context_pct),
+        info_visible: app.chat.info_visible,
+        detail: t,
     }
 }
 
 /// Build the chat status line — the pane's bottom row: "{mode} · {topic}[ ·
-/// {branch}]" left-aligned, a right-aligned "[ {model} · {pct}% ]" chip
-/// showing the current model and context-window usage. Both segments are
-/// one dim gray: it is a footer, not a rule, so it carries no ─ padding
-/// (the input field has its own rules above). Falls back gracefully when
-/// any field is missing — the chip is dropped before the left segment
-/// starts truncating.
+/// {branch}]" left-aligned, a right-aligned chip showing the current model
+/// and context-window usage. With the info pane hidden, the chip also
+/// carries its compact turn metrics: context composition, turn cache,
+/// output/reasoning and total turn latency; with the pane visible the chip
+/// stays terse and the pane owns those figures. Both segments are one dim
+/// gray except the composition cells, which keep the pane's region colours:
+/// it is a footer, not a rule, so it carries no ─ padding (the input field
+/// has its own rules above). Falls back gracefully when any field is
+/// missing — the chip is dropped before the left segment starts truncating.
 fn build_status_line(width: usize, ctx: &ChatHeaderCtx<'_>) -> Line<'static> {
     let style = Style::default().fg(Color::Gray);
 
@@ -2513,18 +2523,11 @@ fn build_status_line(width: usize, ctx: &ChatHeaderCtx<'_>) -> Line<'static> {
     }
     let left_w = left.width();
 
-    // --- Right chip: "[ {model} · {pct}% ]" ---
-    // Omit the chip entirely when both fields are missing (e.g., before
-    // the first poll). When only one is set, render a partial chip
-    // showing the available side. Matches the info-pane convention of
-    // skipping rows for missing data.
-    let chip: Option<String> = match (ctx.model, ctx.pct) {
-        (Some(m), Some(p)) => Some(format!("[ {m} · {p}% ]")),
-        (Some(m), None) => Some(format!("[ {m} ]")),
-        (None, Some(p)) => Some(format!("[ {p}% ]")),
-        (None, None) => None,
-    };
-    let chip_w = chip.as_ref().map(|c| c.width()).unwrap_or(0);
+    let chip = build_status_chip(ctx, style);
+    let chip_w = chip
+        .as_ref()
+        .map(|spans| spans.iter().map(|s| s.content.width()).sum::<usize>())
+        .unwrap_or(0);
 
     // Width budget: need left + chip + one separating space. Drop the chip
     // first, then shrink the left segment.
@@ -2550,17 +2553,117 @@ fn build_status_line(width: usize, ctx: &ChatHeaderCtx<'_>) -> Line<'static> {
         return Line::from(Span::styled(compact, style));
     }
 
-    let mut spans = Vec::with_capacity(3);
+    let mut spans = Vec::with_capacity(chip.as_ref().map_or(1, Vec::len) + 2);
     spans.push(Span::styled(left, style));
-    if let Some(c) = chip {
+    if let Some(chip) = chip {
         // Spaces separate the two segments — at least one, so the chip
         // never sits flush against the left, the rest filling the row.
         // The guard above proved `width >= left_w + chip_w + 1`, so the
         // gap is never negative.
         spans.push(Span::styled(" ".repeat(width - left_w - chip_w), style));
-        spans.push(Span::styled(c, style));
+        spans.extend(chip);
     }
     Line::from(spans)
+}
+
+/// Build the status line's right chip. The info pane's visible form stays
+/// exactly the old "[ {model} · {pct}% ]"; its hidden form is the compact
+/// mirror of the pane: fixed-width context composition, overall usage, turn
+/// cache, turn output/reasoning and total turn latency. Missing segments are
+/// skipped rather than zero-filled.
+fn build_status_chip(ctx: &ChatHeaderCtx<'_>, style: Style) -> Option<Vec<Span<'static>>> {
+    if ctx.info_visible {
+        // Omit the chip entirely when both fields are missing (e.g., before
+        // the first poll). When only one is set, render a partial chip
+        // showing the available side. Matches the info-pane convention of
+        // skipping rows for missing data.
+        let text = match (ctx.model, ctx.pct) {
+            (Some(m), Some(p)) => format!("[ {m} · {p}% ]"),
+            (Some(m), None) => format!("[ {m} ]"),
+            (None, Some(p)) => format!("[ {p}% ]"),
+            (None, None) => return None,
+        };
+        return Some(vec![Span::styled(text, style)]);
+    }
+
+    let mut inner: Vec<Span<'static>> = Vec::new();
+    let mut has_segment = false;
+    if let Some(model) = ctx.model {
+        push_chip_text(&mut inner, &mut has_segment, style, model.to_string());
+    }
+    if let Some(t) = ctx.detail {
+        // Context composition — the same region-colored bar the pane draws,
+        // at a fixed ten cells so the chip never grows with the pane width.
+        if jyc_types::context_composition_total(&t.context_composition) > 0 {
+            push_chip_separator(&mut inner, &mut has_segment, style);
+            push_context_composition_bar_spans(&mut inner, t, 10);
+        }
+    }
+    if let Some(pct) = ctx.pct {
+        push_chip_text(&mut inner, &mut has_segment, style, format!("{pct}%"));
+    }
+    if let Some(t) = ctx.detail {
+        if let Some(input) = t.turn_input_tokens
+            && input > 0
+        {
+            let pct = jyc_types::cache_util_pct(t.turn_cache_hit_tokens, Some(input)).unwrap_or(0);
+            push_chip_text(&mut inner, &mut has_segment, style, format!("↑{pct}%"));
+        }
+        if t.turn_output_tokens.is_some() || t.turn_reasoning_tokens.is_some() {
+            let output = t.turn_output_tokens.unwrap_or(0);
+            let reasoning = t.turn_reasoning_tokens.unwrap_or(0);
+            push_chip_text(
+                &mut inner,
+                &mut has_segment,
+                style,
+                format!(
+                    "{}/{}",
+                    jyc_types::format_token_count(output),
+                    jyc_types::format_token_count(reasoning)
+                ),
+            );
+        }
+        if let Some((avg_ms, calls)) = t.avg_turn_call_ms.zip(t.turn_call_count)
+            && calls > 0
+        {
+            push_chip_text(
+                &mut inner,
+                &mut has_segment,
+                style,
+                format!(
+                    "{}/{}c",
+                    format_duration_ms(avg_ms.saturating_mul(calls), DurationStyle::Millis),
+                    calls
+                ),
+            );
+        }
+    }
+
+    if inner.is_empty() {
+        return None;
+    }
+    let mut spans = Vec::with_capacity(inner.len() + 2);
+    spans.push(Span::styled("[ ", style));
+    spans.extend(inner);
+    spans.push(Span::styled(" ]", style));
+    Some(spans)
+}
+
+fn push_chip_separator(spans: &mut Vec<Span<'static>>, has_segment: &mut bool, style: Style) {
+    if *has_segment {
+        spans.push(Span::styled(" · ", style));
+    }
+    *has_segment = true;
+}
+
+fn push_chip_text(
+    spans: &mut Vec<Span<'static>>,
+    has_segment: &mut bool,
+    style: Style,
+    text: String,
+) {
+    push_chip_separator(spans, has_segment, style);
+    spans.push(Span::styled(text, style));
 }
 
 /// Truncate `s` to at most `max_width` display columns (per

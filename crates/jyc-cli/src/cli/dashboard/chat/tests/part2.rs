@@ -3170,6 +3170,21 @@ fn tail_screen_mode_detail(
     minimal: bool,
     detail: Option<jyc_types::TopicInfo>,
 ) -> (Vec<String>, usize) {
+    let entry = jyc_types::ActivityEntry {
+        event: serde_json::Value::Null,
+        text: Some(text.to_string()),
+        timestamp: None,
+        id: 1,
+    };
+    tail_screen_entries_detail(vec![entry], expanded, minimal, detail)
+}
+
+fn tail_screen_entries_detail(
+    entries: Vec<jyc_types::ActivityEntry>,
+    expanded: bool,
+    minimal: bool,
+    detail: Option<jyc_types::TopicInfo>,
+) -> (Vec<String>, usize) {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.channel = Some("github".into());
@@ -3198,17 +3213,7 @@ fn tail_screen_mode_detail(
         ..Default::default()
     });
     app.topic_detail = detail;
-    app.chat.seed_live(
-        "github",
-        "pr-1",
-        vec![jyc_types::ActivityEntry {
-            event: serde_json::Value::Null,
-            text: Some(text.into()),
-            timestamp: None,
-            id: 1,
-        }],
-        vec![],
-    );
+    app.chat.seed_live("github", "pr-1", entries, vec![]);
 
     let (width, height) = (40, 20);
     use ratatui::Terminal;
@@ -3504,11 +3509,19 @@ fn minimal_progress_mode_renders_one_animated_row() {
 /// contribute to this chat.
 #[test]
 fn minimal_progress_counts_only_the_shown_topics_queue() {
-    let entry = r#"{"type":"tool_started","tool_name":"bash","status":"running"}"#;
+    let event: serde_json::Value =
+        serde_json::from_str(r#"{"type":"tool_started","tool_name":"bash","status":"running"}"#)
+            .expect("valid tool-started event");
+    let entry = jyc_types::ActivityEntry {
+        event,
+        text: None,
+        timestamp: None,
+        id: 1,
+    };
 
     let mut shown = topic_detail_for("pr-1", "github");
     shown.queued = 2;
-    let (rows, total) = tail_screen_mode_detail(entry, true, true, Some(shown));
+    let (rows, total) = tail_screen_entries_detail(vec![entry.clone()], true, true, Some(shown));
     let pane = rows[..total].join("\n");
     assert!(
         pane.contains("bash · ⋮ 2"),
@@ -3517,7 +3530,7 @@ fn minimal_progress_counts_only_the_shown_topics_queue() {
 
     let mut stale = topic_detail_for("other", "github");
     stale.queued = 2;
-    let (rows, total) = tail_screen_mode_detail(entry, true, true, Some(stale));
+    let (rows, total) = tail_screen_entries_detail(vec![entry], true, true, Some(stale));
     let pane = rows[..total].join("\n");
     assert!(
         !pane.contains('⋮'),

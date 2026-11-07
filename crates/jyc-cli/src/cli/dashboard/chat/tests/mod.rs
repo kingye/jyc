@@ -1762,10 +1762,11 @@ fn status_line_renders_at_the_bottom_below_the_popup() {
         bottom.starts_with("plan · jyc · main"),
         "status line takes the last row: {bottom:?}"
     );
+    let bar = "━".repeat(10);
     assert!(
         bottom
             .trim_end()
-            .ends_with("[ kimi/kimi-for-coding · 10% ]"),
+            .ends_with(&format!("[ kimi/kimi-for-coding · {bar} · 10% ]")),
         "model chip stays right-aligned on the status line: {bottom:?}"
     );
     assert!(
@@ -1786,9 +1787,10 @@ fn status_line_renders_at_the_bottom_below_the_popup() {
 }
 
 /// Without a popup open, the status line is the row directly under the
-/// input's bottom rule — and every cell of it renders gray.
+/// input's bottom rule — padded gray, apart from the dark-gray empty
+/// composition cells inside the right chip.
 #[test]
-fn status_line_sits_right_below_the_rule_and_is_gray() {
+fn status_line_sits_right_below_the_rule_and_keeps_padding_gray() {
     let mut app = app_with_topic_summary();
     let buffer = draw_80x24(&mut app);
 
@@ -1800,14 +1802,22 @@ fn status_line_sits_right_below_the_rule_and_is_gray() {
         "{:?}",
         row_text(&buffer, status)
     );
-    // Every cell of the row is gray — the gap between the two segments is
-    // padded with gray spaces, not left unstyled.
+    // The gap around the segments stays gray, while the fixture's empty
+    // composition occupies ten dark-gray bar cells.
+    let bar_start = (0..buffer.area.width as usize)
+        .find(|&x| buffer[(x as u16, status)].symbol() == "━")
+        .expect("status chip draws the empty-composition bar");
     for x in 0..buffer.area.width {
         let cell = &buffer[(x, status)];
+        let expected_fg = if (bar_start..bar_start + 10).contains(&(x as usize)) {
+            Color::DarkGray
+        } else {
+            Color::Gray
+        };
         assert_eq!(
             cell.style().fg,
-            Some(Color::Gray),
-            "status cell {x} renders gray: {cell:?}"
+            Some(expected_fg),
+            "status cell {x} renders {expected_fg:?}: {cell:?}"
         );
     }
 }
@@ -4301,6 +4311,15 @@ fn the_highlight_bar_covers_the_cursor_and_the_selection() {
     };
     let bg_at = |line: usize| cell(line).0;
 
+    assert_eq!(
+        SELECT_BG,
+        Color::Rgb(0, 95, 135),
+        "the selection is the requested #005F87 teal"
+    );
+    assert_ne!(
+        SELECT_BG, USER_BG,
+        "the selection and a user message must not collapse into the same background"
+    );
     assert_eq!(bg_at(cursor), Some(SELECT_BG), "the cursor row");
     assert_eq!(bg_at(cursor - 1), Some(SELECT_BG), "a selected row");
     assert_eq!(bg_at(cursor - 2), Some(SELECT_BG), "the anchor row");
@@ -4313,7 +4332,7 @@ fn the_highlight_bar_covers_the_cursor_and_the_selection() {
     assert_eq!(
         cell(cursor - 1).1,
         Some(Color::White),
-        "a selected row forces a light foreground so the navy works on any theme"
+        "a selected row forces a light foreground so the teal works on any theme"
     );
     assert_ne!(
         bg_at(cursor - 3),

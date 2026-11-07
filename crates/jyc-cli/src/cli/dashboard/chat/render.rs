@@ -133,23 +133,23 @@ pub(super) const USER_BG: Color = Color::Rgb(0x39, 0x35, 0x52);
 /// for every selected row (`Shift+J` to start a selection, any movement key to
 /// extend it), so a selection reads as one thing instead of two.
 ///
-/// A dim navy, far enough from [`USER_BG`]'s dark violet to read as a highlight
+/// A bright teal-blue, far enough from [`USER_BG`]'s dark violet to read as a highlight
 /// rather than as part of a message. Unlike [`USER_BG`] it cannot be an ANSI name
 /// — no theme color is both distinct from the message background and light-theme safe —
 /// so a *selected* row additionally forces a light foreground (on a light-theme
-/// terminal the default foreground is black, which would vanish on this navy),
+/// terminal the default foreground is black, which would vanish on this teal),
 /// while the cursor row gives up its background alone — it is the highlight that
 /// sits on screen while you are merely reading, and the text's own colours (dim
 /// metadata, markdown colours) are worth more there than they are mid-selection.
 /// Inside a selection the cursor row is painted with the range, so it takes the
 /// light foreground like its neighbours.
-pub(super) const SELECT_BG: Color = Color::Rgb(35, 58, 84);
+pub(super) const SELECT_BG: Color = Color::Rgb(0, 95, 135);
 
 /// Paint one transcript row with the highlight bar (the cursor row, or a selected
 /// row — both on [`SELECT_BG`]).
 ///
 /// `bar` says what the row gives up: a selected row overrides the foreground as
-/// well (it has to stay legible on the navy — see [`SELECT_BG`]), the cursor row
+/// well (it has to stay legible on the teal — see [`SELECT_BG`]), the cursor row
 /// only the background, so the text under it keeps its own colour. Either way the
 /// row is padded out with
 /// spaces because `Paragraph` paints a style only where it has glyphs — without

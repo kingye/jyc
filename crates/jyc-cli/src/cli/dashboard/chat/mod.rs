@@ -3,9 +3,10 @@
 
 use super::token_render::{
     LABEL_WIDTH, PaneLayout, bar_width, context_pct, context_region_label_span, label_span,
-    layout_for, push_cache_creation_span, push_context_composition_bar_spans, push_cost_span,
-    push_latency_span, push_output_span, push_reasoning_span, push_session_cache_span,
-    push_status_span, push_today_all_span, push_tokens_span, push_turn_cache_span, value_width,
+    layout_for, push_cache_creation_span, push_context_composition_bar_spans,
+    push_context_composition_bar_spans_or_empty, push_cost_span, push_latency_span,
+    push_output_span, push_reasoning_span, push_session_cache_span, push_status_span,
+    push_today_all_span, push_tokens_span, push_turn_cache_span, value_width,
 };
 use super::*;
 use jyc_core::duration::{DurationStyle, format_duration_ms, format_duration_secs};
@@ -2570,7 +2571,8 @@ fn build_status_line(width: usize, ctx: &ChatHeaderCtx<'_>) -> Line<'static> {
 /// exactly the old "[ {model} · {pct}% ]"; its hidden form is the compact
 /// mirror of the pane: fixed-width context composition, overall usage, turn
 /// input/cache hit rate, turn reasoning/output counts, and total turn latency.
-/// Missing segments are skipped rather than zero-filled.
+/// Missing segments are skipped rather than zero-filled; a segment that is
+/// present stays visible even when its measured value is zero.
 fn build_status_chip(ctx: &ChatHeaderCtx<'_>, style: Style) -> Option<Vec<Span<'static>>> {
     if ctx.info_visible {
         // Omit the chip entirely when both fields are missing (e.g., before
@@ -2594,24 +2596,23 @@ fn build_status_chip(ctx: &ChatHeaderCtx<'_>, style: Style) -> Option<Vec<Span<'
     if let Some(t) = ctx.detail {
         // Context composition — the same region-colored bar the pane draws,
         // at a fixed ten cells so the chip never grows with the pane width.
-        if jyc_types::context_composition_total(&t.context_composition) > 0 {
-            push_chip_separator(&mut inner, &mut has_segment, style);
-            push_context_composition_bar_spans(&mut inner, t, 10);
-        }
+        // No estimated context still owns the row: the full bar remains,
+        // rendered dark gray by the composition helper. A region estimate of
+        // zero owns zero cells; `0` is not promoted into a visible share.
+        push_chip_separator(&mut inner, &mut has_segment, style);
+        push_context_composition_bar_spans_or_empty(&mut inner, t, 10);
     }
     if let Some(pct) = ctx.pct {
         push_chip_text(&mut inner, &mut has_segment, style, format!("{pct}%"));
     }
     if let Some(t) = ctx.detail {
-        if let Some(input) = t.turn_input_tokens
-            && input > 0
-        {
+        if let Some(input) = t.turn_input_tokens {
             let pct = jyc_types::cache_util_pct(t.turn_cache_hit_tokens, Some(input)).unwrap_or(0);
             push_chip_text(
                 &mut inner,
                 &mut has_segment,
                 style,
-                format!("↑{} {pct}%", jyc_types::format_token_count(input)),
+                format!("↑{} {pct}%", format_chip_token_count(input)),
             );
         }
         if t.turn_output_tokens.is_some() || t.turn_reasoning_tokens.is_some() {
@@ -2623,15 +2624,15 @@ fn build_status_chip(ctx: &ChatHeaderCtx<'_>, style: Style) -> Option<Vec<Span<'
                 style,
                 format!(
                     "↓{}/{}",
-                    jyc_types::format_token_count(reasoning),
-                    jyc_types::format_token_count(output)
+                    format_chip_token_count(reasoning),
+                    format_chip_token_count(output)
                 ),
             );
         }
         if let Some(total_ms) = t.turn_total_call_duration_ms {
             let calls = t.turn_call_count.unwrap_or(0);
-            let duration = format_duration_ms(total_ms, DurationStyle::Millis);
-            let latency = if calls > 0 {
+            let duration = format_chip_turn_duration(total_ms);
+            let latency = if t.turn_call_count.is_some() {
                 format!("{duration}/{calls}c")
             } else {
                 duration
@@ -2648,6 +2649,34 @@ fn build_status_chip(ctx: &ChatHeaderCtx<'_>, style: Style) -> Option<Vec<Span<'
     spans.extend(inner);
     spans.push(Span::styled(" ]", style));
     Some(spans)
+}
+
+/// Format one compact-chip token count: raw below 1024, otherwise one decimal
+/// K/M. Zero stays the plain `0` rather than a floating-point `0.0`. The
+/// info pane keeps the shared two-decimal helper; this shorter form is the
+/// chip's one-glance format.
+fn format_chip_token_count(tokens: u64) -> String {
+    if tokens == 0 {
+        return "0".to_string();
+    }
+    if tokens >= 1024 * 1024 {
+        format!("{:.1}M", tokens as f64 / (1024.0 * 1024.0))
+    } else if tokens >= 1024 {
+        format!("{:.1}K", tokens as f64 / 1024.0)
+    } else {
+        tokens.to_string()
+    }
+}
+
+/// Format the chip's total-turn duration as seconds with one decimal. Zero
+/// stays `0s`; sub-second totals still read as fractional seconds so every
+/// non-zero value uses the same scale.
+fn format_chip_turn_duration(total_ms: u64) -> String {
+    if total_ms == 0 {
+        "0s".to_string()
+    } else {
+        format!("{:.1}s", total_ms as f64 / 1000.0)
+    }
 }
 
 fn push_chip_separator(spans: &mut Vec<Span<'static>>, has_segment: &mut bool, style: Style) {

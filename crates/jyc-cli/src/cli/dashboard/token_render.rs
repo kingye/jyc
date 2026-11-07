@@ -115,6 +115,7 @@ pub(super) fn push_context_composition_bar_spans(
     if bar_cells < MIN_BAR_WIDTH || total == 0 {
         return false;
     }
+
     let widths = composition_widths(&t.context_composition, total, bar_cells);
     let mut drew = false;
     for (region, cells) in t.context_composition.iter().zip(widths) {
@@ -128,6 +129,29 @@ pub(super) fn push_context_composition_bar_spans(
         drew = true;
     }
     drew
+}
+
+/// Compact-status variant of [`push_context_composition_bar_spans`] that keeps
+/// the row's ten-cell shape when no context has an estimate.
+///
+/// The info pane leaves the composition row without a bar for empty data;
+/// the chip instead paints the full bar in dark gray so the empty state keeps
+/// its ten-cell shape whether or not a percentage is available. Region shares
+/// stay exact: a region whose estimate is zero receives no cells.
+pub(super) fn push_context_composition_bar_spans_or_empty(
+    spans: &mut Vec<Span>,
+    t: &TopicInfo,
+    bar_cells: usize,
+) -> bool {
+    let total = jyc_types::context_composition_total(&t.context_composition);
+    if total == 0 {
+        spans.push(Span::styled(
+            BAR_FULL.repeat(bar_cells),
+            Style::default().fg(Color::DarkGray),
+        ));
+        return true;
+    }
+    push_context_composition_bar_spans(spans, t, bar_cells)
 }
 
 /// Split `width` cells among the regions in proportion to their estimated
@@ -1525,5 +1549,37 @@ mod tests {
         let widths = composition_widths(&regions, 100, 1);
         assert_eq!(widths.iter().sum::<usize>(), 1);
         assert_eq!(widths[0], 0);
+    }
+
+    /// A Current estimate of zero owns no bar cells; only the weighted history
+    /// region is drawn.
+    #[test]
+    fn composition_zero_current_owns_no_cells() {
+        let mut t = info_with(None, None, None, None, None, None);
+        t.context_composition = vec![
+            region(ContextRegion::History, 8, 8_000, 8_000),
+            region(ContextRegion::Current, 0, 0, 0),
+        ];
+        let mut spans = Vec::new();
+        assert!(push_context_composition_bar_spans_or_empty(
+            &mut spans, &t, 10
+        ));
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, "━".repeat(10));
+        assert_eq!(spans[0].style.fg, Some(Color::Green));
+    }
+
+    /// With no estimated context at all, the compact chip still draws the full
+    /// bar in dark gray so the empty state keeps its ten-cell shape.
+    #[test]
+    fn composition_empty_draws_dark_gray_bar() {
+        let t = info_with(None, None, None, None, None, None);
+        let mut spans = Vec::new();
+        assert!(push_context_composition_bar_spans_or_empty(
+            &mut spans, &t, 10
+        ));
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, "━".repeat(10));
+        assert_eq!(spans[0].style.fg, Some(Color::DarkGray));
     }
 }

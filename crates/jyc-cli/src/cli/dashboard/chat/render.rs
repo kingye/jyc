@@ -451,18 +451,20 @@ fn entry_tool_name(entry: &jyc_types::ActivityEntry) -> Option<String> {
     (name != "thinking").then(|| name.to_string())
 }
 
-/// The entire progress tail in minimal mode: `⠹  12.4s · thinking... | bash`.
+/// The entire progress tail in minimal mode: `⠹  12.4s · thinking... | bash · ⋮ 2`.
 ///
 /// The state word names the current phase; when the phase is not a tool of
 /// its own (thinking, error), the most recent tool entry rides after ` | ` so
-/// a thinking streak does not push the tool name off the line. The time is
-/// the live loop ticker (1 Hz), falling back to the current entry's own age
-/// before the first tick arrives; with neither, the line is just the spinner
-/// and the phase word.
+/// a thinking streak does not push the tool name off the line. A queued-count
+/// suffix appears when another message is waiting behind this turn. The time
+/// is the live loop ticker (1 Hz), falling back to the current entry's own
+/// age before the first tick arrives; with neither, the line is just the
+/// spinner and the phase word.
 fn minimal_progress_line(
     entries: &[jyc_types::ActivityEntry],
     live_tick_ms: Option<u64>,
     now_ms: i64,
+    queued: usize,
 ) -> Line<'static> {
     let last = entries.last();
     let timestamp = last.and_then(|entry| entry.timestamp.clone());
@@ -507,6 +509,12 @@ fn minimal_progress_line(
         // The phase is not a tool of its own — keep the most recent tool on
         // the line after ` | `.
         spans.push(Span::styled(format!(" | {name}"), dim));
+    }
+    if queued > 0 {
+        spans.push(Span::styled(
+            format!(" · ⋮ {queued}"),
+            Style::default().fg(Color::DarkGray),
+        ));
     }
     Line::from(spans)
 }
@@ -707,7 +715,15 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         }
 
         if minimal {
-            tail_lines.push(minimal_progress_line(&activity_entries, live_tick_ms, now));
+            let queued = selected_topic_detail(app)
+                .map(|detail| detail.queued)
+                .unwrap_or(0);
+            tail_lines.push(minimal_progress_line(
+                &activity_entries,
+                live_tick_ms,
+                now,
+                queued,
+            ));
         } else if activity_entries.is_empty() && !has_thinking {
             // Pre-activity placeholder: shown only between ProcessingStarted
             // and the first ToolStarted/LLMRequestStarted event. There's
@@ -1910,7 +1926,7 @@ mod tests {
         };
 
         // A tool is the phase: its name alone, no pipe.
-        let line = minimal_progress_line(std::slice::from_ref(&entry), Some(12_400), 500);
+        let line = minimal_progress_line(std::slice::from_ref(&entry), Some(12_400), 500, 0);
         assert_eq!(text_of(&line), "  ⠴  12.4s · bash");
         assert_eq!(
             line.spans.last().unwrap().style.fg,
@@ -1929,13 +1945,13 @@ mod tests {
             ..entry.clone()
         };
         assert_eq!(
-            text_of(&minimal_progress_line(&[undated], None, 500)),
+            text_of(&minimal_progress_line(&[undated], None, 500, 0)),
             "  ⠴  bash"
         );
 
         // Processing started, no activity event at all.
         assert_eq!(
-            text_of(&minimal_progress_line(&[], None, 0)),
+            text_of(&minimal_progress_line(&[], None, 0, 0)),
             "  ⠋  thinking..."
         );
 
@@ -1946,7 +1962,7 @@ mod tests {
             timestamp: Some("2026-08-13T10:00:02Z".to_string()),
             ..entry.clone()
         };
-        let line = minimal_progress_line(&[entry.clone(), thinking], Some(12_400), 500);
+        let line = minimal_progress_line(&[entry.clone(), thinking], Some(12_400), 500, 0);
         assert_eq!(text_of(&line), "  ⠴  12.4s · thinking... | bash");
 
         // A failing round has to say so on its one line — in this mode the
@@ -1964,7 +1980,7 @@ mod tests {
             timestamp: None,
             ..entry.clone()
         };
-        let line = minimal_progress_line(&[failed], None, 500);
+        let line = minimal_progress_line(&[failed], None, 500, 0);
         assert_eq!(text_of(&line), "  ⠴  error");
         assert_eq!(
             line.spans.last().unwrap().style.fg,
@@ -1986,7 +2002,7 @@ mod tests {
             timestamp: None,
             ..entry.clone()
         };
-        let line = minimal_progress_line(&[entry.clone(), failed], None, 500);
+        let line = minimal_progress_line(&[entry.clone(), failed], None, 500, 0);
         assert_eq!(text_of(&line), "  ⠴  error | bash");
 
         // The shape the server actually sends for an edit: a tool_completed
@@ -2012,8 +2028,28 @@ mod tests {
             ..entry.clone()
         };
         assert_eq!(
-            text_of(&minimal_progress_line(&[raw_json], None, 500)),
+            text_of(&minimal_progress_line(&[raw_json], None, 500, 0)),
             "  ⠴  edit"
+        );
+    }
+
+    #[test]
+    fn minimal_progress_line_marks_queued_messages() {
+        let entry = jyc_types::ActivityEntry {
+            timestamp: Some("2026-08-13T10:00:00Z".to_string()),
+            event: serde_json::Value::Null,
+            text: Some("Tool: bash — {\"command\":\"ls\"}".to_string()),
+            id: 0,
+        };
+        let text_of = |line: &Line<'static>| -> String {
+            line.spans.iter().map(|sp| sp.content.as_ref()).collect()
+        };
+        let line = minimal_progress_line(std::slice::from_ref(&entry), Some(12_400), 500, 2);
+        assert_eq!(text_of(&line), "  ⠴  12.4s · bash · ⋮ 2");
+        assert_eq!(
+            line.spans.last().unwrap().style.fg,
+            Some(Color::DarkGray),
+            "the queued suffix stays muted"
         );
     }
 

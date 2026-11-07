@@ -3020,7 +3020,11 @@ impl ChatState {
         self.activity_split = 0;
         self.info_visible = true;
         self.status_visible = true;
+        self.explorer_visible = false;
         self.zen_saved = None;
+        // Every chat opens zoomed in; the leader-key `z` toggle restores the
+        // standard aux panes through the normal zen-exit path.
+        self.toggle_zen_mode();
         self.ws_state = WsState::Connecting;
         self.input_history.clear();
         self.history_pos = None;

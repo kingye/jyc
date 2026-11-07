@@ -1764,9 +1764,9 @@ fn status_line_renders_at_the_bottom_below_the_popup() {
     );
     let bar = "━".repeat(10);
     assert!(
-        bottom
-            .trim_end()
-            .ends_with(&format!("[ kimi/kimi-for-coding · {bar} · 10% ]")),
+        bottom.trim_end().ends_with(&format!(
+            "[ kimi/kimi-for-coding · {bar} 10% ↑0/0% ↓0/0 →0s/0 ]"
+        )),
         "model chip stays right-aligned on the status line: {bottom:?}"
     );
     assert!(

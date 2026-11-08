@@ -3524,7 +3524,7 @@ fn minimal_progress_counts_only_the_shown_topics_queue() {
     let (rows, total) = tail_screen_entries_detail(vec![entry.clone()], true, true, Some(shown));
     let pane = rows[..total].join("\n");
     assert!(
-        pane.contains("bash · ⋮ 2"),
+        pane.contains("bash | ⋮2"),
         "the shown topic's queue count reaches the minimal row:\n{pane}"
     );
 

@@ -9,6 +9,10 @@
 - With the TUI chat topic-info pane hidden, the input-footer status chip mirrors its figures compactly: a fixed ten-cell, region-colored context-composition bar, overall context usage, turn input/cache hit rate, turn reasoning/output counts, and exact total turn latency/call count. Missing measurements render as zero rather than shrinking the chip, and non-empty subagent and changed-file counts are appended when present. With the pane visible the chip stays terse, and narrowing the terminal still drops the chip before truncating the left segment
 - Default sliding-window `window` is 6 turns (was 10); `extend_rate` 0.5, `turn_tool_result_cap` unset, `checkpoint_interval` 32, `checkpoint_growth` 8, and the anchor/budget slide mechanics are unchanged, so the window still grows to `window + round(extend_rate × window)` = 9 turns before sliding back to 6
 
+### Fixed
+
+- `jyc stop` treats an exited `jyc serve` as stopped when its PID is still a zombie: Linux reads `/proc/<pid>/stat` and macOS reads `proc_pidinfo` process state, so either platform no longer waits out the full SIGTERM grace period or suggests `jyc stop --force` after the service has already finished shutting down. The same probe now also preserves an `EPERM` result as "still running" instead of misclassifying it as a stale PID
+
 ### Removed
 
 - The `turn` context strategy (`context_strategy = { mode = "turn" }` / `/context turn`) and its `/context restart` no-op branch: the mode never justified its keep, and `/context restart` gives the same zero-prior restart on demand. The History Format prompt section is again unconditional. A stale `.jyc/context-strategy.json` override carrying `mode = "turn"` fails to parse and falls back to the configured strategy, while the main config / subagent-type files reject the value outright — replace it with `/context restart` or a sliding window

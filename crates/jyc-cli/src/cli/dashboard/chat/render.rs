@@ -451,7 +451,7 @@ fn entry_tool_name(entry: &jyc_types::ActivityEntry) -> Option<String> {
     (name != "thinking").then(|| name.to_string())
 }
 
-/// The entire progress tail in minimal mode: `⠹  12.4s · thinking... | bash · ⋮ 2`.
+/// The entire progress tail in minimal mode: `⠹  12.4s · thinking... | bash | ⋮2`.
 ///
 /// The state word names the current phase; when the phase is not a tool of
 /// its own (thinking, error), the most recent tool entry rides after ` | ` so
@@ -511,10 +511,7 @@ fn minimal_progress_line(
         spans.push(Span::styled(format!(" | {name}"), dim));
     }
     if queued > 0 {
-        spans.push(Span::styled(
-            format!(" · ⋮ {queued}"),
-            Style::default().fg(Color::DarkGray),
-        ));
+        spans.push(Span::styled(format!(" | ⋮{queued}"), dim));
     }
     Line::from(spans)
 }
@@ -2045,11 +2042,11 @@ mod tests {
             line.spans.iter().map(|sp| sp.content.as_ref()).collect()
         };
         let line = minimal_progress_line(std::slice::from_ref(&entry), Some(12_400), 500, 2);
-        assert_eq!(text_of(&line), "  ⠴  12.4s · bash · ⋮ 2");
+        assert_eq!(text_of(&line), "  ⠴  12.4s · bash | ⋮2");
         assert_eq!(
             line.spans.last().unwrap().style.fg,
-            Some(Color::DarkGray),
-            "the queued suffix stays muted"
+            line.spans[line.spans.len() - 2].style.fg,
+            "the queued suffix matches the phase/tool color"
         );
     }
 

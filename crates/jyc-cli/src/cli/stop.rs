@@ -97,10 +97,68 @@ pub async fn run(args: &StopArgs, data_dir: &Path) -> Result<()> {
 }
 
 /// Check whether a process with the given PID is running.
+///
+/// A zombie is already dead even though `kill(pid, 0)` still succeeds until
+/// its parent reaps it, so platform process state must be checked too.
 #[cfg(unix)]
 fn pid_exists(pid: u32) -> bool {
+    pid_signal_exists(pid) && !pid_is_zombie(pid)
+}
+
+#[cfg(unix)]
+fn pid_signal_exists(pid: u32) -> bool {
     let ret = unsafe { libc::kill(pid as i32, 0) };
-    ret == 0
+    if ret == 0 {
+        return true;
+    }
+    // EPERM means the process exists but the caller may not signal it.
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(target_os = "linux")]
+fn pid_is_zombie(pid: u32) -> bool {
+    let Ok(stat) = std::fs::read(format!("/proc/{pid}/stat")) else {
+        // If the status cannot be read, keep the `kill(pid, 0)` result rather
+        // than treating an inspectable process as gone.
+        return false;
+    };
+    matches!(proc_stat_state(&stat), Some(b'Z' | b'X' | b'x'))
+}
+
+/// Parse the one-letter process state from `/proc/<pid>/stat`.
+///
+/// The command name is parenthesized and may contain spaces or parentheses,
+/// so find the final `)` before reading the state field.
+#[cfg(target_os = "linux")]
+fn proc_stat_state(stat: &[u8]) -> Option<u8> {
+    let comm_end = stat.iter().rposition(|&byte| byte == b')')?;
+    stat.get(comm_end + 2).copied()
+}
+
+#[cfg(target_os = "macos")]
+fn pid_is_zombie(pid: u32) -> bool {
+    let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as libc::c_int;
+    let ret = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDT_SHORTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    if ret != size {
+        // Without a readable status, keep the `kill(pid, 0)` result rather
+        // than treating an inspectable process as gone.
+        return false;
+    }
+    info.pbsi_status == libc::SZOMB
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn pid_is_zombie(_pid: u32) -> bool {
+    false
 }
 
 #[cfg(not(unix))]
@@ -171,6 +229,79 @@ mod tests {
     fn test_pid_exists_returns_false_for_non_existent_pid() {
         // PID 999999999 should not exist on any typical system
         assert!(!pid_exists(999999999));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_proc_stat_state_uses_last_parenthesis_in_comm() {
+        let stat: &[u8] = b"52662 (jyc serve) Z 1 52661 52662 4096 0";
+        assert_eq!(proc_stat_state(stat), Some(b'Z'));
+        let stat: &[u8] = b"52662 (jyc (worker)) S 1 52661 52662 4096 0";
+        assert_eq!(proc_stat_state(stat), Some(b'S'));
+        let stat: &[u8] = b"52662 (jyc \xff) Z 1 52661 52662 4096 0";
+        assert_eq!(proc_stat_state(stat), Some(b'Z'));
+        assert_eq!(proc_stat_state(b"52662 jyc"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_for_child_exit_without_reaping(pid: libc::pid_t) {
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        loop {
+            let ret = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    pid as u32,
+                    &mut info,
+                    libc::WEXITED | libc::WNOWAIT,
+                )
+            };
+            if ret == 0 {
+                return;
+            }
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() != Some(libc::EINTR) {
+                panic!("waitid failed for child {pid}: {err}");
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    struct ChildReaper(libc::pid_t);
+
+    #[cfg(target_os = "linux")]
+    impl Drop for ChildReaper {
+        fn drop(&mut self) {
+            loop {
+                let ret = unsafe { libc::waitpid(self.0, std::ptr::null_mut(), 0) };
+                if ret != -1 {
+                    return;
+                }
+                if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                    return;
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_pid_exists_returns_false_for_zombie() {
+        unsafe {
+            let pid = libc::fork();
+            if pid == 0 {
+                libc::_exit(0);
+            }
+            assert!(pid > 0, "fork failed");
+            let _child = ChildReaper(pid);
+
+            // WNOWAIT waits for the exit without reaping, leaving the child
+            // in the zombie state this function must recognize.
+            wait_for_child_exit_without_reaping(pid);
+            assert!(
+                !pid_exists(pid as u32),
+                "a zombie PID must count as stopped"
+            );
+        }
     }
 
     #[test]

@@ -1021,12 +1021,16 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     }
 
     // ── Status line: the pane's last row (chunks[3]) ──
-    // Mode/topic/branch on the left, model + context usage on the right,
-    // from the polled overview (same source as the Topic Info pane). It
-    // sits below the popup slot so a popup never covers it.
-    let status_ctx = resolve_header_ctx(app);
+    // A presentation of the selected topic's TopicInfo: identity and, while
+    // the info pane is hidden, its compact counters on the left; model,
+    // context usage and turn metrics on the right. It sits below the popup
+    // slot so a popup never covers it.
     frame.render_widget(
-        build_status_line(chunks[3].width as usize, &status_ctx),
+        build_status_line(
+            chunks[3].width as usize,
+            selected_topic_detail(app),
+            app.chat.info_visible,
+        ),
         chunks[3],
     );
 }

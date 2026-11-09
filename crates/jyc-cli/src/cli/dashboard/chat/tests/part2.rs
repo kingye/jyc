@@ -3,6 +3,7 @@
 //! Split from the monolithic `dashboard/chat/tests.rs`.
 
 use super::super::*;
+use jyc_types::task::{TaskItem, TaskList, TaskStatus};
 
 #[test]
 fn constructor_uses_standard_pane_defaults_before_any_chat_is_opened() {
@@ -1120,16 +1121,15 @@ fn info_scroll_is_clamped_after_render() {
     );
 }
 
-fn ctx_with_full_data() -> ChatHeaderCtx<'static> {
-    ChatHeaderCtx {
-        mode: "plan",
-        topic: Some("jyc"),
-        branch: None,
-        model: Some("claude-opus-4-6"),
-        pct: Some(10),
-        info_visible: true,
-        detail: None,
-    }
+/// A `TopicInfo` carrying the terse status-chip fixture: plan mode, the jyc
+/// topic, claude-opus-4-6, and 10% context usage.
+fn visible_status_detail() -> jyc_types::TopicInfo {
+    let mut detail = topic_detail_for("jyc", "agents");
+    detail.mode = Some("plan".to_string());
+    detail.model = Some("claude-opus-4-6".to_string());
+    detail.context_input_tokens = Some(10);
+    detail.max_tokens = Some(100);
+    detail
 }
 
 fn line_text(line: &Line<'_>) -> String {
@@ -1138,8 +1138,8 @@ fn line_text(line: &Line<'_>) -> String {
 
 #[test]
 fn status_line_is_gray_and_carries_no_rule() {
-    let ctx = ctx_with_full_data();
-    let line = build_status_line(80, &ctx);
+    let detail = visible_status_detail();
+    let line = build_status_line(80, Some(&detail), true);
     let text = line_text(&line);
     // The status line is a footer: the input field's rules live above it.
     assert!(
@@ -1158,8 +1158,8 @@ fn status_line_is_gray_and_carries_no_rule() {
 
 #[test]
 fn status_line_includes_mode_topic_and_chip() {
-    let ctx = ctx_with_full_data();
-    let line = build_status_line(80, &ctx);
+    let detail = visible_status_detail();
+    let line = build_status_line(80, Some(&detail), true);
     let text = line_text(&line);
     // Left segment includes mode + topic.
     assert!(
@@ -1181,46 +1181,21 @@ fn status_line_includes_mode_topic_and_chip() {
 }
 
 #[test]
-fn status_line_omits_topic_when_missing() {
-    let mut ctx = ctx_with_full_data();
-    ctx.topic = None;
-    let line = build_status_line(80, &ctx);
-    let text = line_text(&line);
+fn status_line_without_topic_detail_is_empty() {
+    let line = build_status_line(80, None, true);
     assert!(
-        text.starts_with("plan"),
-        "missing mode segment in: {text:?}"
-    );
-    assert!(!text.contains("· jyc"));
-}
-
-#[test]
-fn status_line_with_no_state_is_just_mode() {
-    let ctx = ChatHeaderCtx {
-        mode: "build",
-        topic: None,
-        branch: None,
-        model: None,
-        pct: None,
-        info_visible: true,
-        detail: None,
-    };
-    let line = build_status_line(80, &ctx);
-    let text = line_text(&line);
-    // Defaults: mode = "build", topic/branch all absent.
-    assert_eq!(text, "build");
-    // No fallback placeholders either — there is no chip anymore.
-    assert!(
-        !text.contains('[') && !text.contains('?'),
-        "no question-mark placeholders expected: {text:?}"
+        line.spans.is_empty(),
+        "without TopicInfo there is nothing to present: {:?}",
+        line_text(&line)
     );
 }
 
 #[test]
 fn status_line_truncates_left_when_too_narrow() {
-    let mut ctx = ctx_with_full_data();
-    ctx.topic = Some("a-very-long-topic-name");
+    let mut detail = visible_status_detail();
+    detail.name = "a-very-long-topic-name".to_string();
     // Width so tight that even truncating topic barely fits.
-    let line = build_status_line(20, &ctx);
+    let line = build_status_line(20, Some(&detail), true);
     let text = line_text(&line);
     // Topic must be truncated to fit; no chip ever rendered.
     assert!(
@@ -1238,9 +1213,9 @@ fn status_line_truncates_left_when_too_narrow() {
 
 #[test]
 fn status_line_appends_branch_when_present() {
-    let mut ctx = ctx_with_full_data();
-    ctx.branch = Some("feat/issue-512-show-branch");
-    let line = build_status_line(120, &ctx);
+    let mut detail = visible_status_detail();
+    detail.branch = Some("feat/issue-512-show-branch".to_string());
+    let line = build_status_line(120, Some(&detail), true);
     let text = line_text(&line);
     assert!(
         text.contains("· jyc · feat/issue-512-show-branch"),
@@ -1250,11 +1225,8 @@ fn status_line_appends_branch_when_present() {
 
 #[test]
 fn status_line_omits_branch_segment_when_none() {
-    // Same ctx as `status_line_includes_mode_topic_and_chip`
-    // but with branch=None — the left segment must end at "· jyc"
-    // without a dangling separator.
-    let ctx = ctx_with_full_data();
-    let line = build_status_line(120, &ctx);
+    let detail = visible_status_detail();
+    let line = build_status_line(120, Some(&detail), true);
     let text = line_text(&line);
     assert!(
         text.contains("· jyc "),
@@ -1268,11 +1240,11 @@ fn status_line_omits_branch_segment_when_none() {
 
 #[test]
 fn status_line_renders_partial_chip_with_model_only() {
-    // pct missing (e.g., session hasn't recorded context yet) — the terse
-    // chip keeps its fixed shape and renders the percentage as zero.
-    let mut ctx = ctx_with_full_data();
-    ctx.pct = None;
-    let line = build_status_line(80, &ctx);
+    // Context usage missing (e.g., the session hasn't recorded context yet) —
+    // the terse chip keeps its fixed shape and renders the percentage as zero.
+    let mut detail = visible_status_detail();
+    detail.context_input_tokens = None;
+    let line = build_status_line(80, Some(&detail), true);
     let text = line_text(&line);
     assert!(
         text.contains("[ claude-opus-4-6 · 0% ]"),
@@ -1309,33 +1281,37 @@ fn compact_status_detail() -> jyc_types::TopicInfo {
     detail.turn_input_tokens = Some(1_090_519);
     detail.turn_output_tokens = Some(2_980);
     detail.turn_reasoning_tokens = Some(948);
-    detail.avg_turn_call_ms = Some(858);
-    detail.turn_call_count = Some(9);
-    detail.turn_total_call_duration_ms = Some(7722);
+    detail.avg_turn_call_ms = Some(10_450);
+    detail.turn_call_count = Some(80);
+    detail.branch = Some("main".to_string());
+    detail.tasks = TaskList {
+        items: (1..=5)
+            .map(|id| TaskItem {
+                id,
+                text: format!("task {id}"),
+                status: if id <= 3 {
+                    TaskStatus::Completed
+                } else {
+                    TaskStatus::Pending
+                },
+            })
+            .collect(),
+    };
     detail
 }
 
 #[test]
 fn compact_status_chip_carries_the_hidden_info_pane_metrics() {
     let detail = compact_status_detail();
-    let ctx = ChatHeaderCtx {
-        mode: "plan",
-        topic: Some("jyc"),
-        branch: None,
-        model: detail.model.as_deref(),
-        pct: Some(2),
-        info_visible: false,
-        detail: Some(&detail),
-    };
-    let line = build_status_line(90, &ctx);
+    let line = build_status_line(90, Some(&detail), false);
     let text = line_text(&line);
 
     assert!(
-        text.starts_with("plan · jyc"),
-        "left segment must stay unchanged: {text:?}"
+        text.starts_with("plan · jyc · main · ☑3/5"),
+        "the hidden pane's task counter joins the left segment: {text:?}"
     );
     let expected = format!(
-        "[ gpt-5.5 · {} 2% ↑1.0M/93% ↓948/2.9K →7.7s/9 ]",
+        "[ gpt-5.5 · {} 2% ↑1.0M/93% ↓948/2.9K →10.5s/80 ]",
         "━".repeat(10)
     );
     assert!(
@@ -1361,32 +1337,23 @@ fn compact_status_chip_carries_the_hidden_info_pane_metrics() {
 }
 
 #[test]
-fn compact_status_latency_uses_the_exact_turn_total() {
-    // The persisted average would reconstruct 340 ms × 3 calls as 1.02 s,
-    // which rounds to 1.0s. The chip must use the persisted exact 900 ms
-    // total even though one-decimal seconds can no longer show millisecond
-    // precision.
+fn compact_status_latency_matches_the_info_pane_turn_average() {
+    // The chip mirrors the info pane's `avg_turn_call_ms × turn_call_count`
+    // pair. A reconstructed 900 ms total would render 0.9s; the info pane's
+    // measured 340 ms average rounds to 0.3s, and the chip must agree.
     let mut detail = topic_detail_for("jyc", "agents");
     detail.model = Some("gpt-5.5".to_string());
     detail.avg_turn_call_ms = Some(340);
     detail.turn_call_count = Some(3);
     detail.turn_total_call_duration_ms = Some(900);
-    let ctx = ChatHeaderCtx {
-        mode: "plan",
-        topic: Some("jyc"),
-        branch: None,
-        model: detail.model.as_deref(),
-        pct: None,
-        info_visible: false,
-        detail: Some(&detail),
-    };
+    detail.mode = Some("plan".to_string());
 
-    let text = line_text(&build_status_line(60, &ctx));
+    let text = line_text(&build_status_line(60, Some(&detail), false));
     let bar = "━".repeat(10);
 
     assert!(
-        text.ends_with(&format!("[ gpt-5.5 · {bar} 0% ↑0/0% ↓0/0 →0.9s/3 ]")),
-        "latency must preserve the total that average reconstruction loses: {text:?}"
+        text.ends_with(&format!("[ gpt-5.5 · {bar} 0% ↑0/0% ↓0/0 →0.3s/3 ]")),
+        "latency must match the info pane's turn average: {text:?}"
     );
 }
 
@@ -1394,16 +1361,7 @@ fn compact_status_latency_uses_the_exact_turn_total() {
 fn visible_info_pane_keeps_the_terse_status_chip() {
     let mut detail = compact_status_detail();
     detail.subagents = Some(vec![subagent_node("ci-watch", vec![])]);
-    let ctx = ChatHeaderCtx {
-        mode: "plan",
-        topic: Some("jyc"),
-        branch: None,
-        model: detail.model.as_deref(),
-        pct: Some(2),
-        info_visible: true,
-        detail: Some(&detail),
-    };
-    let line = build_status_line(90, &ctx);
+    let line = build_status_line(90, Some(&detail), true);
     let text = line_text(&line);
 
     assert!(
@@ -1411,7 +1369,10 @@ fn visible_info_pane_keeps_the_terse_status_chip() {
         "a visible info pane owns the detail, so the chip stays terse: {text:?}"
     );
     assert!(
-        !text.contains('↑') && !text.contains("7.7s") && !text.contains('✦'),
+        !text.contains('↑')
+            && !text.contains("10.5s")
+            && !text.contains('✦')
+            && !text.contains('☑'),
         "turn metrics must not duplicate the visible info pane: {text:?}"
     );
 }
@@ -1419,6 +1380,7 @@ fn visible_info_pane_keeps_the_terse_status_chip() {
 #[test]
 fn compact_status_chip_renders_zero_metrics_and_empty_composition() {
     let mut t = topic_detail_for("jyc", "agents");
+    t.mode = Some("plan".to_string());
     t.model = Some("kimi/k3.1-pro".to_string());
     t.branch = Some("main".to_string());
     t.context_composition.clear();
@@ -1429,19 +1391,9 @@ fn compact_status_chip_renders_zero_metrics_and_empty_composition() {
     t.turn_cache_hit_tokens = Some(0);
     t.turn_reasoning_tokens = Some(0);
     t.turn_output_tokens = Some(0);
-    t.turn_total_call_duration_ms = Some(0);
+    t.avg_turn_call_ms = None;
     t.turn_call_count = Some(3);
-    let ctx = ChatHeaderCtx {
-        mode: "plan",
-        topic: Some("jyc"),
-        branch: t.branch.as_deref(),
-        model: t.model.as_deref(),
-        pct: None,
-        info_visible: false,
-        detail: Some(&t),
-    };
-
-    let line = build_status_line(120, &ctx);
+    let line = build_status_line(120, Some(&t), false);
     let text = line_text(&line);
     assert!(text.starts_with("plan · jyc · main"));
     let expected = format!("[ kimi/k3.1-pro · {} 0% ↑0/0% ↓0/0 →0s/3 ]", "━".repeat(10));
@@ -1459,7 +1411,7 @@ fn compact_status_chip_renders_zero_metrics_and_empty_composition() {
 }
 
 #[test]
-fn compact_status_chip_counts_active_subagents_and_changed_files() {
+fn hidden_info_pane_status_line_counts_active_subagents_and_changed_files() {
     let mut detail = compact_status_detail();
     let mut child = subagent_node("review", vec![subagent_node("review-child", vec![])]);
     child.status = jyc_types::TopicStatus::Processing;
@@ -1470,89 +1422,76 @@ fn compact_status_chip_counts_active_subagents_and_changed_files() {
         changed_file_entry("src/lib.rs"),
         changed_file_entry("README.md"),
     ]);
-    let ctx = ChatHeaderCtx {
-        mode: "plan",
-        topic: Some("jyc"),
-        branch: None,
-        model: detail.model.as_deref(),
-        pct: Some(2),
-        info_visible: false,
-        detail: Some(&detail),
-    };
 
-    let text = line_text(&build_status_line(110, &ctx));
+    let text = line_text(&build_status_line(110, Some(&detail), false));
     let expected = format!(
-        "[ gpt-5.5 · {} 2% ↑1.0M/93% ↓948/2.9K →7.7s/9 ✦2/3 ≡2 ]",
+        "[ gpt-5.5 · {} 2% ↑1.0M/93% ↓948/2.9K →10.5s/80 ]",
         "━".repeat(10)
     );
     assert!(
-        text.ends_with(&expected),
-        "subagent counts come before changed-file counts: {text:?}"
+        text.starts_with("plan · jyc · main · ☑3/5 ✦2/3 ≡2"),
+        "subagent and changed-file counters belong in the left segment: {text:?}"
     );
-}
-
-#[test]
-fn compact_status_chip_shows_changed_files_without_subagents() {
-    let mut detail = compact_status_detail();
-    detail.changed_files = Some(vec![changed_file_entry("src/lib.rs")]);
-    let ctx = ChatHeaderCtx {
-        mode: "plan",
-        topic: Some("jyc"),
-        branch: None,
-        model: detail.model.as_deref(),
-        pct: Some(2),
-        info_visible: false,
-        detail: Some(&detail),
-    };
-
-    let text = line_text(&build_status_line(110, &ctx));
     assert!(
-        text.ends_with(&format!(
-            "[ gpt-5.5 · {} 2% ↑1.0M/93% ↓948/2.9K →7.7s/9 ≡1 ]",
-            "━".repeat(10)
-        )),
-        "changed-file count follows turn metrics when there are no subagents: {text:?}"
+        text.ends_with(&expected),
+        "the right chip keeps only model and turn metrics: {text:?}"
     );
 }
 
 #[test]
-fn compact_status_chip_omits_empty_changed_file_list() {
+fn hidden_info_pane_status_line_omits_subagents_and_files_when_absent() {
+    let detail = compact_status_detail();
+    let text = line_text(&build_status_line(100, Some(&detail), false));
+
+    assert!(
+        text.starts_with("plan · jyc · main · ☑3/5"),
+        "only available counters render: {text:?}"
+    );
+    assert!(
+        !text.contains('✦') && !text.contains('≡'),
+        "absent counters must not render zero placeholders: {text:?}"
+    );
+}
+
+#[test]
+fn hidden_info_pane_status_line_omits_all_empty_counters() {
+    let detail = topic_detail_for("jyc", "agents");
+    let text = line_text(&build_status_line(100, Some(&detail), false));
+
+    assert!(
+        text.starts_with("jyc"),
+        "the identity chip stays even when every counter is absent: {text:?}"
+    );
+    assert!(
+        !text.contains('☑') && !text.contains('✦') && !text.contains('≡'),
+        "empty task, subagent and changed-file counters must all be omitted: {text:?}"
+    );
+}
+
+#[test]
+fn hidden_info_pane_status_line_omits_empty_changed_file_list() {
     let mut detail = compact_status_detail();
     detail.changed_files = Some(vec![]);
-    let ctx = ChatHeaderCtx {
-        mode: "plan",
-        topic: Some("jyc"),
-        branch: None,
-        model: detail.model.as_deref(),
-        pct: Some(2),
-        info_visible: false,
-        detail: Some(&detail),
-    };
 
-    let text = line_text(&build_status_line(100, &ctx));
-    let expected = format!(
-        "[ gpt-5.5 · {} 2% ↑1.0M/93% ↓948/2.9K →7.7s/9 ]",
-        "━".repeat(10)
+    let text = line_text(&build_status_line(100, Some(&detail), false));
+    assert!(
+        text.starts_with("plan · jyc · main · ☑3/5"),
+        "an empty resolved changed-file list must not render a zero segment: {text:?}"
     );
     assert!(
-        text.ends_with(&expected),
-        "an empty resolved changed-file list must not render as a zero segment: {text:?}"
+        !text.contains('≡'),
+        "no zero changed-file counter: {text:?}"
     );
 }
 
 #[test]
 fn compact_status_chip_zeroes_missing_turn_metrics() {
-    let detail = topic_detail_for("jyc", "agents");
-    let ctx = ChatHeaderCtx {
-        mode: "plan",
-        topic: Some("jyc"),
-        branch: None,
-        model: Some("claude-opus-4-6"),
-        pct: Some(10),
-        info_visible: false,
-        detail: Some(&detail),
-    };
-    let line = build_status_line(80, &ctx);
+    let mut detail = topic_detail_for("jyc", "agents");
+    detail.mode = Some("plan".to_string());
+    detail.model = Some("claude-opus-4-6".to_string());
+    detail.context_input_tokens = Some(10);
+    detail.max_tokens = Some(100);
+    let line = build_status_line(80, Some(&detail), false);
     let text = line_text(&line);
 
     let bar = "━".repeat(10);
@@ -1565,34 +1504,42 @@ fn compact_status_chip_zeroes_missing_turn_metrics() {
 #[test]
 fn compact_status_chip_is_dropped_when_narrow() {
     let detail = compact_status_detail();
-    let ctx = ChatHeaderCtx {
-        mode: "plan",
-        topic: Some("jyc"),
-        branch: None,
-        model: detail.model.as_deref(),
-        pct: Some(2),
-        info_visible: false,
-        detail: Some(&detail),
-    };
-    let line = build_status_line(40, &ctx);
+    let line = build_status_line(40, Some(&detail), false);
     let text = line_text(&line);
 
     assert_eq!(
-        text, "plan · jyc",
+        text, "plan · jyc · main · ☑3/5",
         "the expanded chip must give way first: {text:?}"
     );
+}
+
+#[test]
+fn narrow_status_line_keeps_an_exact_fit_first_segment() {
+    let detail = visible_status_detail();
+    // mode + bullet + topic = exactly 7 columns; no later segment may steal
+    // columns from the first with a separator it will never draw.
+    let line = build_status_line(7, Some(&detail), true);
+    assert_eq!(line_text(&line), "mode · jyc");
+}
+
+#[test]
+fn narrow_status_line_keeps_the_topic_when_mode_is_missing() {
+    let mut detail = visible_status_detail();
+    detail.mode = None;
+    let line = build_status_line(4, Some(&detail), true);
+    assert_eq!(line_text(&line), "jyc");
 }
 
 #[test]
 fn status_line_drops_chip_when_narrow() {
     // Width that fits the left segment but not the chip — chip
     // should be dropped, left segment preserved.
-    let ctx = ctx_with_full_data();
+    let detail = visible_status_detail();
     // Left "plan · jyc" = 10 display cols.
     // Chip "[ claude-opus-4-6 · 10% ]" = 23 display cols.
     // total = 33 cols + 1 separating space. Width 32 forces dropping
     // the chip.
-    let line = build_status_line(32, &ctx);
+    let line = build_status_line(32, Some(&detail), true);
     let text = line_text(&line);
     assert!(
         !text.contains('['),
@@ -1604,16 +1551,9 @@ fn status_line_drops_chip_when_narrow() {
 #[test]
 fn status_line_never_emits_dangling_separator() {
     // Narrow enough that the topic is truncated to a single column.
-    let ctx = ChatHeaderCtx {
-        mode: "plan",
-        topic: Some("ch"),
-        branch: None,
-        model: None,
-        pct: None,
-        info_visible: true,
-        detail: None,
-    };
-    let line = build_status_line(10, &ctx);
+    let mut detail = topic_detail_for("ch", "agents");
+    detail.mode = Some("plan".to_string());
+    let line = build_status_line(10, Some(&detail), true);
     let text = line_text(&line);
     assert!(
         !text.ends_with("· "),

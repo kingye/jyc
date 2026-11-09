@@ -2712,14 +2712,17 @@ fn format_chip_token_count(tokens: u64) -> String {
 }
 
 /// Format the chip's latest-turn call latency as seconds with one decimal,
-/// using the same `avg_turn_call_ms` field as the info pane. Zero stays `0s`;
-/// sub-second averages still read as fractional seconds so every non-zero
+/// using the same `avg_turn_call_ms` field as the info pane. Tenths are rounded
+/// with integer arithmetic so an exact `10450` ms average reads `10.5s`, not
+/// the `10.4s` a binary floating-point representation can produce. Zero stays
+/// `0s`; sub-second averages still read as fractional seconds so every non-zero
 /// value uses the same scale.
 fn format_chip_turn_latency(avg_ms: u64) -> String {
     if avg_ms == 0 {
         "0s".to_string()
     } else {
-        format!("{:.1}s", avg_ms as f64 / 1000.0)
+        let tenths = (avg_ms + 50) / 100;
+        format!("{}.{:01}s", tenths / 10, tenths % 10)
     }
 }
 

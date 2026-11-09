@@ -1516,10 +1516,11 @@ fn compact_status_chip_is_dropped_when_narrow() {
 #[test]
 fn narrow_status_line_keeps_an_exact_fit_first_segment() {
     let detail = visible_status_detail();
-    // mode + bullet + topic = exactly 7 columns; no later segment may steal
-    // columns from the first with a separator it will never draw.
+    // The `plan` mode segment exactly fills the seven-column row; the `jyc`
+    // topic would need a separator plus one content column, so the first
+    // segment is kept whole instead of being truncated for a later segment.
     let line = build_status_line(7, Some(&detail), true);
-    assert_eq!(line_text(&line), "mode · jyc");
+    assert_eq!(line_text(&line), "plan");
 }
 
 #[test]

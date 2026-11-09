@@ -1514,13 +1514,16 @@ fn compact_status_chip_is_dropped_when_narrow() {
 }
 
 #[test]
-fn narrow_status_line_keeps_an_exact_fit_first_segment() {
+fn narrow_status_line_keeps_first_segment_when_next_does_not_fit() {
     let detail = visible_status_detail();
-    // The `plan` mode segment exactly fills the seven-column row; the `jyc`
-    // topic would need a separator plus one content column, so the first
-    // segment is kept whole instead of being truncated for a later segment.
+    // `plan` occupies 4 of 7 columns; adding `jyc` would require an
+    // 8-column separator plus content, so the first segment is preserved
+    // whole instead of truncated to make room for a segment that cannot fit.
     let line = build_status_line(7, Some(&detail), true);
     assert_eq!(line_text(&line), "plan");
+
+    let exact_fit = build_status_line(4, Some(&detail), true);
+    assert_eq!(line_text(&exact_fit), "plan");
 }
 
 #[test]

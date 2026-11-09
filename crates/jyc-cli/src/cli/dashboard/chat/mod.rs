@@ -2464,71 +2464,68 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App, body
     frame.render_widget(paragraph, inner);
 }
 
-/// Zero-alloc snapshot of the data the chat status line needs. All fields
-/// borrow directly from the polled `InspectOverview`. Missing fields are
-/// dropped rather than filled in: with no `state` yet, the line is just the
-/// mode.
-struct ChatHeaderCtx<'a> {
-    mode: &'a str,
-    topic: Option<&'a str>,
-    branch: Option<&'a str>,
-    model: Option<&'a str>,
-    pct: Option<u32>,
-    /// Whether the topic info pane is visible. When it is, the status chip
-    /// stays terse; when hidden, the chip carries the pane's compact metrics.
+/// Build the chat status line — the pane's bottom row — as a presentation of
+/// the selected topic's `TopicInfo`: "{mode} · {topic}[ · {branch}]"
+/// left-aligned, a right-aligned chip showing model and context-window usage.
+/// With the info pane hidden, the left segment also carries its non-empty
+/// task, subagent, and changed-file counters, while the right chip mirrors
+/// the pane's compact turn metrics: context composition, overall usage, turn
+/// input/cache hit rate, reasoning/output and average turn call latency. With the
+/// pane visible both segments stay terse and the pane owns those figures.
+/// The full right chip uses plain arrow separators for the turn metrics and
+/// renders a missing measurement as zero rather than dropping its segment.
+/// Both segments are one dim gray except the composition cells, which keep
+/// the pane's region colours: it is a footer, not a rule, so it carries no
+/// ─ padding (the input field has its own rules above). Without the selected
+/// topic's detail the row is empty; a narrow row drops the right chip first,
+/// then truncates the left segment.
+fn build_status_line(
+    width: usize,
+    detail: Option<&jyc_types::TopicInfo>,
     info_visible: bool,
-    /// The selected topic's detail — the metrics source for the compact chip.
-    detail: Option<&'a jyc_types::TopicInfo>,
-}
-
-fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
-    let t = selected_topic_detail(app);
-    ChatHeaderCtx {
-        mode: t.and_then(|t| t.mode.as_deref()).unwrap_or("build"),
-        topic: t.map(|t| t.name.as_str()),
-        // Read straight off the topic's detail — the same source the info
-        // pane renders.
-        branch: t.and_then(|t| t.branch.as_deref()),
-        model: t.and_then(|t| t.model.as_deref()),
-        pct: t.and_then(context_pct),
-        info_visible: app.chat.info_visible,
-        detail: t,
-    }
-}
-
-/// Build the chat status line — the pane's bottom row: "{mode} · {topic}[ ·
-/// {branch}]" left-aligned, a right-aligned chip showing the current model
-/// and context-window usage. With the info pane hidden, the chip also carries
-/// its compact turn metrics: context composition, overall usage, turn
-/// input/cache hit rate, reasoning/output and total turn latency, plus
-/// non-empty subagent and changed-file counts when present; with the
-/// pane visible the chip stays terse and the pane owns those figures. The
-/// full form uses plain arrow separators for the turn metrics and renders
-/// a missing measurement as zero rather than dropping its segment. Both
-/// segments are one dim gray except the
-/// composition cells, which keep the pane's region colours: it is a footer,
-/// not a rule, so it carries no ─ padding (the input field has its own rules
-/// above). Falls back gracefully when the width cannot hold the chip —
-/// the chip is dropped before the left segment starts truncating.
-fn build_status_line(width: usize, ctx: &ChatHeaderCtx<'_>) -> Line<'static> {
+) -> Line<'static> {
     let style = Style::default().fg(Color::Gray);
+    let Some(t) = detail else {
+        return Line::default();
+    };
 
-    // --- Left segment: "{mode} · {topic}[ · {branch}]" ---
+    // --- Left segment: "{mode} · {topic}[ · {branch}][ · ☑d/t ✦a/n ≡f]" ---
     // The topic name is the identity that matters here; channel and
     // pattern are routing metadata and are intentionally not shown.
-    let mut left = String::with_capacity(48);
-    left.push_str(ctx.mode);
-    if let Some(topic) = ctx.topic {
-        left.push_str(" · ");
-        left.push_str(topic);
+    let mut left = String::with_capacity(64);
+    let mut has_segment = false;
+    for segment in [
+        t.mode.as_deref(),
+        Some(t.name.as_str()),
+        t.branch.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        push_status_segment(&mut left, &mut has_segment, segment);
     }
-    if let Some(branch) = ctx.branch {
-        left.push_str(" · ");
-        left.push_str(branch);
+    if !info_visible {
+        let mut has_counter = false;
+        let (done, total) = t.tasks.progress();
+        if total > 0 {
+            push_left_counter(&mut left, &mut has_counter, format!("☑{done}/{total}"));
+        }
+        if let Some(subagents) = t.subagents.as_deref() {
+            let total = node_count(subagents);
+            if total > 0 {
+                let active = active_subagent_count(subagents);
+                push_left_counter(&mut left, &mut has_counter, format!("✦{active}/{total}"));
+            }
+        }
+        if let Some(files) = t.changed_files.as_deref()
+            && !files.is_empty()
+        {
+            push_left_counter(&mut left, &mut has_counter, format!("≡{}", files.len()));
+        }
     }
     let left_w = left.width();
 
-    let chip = build_status_chip(ctx, style);
+    let chip = build_status_chip(t, info_visible, style);
     let chip_w = chip
         .as_ref()
         .map(|spans| spans.iter().map(|s| s.content.width()).sum::<usize>())
@@ -2542,18 +2539,31 @@ fn build_status_line(width: usize, ctx: &ChatHeaderCtx<'_>) -> Line<'static> {
             return Line::from(Span::styled(left, style));
         }
         // Left itself doesn't fit; best-effort segments over
-        // [topic, branch], adding the separator only when there is
-        // room for at least one column of content after it.
-        let mut compact = ctx.mode.to_string();
-        for seg in [ctx.topic, ctx.branch].into_iter().flatten() {
+        // [mode, topic, branch]. Only a subsequent segment reserves the
+        // separator, so a first segment that exactly fits is not truncated.
+        let mut compact = String::new();
+        let mut has_segment = false;
+        for segment in [
+            t.mode.as_deref(),
+            Some(t.name.as_str()),
+            t.branch.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
             let used = compact.width();
-            // Need room for " · " (3 cols) plus at least 1 col of content.
-            if width < used + 4 {
+            let separator_width = usize::from(has_segment) * " · ".width();
+            // Need the separator when one exists plus at least one column of
+            // content; the first segment needs only that one content column.
+            if width < used + separator_width + 1 {
                 break;
             }
-            let avail = width - used - 3;
-            compact.push_str(" · ");
-            compact.push_str(&truncate_to_width(seg, avail));
+            let avail = width - used - separator_width;
+            if has_segment {
+                compact.push_str(" · ");
+            }
+            has_segment = true;
+            compact.push_str(&truncate_to_width(segment, avail));
         }
         return Line::from(Span::styled(compact, style));
     }
@@ -2571,33 +2581,33 @@ fn build_status_line(width: usize, ctx: &ChatHeaderCtx<'_>) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Build the status line's right chip. The info pane's visible form is the
-/// terse "[ {model} · {pct}% ]"; its hidden form is the compact mirror of the
-/// pane: fixed-width context composition, overall usage, turn input/cache hit
-/// rate, reasoning/output counts, and total turn latency. Missing
-/// measurements render as zero so the full form never degenerates into a
-/// narrower chip. Non-empty subagent and changed-file counts follow when
-/// present.
-fn build_status_chip(ctx: &ChatHeaderCtx<'_>, style: Style) -> Option<Vec<Span<'static>>> {
-    if ctx.info_visible {
+/// Build the status line's right chip from the same `TopicInfo` as the left
+/// segment. The info pane's visible form is the terse "[ {model} · {pct}% ]";
+/// its hidden form is the compact mirror of the pane: fixed-width context
+/// composition, overall usage, turn input/cache hit rate, reasoning/output
+/// counts, and average turn call latency. Missing measurements render as zero so
+/// the full form never degenerates into a narrower chip.
+fn build_status_chip(
+    t: &jyc_types::TopicInfo,
+    info_visible: bool,
+    style: Style,
+) -> Option<Vec<Span<'static>>> {
+    let pct = context_pct(t);
+    if info_visible {
         // The visible form is the fixed two-segment model/percentage chip. A
         // missing percentage reads as zero; only a missing model (and thus no
         // percentage source before the first detail poll) drops the chip.
-        let text = match ctx.model {
-            Some(m) => format!("[ {m} · {}% ]", ctx.pct.unwrap_or(0)),
-            None if ctx.pct.is_some() => format!("[ {}% ]", ctx.pct.unwrap_or(0)),
+        let text = match t.model.as_deref() {
+            Some(m) => format!("[ {m} · {}% ]", pct.unwrap_or(0)),
+            None if pct.is_some() => format!("[ {}% ]", pct.unwrap_or(0)),
             None => return None,
         };
         return Some(vec![Span::styled(text, style)]);
     }
 
-    // The full form reads every metric from the selected topic's detail; the
-    // app resolves model and percentage from that same detail, so a missing
-    // detail means the first poll has not arrived yet and the chip is absent.
-    let t = ctx.detail?;
     let mut inner: Vec<Span<'static>> = Vec::new();
     let mut has_segment = false;
-    if let Some(model) = ctx.model {
+    if let Some(model) = t.model.as_deref() {
         inner.push(Span::styled(model.to_string(), style));
         has_segment = true;
     }
@@ -2613,7 +2623,7 @@ fn build_status_chip(ctx: &ChatHeaderCtx<'_>, style: Style) -> Option<Vec<Span<'
     if has_segment {
         inner.push(Span::styled(" ", style));
     }
-    inner.push(Span::styled(format!("{}%", ctx.pct.unwrap_or(0)), style));
+    inner.push(Span::styled(format!("{}%", pct.unwrap_or(0)), style));
     has_segment = true;
 
     let input = t.turn_input_tokens.unwrap_or(0);
@@ -2640,38 +2650,37 @@ fn build_status_chip(ctx: &ChatHeaderCtx<'_>, style: Style) -> Option<Vec<Span<'
         style,
         format!(
             "→{}/{}",
-            format_chip_turn_duration(t.turn_total_call_duration_ms.unwrap_or(0)),
+            format_chip_turn_latency(t.avg_turn_call_ms.unwrap_or(0)),
             t.turn_call_count.unwrap_or(0)
         ),
     );
-    if let Some(subagents) = t.subagents.as_deref() {
-        let total = node_count(subagents);
-        if total > 0 {
-            let active = active_subagent_count(subagents);
-            push_chip_text(
-                &mut inner,
-                &mut has_segment,
-                style,
-                format!("✦{active}/{total}"),
-            );
-        }
-    }
-    if let Some(files) = t.changed_files.as_deref()
-        && !files.is_empty()
-    {
-        push_chip_text(
-            &mut inner,
-            &mut has_segment,
-            style,
-            format!("≡{}", files.len()),
-        );
-    }
 
     let mut spans = Vec::with_capacity(inner.len() + 2);
     spans.push(Span::styled("[ ", style));
     spans.extend(inner);
     spans.push(Span::styled(" ]", style));
     Some(spans)
+}
+
+/// Append one left-segment `TopicInfo` field, separated by the status bullet.
+fn push_status_segment(left: &mut String, has_segment: &mut bool, segment: &str) {
+    if *has_segment {
+        left.push_str(" · ");
+    }
+    *has_segment = true;
+    left.push_str(segment);
+}
+
+/// Append one left-segment counter. Counters join the identity fields with
+/// the status bullet and each other with a plain space.
+fn push_left_counter(left: &mut String, has_counter: &mut bool, text: String) {
+    if !left.is_empty() {
+        left.push_str(if *has_counter { " " } else { " · " });
+    } else if *has_counter {
+        left.push(' ');
+    }
+    *has_counter = true;
+    left.push_str(&text);
 }
 
 /// Count subagents currently executing a turn, including nested descendants.
@@ -2702,14 +2711,18 @@ fn format_chip_token_count(tokens: u64) -> String {
     }
 }
 
-/// Format the chip's total-turn duration as seconds with one decimal. Zero
-/// stays `0s`; sub-second totals still read as fractional seconds so every
-/// non-zero value uses the same scale.
-fn format_chip_turn_duration(total_ms: u64) -> String {
-    if total_ms == 0 {
+/// Format the chip's latest-turn call latency as seconds with one decimal,
+/// using the same `avg_turn_call_ms` field as the info pane. Tenths are rounded
+/// with integer arithmetic so an exact `10450` ms average reads `10.5s`, not
+/// the `10.4s` a binary floating-point representation can produce. Zero stays
+/// `0s`; sub-second averages still read as fractional seconds so every non-zero
+/// value uses the same scale.
+fn format_chip_turn_latency(avg_ms: u64) -> String {
+    if avg_ms == 0 {
         "0s".to_string()
     } else {
-        format!("{:.1}s", total_ms as f64 / 1000.0)
+        let tenths = (avg_ms + 50) / 100;
+        format!("{}.{:01}s", tenths / 10, tenths % 10)
     }
 }
 

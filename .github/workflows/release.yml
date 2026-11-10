@@ -153,10 +153,12 @@ jobs:
               --draft \
               --prerelease \
               --verify-tag
-            STAGING_RELEASE_ID="$(gh release view nightly-staging \
-              --repo "$GITHUB_REPOSITORY" \
-              --json id \
-              --jq '.id')"
+            STAGING_RELEASE_ID="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+              --jq '.[] | select(.tag_name == "nightly-staging" and .draft == true) | .id')"
+            if [[ -z "$STAGING_RELEASE_ID" ]]; then
+              echo "Failed to find the new nightly-staging draft release" >&2
+              exit 1
+            fi
             gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$STAGING_RELEASE_ID" \
               -f "target_commitish=$SOURCE_SHA"
           fi

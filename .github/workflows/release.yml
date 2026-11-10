@@ -40,6 +40,7 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          STAGING_BACKUP_MARKER="jyc-nightly-swap-backup"
           api_ref_sha() {
             local tag_name=$1
             gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag_name" --jq '.object.sha' 2>/dev/null
@@ -118,6 +119,22 @@ jobs:
               --jq '.[] | select(.tag_name == "nightly" and .draft == false) | .id' | wc -l)"
             PUBLISHED_STAGING_COUNT="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
               --jq '.[] | select(.tag_name == "nightly-staging" and .draft == false) | .id' | wc -l)"
+            STAGING_BACKUP_COUNT="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+              --jq ".[] | select(.tag_name == \"nightly-staging\" and .draft == false and .name == \"$STAGING_BACKUP_MARKER\") | .id" | wc -l)"
+            if [[ "$STAGING_BACKUP_COUNT" -gt 1 ]]; then
+              echo "Ambiguous published staging backups; refusing to continue." >&2
+              exit 1
+            elif [[ "$STAGING_BACKUP_COUNT" -eq 1 ]]; then
+              if [[ "$PUBLISHED_STAGING_COUNT" -ne 1 ]]; then
+                echo "Published staging backup is ambiguous; refusing to continue." >&2
+                exit 1
+              fi
+              STAGING_BACKUP_ID="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+                --jq "[.[] | select(.tag_name == \"nightly-staging\" and .draft == false and .name == \"$STAGING_BACKUP_MARKER\")][0] | .id")"
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$STAGING_BACKUP_ID"
+              PUBLISHED_STAGING_COUNT="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+                --jq '.[] | select(.tag_name == "nightly-staging" and .draft == false) | .id' | wc -l)"
+            fi
             if [[ "$PUBLISHED_NIGHTLY_COUNT" -gt 1 || "$PUBLISHED_STAGING_COUNT" -gt 0 ]]; then
               echo "Ambiguous or unexpected published nightly releases; refusing to continue." >&2
               exit 1
@@ -250,18 +267,20 @@ jobs:
         run: |
           set -euo pipefail
           TARGET_TAG="nightly"
+          STAGING_BACKUP_MARKER="jyc-nightly-swap-backup"
           TEMP_RELEASE_TAG="nightly-previous-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           TEMP_MOVED=false
           OLD_RELEASE_ID=""
           OLD_MOVED=false
           OLD_TARGET=""
+          OLD_NAME=""
           OLD_REF_SHA=""
 
           release_records() {
             local tag_name=$1
             local is_draft=$2
             gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-              --jq ".[] | select(.tag_name == \"$tag_name\" and .draft == $is_draft) | [.id, .target_commitish] | @tsv"
+              --jq ".[] | select(.tag_name == \"$tag_name\" and .draft == $is_draft) | [.id, .target_commitish, .name] | @tsv"
           }
 
           record_count() {
@@ -308,6 +327,7 @@ jobs:
               gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$OLD_RELEASE_ID" \
                 -f "tag_name=$TARGET_TAG" \
                 -f "target_commitish=$OLD_TARGET" \
+                -f "name=$OLD_NAME" \
                 -F "draft=false" \
                 -F "prerelease=true" || \
                 echo "Warning: failed to restore release $OLD_RELEASE_ID to $TARGET_TAG" >&2
@@ -327,7 +347,7 @@ jobs:
             echo "Expected exactly one draft staging release for $RELEASE_TAG" >&2
             exit 1
           fi
-          IFS=$'\t' read -r STAGING_RELEASE_ID STAGING_TARGET <<< "$STAGING_RECORDS"
+          IFS=$'\t' read -r STAGING_RELEASE_ID STAGING_TARGET STAGING_NAME <<< "$STAGING_RECORDS"
           if [[ -z "$STAGING_RELEASE_ID" || -z "$STAGING_TARGET" ]]; then
             echo "Incomplete staging release record for $RELEASE_TAG" >&2
             exit 1
@@ -339,8 +359,8 @@ jobs:
             echo "Ambiguous published $TARGET_TAG releases; refusing to swap" >&2
             exit 1
           elif [[ "$OLD_COUNT" -eq 1 ]]; then
-            IFS=$'\t' read -r OLD_RELEASE_ID OLD_TARGET <<< "$OLD_RECORDS"
-            if [[ -z "$OLD_RELEASE_ID" || -z "$OLD_TARGET" ]]; then
+            IFS=$'\t' read -r OLD_RELEASE_ID OLD_TARGET OLD_NAME <<< "$OLD_RECORDS"
+            if [[ -z "$OLD_RELEASE_ID" || -z "$OLD_TARGET" || -z "$OLD_NAME" ]]; then
               echo "Incomplete previous $TARGET_TAG release record" >&2
               exit 1
             fi
@@ -357,6 +377,7 @@ jobs:
             TEMP_MOVED=true
             gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$OLD_RELEASE_ID" \
               -f "tag_name=$RELEASE_TAG" \
+              -f "name=$STAGING_BACKUP_MARKER" \
               -F "draft=false" \
               -F "prerelease=true"
             OLD_MOVED=true
@@ -374,7 +395,7 @@ jobs:
             echo "Retargeted $TARGET_TAG draft failed verification" >&2
             exit 1
           fi
-          IFS=$'\t' read -r NEW_RELEASE_ID NEW_TARGET <<< "$NEW_RECORDS"
+          IFS=$'\t' read -r NEW_RELEASE_ID NEW_TARGET NEW_NAME <<< "$NEW_RECORDS"
           if ! NEW_REF_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TARGET_TAG" --jq '.object.sha' 2>/dev/null)"; then
             echo "Retargeted $TARGET_TAG draft has no tag ref" >&2
             exit 1

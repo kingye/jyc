@@ -25,6 +25,18 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Reject stale nightly event
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_TARGET: ${{ github.event.release.target_commitish }}
+        run: |
+          set -euo pipefail
+          CURRENT_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" --jq '.object.sha')"
+          if [[ -z "$EVENT_TARGET" || "$EVENT_TARGET" != "$CURRENT_SHA" ]]; then
+            echo "Stale nightly event: target='$EVENT_TARGET', current tag='$CURRENT_SHA'" >&2
+            exit 1
+          fi
+
       - name: Download release assets from GitHub
         run: |
           mkdir -p dist

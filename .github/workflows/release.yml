@@ -352,25 +352,32 @@ jobs:
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$STAGING_RELEASE_ID" \
             -f "tag_name=$TARGET_TAG" \
             -f "target_commitish=$SOURCE_SHA" \
-            -F "draft=false" \
+            -F "draft=true" \
             -F "prerelease=true"
 
-          NEW_RECORDS="$(release_records "$TARGET_TAG" false)"
+          NEW_RECORDS="$(release_records "$TARGET_TAG" true)"
           if [[ "$(record_count "$NEW_RECORDS")" -ne 1 ]]; then
-            echo "New $TARGET_TAG release failed verification" >&2
+            echo "Retargeted $TARGET_TAG draft failed verification" >&2
             exit 1
           fi
           IFS=$'\t' read -r NEW_RELEASE_ID NEW_TARGET <<< "$NEW_RECORDS"
           if ! NEW_REF_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TARGET_TAG" --jq '.object.sha' 2>/dev/null)"; then
-            echo "New $TARGET_TAG release has no tag ref" >&2
+            echo "Retargeted $TARGET_TAG draft has no tag ref" >&2
             exit 1
           fi
           if [[ "$NEW_RELEASE_ID" != "$STAGING_RELEASE_ID" || \
                 "$NEW_TARGET" != "$SOURCE_SHA" || \
                 "$NEW_REF_SHA" != "$SOURCE_SHA" ]]; then
-            echo "New $TARGET_TAG release metadata or tag SHA failed verification" >&2
+            echo "Retargeted $TARGET_TAG draft metadata or tag SHA failed verification" >&2
             exit 1
           fi
+
+          # Every check above ran while the release was still a draft, so no
+          # release:published event has been emitted yet. This patch is the
+          # first public event visible to sync-gitee-release.yml.
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$STAGING_RELEASE_ID" \
+            -F "draft=false"
+          trap - ERR
 
           # Cleanup is best-effort after the new public nightly is verified.
           if [[ -n "$OLD_RELEASE_ID" ]]; then

@@ -54,6 +54,15 @@ jobs:
             type=raw,value=latest
             type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
+      - name: Identify artifact retention
+        id: release-tag
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "retention_days=400" >> "$GITHUB_OUTPUT"
+          else
+            echo "retention_days=1" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v7
         with:
@@ -66,3 +75,16 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=jyc-build
           cache-to: type=gha,mode=max,scope=jyc-build
+        # Main builds only need the record while debugging the immediate run;
+        # exact semver tag records are kept for the latest five releases by
+        # the shared prune workflow.
+        env:
+          DOCKER_BUILD_RECORD_RETENTION_DAYS: ${{ steps.release-tag.outputs.retention_days }}
+
+  prune-artifacts:
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    needs: build-slim
+    permissions:
+      actions: write
+      contents: read
+    uses: ./.github/workflows/prune-artifacts.yml

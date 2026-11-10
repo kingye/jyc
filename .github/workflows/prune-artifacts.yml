@@ -1,0 +1,74 @@
+name: Prune Actions Artifacts
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 2 * * *'
+
+permissions:
+  actions: write
+  contents: read
+
+# Serialize every caller and scheduled/manual cleanup within this repository.
+# Do not cancel an in-progress cleanup that may already be deleting the same
+# artifact set.
+concurrency:
+  group: prune-actions-artifacts
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete artifacts outside the latest five releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          tag_refs=$(gh api \
+            "repos/${{ github.repository }}/git/matching-refs/tags/v" \
+            --jq '.[].ref | ltrimstr("refs/tags/")')
+
+          mapfile -t keep_tags < <(
+            printf '%s\n' "$tag_refs" \
+              | awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/ { print }' \
+              | sort -rV \
+              | head -5
+          )
+          if [ "${#keep_tags[@]}" -eq 0 ]; then
+            echo "::error::No semver release tags found; refusing to delete artifacts"
+            exit 1
+          fi
+
+          keep_list=$(printf '%s\n' "${keep_tags[@]}" | paste -sd,)
+          echo "::notice::Keeping Actions artifacts for: $keep_list"
+
+          artifacts=$(gh api \
+            "repos/${{ github.repository }}/actions/artifacts?per_page=100" \
+            --paginate \
+            --jq '.artifacts[]
+              | select(.expired == false)
+              | [.id, (.workflow_run.head_branch // ""), .size_in_bytes, .created_at]
+              | @tsv')
+
+          now=$(date -u +%s)
+          while IFS=$'\t' read -r artifact_id head_branch _size_in_bytes created_at; do
+            [ -z "$artifact_id" ] && continue
+
+            # A producer may still be running between upload and consume.
+            # retention-days handles routine one-day artifacts; leave any
+            # record younger than that window for the next cleanup pass.
+            created_epoch=$(date -u +%s -d "$created_at")
+            if [ $((now - created_epoch)) -lt 86400 ]; then
+              echo "::notice::Skipping new artifact $artifact_id from $head_branch"
+              continue
+            fi
+
+            if [[ ",$keep_list," != *",$head_branch,"* ]]; then
+              echo "::notice::Deleting artifact $artifact_id from $head_branch"
+              gh api -X DELETE \
+                "repos/${{ github.repository }}/actions/artifacts/$artifact_id"
+            fi
+          done <<< "$artifacts"

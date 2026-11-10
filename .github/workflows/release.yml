@@ -70,11 +70,25 @@ jobs:
           mkdir -p dist
           tar -C target/${{ matrix.target }}/release -czf dist/jyc-${{ matrix.target }}.tar.gz jyc jyc-pipe
 
+      - name: Identify artifact retention
+        id: release-tag
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "retention_days=400" >> "$GITHUB_OUTPUT"
+          else
+            echo "retention_days=1" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: jyc-${{ matrix.target }}
           path: dist/jyc-${{ matrix.target }}.tar.gz
+          # Main builds only stage binaries for the `release` job; published
+          # archives live on the nightly GitHub Release. Exact semver tag
+          # builds are kept for the latest five releases by the shared prune
+          # workflow.
+          retention-days: ${{ steps.release-tag.outputs.retention_days }}
 
   release:
     needs: build
@@ -147,3 +161,14 @@ jobs:
           # release:published event can trigger sync-gitee-release.yml.
           # Events from GITHUB_TOKEN don't trigger other workflows.
           token: ${{ secrets.RELEASE_PAT }}
+
+  prune-artifacts:
+    # Keep Actions artifacts for the latest five release tags. This covers
+    # both Release staging archives and Docker build records; GitHub Release
+    # assets are separate.
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    needs: release
+    permissions:
+      actions: write
+      contents: read
+    uses: ./.github/workflows/prune-artifacts.yml

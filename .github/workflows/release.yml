@@ -40,76 +40,102 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          api_ref_sha() {
+            local tag_name=$1
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag_name" --jq '.object.sha' 2>/dev/null
+          }
+
+          delete_ref_if_present() {
+            local tag_name=$1
+            local ref_sha
+            if ref_sha="$(api_ref_sha "$tag_name")"; then
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag_name"
+            fi
+          }
+
+          set_ref() {
+            local tag_name=$1
+            local sha=$2
+            local ref_sha
+            if ref_sha="$(api_ref_sha "$tag_name")"; then
+              gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag_name" \
+                -f "sha=$sha" \
+                -F force=true
+            else
+              gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
+                -f "ref=refs/tags/$tag_name" \
+                -f "sha=$sha"
+            fi
+          }
+
+          delete_draft_releases() {
+            local tag_name=$1
+            local release_ids
+            release_ids="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+              --jq ".[] | select(.tag_name == \"$tag_name\" and .draft == true) | .id")"
+            if [[ -n "$release_ids" ]]; then
+              while IFS= read -r release_id; do
+                [[ -n "$release_id" ]] || continue
+                gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$release_id"
+              done <<< "$release_ids"
+            fi
+          }
+
           if [[ "$REF_TYPE" == "tag" ]]; then
             echo "release_tag=$REF_NAME" >> "$GITHUB_OUTPUT"
             echo "target_tag=$REF_NAME" >> "$GITHUB_OUTPUT"
             echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
-            # Inspect every matching release: a draft can coexist with a
-            # published sibling after a failed retry, and deleting by tag would
-            # otherwise remove the published release as well.
-            MATCHING_RELEASES="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-              --jq ".[] | select(.tag_name == \"$REF_NAME\") | [.id, .draft] | @tsv")"
-            PUBLISHED_COUNT=0
-            DRAFT_IDS=()
-            while IFS=$'\t' read -r release_id is_draft; do
-              [[ -z "$release_id" ]] && continue
-              if [[ "$is_draft" == "true" ]]; then
-                DRAFT_IDS+=("$release_id")
-              else
-                PUBLISHED_COUNT=$((PUBLISHED_COUNT + 1))
-              fi
-            done <<< "$MATCHING_RELEASES"
-
-            if (( PUBLISHED_COUNT > 0 )); then
-              echo "Release $REF_NAME is already published; nothing to do"
+            # Inspect every release record for this tag. A single published
+            # release wins, even if stale drafts also exist.
+            PUBLISHED_COUNT="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+              --jq "[.[] | select(.tag_name == \"$REF_NAME\" and .draft == false)] | length")"
+            if [[ "$PUBLISHED_COUNT" -gt 0 ]]; then
+              echo "This release is already published; refusing to overwrite it." >&2
               echo "publish_release=false" >> "$GITHUB_OUTPUT"
-            elif (( ${#DRAFT_IDS[@]} > 0 )); then
-              # Remove only stale draft records before the matrix uploads
-              # assets; a published sibling was handled above and is preserved.
-              for release_id in "${DRAFT_IDS[@]}"; do
-                gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$release_id"
-              done
-
-              # Recreate the tag at this run's commit before --verify-tag.
-              if ! gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$REF_NAME"; then
-                if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$REF_NAME" >/dev/null 2>&1; then
-                  echo "Failed to remove stale $REF_NAME tag" >&2
-                  exit 1
-                fi
-              fi
-              gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
-                -f "ref=refs/tags/$REF_NAME" \
-                -f "sha=$SOURCE_SHA"
-
-              gh release create "$REF_NAME" --repo "$GITHUB_REPOSITORY" \
-                --verify-tag --draft --generate-notes
-              echo "publish_release=true" >> "$GITHUB_OUTPUT"
-            else
-              gh release create "$REF_NAME" --repo "$GITHUB_REPOSITORY" \
-                --verify-tag --draft --generate-notes
-              echo "publish_release=true" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
-          else
-            # Stage the new nightly privately. The published nightly stays
-            # available until every asset has uploaded and the release job
-            # swaps the tag below.
-            for id in $(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-              --jq '.[] | select(.tag_name=="nightly-staging") | .id'); do
-              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
-            done
-            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly-staging" || true
 
-            gh release create nightly-staging --repo "$GITHUB_REPOSITORY" \
-              --target "$SOURCE_SHA" --draft --prerelease \
-              --title "Nightly Build ($SOURCE_SHA)" \
-              --notes "Automated nightly build from commit $SOURCE_SHA"
+            delete_draft_releases "$REF_NAME"
+            delete_ref_if_present "$REF_NAME"
+            set_ref "$REF_NAME" "$SOURCE_SHA"
+            gh release create "$REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$REF_NAME" \
+              --generate-notes \
+              --draft \
+              --verify-tag
+            echo "publish_release=true" >> "$GITHUB_OUTPUT"
+          else
             {
               echo "release_tag=nightly-staging"
               echo "target_tag=nightly"
               echo "source_sha=$SOURCE_SHA"
               echo "publish_release=true"
             } >> "$GITHUB_OUTPUT"
+
+            PUBLISHED_NIGHTLY_COUNT="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+              --jq '[.[] | select(.tag_name == "nightly" and .draft == false)] | length')"
+            PUBLISHED_STAGING_COUNT="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+              --jq '[.[] | select(.tag_name == "nightly-staging" and .draft == false)] | length')"
+            if [[ "$PUBLISHED_NIGHTLY_COUNT" -gt 1 || "$PUBLISHED_STAGING_COUNT" -gt 0 ]]; then
+              echo "Ambiguous or unexpected published nightly releases; refusing to continue." >&2
+              exit 1
+            fi
+
+            # Remove only draft leftovers from failed attempts. The published
+            # nightly release and tag remain available until the final swap.
+            delete_draft_releases "nightly-staging"
+            delete_draft_releases "nightly"
+            delete_ref_if_present "nightly-staging"
+            set_ref "nightly-staging" "$SOURCE_SHA"
+            gh release create nightly-staging \
+              --repo "$GITHUB_REPOSITORY" \
+              --title nightly \
+              --generate-notes \
+              --draft \
+              --prerelease \
+              --verify-tag
           fi
 
   build:
@@ -205,9 +231,10 @@ jobs:
             dist/jyc-plugins.tar.gz
 
       # Move the fully uploaded staging draft onto the public nightly tag only
-      # after every matrix and plugin upload has succeeded. Keep the previous
-      # nightly release on a per-attempt backup tag until the new release is
-      # verified public; restore that release if the swap cannot complete.
+      # after every matrix and plugin upload has succeeded. The underlying tag
+      # must move too: release edits do not retarget an existing tag. Keep the
+      # previous release and tag SHA on a per-attempt backup until the new
+      # public nightly has been verified.
       - name: Replace nightly release
         if: needs.prepare-release.outputs.publish_release == 'true' && needs.prepare-release.outputs.target_tag == 'nightly'
         env:
@@ -218,64 +245,134 @@ jobs:
           set -euo pipefail
           TARGET_TAG="nightly"
           BACKUP_TAG="nightly-previous-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-
-          release_record() {
-            local tag_name=$1
-            gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-              --jq "[.[] | select(.tag_name == \"$tag_name\")][0] | if . == null then empty else [.id, .target_commitish, .draft] | @tsv end"
-          }
-
-          STAGING_RECORD="$(release_record "$RELEASE_TAG")"
-          if [[ -z "$STAGING_RECORD" ]]; then
-            echo "Missing staging release $RELEASE_TAG" >&2
-            exit 1
-          fi
-          IFS=$'\t' read -r STAGING_RELEASE_ID STAGING_TARGET STAGING_DRAFT <<< "$STAGING_RECORD"
-          if [[ -z "$STAGING_RELEASE_ID" || "$STAGING_DRAFT" != "true" ]]; then
-            echo "Staging release $RELEASE_TAG is missing or not a draft" >&2
-            exit 1
-          fi
-
-          OLD_RECORD="$(release_record "$TARGET_TAG")"
+          COMMITTED=false
           OLD_RELEASE_ID=""
           OLD_TARGET=""
-          OLD_DRAFT=""
-          if [[ -n "$OLD_RECORD" ]]; then
-            IFS=$'\t' read -r OLD_RELEASE_ID OLD_TARGET OLD_DRAFT <<< "$OLD_RECORD"
+          OLD_REF_SHA=""
+
+          release_records() {
+            local tag_name=$1
+            local is_draft=$2
+            gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+              --jq ".[] | select(.tag_name == \"$tag_name\" and .draft == $is_draft) | [.id, .target_commitish] | @tsv"
+          }
+
+          record_count() {
+            local records=$1
+            local count=0
+            local record
+            while IFS= read -r record; do
+              [[ -n "$record" ]] && count=$((count + 1))
+            done <<< "$records"
+            echo "$count"
+          }
+
+          set_ref() {
+            local tag_name=$1
+            local sha=$2
+            local ref_sha
+            if ref_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag_name" --jq '.object.sha' 2>/dev/null)"; then
+              gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag_name" \
+                -f "sha=$sha" \
+                -F force=true
+            else
+              gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
+                -f "ref=refs/tags/$tag_name" \
+                -f "sha=$sha"
+            fi
+          }
+
+          rollback() {
+            local status=$?
+            trap - ERR
+            if [[ "$COMMITTED" == "true" ]]; then
+              exit "$status"
+            fi
+            echo "Nightly swap failed; rolling back the previous release" >&2
+            if [[ -n "$OLD_RELEASE_ID" ]]; then
+              gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$OLD_RELEASE_ID" \
+                -f "tag_name=$TARGET_TAG" \
+                -f "target_commitish=$OLD_TARGET" \
+                -F "draft=false" \
+                -F "prerelease=true" || \
+                echo "Warning: failed to restore release $OLD_RELEASE_ID to $TARGET_TAG" >&2
+            fi
+            if [[ -n "$OLD_REF_SHA" ]]; then
+              gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TARGET_TAG" \
+                -f "sha=$OLD_REF_SHA" \
+                -F force=true || \
+                echo "Warning: failed to restore $TARGET_TAG to $OLD_REF_SHA" >&2
+            fi
+            exit "$status"
+          }
+          trap rollback ERR
+
+          STAGING_RECORDS="$(release_records "$RELEASE_TAG" true)"
+          if [[ "$(record_count "$STAGING_RECORDS")" -ne 1 ]]; then
+            echo "Expected exactly one draft staging release for $RELEASE_TAG" >&2
+            exit 1
+          fi
+          IFS=$'\t' read -r STAGING_RELEASE_ID STAGING_TARGET <<< "$STAGING_RECORDS"
+          if [[ -z "$STAGING_RELEASE_ID" || -z "$STAGING_TARGET" ]]; then
+            echo "Incomplete staging release record for $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+          OLD_RECORDS="$(release_records "$TARGET_TAG" false)"
+          OLD_COUNT="$(record_count "$OLD_RECORDS")"
+          if [[ "$OLD_COUNT" -gt 1 ]]; then
+            echo "Ambiguous published $TARGET_TAG releases; refusing to swap" >&2
+            exit 1
+          elif [[ "$OLD_COUNT" -eq 1 ]]; then
+            IFS=$'\t' read -r OLD_RELEASE_ID OLD_TARGET <<< "$OLD_RECORDS"
+            if [[ -z "$OLD_RELEASE_ID" || -z "$OLD_TARGET" ]]; then
+              echo "Incomplete previous $TARGET_TAG release record" >&2
+              exit 1
+            fi
+            if ! OLD_REF_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TARGET_TAG" --jq '.object.sha' 2>/dev/null)"; then
+              echo "Published release $OLD_RELEASE_ID has no $TARGET_TAG tag ref; refusing to swap" >&2
+              exit 1
+            fi
+
+            set_ref "$BACKUP_TAG" "$OLD_REF_SHA"
             gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$OLD_RELEASE_ID" \
               -f "tag_name=$BACKUP_TAG" \
               -F "draft=false" \
               -F "prerelease=true"
           fi
 
-          if ! gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$STAGING_RELEASE_ID" \
+          set_ref "$TARGET_TAG" "$SOURCE_SHA"
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$STAGING_RELEASE_ID" \
             -f "tag_name=$TARGET_TAG" \
             -f "target_commitish=$SOURCE_SHA" \
             -F "draft=false" \
-            -F "prerelease=true"; then
-            if [[ -n "$OLD_RELEASE_ID" ]]; then
-              gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$OLD_RELEASE_ID" \
-                -f "tag_name=$TARGET_TAG" \
-                -f "target_commitish=$OLD_TARGET" \
-                -F "draft=$OLD_DRAFT" \
-                -F "prerelease=true"
-              RESTORED_RECORD="$(release_record "$TARGET_TAG")"
-              IFS=$'\t' read -r RESTORED_ID RESTORED_TARGET RESTORED_DRAFT <<< "$RESTORED_RECORD"
-              if [[ "$RESTORED_ID" != "$OLD_RELEASE_ID" || "$RESTORED_DRAFT" != "$OLD_DRAFT" ]]; then
-                echo "Failed to restore the previous nightly release; recover release $OLD_RELEASE_ID from tag $BACKUP_TAG" >&2
-                exit 1
-              fi
-              gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$BACKUP_TAG"
-            fi
-            echo "Failed to publish staging release $RELEASE_TAG" >&2
+            -F "prerelease=true"
+          COMMITTED=true
+          trap - ERR
+
+          NEW_RECORDS="$(release_records "$TARGET_TAG" false)"
+          if [[ "$(record_count "$NEW_RECORDS")" -ne 1 ]]; then
+            echo "New $TARGET_TAG release failed verification" >&2
+            exit 1
+          fi
+          IFS=$'\t' read -r NEW_RELEASE_ID NEW_TARGET <<< "$NEW_RECORDS"
+          if ! NEW_REF_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TARGET_TAG" --jq '.object.sha' 2>/dev/null)"; then
+            echo "New $TARGET_TAG release has no tag ref" >&2
+            exit 1
+          fi
+          if [[ "$NEW_RELEASE_ID" != "$STAGING_RELEASE_ID" || \
+                "$NEW_TARGET" != "$SOURCE_SHA" || \
+                "$NEW_REF_SHA" != "$SOURCE_SHA" ]]; then
+            echo "New $TARGET_TAG release metadata or tag SHA failed verification" >&2
             exit 1
           fi
 
-          # The swap has committed. Remove the previous release only after the
-          # new public nightly exists; staging-tag cleanup below is optional.
+          # Cleanup is best-effort after the new public nightly is verified.
           if [[ -n "$OLD_RELEASE_ID" ]]; then
-            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$OLD_RELEASE_ID"
-            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$BACKUP_TAG"
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$OLD_RELEASE_ID" || \
+              echo "Warning: failed to delete previous release $OLD_RELEASE_ID" >&2
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$BACKUP_TAG" || \
+              echo "Warning: failed to delete backup tag $BACKUP_TAG" >&2
           fi
           gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" || true
 

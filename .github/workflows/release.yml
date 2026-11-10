@@ -8,178 +8,223 @@ on:
   workflow_dispatch:
 
 # Serialize runs per ref type: rapid pushes to main must not race the nightly
-# delete/recreate, and a version-tag release should not block on (or be
-# blocked by) a nightly build.
+# release swap; the stable tag group prevents concurrent tag releases.
 concurrency:
   group: release-${{ github.ref_type }}
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
+  JYC_VERSION: 0.9.0
 
 jobs:
   prepare-release:
-    runs-on: ubuntu-latest
-    outputs:
-      release_tag: ${{ steps.release.outputs.release_tag }}
-      publish_release: ${{ steps.release.outputs.publish_release }}
+    name: Prepare draft release
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.JYC_RELEASE_PAT }}
+      SOURCE_SHA: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+      TARGET_TAG: nightly
+      STAGING_TAG: nightly-staging
+    outputs:
+      source_sha: ${{ steps.prepare.outputs.source_sha }}
+      release_title: ${{ steps.prepare.outputs.release_title }}
+      release_body: ${{ steps.prepare.outputs.release_body }}
+      release_tag: ${{ steps.prepare.outputs.release_tag }}
     steps:
-      # Create (or refresh) the release target before the matrix starts. Build
-      # jobs upload their archives directly as release assets, so Release no
-      # longer depends on Actions artifact storage.
-      - name: Prepare release target
-        id: release
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
-          REF_NAME: ${{ github.ref_name }}
-          REF_TYPE: ${{ github.ref_type }}
-          SOURCE_SHA: ${{ github.sha }}
+      - name: Prepare release metadata and draft
+        id: prepare
         run: |
           set -euo pipefail
-          if [[ "$REF_TYPE" == "tag" ]]; then
-            echo "release_tag=$REF_NAME" >> "$GITHUB_OUTPUT"
-            if gh release view "$REF_NAME" --repo "$GITHUB_REPOSITORY" \
-                --json isDraft --jq '.isDraft' 2>/dev/null | grep -qx 'false'; then
-              echo "publish_release=false" >> "$GITHUB_OUTPUT"
-            else
-              if ! gh release view "$REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-                gh release create "$REF_NAME" --repo "$GITHUB_REPOSITORY" \
-                  --verify-tag --draft --generate-notes
-              fi
-              echo "publish_release=true" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            # Delete ALL existing nightly releases (including stale drafts) and
-            # the tag, so the release can be recreated without hitting
-            # "tag_name already_exists". gh release delete only removes the
-            # single release the tag resolves to, leaving duplicate drafts.
-            for id in $(gh api repos/${{ github.repository }}/releases \
-              --jq '.[] | select(.tag_name=="nightly") | .id'); do
-              gh api -X DELETE repos/${{ github.repository }}/releases/"$id" || true
-            done
-            gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/nightly || true
 
-            gh release create nightly --repo "$GITHUB_REPOSITORY" \
-              --target "$SOURCE_SHA" --draft --prerelease \
-              --title "Nightly Build ($SOURCE_SHA)" \
-              --notes "Automated nightly build from commit $SOURCE_SHA"
-            {
-              echo "release_tag=nightly"
-              echo "publish_release=true"
-            } >> "$GITHUB_OUTPUT"
+          delete_ref() {
+            local tag="$1"
+            if gh api "repos/${{ github.repository }}/git/ref/tags/$tag" >/dev/null 2>&1; then
+              gh api -X DELETE "repos/${{ github.repository }}/git/ref/tags/$tag"
+            fi
+          }
+
+          if [[ "${{ github.ref_type }}" == 'tag' ]]; then
+            TAG="${{ github.ref_name }}"
+            RELEASE_TAG="$TAG"
+            TITLE="Version $TAG"
+            BODY="Automated release for $TAG."
+
+            # Published version releases are immutable. A stale draft from an
+            # earlier failed run may be replaced; a published one may not.
+            if IS_DRAFT="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null)"; then
+              if [[ "$IS_DRAFT" != "true" ]]; then
+                echo "Release $TAG already exists; refusing to overwrite a published version release." >&2
+                exit 1
+              fi
+              gh release delete "$TAG" --yes
+            fi
+            delete_ref "$TAG"
+          else
+            TAG="$TARGET_TAG"
+            RELEASE_TAG="$STAGING_TAG"
+            TITLE="Nightly"
+            BODY="Automated nightly build from main."
+
+            # Keep the published nightly available while the new build is
+            # staged under a private draft tag.
+            if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+              gh release delete "$RELEASE_TAG" --yes
+            fi
+            delete_ref "$RELEASE_TAG"
           fi
 
+          PRERELEASE_FLAG=()
+          if [[ "$TAG" == "$TARGET_TAG" ]]; then
+            PRERELEASE_FLAG=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" \
+            --target "$SOURCE_SHA" \
+            --title "$TITLE" \
+            --notes "$BODY" \
+            --draft \
+            "${PRERELEASE_FLAG[@]}"
+
+          {
+            echo "source_sha=$SOURCE_SHA"
+            echo "release_title=$TITLE"
+            echo "release_body=$BODY"
+            echo "release_tag=$RELEASE_TAG"
+          } >> "$GITHUB_OUTPUT"
+
   build:
+    name: Build and upload (${{ matrix.runner }}, ${{ matrix.target }})
     needs: prepare-release
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
+          - runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-          - os: macos-latest
+          - runner: macos-latest
             target: aarch64-apple-darwin
-
+    env:
+      GITHUB_TOKEN: ${{ secrets.JYC_RELEASE_PAT }}
+      SOURCE_SHA: ${{ needs.prepare-release.outputs.source_sha }}
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
     steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Checkout repository
+        uses: actions/checkout@v6
         with:
-          target: ${{ matrix.target }}
-          cache: false
+          ref: ${{ env.SOURCE_SHA }}
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          # Include runner OS in cache key so different Ubuntu versions
-          # (e.g., ubuntu-latest in CI vs ubuntu-22.04 here) don't poison
-          # each other's GLIBC-linked build artifacts.
-          prefix-key: "v0-rust-${{ matrix.os }}"
+          targets: ${{ matrix.target }}
 
-      - name: Install protoc (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
+          cache-target-dir: false
 
-      - name: Install protoc (macOS)
-        if: runner.os == 'macOS'
-        run: brew install protobuf
+      - name: Build release binary
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
-      - name: Build release binaries
-        # jyc: agent core + TUI; jyc-pipe: peripheral channel pipe process
-        # (pipe process split — docs/architecture/pipe-split.md).
-        #
-        # Two invocations on purpose: feature resolution is per-invocation, and
-        # building both packages at once unifies their reqwest features, which
-        # links the pipe's rustls backend into the hub binary. The hub uses
-        # native-tls, the pipe keeps reqwest's rustls default.
+      - name: Package archive
+        shell: bash
         run: |
-          cargo build --release -p jyc-cli --target ${{ matrix.target }}
-          cargo build --release -p jyc-channels --target ${{ matrix.target }}
+          set -euo pipefail
+          if [[ "${{ matrix.runner }}" == macos-* ]]; then
+            PLATFORM="aarch64-apple-darwin"
+          else
+            PLATFORM="${{ matrix.target }}"
+          fi
+          ARCHIVE_NAME="jyc-${{ env.JYC_VERSION }}-${PLATFORM}.tar.gz"
+          CHECKSUM_NAME="${ARCHIVE_NAME}.sha256"
+          tar -C "target/${{ matrix.target }}/release" -czf "$ARCHIVE_NAME" jyc
+          shasum -a 256 "$ARCHIVE_NAME" > "$CHECKSUM_NAME"
+          echo "ARCHIVE_NAME=$ARCHIVE_NAME" >> "$GITHUB_ENV"
+          echo "CHECKSUM_NAME=$CHECKSUM_NAME" >> "$GITHUB_ENV"
 
-      - name: Package binaries
-        run: |
-          mkdir -p dist
-          tar -C target/${{ matrix.target }}/release -czf dist/jyc-${{ matrix.target }}.tar.gz jyc jyc-pipe
+      - name: Upload archive directly to release draft
+        run: gh release upload "$RELEASE_TAG" "$ARCHIVE_NAME" "$CHECKSUM_NAME"
 
-      - name: Upload binaries to release
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
-          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
-        run: |
-          gh release upload "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --clobber \
-            "dist/jyc-${{ matrix.target }}.tar.gz"
-
-  release:
-    needs: [prepare-release, build]
-    runs-on: ubuntu-latest
+  plugin:
+    name: Build and upload plugin archive
+    needs: prepare-release
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.JYC_RELEASE_PAT }}
+      SOURCE_SHA: ${{ needs.prepare-release.outputs.source_sha }}
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.SOURCE_SHA }}
 
-      # The plugin archive: the user-editable collections this repo ships, in
-      # the layout `jyc plugins install` expects at an archive (or directory)
-      # root. Built here rather than in `build`, so the matrix does not produce
-      # it once per target. sync-gitee-release.yml mirrors it as well.
-      - name: Package plugin archive
-        run: |
-          mkdir -p dist
-          tar -czf dist/jyc-plugins.tar.gz skills subagents hooks templates
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Upload plugin archive to release
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
-          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
-        run: |
-          gh release upload "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --clobber \
-            dist/jyc-plugins.tar.gz
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
+          cache-target-dir: false
 
-      # Publishing (rather than merely uploading assets) is what triggers the
-      # release:published event consumed by sync-gitee-release.yml.
-      - name: Publish prepared release
-        if: needs.prepare-release.outputs.publish_release == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
-          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+      - name: Build plugin archive
+        run: cargo xtask dist-plugin
+
+      - name: Upload plugin archive directly to release draft
+        run: gh release upload "$RELEASE_TAG" target/dist/jyc-plugin.tar.gz
+
+  release:
+    name: Publish release
+    needs: [prepare-release, build, plugin]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.JYC_RELEASE_PAT }}
+      SOURCE_SHA: ${{ needs.prepare-release.outputs.source_sha }}
+      RELEASE_TITLE: ${{ needs.prepare-release.outputs.release_title }}
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+      TARGET_TAG: nightly
+    steps:
+      - name: Publish staged release
         run: |
-          gh release edit "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --draft=false
+          set -euo pipefail
+
+          delete_ref() {
+            local tag="$1"
+            if gh api "repos/${{ github.repository }}/git/ref/tags/$tag" >/dev/null 2>&1; then
+              gh api -X DELETE "repos/${{ github.repository }}/git/ref/tags/$tag"
+            fi
+          }
+
+          if [[ "$RELEASE_TAG" == "$TARGET_TAG" ]]; then
+            gh release edit "$RELEASE_TAG" --draft=false
+          else
+            # Every build job has uploaded successfully by this point. Replace
+            # the published nightly only now so a failed build never removes
+            # the last downloadable nightly.
+            if gh release view "$TARGET_TAG" >/dev/null 2>&1; then
+              gh release delete "$TARGET_TAG" --yes
+            fi
+            delete_ref "$TARGET_TAG"
+            gh release edit "$RELEASE_TAG" \
+              --tag "$TARGET_TAG" \
+              --title "$RELEASE_TITLE" \
+              --draft=false \
+              --prerelease
+          fi
 
   prune-artifacts:
-    # Keep Actions artifacts for the latest five release tags. Release binaries
-    # are GitHub Release assets, so this now applies to Docker build records;
-    # GitHub Release assets are separate.
-    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    name: Prune old Actions artifacts
     needs: release
     permissions:
       actions: write

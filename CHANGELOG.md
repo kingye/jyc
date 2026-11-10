@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-10
+
 ### Changed
 
 - Selecting a topic from the TUI topic explorer keeps the explorer pane open after the switch (#1084)

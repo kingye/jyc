@@ -83,18 +83,6 @@ jobs:
             fi
           }
 
-          find_draft_release_id() {
-            local tag_name=$1
-            local release_ids
-            release_ids="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-              --jq ".[] | select(.tag_name == \"$tag_name\" and .draft == true) | .id")"
-            if [[ "$(wc -l <<< "$release_ids")" -ne 1 || -z "$release_ids" ]]; then
-              echo "Expected exactly one $tag_name draft release" >&2
-              return 1
-            fi
-            printf '%s\n' "$release_ids"
-          }
-
           if [[ "$REF_TYPE" == "tag" ]]; then
             echo "release_tag=$REF_NAME" >> "$GITHUB_OUTPUT"
             echo "target_tag=$REF_NAME" >> "$GITHUB_OUTPUT"
@@ -120,13 +108,15 @@ jobs:
             delete_draft_releases "$REF_NAME"
             delete_ref_if_present "$REF_NAME"
             set_ref "$REF_NAME" "$SOURCE_SHA"
-            gh release create "$REF_NAME" \
-              --repo "$GITHUB_REPOSITORY" \
-              --title "$REF_NAME" \
-              --generate-notes \
-              --draft \
-              --verify-tag
-            RELEASE_ID="$(find_draft_release_id "$REF_NAME")"
+            # Create the draft via the Releases API. Tag-based `gh release
+            # create/view` cannot reliably resolve a draft-only tag, so all
+            # version-tag state is keyed by numeric release ID from here on.
+            RELEASE_ID="$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" \
+              -f "tag_name=$REF_NAME" \
+              -f "target_commitish=$SOURCE_SHA" \
+              -f "name=$REF_NAME" \
+              -f "draft=true" \
+              --jq '.id')"
             {
               echo "publish_release=true"
               echo "release_id=$RELEASE_ID"
@@ -170,14 +160,16 @@ jobs:
             delete_draft_releases "nightly"
             delete_ref_if_present "nightly-staging"
             set_ref "nightly-staging" "$SOURCE_SHA"
-            gh release create nightly-staging \
-              --repo "$GITHUB_REPOSITORY" \
-              --title nightly \
-              --generate-notes \
-              --draft \
-              --prerelease \
-              --verify-tag
-            STAGING_RELEASE_ID="$(find_draft_release_id nightly-staging)"
+            # Create the draft via the Releases API. Tag-based `gh release
+            # create/view` cannot reliably resolve a draft-only tag, so all
+            # staging state is keyed by numeric release ID from here on.
+            STAGING_RELEASE_ID="$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" \
+              -f "tag_name=nightly-staging" \
+              -f "target_commitish=$SOURCE_SHA" \
+              -f "name=nightly" \
+              -f "draft=true" \
+              -f "prerelease=true" \
+              --jq '.id')"
             gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$STAGING_RELEASE_ID" \
               -f "target_commitish=$SOURCE_SHA"
             echo "release_id=$STAGING_RELEASE_ID" >> "$GITHUB_OUTPUT"

@@ -115,7 +115,7 @@ jobs:
               -f "tag_name=$REF_NAME" \
               -f "target_commitish=$SOURCE_SHA" \
               -f "name=$REF_NAME" \
-              -f "draft=true" \
+              -F draft=true \
               --jq '.id')"
             {
               echo "publish_release=true"
@@ -167,11 +167,9 @@ jobs:
               -f "tag_name=nightly-staging" \
               -f "target_commitish=$SOURCE_SHA" \
               -f "name=nightly" \
-              -f "draft=true" \
-              -f "prerelease=true" \
+              -F draft=true \
+              -F prerelease=true \
               --jq '.id')"
-            gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$STAGING_RELEASE_ID" \
-              -f "target_commitish=$SOURCE_SHA"
             echo "release_id=$STAGING_RELEASE_ID" >> "$GITHUB_OUTPUT"
           fi
 
@@ -482,11 +480,13 @@ jobs:
         if: needs.prepare-release.outputs.publish_release == 'true' && needs.prepare-release.outputs.target_tag != 'nightly'
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
-          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
         run: |
-          gh release edit "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --draft=false
+          # Publish by numeric release ID: tag-based `gh release edit` cannot
+          # reliably resolve a draft-only tag (the same limitation that moved
+          # draft creation to the Releases API in prepare-release).
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            -F "draft=false"
 
   prune-artifacts:
     # Keep Actions artifacts for the latest five release tags. Release binaries

@@ -2,6 +2,7 @@
 
 ### Changed
 
+- Selecting a topic from the TUI topic explorer keeps the explorer pane open after the switch (#1084)
 - Opening a TUI chat now starts in zen mode with the topic info, explorer, and activity panes hidden; exiting zen restores the standard chat layout (#1080)
 - When a chat turn is processing and later messages are still queued, the minimal TUI progress line appends a muted ` | ⋮N` queue-count suffix; the row is unchanged when the queue is empty (#1080)
 - Darken the TUI chat user-message background to `#393552`; the compact chat status chip now labels turn input/cache hit rate and turn reasoning/output counts (`↑input/hit%`, `↓reasoning/output →latency/calls`)

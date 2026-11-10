@@ -25,6 +25,7 @@ jobs:
       target_tag: ${{ steps.release.outputs.target_tag }}
       source_sha: ${{ steps.release.outputs.source_sha }}
       publish_release: ${{ steps.release.outputs.publish_release }}
+      release_id: ${{ steps.release.outputs.release_id }}
     permissions:
       contents: write
     steps:
@@ -82,6 +83,18 @@ jobs:
             fi
           }
 
+          find_draft_release_id() {
+            local tag_name=$1
+            local release_ids
+            release_ids="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+              --jq ".[] | select(.tag_name == \"$tag_name\" and .draft == true) | .id")"
+            if [[ "$(wc -l <<< "$release_ids")" -ne 1 || -z "$release_ids" ]]; then
+              echo "Expected exactly one $tag_name draft release" >&2
+              return 1
+            fi
+            printf '%s\n' "$release_ids"
+          }
+
           if [[ "$REF_TYPE" == "tag" ]]; then
             echo "release_tag=$REF_NAME" >> "$GITHUB_OUTPUT"
             echo "target_tag=$REF_NAME" >> "$GITHUB_OUTPUT"
@@ -92,6 +105,13 @@ jobs:
             PUBLISHED_COUNT="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
               --jq ".[] | select(.tag_name == \"$REF_NAME\" and .draft == false) | .id" | wc -l)"
             if [[ "$PUBLISHED_COUNT" -gt 0 ]]; then
+              EXISTING_RELEASE_ID="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+                --jq ".[] | select(.tag_name == \"$REF_NAME\" and .draft == false) | .id")"
+              if [[ "$(wc -l <<< "$EXISTING_RELEASE_ID")" -ne 1 || -z "$EXISTING_RELEASE_ID" ]]; then
+                echo "Ambiguous published $REF_NAME releases; refusing to continue." >&2
+                exit 1
+              fi
+              echo "release_id=$EXISTING_RELEASE_ID" >> "$GITHUB_OUTPUT"
               echo "This release is already published; refusing to overwrite it." >&2
               echo "publish_release=false" >> "$GITHUB_OUTPUT"
               exit 0
@@ -106,7 +126,11 @@ jobs:
               --generate-notes \
               --draft \
               --verify-tag
-            echo "publish_release=true" >> "$GITHUB_OUTPUT"
+            RELEASE_ID="$(find_draft_release_id "$REF_NAME")"
+            {
+              echo "publish_release=true"
+              echo "release_id=$RELEASE_ID"
+            } >> "$GITHUB_OUTPUT"
           else
             {
               echo "release_tag=nightly-staging"
@@ -153,14 +177,10 @@ jobs:
               --draft \
               --prerelease \
               --verify-tag
-            STAGING_RELEASE_ID="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-              --jq '.[] | select(.tag_name == "nightly-staging" and .draft == true) | .id')"
-            if [[ -z "$STAGING_RELEASE_ID" ]]; then
-              echo "Failed to find the new nightly-staging draft release" >&2
-              exit 1
-            fi
+            STAGING_RELEASE_ID="$(find_draft_release_id nightly-staging)"
             gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$STAGING_RELEASE_ID" \
               -f "target_commitish=$SOURCE_SHA"
+            echo "release_id=$STAGING_RELEASE_ID" >> "$GITHUB_OUTPUT"
           fi
 
   build:
@@ -221,12 +241,30 @@ jobs:
       - name: Upload binaries to release
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
-          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
         run: |
-          gh release upload "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --clobber \
-            "dist/jyc-${{ matrix.target }}.tar.gz"
+          upload_asset() {
+            local file=$1
+            local name=$2
+            local asset_id
+            asset_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --paginate \
+              --jq ".[] | select(.name == \"$name\") | .id")"
+            if [[ -n "$asset_id" ]]; then
+              if [[ "$(wc -l <<< "$asset_id")" -ne 1 ]]; then
+                echo "Ambiguous existing asset $name" >&2
+                exit 1
+              fi
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+            fi
+            gh api -X POST \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'Content-Type: application/gzip' \
+              --input "$file" \
+              "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$name" \
+              --jq '.browser_download_url'
+          }
+
+          upload_asset "dist/jyc-${{ matrix.target }}.tar.gz" "jyc-${{ matrix.target }}.tar.gz"
 
   release:
     needs: [prepare-release, build]
@@ -248,12 +286,30 @@ jobs:
       - name: Upload plugin archive to release
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
-          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
         run: |
-          gh release upload "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --clobber \
-            dist/jyc-plugins.tar.gz
+          upload_asset() {
+            local file=$1
+            local name=$2
+            local asset_id
+            asset_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --paginate \
+              --jq ".[] | select(.name == \"$name\") | .id")"
+            if [[ -n "$asset_id" ]]; then
+              if [[ "$(wc -l <<< "$asset_id")" -ne 1 ]]; then
+                echo "Ambiguous existing asset $name" >&2
+                exit 1
+              fi
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+            fi
+            gh api -X POST \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'Content-Type: application/gzip' \
+              --input "$file" \
+              "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$name" \
+              --jq '.browser_download_url'
+          }
+
+          upload_asset dist/jyc-plugins.tar.gz jyc-plugins.tar.gz
 
       # Move the fully uploaded staging draft onto the public nightly tag only
       # after every matrix and plugin upload has succeeded. The underlying tag

@@ -243,6 +243,8 @@ jobs:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
           RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
         run: |
+          UPLOAD_URL="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq -r '.upload_url')"
+          UPLOAD_URL="${UPLOAD_URL%%\{*}"
           upload_asset() {
             local file=$1
             local name=$2
@@ -260,7 +262,7 @@ jobs:
               -H 'Accept: application/vnd.github+json' \
               -H 'Content-Type: application/gzip' \
               --input "$file" \
-              "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$name" \
+              "$UPLOAD_URL?name=$name" \
               --jq '.browser_download_url'
           }
 
@@ -288,6 +290,8 @@ jobs:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
           RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
         run: |
+          UPLOAD_URL="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq -r '.upload_url')"
+          UPLOAD_URL="${UPLOAD_URL%%\{*}"
           upload_asset() {
             local file=$1
             local name=$2
@@ -305,7 +309,7 @@ jobs:
               -H 'Accept: application/vnd.github+json' \
               -H 'Content-Type: application/gzip' \
               --input "$file" \
-              "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$name" \
+              "$UPLOAD_URL?name=$name" \
               --jq '.browser_download_url'
           }
 

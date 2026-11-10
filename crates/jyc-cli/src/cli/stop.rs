@@ -5,11 +5,12 @@ use std::time::Duration;
 /// Arguments for the `jyc stop` command.
 #[derive(Debug, clap::Args)]
 pub struct StopArgs {
-    /// Force stop (SIGKILL instead of SIGTERM)
+    /// Force stop (SIGKILL immediately instead of SIGTERM first)
     #[arg(long)]
     pub force: bool,
-    /// Grace period (seconds) to wait for the process to exit after
-    /// the signal. Defaults to 10.
+    /// Seconds to wait for exit after each signal. Defaults to 10.
+    /// Without --force, a process still running when the first wait expires
+    /// is sent SIGKILL.
     #[arg(long)]
     pub wait: Option<u64>,
 }
@@ -41,59 +42,155 @@ pub async fn run(args: &StopArgs, data_dir: &Path) -> Result<()> {
     }
 
     // Determine signal
-    let signal = if args.force {
-        libc::SIGKILL
-    } else {
-        libc::SIGTERM
-    };
-
-    // Send the signal
-    let signal_name = if args.force { "SIGKILL" } else { "SIGTERM" };
-    tracing::info!(pid, signal = %signal_name, "Sending signal to jyc serve");
-
-    let ret = unsafe { libc::kill(pid as i32, signal) };
-    if ret != 0 {
-        let err = std::io::Error::last_os_error();
-        anyhow::bail!("Failed to send {signal_name} to PID {pid}: {err}");
-    }
-
-    // Wait for process to exit (poll every 200ms, up to --wait seconds)
     let wait_secs = args.wait.unwrap_or(10);
-    let deadline = std::time::Instant::now() + Duration::from_secs(wait_secs);
-    let mut exited = false;
-    while std::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        if !pid_exists(pid) {
-            exited = true;
-            break;
-        }
-    }
+    let (signal, signal_name) = if args.force {
+        (libc::SIGKILL, "SIGKILL")
+    } else {
+        (libc::SIGTERM, "SIGTERM")
+    };
+    let target = StopTarget::new(pid);
 
-    // Remove PID file
-    tokio::fs::remove_file(&pid_path).await.ok();
-
-    if exited {
-        tracing::info!(pid, "jyc serve stopped");
-        println!("jyc serve stopped (PID {pid})");
-        Ok(())
-    } else if !args.force {
-        // Process didn't exit in time, suggest --force
+    tracing::info!(pid, signal = %signal_name, "Sending signal to jyc serve");
+    let mut exited = match send_signal(&target, signal, signal_name)? {
+        SignalOutcome::AlreadyExited => true,
+        SignalOutcome::Sent => wait_for_exit(&target, wait_secs).await,
+    };
+    let mut escalated = false;
+    if !exited && !args.force {
         tracing::warn!(
             pid,
             wait_secs,
-            "Process did not exit after SIGTERM within the grace period"
+            "Process did not exit after SIGTERM within the grace period; sending SIGKILL"
         );
-        println!(
-            "jyc serve (PID {pid}) did not stop within {wait_secs} seconds after SIGTERM.\n\
-             Use `jyc stop --force` to force kill."
-        );
-        Ok(())
-    } else {
-        // SIGKILL was sent but process still didn't exit (shouldn't happen)
-        tracing::warn!(pid, "Process still alive after SIGKILL");
-        println!("Warning: PID {pid} still appears to be running after SIGKILL.");
-        Ok(())
+        escalated = true;
+        exited = match send_signal(&target, libc::SIGKILL, "SIGKILL")? {
+            SignalOutcome::AlreadyExited => true,
+            SignalOutcome::Sent => wait_for_exit(&target, wait_secs).await,
+        };
     }
+
+    if !exited {
+        anyhow::bail!("PID {pid} still appears to be running after SIGKILL");
+    }
+
+    // Remove PID file only after exit is confirmed, so a failed stop can be retried.
+    if let Err(err) = tokio::fs::remove_file(&pid_path).await
+        && err.kind() != std::io::ErrorKind::NotFound
+    {
+        anyhow::bail!("Failed to remove PID file at {}: {err}", pid_path.display());
+    }
+
+    tracing::info!(pid, escalated, "jyc serve stopped");
+    if escalated {
+        println!("jyc serve stopped (PID {pid}) after SIGKILL escalation");
+    } else {
+        println!("jyc serve stopped (PID {pid})");
+    }
+    Ok(())
+}
+
+enum SignalOutcome {
+    Sent,
+    AlreadyExited,
+}
+
+/// The process identified by the PID file, optionally pinned by a Linux pidfd.
+///
+/// A pidfd protects the delayed SIGKILL from PID reuse. On systems where it is
+/// unavailable, raw-PID signaling remains and cannot fully rule out that race.
+struct StopTarget {
+    pid: u32,
+    pidfd: Option<libc::c_int>,
+}
+
+impl StopTarget {
+    fn new(pid: u32) -> Self {
+        Self {
+            pid,
+            pidfd: open_pidfd(pid),
+        }
+    }
+}
+
+impl Drop for StopTarget {
+    fn drop(&mut self) {
+        if let Some(fd) = self.pidfd.take() {
+            unsafe {
+                libc::close(fd);
+            }
+        }
+    }
+}
+
+fn send_signal(
+    target: &StopTarget,
+    signal: libc::c_int,
+    signal_name: &str,
+) -> Result<SignalOutcome> {
+    #[cfg(target_os = "linux")]
+    if let Some(fd) = target.pidfd {
+        let ret = unsafe { libc::syscall(libc::SYS_pidfd_send_signal, fd, signal, 0, 0) };
+        if ret == 0 {
+            return Ok(SignalOutcome::Sent);
+        }
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(SignalOutcome::AlreadyExited);
+        }
+        if err.raw_os_error() != Some(libc::ENOSYS) {
+            anyhow::bail!("Failed to send {signal_name} to PID {}: {err}", target.pid);
+        }
+    }
+
+    let ret = unsafe { libc::kill(target.pid as i32, signal) };
+    if ret == 0 {
+        return Ok(SignalOutcome::Sent);
+    }
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(SignalOutcome::AlreadyExited);
+    }
+    anyhow::bail!("Failed to send {signal_name} to PID {}: {err}", target.pid);
+}
+
+#[cfg(target_os = "linux")]
+fn open_pidfd(pid: u32) -> Option<libc::c_int> {
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0u32) };
+    if fd >= 0 {
+        Some(fd as libc::c_int)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_pidfd(_pid: u32) -> Option<libc::c_int> {
+    None
+}
+
+async fn wait_for_exit(target: &StopTarget, wait_secs: u64) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(wait_secs);
+    while std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        if target_exited(target) {
+            return true;
+        }
+    }
+    false
+}
+
+fn target_exited(target: &StopTarget) -> bool {
+    #[cfg(target_os = "linux")]
+    if let Some(fd) = target.pidfd {
+        let mut pollfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ret = unsafe { libc::poll(&mut pollfd, 1, 0) };
+        return ret != 0 && pollfd.revents & (libc::POLLIN | libc::POLLERR | libc::POLLHUP) != 0;
+    }
+    !pid_exists(target.pid)
 }
 
 /// Check whether a process with the given PID is running.
@@ -222,6 +319,62 @@ mod tests {
         );
         // Stale PID file should be cleaned up
         assert!(!pid_path.exists(), "stale PID file should be removed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_send_signal_reports_missing_pid_as_already_exited() {
+        let target = StopTarget::new(999999999);
+        assert!(matches!(
+            send_signal(&target, libc::SIGTERM, "SIGTERM"),
+            Ok(SignalOutcome::AlreadyExited)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_stop_escalates_sigterm_to_sigkill() {
+        use std::os::unix::process::ExitStatusExt;
+        use tokio::io::AsyncBufReadExt;
+
+        let tmp = TempDir::new().unwrap();
+        let pid_path = tmp.path().join("jyc.pid");
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("trap '' TERM; echo ready; exec sleep 30")
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn SIGTERM-ignoring child");
+        let pid = child.id().expect("child just spawned");
+
+        let mut stdout = tokio::io::BufReader::new(child.stdout.take().expect("stdout was piped"));
+        let mut ready = String::new();
+        tokio::time::timeout(Duration::from_secs(5), stdout.read_line(&mut ready))
+            .await
+            .expect("ready marker emitted promptly")
+            .expect("read ready marker");
+        assert_eq!(ready.trim_end(), "ready", "trap installed before signaling");
+
+        tokio::fs::write(&pid_path, pid.to_string()).await.unwrap();
+        let waiter = tokio::spawn(async move { child.wait().await.expect("child reaped") });
+
+        let args = StopArgs {
+            force: false,
+            wait: Some(1),
+        };
+        run(&args, tmp.path()).await.expect("stop must escalate");
+
+        assert!(!pid_path.exists(), "PID file removed only after exit");
+        let status = tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("reaper joined promptly")
+            .expect("child reaper completed");
+        assert_eq!(
+            status.signal(),
+            Some(libc::SIGKILL),
+            "the SIGTERM-ignoring child must be killed by SIGKILL"
+        );
     }
 
     #[cfg(unix)]

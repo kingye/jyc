@@ -13,6 +13,7 @@
 ### Fixed
 
 - `jyc stop` treats an exited `jyc serve` as stopped when its PID is still a zombie: Linux reads `/proc/<pid>/stat` and macOS reads `proc_pidinfo` process state, so either platform no longer waits out the full SIGTERM grace period or suggests `jyc stop --force` after the service has already finished shutting down. The same probe now also preserves an `EPERM` result as "still running" instead of misclassifying it as a stale PID
+- `jyc stop` now escalates a `jyc serve` process that ignores SIGTERM to SIGKILL after the `--wait` grace period instead of leaving it running, and removes `jyc.pid` only after exit is confirmed so an unsuccessful stop remains retryable (#1085)
 
 ### Removed
 

@@ -187,7 +187,7 @@ fn opening_explorer_moves_focus_into_it() {
 }
 
 #[tokio::test]
-async fn explorer_switch_sets_pending_hydrate_and_hides_explorer() {
+async fn explorer_switch_keeps_explorer_visible_and_pending_hydrate() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.open_addr = Some("test-addr".to_string());
@@ -236,13 +236,22 @@ async fn explorer_switch_sets_pending_hydrate_and_hides_explorer() {
 
     explorer_open_selected(&mut app);
 
-    assert!(!app.chat.explorer_visible);
+    assert!(app.chat.explorer_visible);
     assert_eq!(app.chat.topic.as_deref(), Some("other"));
     assert_eq!(app.chat.focus, Focus::ChatPane);
     assert_eq!(
         app.pending_hydrate.as_ref(),
         Some(&("local_dev".to_string(), "other".to_string()))
     );
+    assert!(
+        app.chat
+            .zen_saved
+            .as_ref()
+            .is_some_and(|saved| saved.explorer_visible)
+    );
+
+    app.chat.toggle_zen_mode();
+    assert!(app.chat.explorer_visible);
 }
 
 #[test]

@@ -823,6 +823,7 @@ fn explorer_move(app: &mut App, delta: i64) {
 /// Open the topic currently selected in the explorer pane. All channel
 /// types use the unified `/ws/<channel>/<topic>` endpoint.
 fn explorer_open_selected(app: &mut App) {
+    let keep_explorer_visible = app.chat.explorer_visible;
     let info = app.state.as_ref().and_then(|s| {
         let forest = topic_forest(&lineage_of(&s.topics));
         let rows = explorer_rows(&forest);
@@ -839,10 +840,12 @@ fn explorer_open_selected(app: &mut App) {
             // Hydration runs on the async poll loop (sync key handler
             // can't await on InspectClient).
             app.pending_hydrate = Some((channel, name));
-            // Focus on the new topic's input; hide the explorer so
-            // the user lands in the chat, not the pane they used to
-            // pick the topic.
-            app.chat.explorer_visible = false;
+            // `open()` resets the chat to zen defaults; keep the explorer that
+            // initiated the switch visible, including the zen-mode snapshot.
+            app.chat.explorer_visible = keep_explorer_visible;
+            if let Some(saved) = app.chat.zen_saved.as_mut() {
+                saved.explorer_visible = keep_explorer_visible;
+            }
         }
         None => app.set_status("No server address available".to_string()),
     }

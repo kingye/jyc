@@ -18,9 +18,65 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      publish_release: ${{ steps.release.outputs.publish_release }}
+    permissions:
+      contents: write
+    steps:
+      # Create (or refresh) the release target before the matrix starts. Build
+      # jobs upload their archives directly as release assets, so Release no
+      # longer depends on Actions artifact storage.
+      - name: Prepare release target
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF_TYPE" == "tag" ]]; then
+            echo "release_tag=$REF_NAME" >> "$GITHUB_OUTPUT"
+            if gh release view "$REF_NAME" --repo "$GITHUB_REPOSITORY" \
+                --json isDraft --jq '.isDraft' 2>/dev/null | grep -qx 'false'; then
+              echo "publish_release=false" >> "$GITHUB_OUTPUT"
+            else
+              if ! gh release view "$REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+                gh release create "$REF_NAME" --repo "$GITHUB_REPOSITORY" \
+                  --verify-tag --draft --generate-notes
+              fi
+              echo "publish_release=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            # Delete ALL existing nightly releases (including stale drafts) and
+            # the tag, so the release can be recreated without hitting
+            # "tag_name already_exists". gh release delete only removes the
+            # single release the tag resolves to, leaving duplicate drafts.
+            for id in $(gh api repos/${{ github.repository }}/releases \
+              --jq '.[] | select(.tag_name=="nightly") | .id'); do
+              gh api -X DELETE repos/${{ github.repository }}/releases/"$id" || true
+            done
+            gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/nightly || true
+
+            gh release create nightly --repo "$GITHUB_REPOSITORY" \
+              --target "$SOURCE_SHA" --draft --prerelease \
+              --title "Nightly Build ($SOURCE_SHA)" \
+              --notes "Automated nightly build from commit $SOURCE_SHA"
+            {
+              echo "release_tag=nightly"
+              echo "publish_release=true"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: prepare-release
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -70,102 +126,59 @@ jobs:
           mkdir -p dist
           tar -C target/${{ matrix.target }}/release -czf dist/jyc-${{ matrix.target }}.tar.gz jyc jyc-pipe
 
-      - name: Identify artifact retention
-        id: release-tag
+      - name: Upload binaries to release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
         run: |
-          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "retention_days=400" >> "$GITHUB_OUTPUT"
-          else
-            echo "retention_days=1" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: jyc-${{ matrix.target }}
-          path: dist/jyc-${{ matrix.target }}.tar.gz
-          # Main builds only stage binaries for the `release` job; published
-          # archives live on the nightly GitHub Release. Exact semver tag
-          # builds are kept for the latest five releases by the shared prune
-          # workflow.
-          retention-days: ${{ steps.release-tag.outputs.retention_days }}
+          gh release upload "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber \
+            "dist/jyc-${{ matrix.target }}.tar.gz"
 
   release:
-    needs: build
+    needs: [prepare-release, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      # The checkout runs first, and `dist/` is only created after it: a
-      # checkout into a workspace that is not a git repository removes that
-      # workspace's contents, which would otherwise take the downloaded
-      # artifacts with it.
-      - name: Checkout (for the plugin archive contents)
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
 
       # The plugin archive: the user-editable collections this repo ships, in
       # the layout `jyc plugins install` expects at an archive (or directory)
       # root. Built here rather than in `build`, so the matrix does not produce
-      # it once per target. Both publishes below pick it up through
-      # `files: dist/*.tar.gz`, and sync-gitee-release.yml mirrors it as well.
+      # it once per target. sync-gitee-release.yml mirrors it as well.
       - name: Package plugin archive
         run: |
           mkdir -p dist
           tar -czf dist/jyc-plugins.tar.gz skills subagents hooks templates
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v8
-        with:
-          path: dist
-          merge-multiple: true
-
-      # Version-tag push (e.g. `v0.3.14`): publish a stable release with the
-      # tag name. The tag was pushed with the code, so it already exists;
-      # action-gh-release creates the release for it (fails only if the
-      # RELEASE already exists — tags are immutable and never re-published).
-      - name: Publish stable release (version tag)
-        if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          files: dist/*.tar.gz
-          generate_release_notes: true
-          token: ${{ secrets.RELEASE_PAT }}
-
-      # Push to main: refresh the nightly pre-release.
-      # Delete ALL existing nightly releases (including stale drafts) and the
-      # tag, so action-gh-release creates a fresh release without hitting
-      # "tag_name already_exists". gh release delete only removes the single
-      # release the tag resolves to, leaving duplicate drafts behind.
-      - name: Delete existing nightly release
-        if: github.ref_type == 'branch'
-        run: |
-          for id in $(gh api repos/${{ github.repository }}/releases \
-            --jq '.[] | select(.tag_name=="nightly") | .id'); do
-            gh api -X DELETE repos/${{ github.repository }}/releases/"$id" || true
-          done
-          gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/nightly || true
+      - name: Upload plugin archive to release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber \
+            dist/jyc-plugins.tar.gz
 
-      - name: Publish nightly release
-        if: github.ref_type == 'branch'
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: nightly
-          name: Nightly Build (${{ github.sha }})
-          prerelease: true
-          files: dist/*.tar.gz
-          # Use a PAT (not the default GITHUB_TOKEN) so the resulting
-          # release:published event can trigger sync-gitee-release.yml.
-          # Events from GITHUB_TOKEN don't trigger other workflows.
-          token: ${{ secrets.RELEASE_PAT }}
+      # Publishing (rather than merely uploading assets) is what triggers the
+      # release:published event consumed by sync-gitee-release.yml.
+      - name: Publish prepared release
+        if: needs.prepare-release.outputs.publish_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+        run: |
+          gh release edit "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false
 
   prune-artifacts:
-    # Keep Actions artifacts for the latest five release tags. This covers
-    # both Release staging archives and Docker build records; GitHub Release
-    # assets are separate.
+    # Keep Actions artifacts for the latest five release tags. Release binaries
+    # are GitHub Release assets, so this now applies to Docker build records;
+    # GitHub Release assets are separate.
     if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
     needs: release
     permissions:

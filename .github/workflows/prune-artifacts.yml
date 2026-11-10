@@ -12,7 +12,7 @@ permissions:
 
 # Serialize every caller and scheduled/manual cleanup within this repository.
 # Do not cancel an in-progress cleanup that may already be deleting the same
-# artifact set.
+# record set.
 concurrency:
   group: prune-actions-artifacts
   cancel-in-progress: false

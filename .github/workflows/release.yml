@@ -89,7 +89,7 @@ jobs:
             # Inspect every release record for this tag. A single published
             # release wins, even if stale drafts also exist.
             PUBLISHED_COUNT="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-              --jq "[.[] | select(.tag_name == \"$REF_NAME\" and .draft == false)] | length")"
+              --jq ".[] | select(.tag_name == \"$REF_NAME\" and .draft == false) | .id" | wc -l)"
             if [[ "$PUBLISHED_COUNT" -gt 0 ]]; then
               echo "This release is already published; refusing to overwrite it." >&2
               echo "publish_release=false" >> "$GITHUB_OUTPUT"
@@ -115,9 +115,9 @@ jobs:
             } >> "$GITHUB_OUTPUT"
 
             PUBLISHED_NIGHTLY_COUNT="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-              --jq '[.[] | select(.tag_name == "nightly" and .draft == false)] | length')"
+              --jq '.[] | select(.tag_name == "nightly" and .draft == false) | .id' | wc -l)"
             PUBLISHED_STAGING_COUNT="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-              --jq '[.[] | select(.tag_name == "nightly-staging" and .draft == false)] | length')"
+              --jq '.[] | select(.tag_name == "nightly-staging" and .draft == false) | .id' | wc -l)"
             if [[ "$PUBLISHED_NIGHTLY_COUNT" -gt 1 || "$PUBLISHED_STAGING_COUNT" -gt 0 ]]; then
               echo "Ambiguous or unexpected published nightly releases; refusing to continue." >&2
               exit 1
@@ -245,7 +245,6 @@ jobs:
           set -euo pipefail
           TARGET_TAG="nightly"
           BACKUP_TAG="nightly-previous-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          COMMITTED=false
           OLD_RELEASE_ID=""
           OLD_TARGET=""
           OLD_REF_SHA=""
@@ -285,10 +284,18 @@ jobs:
           rollback() {
             local status=$?
             trap - ERR
-            if [[ "$COMMITTED" == "true" ]]; then
-              exit "$status"
+            echo "Nightly swap failed; rolling back to the previous release" >&2
+            # If publication already happened, first move the new release back
+            # to private staging so verification failures cannot strand both
+            # releases off the public tag.
+            if [[ -n "$STAGING_RELEASE_ID" ]]; then
+              gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$STAGING_RELEASE_ID" \
+                -f "tag_name=$RELEASE_TAG" \
+                -f "target_commitish=$SOURCE_SHA" \
+                -F "draft=true" \
+                -F "prerelease=true" || \
+                echo "Warning: failed to return new release $STAGING_RELEASE_ID to staging" >&2
             fi
-            echo "Nightly swap failed; rolling back the previous release" >&2
             if [[ -n "$OLD_RELEASE_ID" ]]; then
               gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$OLD_RELEASE_ID" \
                 -f "tag_name=$TARGET_TAG" \
@@ -347,8 +354,6 @@ jobs:
             -f "target_commitish=$SOURCE_SHA" \
             -F "draft=false" \
             -F "prerelease=true"
-          COMMITTED=true
-          trap - ERR
 
           NEW_RECORDS="$(release_records "$TARGET_TAG" false)"
           if [[ "$(record_count "$NEW_RECORDS")" -ne 1 ]]; then

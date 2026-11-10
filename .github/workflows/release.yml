@@ -136,6 +136,12 @@ jobs:
               --draft \
               --prerelease \
               --verify-tag
+            STAGING_RELEASE_ID="$(gh release view nightly-staging \
+              --repo "$GITHUB_REPOSITORY" \
+              --json id \
+              --jq '.id')"
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$STAGING_RELEASE_ID" \
+              -f "target_commitish=$SOURCE_SHA"
           fi
 
   build:
@@ -233,8 +239,8 @@ jobs:
       # Move the fully uploaded staging draft onto the public nightly tag only
       # after every matrix and plugin upload has succeeded. The underlying tag
       # must move too: release edits do not retarget an existing tag. Keep the
-      # previous release and tag SHA on a per-attempt backup until the new
-      # public nightly has been verified.
+      # previous release and tag SHA under the existing staging tag until the
+      # new public nightly has been verified.
       - name: Replace nightly release
         if: needs.prepare-release.outputs.publish_release == 'true' && needs.prepare-release.outputs.target_tag == 'nightly'
         env:
@@ -244,8 +250,10 @@ jobs:
         run: |
           set -euo pipefail
           TARGET_TAG="nightly"
-          BACKUP_TAG="nightly-previous-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          TEMP_RELEASE_TAG="nightly-previous-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          TEMP_MOVED=false
           OLD_RELEASE_ID=""
+          OLD_MOVED=false
           OLD_TARGET=""
           OLD_REF_SHA=""
 
@@ -285,10 +293,10 @@ jobs:
             local status=$?
             trap - ERR
             echo "Nightly swap failed; rolling back to the previous release" >&2
-            # If publication already happened, first move the new release back
-            # to private staging so verification failures cannot strand both
-            # releases off the public tag.
-            if [[ -n "$STAGING_RELEASE_ID" ]]; then
+            # Return the staged/new release to the existing staging tag before
+            # restoring the old public release. The temporary release tag is a
+            # release name only; no backup Git ref is created.
+            if [[ "$TEMP_MOVED" == "true" && -n "$STAGING_RELEASE_ID" ]]; then
               gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$STAGING_RELEASE_ID" \
                 -f "tag_name=$RELEASE_TAG" \
                 -f "target_commitish=$SOURCE_SHA" \
@@ -296,7 +304,7 @@ jobs:
                 -F "prerelease=true" || \
                 echo "Warning: failed to return new release $STAGING_RELEASE_ID to staging" >&2
             fi
-            if [[ -n "$OLD_RELEASE_ID" ]]; then
+            if [[ "$OLD_MOVED" == "true" && -n "$OLD_RELEASE_ID" ]]; then
               gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$OLD_RELEASE_ID" \
                 -f "tag_name=$TARGET_TAG" \
                 -f "target_commitish=$OLD_TARGET" \
@@ -341,11 +349,17 @@ jobs:
               exit 1
             fi
 
-            set_ref "$BACKUP_TAG" "$OLD_REF_SHA"
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$STAGING_RELEASE_ID" \
+              -f "tag_name=$TEMP_RELEASE_TAG" \
+              -f "target_commitish=$SOURCE_SHA" \
+              -F "draft=true" \
+              -F "prerelease=true"
+            TEMP_MOVED=true
             gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$OLD_RELEASE_ID" \
-              -f "tag_name=$BACKUP_TAG" \
+              -f "tag_name=$RELEASE_TAG" \
               -F "draft=false" \
               -F "prerelease=true"
+            OLD_MOVED=true
           fi
 
           set_ref "$TARGET_TAG" "$SOURCE_SHA"
@@ -380,11 +394,9 @@ jobs:
           trap - ERR
 
           # Cleanup is best-effort after the new public nightly is verified.
-          if [[ -n "$OLD_RELEASE_ID" ]]; then
+          if [[ "$OLD_MOVED" == "true" && -n "$OLD_RELEASE_ID" ]]; then
             gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$OLD_RELEASE_ID" || \
               echo "Warning: failed to delete previous release $OLD_RELEASE_ID" >&2
-            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$BACKUP_TAG" || \
-              echo "Warning: failed to delete backup tag $BACKUP_TAG" >&2
           fi
           gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" || true
 

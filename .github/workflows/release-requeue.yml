@@ -1,0 +1,64 @@
+name: Release Requeue
+
+# Self-heal for the queue-cancel failure mode (observed 2026-11-10): GitHub
+# cancels jobs that have been queued on a saturated runner pool for ~15
+# minutes without ever starting one (0 steps, no runner assigned), which fails
+# the whole Release run. This workflow fires when a Release run *completes*
+# (the rerun endpoint refuses a run that is still in progress), inspects the
+# finished run for that exact shape, and re-runs only the failed jobs — once.
+#
+# Loop safety: `run_attempt == 1` is the one-shot guard. Attempt 2 can never
+# trigger attempt 3, so a genuinely broken build stays red after exactly one
+# automatic retry; a queue-cancelled job usually goes green.
+#
+# Scope guard: this workflow must never touch the tag path. The tag path
+# already refuses duplicates inside the Release workflow, and a requeue would
+# repeat draft/tag/release mutations for a legitimately published release, so
+# only branch (main/nightly) runs are eligible.
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+
+permissions:
+  actions: write
+
+# No checkout needed: everything reads through the API.
+jobs:
+  requeue:
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.run_attempt == 1 &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-run failed jobs if they were queue-cancelled
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+
+          # Shape confirmed on runs 42849593129 / 42849593231 / 42852083135:
+          # the failed leg is `cancelled`, ran zero steps, and never got a
+          # runner. Compile/upload failures have steps and a runner; they do
+          # not match and stay red (correctly).
+          QUEUE_CANCELLED_JOBS="$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs" \
+            --jq '[.jobs[] | select(
+              .conclusion == "cancelled" and
+              (.steps | length) == 0 and
+              .runner_name == "")] | length')"
+
+          # Zero matches means this was a real failure, not a queue cancel;
+          # a real failure stays red.
+          if [[ "$QUEUE_CANCELLED_JOBS" -eq 0 ]]; then
+            echo "No queue-cancelled jobs found; not requeueing." >&2
+            exit 0
+          fi
+
+          echo "Found $QUEUE_CANCELLED_JOBS queue-cancelled job(s); re-running failed jobs (attempt 2)."
+          gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/rerun-failed-jobs" --silent
+          echo "A new attempt has been queued; a genuinely broken build will stay red."

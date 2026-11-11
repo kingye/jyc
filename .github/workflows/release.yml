@@ -72,7 +72,7 @@ jobs:
           if [[ "$REF_TYPE" == "branch" ]]; then
             # Server-side filtering (`--commit` + `--branch` + `--status`) —
             # no window limit can hide an earlier green run for this SHA.
-            DONE_COUNT="$(gh run list --workflow Release \
+            DONE_COUNT="$(gh run list -R "$GITHUB_REPOSITORY" --workflow Release \
               --commit "$HEAD_SHA" --branch main --status success \
               --json databaseId \
               --jq "[.[] | select(.databaseId < $MY_RUN_ID)] | length")"

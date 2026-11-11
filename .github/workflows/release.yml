@@ -29,11 +29,61 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Gate: does this run have any work to do? Both skip reasons below are
+      # specific to the main-branch (nightly) path — the version-tag path has
+      # its own "already published" refusal inside the prepare step.
+      #
+      # 1. A completed, green Release run for this same commit already exists.
+      #    GitHub can deliver the same push event twice (observed 2026-11-10:
+      #    one v0.9.1 tag push produced a second Release run 15 minutes after
+      #    the first), and a manual retrigger can race the run it retries.
+      #    Rebuilding would re-swap nightly onto content it already has.
+      #    The run-id comparison makes the oldest run the winner, so two runs
+      #    starting at the same instant cannot both bail out.
+      # 2. The head commit is a release bump ("chore: prepare release
+      #    vX.Y.Z"). A release-day `git push origin main vX.Y.Z` fires this
+      #    run and the version-tag run at the same instant; the tag run builds
+      #    the release commit seconds later, so rebuilding nightly here only
+      #    doubles the load on the small macOS runner pool — which is exactly
+      #    how both release-day runs lost a never-started macOS job to a
+      #    queue cancel on 2026-11-10. Nightly catches up on the next
+      #    ordinary push to main.
+      #
+      # A gated-off run exits green with publish=false; the build and release
+      # jobs are gated on that output. (Note: with reason 2, a manual
+      # workflow_dispatch on a bump commit is also gated off — the tag run is
+      # the release-day authority for that commit by design.)
+      - name: Decide whether this run has work to do
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          REF_TYPE: ${{ github.ref_type }}
+          HEAD_SHA: ${{ github.sha }}
+          HEAD_MSG: ${{ github.event.head_commit.message }}
+          MY_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          publish=true
+          if [[ "$REF_TYPE" == "branch" ]]; then
+            DONE_COUNT="$(gh run list --workflow Release --limit 30 \
+              --json databaseId,headSha,headBranch,status,conclusion \
+              --jq "[.[] | select(.headSha == \"$HEAD_SHA\" and .headBranch == \"main\" and .status == \"completed\" and .conclusion == \"success\" and .databaseId < $MY_RUN_ID)] | length")"
+            if [[ "$DONE_COUNT" -gt 0 ]]; then
+              echo "A completed Release run for $HEAD_SHA already exists; nothing to do." >&2
+              publish=false
+            elif [[ "$HEAD_MSG" == "chore: prepare release v"* ]]; then
+              echo "Head commit is a release bump; the version-tag run covers this commit." >&2
+              publish=false
+            fi
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
       # Create (or refresh) the release target before the matrix starts. Build
       # jobs upload their archives directly as release assets, so Release no
       # longer depends on Actions artifact storage.
       - name: Prepare release target
         id: release
+        if: steps.gate.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
           REF_NAME: ${{ github.ref_name }}
@@ -175,6 +225,9 @@ jobs:
 
   build:
     needs: prepare-release
+    # A gated-off run (duplicate commit run, or release-bump commit) must not
+    # rebuild anything: exit green with the entire matrix skipped.
+    if: needs.prepare-release.outputs.publish_release == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     permissions:
@@ -260,6 +313,11 @@ jobs:
 
   release:
     needs: [prepare-release, build]
+    # Skipped along with the gated-off build matrix (see the build job).
+    if: |
+      !cancelled() &&
+      needs.prepare-release.outputs.publish_release == 'true' &&
+      needs.build.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -492,9 +550,50 @@ jobs:
     # Keep Actions artifacts for the latest five release tags. Release binaries
     # are GitHub Release assets, so this now applies to Docker build records;
     # GitHub Release assets are separate.
-    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    #
+    # `result` handling: when the tag run itself is gated off (a duplicate or
+    # bumped tag push), the release job is skipped and this reusable workflow
+    # would be auto-skipped ("needs" only takes job status into account for
+    # success/failure) — `result` keeps the chaining explicit and green.
+    if: >-
+      !cancelled() &&
+      github.ref_type == 'tag' &&
+      startsWith(github.ref_name, 'v') &&
+      needs.release.result == 'success'
     needs: release
     permissions:
       actions: write
       contents: read
     uses: ./.github/workflows/prune-artifacts.yml
+
+  # Self-heal for the queue-cancel failure mode (observed 2026-11-10): GitHub
+  # cancels jobs that have been queued on a saturated runner pool for ~15
+  # minutes without ever starting one (0 steps, no runner assigned), which
+  # fails the whole run. Re-run those jobs once and let the re-run decide:
+  # if a runner is free this time the run goes green without anyone retriggering
+  # it; if it fails again it stays red. `run_attempt == 1` is the one-shot
+  # guard — attempt 2 can never trigger attempt 3, so a genuinely broken
+  # build cannot loop forever. Re-runs only exist for run-attempt 2+, which
+  # is why this job skips on earlier attempts instead of needing a
+  # `rerun-failed-jobs` permission on the API call.
+  requeue-cancelled-builds:
+    needs: [prepare-release, build]
+    if: >-
+      !cancelled() &&
+      github.run_attempt == 1 &&
+      needs.prepare-release.outputs.publish_release == 'true' &&
+      needs.build.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Re-run failed build jobs (attempt 2)
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          echo "Build jobs failed (likely cancelled while queued); re-running the run as attempt 2."
+          gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/rerun" --silent
+          echo "A new attempt has been queued; this attempt ends now."

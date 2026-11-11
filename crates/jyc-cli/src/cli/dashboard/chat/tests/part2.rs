@@ -308,6 +308,23 @@ fn toggle_status_bar_independent_of_info_pane() {
 }
 
 #[test]
+fn opening_the_info_pane_re_shows_the_status_block() {
+    // Opening the info pane yields a fully populated pane: the status
+    // block comes back with it. Closing must stay independent — it
+    // does not resurrect a status block the user hid.
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.toggle_status_bar();
+    assert!(!app.chat.status_visible);
+    app.chat.toggle_info_pane(); // hide: status stays hidden
+    assert!(!app.chat.info_visible);
+    assert!(!app.chat.status_visible);
+    app.chat.toggle_info_pane(); // open: status shows with the pane
+    assert!(app.chat.info_visible);
+    assert!(app.chat.status_visible);
+}
+
+#[test]
 fn toggle_info_pane_independent_and_refocuses() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);

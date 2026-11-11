@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Fixed
+
+- Opening the TUI chat topic-info pane (leader-key `i`) now also shows the status block inside it, so `Ctrl+P i` from a zen-opened chat yields a fully populated pane; closing the pane still leaves the status toggle (`s`) untouched
+
 ## [0.9.1] - 2026-11-10
 
 ### Changed

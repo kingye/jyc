@@ -207,7 +207,8 @@ pub(super) struct ChatState {
     pub(super) info_visible: bool,
     /// Chat status block visibility — the version/stats (or transient
     /// message) lines at the top of the topic info pane. Default
-    /// visible; toggled via the leader-key popup (`s`).
+    /// visible; toggled via the leader-key popup (`s`). Re-shown
+    /// whenever the enclosing info pane is opened (`i`).
     pub(super) status_visible: bool,
     /// Topic explorer pane (left side, 20% width). Default hidden;
     /// toggled via the leader-key popup (`e`).
@@ -3169,10 +3170,15 @@ impl ChatState {
         self.status_visible = !self.status_visible;
     }
 
-    /// Toggle the topic info pane (leader-key popup `i`). Hiding it
-    /// while focused moves focus back to the chat pane.
+    /// Toggle the topic info pane (leader-key popup `i`). Opening it
+    /// also shows the status block inside it, so `i` from the zen-open
+    /// state yields a fully populated pane; hiding it while focused
+    /// moves focus back to the chat pane.
     pub(super) fn toggle_info_pane(&mut self) {
         self.info_visible = !self.info_visible;
+        if self.info_visible {
+            self.status_visible = true;
+        }
         if !self.info_visible && self.focus == Focus::InfoPane {
             self.focus = Focus::ChatPane;
         }

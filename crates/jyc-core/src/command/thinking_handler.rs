@@ -43,15 +43,31 @@ impl CommandHandler for ThinkingCommandHandler {
         let state_dir = resolve_state_dir(&context.topic_name, &context.topic_path);
 
         if arg.is_empty() {
-            // Bare `/thinking`: report the current tier.
-            let current = tokio::fs::read_to_string(state_dir.join("thinking-effort"))
-                .await
-                .ok()
-                .map(|s| s.trim().to_string());
-            let message = match current.as_deref() {
-                Some(tier) => format!("/thinking: current tier is '{tier}'"),
-                None => "/thinking: no runtime tier set; [ai.reasoning_effort] applies".into(),
-            };
+            // Bare `/thinking`: report the tier that would actually apply —
+            // the same chain `resolve_effort_tier` walks for every request
+            // (runtime file > mode tier > default), not just the file.
+            let source;
+            let tier;
+            match tokio::fs::read_to_string(state_dir.join("thinking-effort")).await {
+                Ok(raw) => {
+                    tier = raw.trim().to_string();
+                    source = "runtime override";
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    tier = crate::session_state::resolve_effort_tier(
+                        &context.topic_name,
+                        &context.topic_path,
+                        context.config.as_ref(),
+                        &context.channel,
+                    )
+                    .await
+                    .map(|t| t.to_string())
+                    .unwrap_or_else(|| "none".to_string());
+                    source = "config";
+                }
+                Err(error) => return Err(error.into()),
+            }
+            let message = format!("/thinking: current tier is '{tier}' ({source})");
             return Ok(CommandResult {
                 success: true,
                 message,
@@ -111,22 +127,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_thinking_bare_reports_unset() {
+    async fn test_thinking_bare_reports_config_tier_when_unset() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_thinking_bare_reports_unset";
+        let topic = "test_thinking_bare_reports_config_tier";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ThinkingCommandHandler;
         let ctx = test_context(topic, tmp.path());
 
+        // The standard fixture has no [ai.reasoning_effort], so the chain
+        // ends at "none".
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
-        assert!(result.message.contains("no runtime tier set"));
+        assert!(
+            result.message.contains("current tier is 'none' (config)"),
+            "{:?}",
+            result.message
+        );
+        jyc_types::state_dir::unregister("test_thinking_bare_reports_config_tier");
+        jyc_types::state_dir::clear_closed("test_thinking_bare_reports_config_tier");
     }
 
     #[tokio::test]
-    async fn test_thinking_bare_reports_current_tier() {
+    async fn test_thinking_bare_reports_runtime_tier() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_thinking_bare_reports_current_tier";
+        let topic = "test_thinking_bare_reports_runtime_tier";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ThinkingCommandHandler;
         let mut ctx = test_context(topic, tmp.path());
@@ -137,7 +161,15 @@ mod tests {
         ctx.args = vec![];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
-        assert!(result.message.contains("current tier is 'medium'"));
+        assert!(
+            result
+                .message
+                .contains("current tier is 'medium' (runtime override)"),
+            "{:?}",
+            result.message
+        );
+        jyc_types::state_dir::unregister("test_thinking_bare_reports_runtime");
+        jyc_types::state_dir::clear_closed("test_thinking_bare_reports_runtime");
     }
 
     #[tokio::test]

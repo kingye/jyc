@@ -346,6 +346,78 @@ plan = "low"
 }
 
 #[test]
+fn test_valid_effort_map_passes() {
+    let toml = r#"
+[general]
+[channels.work]
+type = "email"
+[channels.work.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.work.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[agent]
+enabled = true
+mode = "agent"
+[ai.providers.anthropic.models.claude-opus-4-6]
+model_id = "claude-opus-4-6"
+effort_map = { high = 16000, medium = 8000, low = "minimal" }
+"#;
+    let config = load_config_from_str(toml).unwrap();
+    let errors = validate_config(&config, NO_BUILTINS);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+}
+
+#[test]
+fn test_invalid_effort_map_key_and_value_fail() {
+    let toml = r#"
+[general]
+[channels.work]
+type = "email"
+[channels.work.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.work.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[agent]
+enabled = true
+mode = "agent"
+[ai.providers.anthropic.models.claude-opus-4-6]
+model_id = "claude-opus-4-6"
+effort_map = { ultra = true }
+"#;
+    let config = load_config_from_str(toml).unwrap();
+    let errors = validate_config(&config, NO_BUILTINS);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.path == "ai.providers.anthropic.models.claude-opus-4-6.effort_map.ultra"),
+        "expected effort_map.ultra errors, got: {:?}",
+        errors
+    );
+    let ultra_errors: Vec<_> = errors
+        .iter()
+        .filter(|e| e.path.ends_with("effort_map.ultra"))
+        .collect();
+    assert_eq!(
+        ultra_errors.len(),
+        2,
+        "both the key and the value are invalid: {:?}",
+        ultra_errors
+    );
+}
+
+#[test]
 fn test_invalid_mcp_in_agent() {
     let toml = r#"
 [general]

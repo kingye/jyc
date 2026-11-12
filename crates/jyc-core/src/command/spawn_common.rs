@@ -42,6 +42,7 @@ const SEED_FILES: &[&str] = &[
     "build-model-override",
     "model-override", // the mode-agnostic fallback the chain reads next
     session_state::CONTEXT_STRATEGY_FILE, // `/context`
+    session_state::THINKING_EFFORT_FILE, // `/thinking` runtime tier
     session_state::MCP_OVERRIDE_FILE, // `/mcp`
     session_state::SKILL_OVERRIDE_FILE, // `/skill`
     "skills.json",

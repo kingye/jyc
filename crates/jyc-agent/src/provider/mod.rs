@@ -636,6 +636,13 @@ pub trait Provider: Send + Sync {
         false
     }
 
+    /// The reasoning-effort value sent with every request, already
+    /// translated to this model's native shape (`effort_map` entry or the
+    /// tier string). `None` when no tier is set. Test visibility mainly.
+    fn effort(&self) -> Option<&serde_json::Value> {
+        None
+    }
+
     /// Send messages and get a streaming response.
     async fn complete(
         &self,
@@ -702,6 +709,65 @@ pub fn merge_params(body: &mut serde_json::Value, params: &Option<serde_json::Va
         for (k, v) in params_obj {
             body_obj.insert(k.clone(), v.clone());
         }
+    }
+}
+
+/// Apply the reasoning effort to a request body. Call this right after
+/// [`merge_params`]: an explicit `thinking` / `reasoning_effort` /
+/// `reasoning` in `[agent.providers.*.params]` keeps precedence — the tier
+/// only fills the keys the params leave unset.
+///
+/// Rendering by value shape (translated from the generic tier by the
+/// model's `effort_map`, or the tier string itself when unmapped):
+/// - JSON number — the legacy Anthropic Extended-thinking API:
+///   `thinking.type = "enabled"` + `budget_tokens`. The budget must stay
+///   below the request's `max_tokens` (Anthropic rejects
+///   `budget_tokens >= max_tokens`); `max_tokens_floor` is the effective
+///   cap after any params override. A too-large budget is dropped with a
+///   warning rather than sent to fail upstream.
+/// - any other value (string) — the adaptive API:
+///   `thinking.type = "adaptive"` + `output_config.effort` (OpenAI
+///   providers instead put the string in their native effort field).
+pub(crate) fn apply_effort(
+    body: &mut serde_json::Value,
+    effort: Option<&serde_json::Value>,
+    anthropic: bool,
+    max_tokens_floor: u64,
+) {
+    let Some(effort) = effort else { return };
+    if anthropic {
+        match effort {
+            serde_json::Value::Number(budget) => {
+                if body.get("thinking").is_some() {
+                    return; // explicit params `thinking` wins
+                }
+                let budget_u64 = budget.as_u64().unwrap_or(0);
+                if budget_u64 < 1024 || budget_u64 >= max_tokens_floor {
+                    tracing::warn!(
+                        budget = budget_u64,
+                        max_tokens = max_tokens_floor,
+                        "effort_map budget_tokens out of range (1024 <= budget < max_tokens); dropping the thinking parameter"
+                    );
+                    return;
+                }
+                body["thinking"] = serde_json::json!({
+                    "type": "enabled",
+                    "budget_tokens": budget,
+                });
+            }
+            other => {
+                if body.get("thinking").is_none() {
+                    body["thinking"] = serde_json::json!({ "type": "adaptive" });
+                }
+                if body.get("output_config").is_none() {
+                    let mut output_config = serde_json::Map::new();
+                    output_config.insert("effort".to_string(), other.clone());
+                    body["output_config"] = serde_json::Value::Object(output_config);
+                }
+            }
+        }
+    } else if body.get("reasoning_effort").is_none() {
+        body["reasoning_effort"] = effort.clone();
     }
 }
 
@@ -810,14 +876,27 @@ pub fn create_provider(
     // string itself is the native value — that is what the standard tiers
     // (`low`/`medium`/`high`) are for. Anthropic legacy-Extended-thinking
     // models express effort as a `budget_tokens` integer instead, which the
-    // map carries as a JSON number.
+    // map carries as a JSON number. A mapped value must be a string or a
+    // number — anything else is a config error, not something to silently
+    // stringify, so the map entry is ignored (warn) and the tier string sent.
     let effort = effort_tier.map(|tier| {
         config
             .models
             .get(model_id)
             .and_then(|m| m.effort_map.as_ref())
             .and_then(|map| map.get(tier))
-            .cloned()
+            .map(|native| match native {
+                v @ (serde_json::Value::String(_) | serde_json::Value::Number(_)) => v.clone(),
+                other => {
+                    tracing::warn!(
+                        model = model_id,
+                        tier,
+                        value = %other,
+                        "effort_map value must be a string or a number; ignoring the map entry and sending the tier string"
+                    );
+                    serde_json::Value::String(tier.to_string())
+                }
+            })
             .unwrap_or_else(|| serde_json::Value::String(tier.to_string()))
     });
 
@@ -1629,6 +1708,44 @@ mod model_id_tests {
         let low = create_provider("kimi/k3-low", &providers, None).unwrap();
         assert_eq!(high.model(), "k3");
         assert_eq!(low.model(), "k3");
+    }
+
+    /// The effort tier maps through the model's `effort_map` when the key
+    /// exists (Anthropic legacy models carry an integer `budget_tokens`
+    /// here), and falls back to the tier string itself otherwise — the
+    /// standard value OpenAI-format APIs take verbatim.
+    #[test]
+    fn effort_tier_maps_via_effort_map_with_string_fallback() {
+        let mut mapped = model_config(Some("k3"));
+        mapped.effort_map = Some(
+            [
+                ("low".to_string(), serde_json::json!(1024)),
+                ("high".to_string(), serde_json::json!("max")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let mut models = HashMap::new();
+        models.insert("k3".to_string(), mapped);
+        models.insert("plain".to_string(), model_config(Some("plain-id")));
+        let providers = providers_with(models);
+
+        let p = create_provider("kimi/k3", &providers, Some("low")).unwrap();
+        assert_eq!(p.effort(), Some(&serde_json::json!(1024)));
+        let p = create_provider("kimi/k3", &providers, Some("high")).unwrap();
+        assert_eq!(p.effort(), Some(&serde_json::json!("max")));
+
+        // No map entry for `medium`: the tier string passes through.
+        let p = create_provider("kimi/k3", &providers, Some("medium")).unwrap();
+        assert_eq!(p.effort(), Some(&serde_json::json!("medium")));
+
+        // Model with no `effort_map` at all: same fallback.
+        let p = create_provider("kimi/plain", &providers, Some("high")).unwrap();
+        assert_eq!(p.effort(), Some(&serde_json::json!("high")));
+
+        // No tier: no effort at all.
+        let p = create_provider("kimi/k3", &providers, None).unwrap();
+        assert_eq!(p.effort(), None);
     }
 }
 

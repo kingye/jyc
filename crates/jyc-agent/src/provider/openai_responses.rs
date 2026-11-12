@@ -140,21 +140,13 @@ impl OpenAiResponsesProvider {
             body["tools"] = serde_json::Value::Array(responses_tools);
         }
 
-        // Merge extra params from config (provider-level + model-level)
+        // Merge extra params from config (provider-level + model-level),
+        // then the reasoning effort — `apply_effort` only fills the
+        // `reasoning.effort` key the params leave unset, so a `reasoning`
+        // object in `[agent.providers.*.params]` wins. Other `reasoning`
+        // keys already merged from params are kept.
         crate::provider::merge_params(&mut body, &self.params);
-
-        // Reasoning effort — after the params merge, so a `reasoning` object
-        // in `[agent.providers.*.params]` keeps its other keys (e.g.
-        // `summary`) while this overrides only `effort`.
-        if let Some(effort) = &self.effort {
-            let mut reasoning = body
-                .get("reasoning")
-                .and_then(|v| v.as_object())
-                .cloned()
-                .unwrap_or_default();
-            reasoning.insert("effort".to_string(), effort.clone());
-            body["reasoning"] = serde_json::Value::Object(reasoning);
-        }
+        crate::provider::apply_effort(&mut body, self.effort.as_ref(), false, 0);
 
         let req = self
             .client
@@ -239,6 +231,10 @@ impl Provider for OpenAiResponsesProvider {
 
     fn model(&self) -> &str {
         &self.model
+    }
+
+    fn effort(&self) -> Option<&serde_json::Value> {
+        self.effort.as_ref()
     }
 
     fn supports_images(&self) -> bool {
@@ -784,6 +780,45 @@ mod tests {
             sent["reasoning"],
             serde_json::json!({"summary": "auto", "effort": "medium"}),
             "effort merges into the reasoning object: {sent:#}"
+        );
+    }
+
+    /// Params win: a `reasoning` object in `[agent.providers.*.params]`
+    /// must not have its `effort` key clobbered by the tier.
+    #[tokio::test]
+    async fn params_reasoning_effort_beats_tier() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "type": "response.completed",
+                "response": {"id": "r", "usage": {"input_tokens": 1, "output_tokens": 1}}
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = OpenAiResponsesProvider::new(
+            &server.uri(),
+            "gpt-5",
+            Some("k"),
+            Some(serde_json::json!({"reasoning": {"effort": "low", "summary": "auto"}})),
+            false,
+            None,
+            Some(serde_json::json!("high")),
+        )
+        .expect("provider construction");
+        let mut stream = provider
+            .complete(&[Message::user("hello")], &[], "")
+            .await
+            .expect("complete should return a stream");
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        assert_eq!(
+            sent["reasoning"],
+            serde_json::json!({"effort": "low", "summary": "auto"}),
+            "params reasoning must win over the tier: {sent:#}"
         );
     }
 

@@ -266,12 +266,14 @@ mode = "agent"
 # Per-model translation: a model whose API names the values differently maps
 # the generic tier through `effort_map` (optional — without it the tier
 # string itself is sent). A number in the map selects the Anthropic legacy
-# rendering (`thinking = { type = "enabled", budget_tokens = <n> }`); a
-# string selects the Anthropic adaptive rendering
+# rendering (`thinking = { type = "enabled", budget_tokens = <n> }`) and must
+# stay below the request's `max_tokens` (16384) and at least 1024 — jyc drops
+# the thinking parameter with a warning otherwise; a string selects the
+# Anthropic adaptive rendering
 # (`thinking = { type = "adaptive" }` + `output_config.effort = <value>`).
 # [ai.providers.anthropic.models.claude-opus-4-6]
 # model_id = "claude-opus-4-6"
-# effort_map = { high = 32000, medium = 16000, low = 8000 }
+# effort_map = { high = 16000, medium = 8000, low = 1024 }
 # [ai.providers.anthropic.models.claude-opus-4-5]
 # model_id = "claude-opus-4-5"
 # effort_map = { high = "high", medium = "medium", low = "low" }
@@ -336,7 +338,8 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 #   for gpt-5.6+ rejects requests combining tools with a non-"none"
 #   reasoning_effort. The Responses API supports tools + reasoning together.
 # - With `reasoning.summary` set, a reasoning SUMMARY is streamed and shown
-#   by `/thinking show` (raw chain-of-thought is never exposed by OpenAI).
+#   in the dashboard's chat pane (toggle with the leader key `t`; raw
+#   chain-of-thought is never exposed by OpenAI).
 #
 # [ai.providers.openai]
 # type = "openai-responses"

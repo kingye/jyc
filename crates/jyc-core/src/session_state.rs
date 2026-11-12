@@ -784,9 +784,6 @@ fn context_window_for_model(model_str: &str, config: &AppConfig) -> Option<u64> 
 /// `high`).
 pub const THINKING_EFFORT_FILE: &str = "thinking-effort";
 
-/// The standard reasoning-effort tiers, in ascending order.
-pub const EFFORT_TIERS: [&str; 3] = ["low", "medium", "high"];
-
 /// The reasoning-effort tier this topic runs at right now, before any
 /// per-model mapping: the `/thinking` runtime override
 /// (`.jyc/thinking-effort`), else the tier the effective mode asks for
@@ -819,21 +816,6 @@ pub async fn resolve_effort_tier(
         }
         None => None,
     }
-}
-
-/// Translate a generic tier into the native value one model expects:
-/// the `effort_map` entry when the model maps that tier, else the tier
-/// string itself (the standard value OpenAI-format APIs take verbatim).
-pub fn native_effort(tier: &str, model_str: &str, config: &AppConfig) -> serde_json::Value {
-    if let Some((provider_name, model_id)) = model_str.split_once('/')
-        && let Some(provider) = config.ai.providers.get(provider_name)
-        && let Some(model) = provider.models.get(model_id)
-        && let Some(map) = &model.effort_map
-        && let Some(native) = map.get(tier)
-    {
-        return native.clone();
-    }
-    serde_json::Value::String(tier.to_string())
 }
 
 /// File name for the runtime context-strategy override written by the
@@ -1228,7 +1210,7 @@ host = "h"
 port = 465
 username = "u"
 password = "p"
-[agent]
+[ai]
 enabled = true
 mode = "agent"
 "#,
@@ -1287,7 +1269,7 @@ mode = "agent"
         assert_eq!(result, None);
     }
 
-    // ── resolve_effort_tier / native_effort ─────────────────────────
+    // ── resolve_effort_tier ─────────────────────────────────────────
 
     /// `[ai]` config with reasoning-effort tiers set.
     fn config_with_effort(default: &str, plan: &str, build: &str) -> AppConfig {
@@ -1381,49 +1363,6 @@ build = "{build}"
         assert_eq!(result, None);
         jyc_types::state_dir::unregister(topic);
         jyc_types::state_dir::clear_closed(topic);
-    }
-
-    #[test]
-    fn native_effort_maps_via_effort_map() {
-        let toml = r#"
-[general]
-[ai]
-model = "p/m1"
-[ai.providers.p]
-type = "openai"
-api_key = "k"
-[ai.providers.p.models.m1]
-[ai.providers.p.models.m1.effort_map]
-low = 1024
-high = "max"
-"#;
-        let config = jyc_types::load_config_from_str(toml).expect("config should parse");
-        assert_eq!(
-            native_effort("low", "p/m1", &config),
-            serde_json::json!(1024)
-        );
-        assert_eq!(
-            native_effort("high", "p/m1", &config),
-            serde_json::json!("max")
-        );
-    }
-
-    #[test]
-    fn native_effort_falls_back_to_tier_string() {
-        let toml = r#"
-[general]
-[ai]
-model = "p/m1"
-[ai.providers.p]
-type = "openai"
-api_key = "k"
-[ai.providers.p.models.m1]
-"#;
-        let config = jyc_types::load_config_from_str(toml).expect("config should parse");
-        assert_eq!(
-            native_effort("medium", "p/m1", &config),
-            serde_json::json!("medium")
-        );
     }
 
     #[tokio::test]

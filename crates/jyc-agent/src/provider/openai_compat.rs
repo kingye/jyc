@@ -176,6 +176,10 @@ impl Provider for OpenAiCompatProvider {
         &self.model
     }
 
+    fn effort(&self) -> Option<&serde_json::Value> {
+        self.effort.as_ref()
+    }
+
     fn supports_images(&self) -> bool {
         self.supports_images
     }
@@ -225,14 +229,12 @@ impl Provider for OpenAiCompatProvider {
             body["tools"] = serde_json::Value::Array(openai_tools);
         }
 
-        // Merge extra params from config (provider-level + model-level)
+        // Merge extra params from config (provider-level + model-level),
+        // then the reasoning effort — `apply_effort` only fills the key
+        // the params leave unset, so an explicit `reasoning_effort` in
+        // `[agent.providers.*.params]` wins.
         crate::provider::merge_params(&mut body, &self.params);
-
-        // Reasoning effort — after the params merge, so an explicit
-        // `reasoning_effort` in `[agent.providers.*.params]` still wins.
-        if let Some(effort) = &self.effort {
-            body["reasoning_effort"] = effort.clone();
-        }
+        crate::provider::apply_effort(&mut body, self.effort.as_ref(), false, 0);
 
         self.send(body)
     }
@@ -304,14 +306,11 @@ impl Provider for OpenAiCompatProvider {
             body["tools"] = serde_json::Value::Array(openai_tools);
         }
 
-        // Merge extra params
+        // Merge extra params, then the reasoning effort — `apply_effort`
+        // only fills the key the params leave unset, so an explicit
+        // `reasoning_effort` in `[agent.providers.*.params]` wins.
         crate::provider::merge_params(&mut body, &self.params);
-
-        // Reasoning effort — after the params merge, so an explicit
-        // `reasoning_effort` in `[agent.providers.*.params]` still wins.
-        if let Some(effort) = &self.effort {
-            body["reasoning_effort"] = effort.clone();
-        }
+        crate::provider::apply_effort(&mut body, self.effort.as_ref(), false, 0);
 
         self.send(body)
     }
@@ -1050,6 +1049,44 @@ mod tests {
         assert!(msg.starts_with("SSE stream error: "), "{msg}");
         assert!(msg.contains("400"), "{msg}");
         assert!(msg.contains("bad request"), "{msg}");
+    }
+
+    /// Params win: an explicit `reasoning_effort` in
+    /// `[agent.providers.*.params]` must not be clobbered by the tier.
+    #[tokio::test]
+    async fn params_reasoning_effort_beats_tier() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = OpenAiCompatProvider::new(
+            &server.uri(),
+            "m",
+            Some("k"),
+            Some(serde_json::json!({"reasoning_effort": "low"})),
+            false,
+            None,
+            Some(serde_json::json!("high")),
+        )
+        .expect("provider construction");
+
+        let messages = vec![Message::user("hi")];
+        let mut stream = provider.complete(&messages, &[], "").await.expect("stream");
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        assert_eq!(
+            sent["reasoning_effort"],
+            serde_json::json!("low"),
+            "params reasoning_effort must win over the tier: {sent:#}"
+        );
     }
 
     /// An effort value lands as the top-level `reasoning_effort` key.

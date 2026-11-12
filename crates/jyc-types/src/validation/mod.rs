@@ -402,6 +402,43 @@ pub fn validate_config(config: &AppConfig, builtin_names: &[&str]) -> Vec<Valida
         validate_reasoning_effort("ai.reasoning_effort", effort, &mut errors);
     }
 
+    // Topic-level `[ai.reasoning_effort]` (subagent types and pipe topics)
+    for (topic_name, topic) in &config.subagents {
+        if let Some(ref ai) = topic.ai
+            && let Some(ref effort) = ai.reasoning_effort
+        {
+            validate_reasoning_effort(
+                &format!("subagents.{topic_name}.ai.reasoning_effort"),
+                effort,
+                &mut errors,
+            );
+        }
+    }
+    for (channel_name, channel) in &config.channels {
+        if let Some(ref ai) = channel.ai
+            && let Some(ref effort) = ai.reasoning_effort
+        {
+            validate_reasoning_effort(
+                &format!("channels.{channel_name}.ai.reasoning_effort"),
+                effort,
+                &mut errors,
+            );
+        }
+    }
+
+    // Validate per-model effort maps
+    for (provider_name, provider) in &config.ai.providers {
+        for (model_name, model) in &provider.models {
+            if let Some(ref map) = model.effort_map {
+                validate_effort_map(
+                    &format!("ai.providers.{provider_name}.models.{model_name}.effort_map"),
+                    map,
+                    &mut errors,
+                );
+            }
+        }
+    }
+
     // Validate agent attachment config
     if let Some(ref att) = config.ai.attachments {
         validate_outbound_attachment_config("ai.attachments", att, &mut errors);
@@ -875,6 +912,29 @@ fn validate_reasoning_effort(
             errors.push(ValidationError {
                 path: format!("{prefix}.{name}"),
                 message: format!("must be 'low', 'medium' or 'high', got '{tier}'"),
+            });
+        }
+    }
+}
+
+/// Validate a per-model `effort_map`: keys are standard tiers, values are
+/// strings (adaptive rendering) or numbers (Anthropic legacy budget).
+fn validate_effort_map(
+    prefix: &str,
+    map: &std::collections::BTreeMap<String, serde_json::Value>,
+    errors: &mut Vec<ValidationError>,
+) {
+    for (tier, value) in map {
+        if tier != "low" && tier != "medium" && tier != "high" {
+            errors.push(ValidationError {
+                path: format!("{prefix}.{tier}"),
+                message: format!("key must be 'low', 'medium' or 'high', got '{tier}'"),
+            });
+        }
+        if !value.is_string() && !value.is_number() {
+            errors.push(ValidationError {
+                path: format!("{prefix}.{tier}"),
+                message: format!("value must be a string or a number, got {value}"),
             });
         }
     }

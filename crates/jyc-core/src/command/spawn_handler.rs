@@ -2055,6 +2055,7 @@ mod tests {
                     "plan-model-override",
                     "build-model-override",
                     "model-override",
+                    "thinking-effort",
                     "skill-override.json",
                     "mcp-override.json",
                 ],
@@ -2068,6 +2069,7 @@ mod tests {
                 &["mode-override", "plan-model-override", "model-override"],
                 &[
                     "build-model-override",
+                    "thinking-effort",
                     "skill-override.json",
                     "mcp-override.json",
                 ],
@@ -2080,7 +2082,7 @@ mod tests {
                     "build-model-override",
                     "model-override",
                 ],
-                &["mode-override", "skill-override.json"],
+                &["mode-override", "thinking-effort", "skill-override.json"],
             ),
             (
                 // No `mode`: the parent's `mode-override` stands, so this child
@@ -2088,7 +2090,7 @@ mod tests {
                 // chain reads for it.
                 "[ai]\nbuild_model = \"provider/role\"\n",
                 &["build-model-override", "model-override"],
-                &["plan-model-override", "mode-override"],
+                &["plan-model-override", "mode-override", "thinking-effort"],
             ),
             (
                 // A skill allow-list of its own: the parent's `/skill`
@@ -2101,6 +2103,7 @@ mod tests {
                     "plan-model-override",
                     "build-model-override",
                     "model-override",
+                    "thinking-effort",
                     "mcp-override.json",
                 ],
             ),

@@ -1258,15 +1258,6 @@ comes from a config layer — a typed subagent — `/model X` wrote
 `plan-model-override` while the turn read `build-model-override`, so the command
 reported success, the pane showed X and the agent kept running the old model.
 
-Before this the chain existed three times and had drifted: the display had no
-topic-config layer at all and put the channel's generic `model` above the global
-per-mode fields, and each consumer picked the `<mode>-model-override` file by its
-own notion of "mode" (the runtime by the file's mode, `/model` and the display by
-the effective one). That last difference was user-visible: in a topic whose mode
-comes from a config layer — a typed subagent — `/model X` wrote
-`plan-model-override` while the turn read `build-model-override`, so the command
-reported success, the pane showed X and the agent kept running the old model.
-
 **Self-containment invariant**: all generated state follows the *effective data root* — a custom `--data-dir` instance never touches the platform data dir, keeping parallel instances and tests isolated.
 
 ## Config Hot-Reload Architecture

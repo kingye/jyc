@@ -1288,7 +1288,7 @@ host = "h"
 port = 465
 username = "u"
 password = "p"
-[agent]
+[ai]
 enabled = true
 mode = "agent"
 [ai.reasoning_effort]

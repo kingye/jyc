@@ -146,10 +146,10 @@ host = "h"
 port = 465
 username = "u"
 password = "p"
-[agent]
+[ai]
 enabled = true
 mode = "agent"
-[agent.reasoning_effort]
+[ai.reasoning_effort]
 default = "medium"
 "#,
         );

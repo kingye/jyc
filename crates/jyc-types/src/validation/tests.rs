@@ -361,7 +361,7 @@ host = "h"
 port = 465
 username = "u"
 password = "p"
-[agent]
+[ai]
 enabled = true
 mode = "agent"
 [ai.providers.anthropic.models.claude-opus-4-6]
@@ -389,7 +389,7 @@ host = "h"
 port = 465
 username = "u"
 password = "p"
-[agent]
+[ai]
 enabled = true
 mode = "agent"
 [ai.providers.anthropic.models.claude-opus-4-6]

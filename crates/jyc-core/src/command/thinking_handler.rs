@@ -122,6 +122,51 @@ mod tests {
         assert_eq!(content, "high");
     }
 
+    /// With no runtime file, the bare report falls through to the config
+    /// tier and names the source.
+    #[tokio::test]
+    async fn test_thinking_bare_reports_config_tier_when_config_has_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_thinking_bare_reports_config_tier_when_config_has_one";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let ctx = crate::test_support::test_context_with_config(
+            topic,
+            tmp.path(),
+            r#"
+[general]
+[channels.test]
+type = "email"
+[channels.test.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.test.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[agent]
+enabled = true
+mode = "agent"
+[agent.reasoning_effort]
+default = "medium"
+"#,
+        );
+        let handler = ThinkingCommandHandler;
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success, "{:?}", result.message);
+        assert!(
+            result
+                .message
+                .contains("current tier is 'medium' (config default tier)"),
+            "{:?}",
+            result.message
+        );
+        jyc_types::state_dir::unregister(topic);
+        jyc_types::state_dir::clear_closed(topic);
+    }
+
     #[tokio::test]
     async fn test_thinking_bare_reports_config_tier_when_unset() {
         let tmp = tempfile::tempdir().unwrap();

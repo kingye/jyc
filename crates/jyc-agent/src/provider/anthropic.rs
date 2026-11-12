@@ -192,7 +192,11 @@ impl Provider for AnthropicProvider {
         // the params leave unset, so an explicit `thinking` in
         // `[agent.providers.*.params]` wins.
         crate::provider::merge_params(&mut body, &self.params);
-        crate::provider::apply_effort(&mut body, self.effort.as_ref(), true, 16384);
+        crate::provider::apply_effort(
+            &mut body,
+            self.effort.as_ref(),
+            crate::provider::EffortWire::AnthropicBudget,
+        );
 
         // Prompt-cache breakpoints. See `complete_raw` above for why this
         // runs after the params merge.
@@ -315,7 +319,11 @@ impl Provider for AnthropicProvider {
         // `thinking` in `[agent.providers.*.params]` wins. Same rendering
         // as `complete` above.
         crate::provider::merge_params(&mut body, &self.params);
-        crate::provider::apply_effort(&mut body, self.effort.as_ref(), true, 16384);
+        crate::provider::apply_effort(
+            &mut body,
+            self.effort.as_ref(),
+            crate::provider::EffortWire::AnthropicBudget,
+        );
 
         // Prompt-cache breakpoints. Applied last so a `system` or `tools`
         // override coming from `params` is marked too, and cannot clobber
@@ -984,6 +992,100 @@ mod tests {
         assert!(sent.get("output_config").is_none());
     }
 
+    /// The budget cap follows `max_tokens` *after* the params merge: params
+    /// lowering `max_tokens` below the budget drops the thinking parameter
+    /// instead of sending the API-rejected pair.
+    #[tokio::test]
+    async fn params_lowered_max_tokens_drops_oversized_budget() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "type": "message_start",
+                "message": {"id": "m", "type": "message", "role": "assistant", "content": [], "model": "claude-legacy", "stop_reason": null, "usage": {"input_tokens": 1, "output_tokens": 1}},
+            })))
+            .mount(&server)
+            .await;
+
+        let params = json!({"max_tokens": 8000});
+        let provider = AnthropicProvider::new(
+            &server.uri(),
+            "claude-legacy",
+            Some("k"),
+            Some(params),
+            false,
+            None,
+            false,
+            Some(json!(16000)),
+        )
+        .expect("provider construction");
+
+        let messages = vec![Message::user("hello")];
+        let mut stream = provider
+            .complete(&messages, &[], "")
+            .await
+            .expect("complete should return a stream");
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        assert_eq!(
+            sent["max_tokens"], 8000,
+            "params override applied: {sent:#}"
+        );
+        assert!(
+            sent.get("thinking").is_none(),
+            "budget 16000 >= merged max_tokens 8000 — dropped, not sent: {sent:#}"
+        );
+    }
+
+    /// Same cap, other direction: params raising `max_tokens` keeps a
+    /// budget that a fixed ceiling would have wrongly discarded.
+    #[tokio::test]
+    async fn params_raised_max_tokens_keeps_valid_budget() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "type": "message_start",
+                "message": {"id": "m", "type": "message", "role": "assistant", "content": [], "model": "claude-legacy", "stop_reason": null, "usage": {"input_tokens": 1, "output_tokens": 1}},
+            })))
+            .mount(&server)
+            .await;
+
+        let params = json!({"max_tokens": 32000});
+        let provider = AnthropicProvider::new(
+            &server.uri(),
+            "claude-legacy",
+            Some("k"),
+            Some(params),
+            false,
+            None,
+            false,
+            Some(json!(16000)),
+        )
+        .expect("provider construction");
+
+        let messages = vec![Message::user("hello")];
+        let mut stream = provider
+            .complete(&messages, &[], "")
+            .await
+            .expect("complete should return a stream");
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        assert_eq!(
+            sent["max_tokens"], 32000,
+            "params override applied: {sent:#}"
+        );
+        assert_eq!(
+            sent["thinking"],
+            json!({"type": "enabled", "budget_tokens": 16000}),
+            "budget 16000 < merged max_tokens 32000 — kept: {sent:#}"
+        );
+    }
+
     /// Params win: an explicit `thinking` in `[agent.providers.*.params]`
     /// must not be clobbered by the effort tier (`complete` path).
     #[tokio::test]
@@ -1067,6 +1169,10 @@ mod tests {
             sent["thinking"],
             json!({"type": "enabled", "budget_tokens": 999}),
             "params thinking must win over the effort tier: {sent:#}"
+        );
+        assert!(
+            sent.get("output_config").is_none(),
+            "params thinking wins the whole effort path — no adaptive output_config either: {sent:#}"
         );
     }
 

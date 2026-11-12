@@ -712,62 +712,96 @@ pub fn merge_params(body: &mut serde_json::Value, params: &Option<serde_json::Va
     }
 }
 
-/// Apply the reasoning effort to a request body. Call this right after
-/// [`merge_params`]: an explicit `thinking` / `reasoning_effort` /
-/// `reasoning` in `[agent.providers.*.params]` keeps precedence — the tier
-/// only fills the keys the params leave unset.
-///
-/// Rendering by value shape (translated from the generic tier by the
-/// model's `effort_map`, or the tier string itself when unmapped):
-/// - JSON number — the legacy Anthropic Extended-thinking API:
-///   `thinking.type = "enabled"` + `budget_tokens`. The budget must stay
-///   below the request's `max_tokens` (Anthropic rejects
-///   `budget_tokens >= max_tokens`); `max_tokens_floor` is the effective
-///   cap after any params override. A too-large budget is dropped with a
-///   warning rather than sent to fail upstream.
-/// - any other value (string) — the adaptive API:
-///   `thinking.type = "adaptive"` + `output_config.effort` (OpenAI
-///   providers instead put the string in their native effort field).
+/// Where the reasoning effort lands on each wire format. Call
+/// [`apply_effort`] right after [`merge_params`]: an explicit `thinking` /
+/// `reasoning_effort` / `reasoning` in `[agent.providers.*.params]` keeps
+/// precedence — the tier only fills the keys the params leave unset.
+pub(crate) enum EffortWire {
+    /// Chat Completions: top-level `reasoning_effort` string.
+    ChatCompletions,
+    /// OpenAI Responses: `reasoning.effort` inside the `reasoning` object,
+    /// merged into whatever `params` already put there (`summary`, …).
+    Responses,
+    /// Anthropic legacy Extended-thinking: `thinking.type = "enabled"` +
+    /// `budget_tokens` from a JSON-number effort value. The budget must
+    /// stay below the request's `max_tokens` (Anthropic rejects
+    /// `budget_tokens >= max_tokens`, read from the merged body); a
+    /// too-large budget is dropped with a warning rather than sent to
+    /// fail upstream.
+    AnthropicBudget,
+    /// Anthropic adaptive: `thinking.type = "adaptive"` +
+    /// `output_config.effort` from any other effort value.
+    AnthropicAdaptive,
+}
+
+/// Apply the reasoning effort to a request body. Rendering by value shape:
+/// a JSON number selects the legacy-budget rendering inside
+/// [`EffortWire::AnthropicBudget`], any other value is used verbatim.
 pub(crate) fn apply_effort(
     body: &mut serde_json::Value,
     effort: Option<&serde_json::Value>,
-    anthropic: bool,
-    max_tokens_floor: u64,
+    wire: EffortWire,
 ) {
     let Some(effort) = effort else { return };
-    if anthropic {
-        match effort {
-            serde_json::Value::Number(budget) => {
-                if body.get("thinking").is_some() {
-                    return; // explicit params `thinking` wins
-                }
-                let budget_u64 = budget.as_u64().unwrap_or(0);
-                if budget_u64 < 1024 || budget_u64 >= max_tokens_floor {
-                    tracing::warn!(
-                        budget = budget_u64,
-                        max_tokens = max_tokens_floor,
-                        "effort_map budget_tokens out of range (1024 <= budget < max_tokens); dropping the thinking parameter"
-                    );
-                    return;
-                }
-                body["thinking"] = serde_json::json!({
-                    "type": "enabled",
-                    "budget_tokens": budget,
-                });
-            }
-            other => {
-                if body.get("thinking").is_none() {
-                    body["thinking"] = serde_json::json!({ "type": "adaptive" });
-                }
-                if body.get("output_config").is_none() {
-                    let mut output_config = serde_json::Map::new();
-                    output_config.insert("effort".to_string(), other.clone());
-                    body["output_config"] = serde_json::Value::Object(output_config);
-                }
+    match wire {
+        EffortWire::ChatCompletions => {
+            if body.get("reasoning_effort").is_none() {
+                body["reasoning_effort"] = effort.clone();
             }
         }
-    } else if body.get("reasoning_effort").is_none() {
-        body["reasoning_effort"] = effort.clone();
+        EffortWire::Responses => {
+            if body.get("reasoning_effort").is_some() {
+                return; // explicit params already chose a shape
+            }
+            let reasoning = body
+                .get("reasoning")
+                .and_then(|r| r.as_object())
+                .cloned()
+                .unwrap_or_default();
+            if reasoning.get("effort").is_none() {
+                body["reasoning"] = serde_json::Value::Object({
+                    let mut r = reasoning;
+                    r.insert("effort".to_string(), effort.clone());
+                    r
+                });
+            }
+        }
+        EffortWire::AnthropicBudget => {
+            if body.get("thinking").is_some() {
+                return; // explicit params `thinking` wins
+            }
+            let Some(budget) = effort.as_u64() else {
+                tracing::warn!(
+                    effort = %effort,
+                    "effort_map gave a non-number for a legacy-budget model; dropping the thinking parameter"
+                );
+                return;
+            };
+            let max_tokens = body.get("max_tokens").and_then(|m| m.as_u64()).unwrap_or(0);
+            if budget < 1024 || max_tokens == 0 || budget >= max_tokens {
+                tracing::warn!(
+                    budget,
+                    max_tokens,
+                    "effort_map budget_tokens out of range (1024 <= budget < max_tokens); dropping the thinking parameter"
+                );
+                return;
+            }
+            body["thinking"] = serde_json::json!({
+                "type": "enabled",
+                "budget_tokens": budget,
+            });
+        }
+        EffortWire::AnthropicAdaptive => {
+            if body.get("thinking").is_some() {
+                return; // explicit params `thinking` wins — don't add output_config either
+            }
+            body["thinking"] = serde_json::json!({ "type": "adaptive" });
+            if body.get("output_config").is_none() {
+                let mut output_config = serde_json::Map::new();
+                output_config.insert("effort".to_string(), effort.clone());
+                body["output_config"] = serde_json::Value::Object(output_config);
+            }
+        }
     }
 }
 
@@ -878,27 +912,26 @@ pub fn create_provider(
     // models express effort as a `budget_tokens` integer instead, which the
     // map carries as a JSON number. A mapped value must be a string or a
     // number — anything else is a config error, not something to silently
-    // stringify, so the map entry is ignored (warn) and the tier string sent.
-    let effort = effort_tier.map(|tier| {
-        config
-            .models
-            .get(model_id)
-            .and_then(|m| m.effort_map.as_ref())
-            .and_then(|map| map.get(tier))
-            .map(|native| match native {
-                v @ (serde_json::Value::String(_) | serde_json::Value::Number(_)) => v.clone(),
-                other => {
-                    tracing::warn!(
-                        model = model_id,
-                        tier,
-                        value = %other,
-                        "effort_map value must be a string or a number; ignoring the map entry and sending the tier string"
-                    );
-                    serde_json::Value::String(tier.to_string())
+    // stringify, so provider construction fails.
+    let effort = match effort_tier {
+        Some(tier) => {
+            let mapped = config
+                .models
+                .get(model_id)
+                .and_then(|m| m.effort_map.as_ref())
+                .and_then(|map| map.get(tier));
+            match mapped {
+                Some(native @ (serde_json::Value::String(_) | serde_json::Value::Number(_))) => {
+                    Some(native.clone())
                 }
-            })
-            .unwrap_or_else(|| serde_json::Value::String(tier.to_string()))
-    });
+                Some(other) => anyhow::bail!(
+                    "model '{model_id}': effort_map value for tier '{tier}' must be a string or a number, got {other}"
+                ),
+                None => Some(serde_json::Value::String(tier.to_string())),
+            }
+        }
+        None => None,
+    };
 
     match config.provider_type.as_str() {
         "anthropic" => {
@@ -1746,6 +1779,33 @@ mod model_id_tests {
         // No tier: no effort at all.
         let p = create_provider("kimi/k3", &providers, None).unwrap();
         assert_eq!(p.effort(), None);
+    }
+
+    /// A mapped value that is neither a string nor a number (bool, object,
+    /// array, null) is a config error: `create_provider` fails instead of
+    /// silently sending the tier string.
+    #[test]
+    fn effort_map_rejects_non_scalar_values_at_construction() {
+        for bad in [
+            serde_json::json!(true),
+            serde_json::json!({ "budget": 1024 }),
+            serde_json::json!([1024]),
+            serde_json::Value::Null,
+        ] {
+            let mut mapped = model_config(Some("k3"));
+            mapped.effort_map = Some([("high".to_string(), bad.clone())].into_iter().collect());
+            let mut models = HashMap::new();
+            models.insert("k3".to_string(), mapped);
+            let providers = providers_with(models);
+
+            let error = create_provider("kimi/k3", &providers, Some("high"))
+                .err()
+                .expect("non-scalar effort_map value must fail construction");
+            assert!(
+                error.to_string().contains("must be a string or a number"),
+                "bool/object/array/null all bail: {error}"
+            );
+        }
     }
 }
 

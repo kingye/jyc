@@ -146,7 +146,11 @@ impl OpenAiResponsesProvider {
         // object in `[agent.providers.*.params]` wins. Other `reasoning`
         // keys already merged from params are kept.
         crate::provider::merge_params(&mut body, &self.params);
-        crate::provider::apply_effort(&mut body, self.effort.as_ref(), false, 0);
+        crate::provider::apply_effort(
+            &mut body,
+            self.effort.as_ref(),
+            crate::provider::EffortWire::Responses,
+        );
 
         let req = self
             .client
@@ -819,6 +823,10 @@ mod tests {
             sent["reasoning"],
             serde_json::json!({"effort": "low", "summary": "auto"}),
             "params reasoning must win over the tier: {sent:#}"
+        );
+        assert!(
+            sent.get("reasoning_effort").is_none(),
+            "the Responses wire never carries a top-level reasoning_effort: {sent:#}"
         );
     }
 

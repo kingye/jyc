@@ -234,7 +234,11 @@ impl Provider for OpenAiCompatProvider {
         // the params leave unset, so an explicit `reasoning_effort` in
         // `[agent.providers.*.params]` wins.
         crate::provider::merge_params(&mut body, &self.params);
-        crate::provider::apply_effort(&mut body, self.effort.as_ref(), false, 0);
+        crate::provider::apply_effort(
+            &mut body,
+            self.effort.as_ref(),
+            crate::provider::EffortWire::ChatCompletions,
+        );
 
         self.send(body)
     }
@@ -310,7 +314,11 @@ impl Provider for OpenAiCompatProvider {
         // only fills the key the params leave unset, so an explicit
         // `reasoning_effort` in `[agent.providers.*.params]` wins.
         crate::provider::merge_params(&mut body, &self.params);
-        crate::provider::apply_effort(&mut body, self.effort.as_ref(), false, 0);
+        crate::provider::apply_effort(
+            &mut body,
+            self.effort.as_ref(),
+            crate::provider::EffortWire::ChatCompletions,
+        );
 
         self.send(body)
     }

@@ -724,10 +724,10 @@ pub(crate) enum EffortWire {
     Responses,
     /// Anthropic: the effort value's shape picks the rendering. A JSON
     /// number selects legacy Extended-thinking (`thinking.type = "enabled"`
-    /// + `budget_tokens`, which must stay below the request's `max_tokens`
+    /// with `budget_tokens`, which must stay below the request's `max_tokens`
     /// read from the merged body — a too-large budget is dropped with a
     /// warning rather than sent to fail upstream); any other value selects
-    /// the adaptive rendering (`thinking.type = "adaptive"` +
+    /// the adaptive rendering (`thinking.type = "adaptive"` plus
     /// `output_config.effort`).
     Anthropic,
 }

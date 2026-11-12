@@ -38,6 +38,7 @@ pub struct AnthropicProvider {
 }
 
 impl AnthropicProvider {
+    #[allow(clippy::too_many_arguments)] // same shape as the OpenAI providers' `new`
     pub fn new(
         base_url: &str,
         model: &str,

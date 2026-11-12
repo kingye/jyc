@@ -54,7 +54,7 @@ impl CommandHandler for ThinkingCommandHandler {
             };
             return Ok(CommandResult {
                 success: true,
-                message: message.into(),
+                message,
                 error: None,
                 append_body: None,
             });
@@ -76,7 +76,7 @@ impl CommandHandler for ThinkingCommandHandler {
 
         Ok(CommandResult {
             success: true,
-            message: format!("/thinking: reasoning effort set to '{arg}'").into(),
+            message: format!("/thinking: reasoning effort set to '{arg}'"),
             error: None,
             append_body: None,
         })
@@ -131,7 +131,7 @@ mod tests {
         let handler = ThinkingCommandHandler;
         let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["medium".to_string()];
-        handler.execute(ctx).await.unwrap().success;
+        handler.execute(ctx).await.unwrap();
 
         let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec![];

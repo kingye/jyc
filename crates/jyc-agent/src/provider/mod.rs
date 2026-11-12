@@ -734,7 +734,7 @@ pub(crate) enum EffortWire {
 
 /// Apply the reasoning effort to a request body. Rendering by value shape:
 /// a JSON number selects the legacy-budget rendering inside
-/// [`EffortWire::AnthropicBudget`], any other value is used verbatim.
+/// [`EffortWire::Anthropic`], any other value is used verbatim.
 pub(crate) fn apply_effort(
     body: &mut serde_json::Value,
     effort: Option<&serde_json::Value>,

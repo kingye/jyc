@@ -46,27 +46,23 @@ impl CommandHandler for ThinkingCommandHandler {
             // Bare `/thinking`: report the tier that would actually apply —
             // the same chain `resolve_effort_tier` walks for every request
             // (runtime file > mode tier > default), not just the file.
-            let source;
-            let tier;
-            match tokio::fs::read_to_string(state_dir.join("thinking-effort")).await {
-                Ok(raw) => {
-                    tier = raw.trim().to_string();
-                    source = "runtime override";
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    tier = crate::session_state::resolve_effort_tier(
-                        &context.topic_name,
-                        &context.topic_path,
-                        context.config.as_ref(),
-                        &context.channel,
-                    )
-                    .await
-                    .map(|t| t.to_string())
-                    .unwrap_or_else(|| "none".to_string());
-                    source = "config";
-                }
-                Err(error) => return Err(error.into()),
-            }
+            let (tier, source) =
+                match tokio::fs::read_to_string(state_dir.join("thinking-effort")).await {
+                    Ok(raw) => (raw.trim().to_string(), "runtime override"),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        let tier = crate::session_state::resolve_effort_tier(
+                            &context.topic_name,
+                            &context.topic_path,
+                            context.config.as_ref(),
+                            &context.channel,
+                        )
+                        .await
+                        .map(|t| t.to_string())
+                        .unwrap_or_else(|| "none".to_string());
+                        (tier, "config")
+                    }
+                    Err(error) => return Err(error.into()),
+                };
             let message = format!("/thinking: current tier is '{tier}' ({source})");
             return Ok(CommandResult {
                 success: true,

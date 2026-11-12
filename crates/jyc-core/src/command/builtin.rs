@@ -468,7 +468,7 @@ builtin_commands! {
         make: |_| Arc::new(TemplateCommandHandler)
     },
     "/thinking" => {
-        desc: "Show or hide AI thinking/reasoning content",
+        desc: "Set the reasoning-effort tier (low|medium|high); bare reports current",
         shape: Shape::Subcommand {
             labels: &[],
             rest: None,

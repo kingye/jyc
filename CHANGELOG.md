@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+### Added
+
+- Reasoning-effort control: `[ai.reasoning_effort]` (`default`/`build`/`plan`) and the `/thinking low|medium|high` command pick a standard tier per topic; the tier reaches the provider as the model's native reasoning parameter — `reasoning_effort` (Chat Completions), `reasoning.effort` (Responses API), or Anthropic thinking (`effort_map` translates the tier, a number meaning legacy `budget_tokens`, a string the adaptive `output_config.effort`; without a map the tier string itself is sent). A subagent type's `[ai.reasoning_effort]` replaces the inherited one and clears the parent's runtime tier at spawn
+
+### Changed
+
+- `/thinking` now sets the reasoning-effort tier (`low`/`medium`/`high`; bare `/thinking` reports the current tier) instead of toggling reasoning display; thinking display stays on the TUI leader key `t`. The `.jyc/thinking-state` file is no longer read — a leftover one is inert and can be deleted
+
 ### Fixed
 
 - Opening the TUI chat topic-info pane (leader-key `i`) now also shows the status block inside it, so `Ctrl+P i` from a zen-opened chat yields a fully populated pane; closing the pane still leaves the status toggle (`s`) untouched

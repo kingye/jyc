@@ -462,6 +462,7 @@ impl JycAgentService {
         &self,
         agent_cfg: &jyc_types::AiConfig,
         model_override: Option<&str>,
+        effort_tier: Option<&str>,
     ) -> Result<Box<dyn provider::Provider>> {
         // Both the override and the fallback may be a reference to an `[ai]`
         // value (`model = "${ai.models.review}"`). Resolving here — the choke
@@ -480,7 +481,7 @@ impl JycAgentService {
         let model = jyc_types::resolve_model_reference(model, agent_cfg)
             .map_err(|err| anyhow::anyhow!(err))?;
 
-        provider::create_provider(&model, &agent_cfg.providers)
+        provider::create_provider(&model, &agent_cfg.providers, effort_tier)
     }
 
     /// Get event bus for a topic.

@@ -107,9 +107,6 @@ pub struct AgentLoopConfig<'a> {
     /// with the token counts so the dashboard can show how full the window
     /// is.
     pub context_window: Option<u64>,
-    /// Whether to publish `TopicEvent::Thinking` events for dashboard display.
-    /// Controlled by the `/thinking show/hide` command. Default: `true`.
-    pub thinking_enabled: bool,
     /// Billing rates for the active model. `None` when the model has no
     /// configured `pricing`, in which case no cost is computed and nothing
     /// is written to the ledger.
@@ -172,7 +169,6 @@ pub async fn run(
         current_channel,
         outbounds,
         context_window,
-        thinking_enabled,
         pricing,
         billing_mode,
         billing_dir,
@@ -517,7 +513,6 @@ pub async fn run(
             event_bus,
             sse_read_timeout,
             &cancel,
-            thinking_enabled,
             SSE_RETRY_BACKOFF_MS,
         )
         .await

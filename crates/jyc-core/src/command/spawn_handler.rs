@@ -1094,6 +1094,11 @@ fn superseded_overrides(config: &TopicConfig) -> Vec<&'static str> {
         if ai.model.is_some() || ai.build_model.is_some() {
             files.push("build-model-override");
         }
+        // The runtime effort tier outranks the type's `[ai.reasoning_effort]`
+        // in the same chain, so a type that sets any tier needs it gone.
+        if ai.reasoning_effort.is_some() {
+            files.push(crate::session_state::THINKING_EFFORT_FILE);
+        }
     }
     // A skill toggle cancels a config-level exclusion of the same name, so a
     // type that replaces the inherited skill list outright needs the parent's
@@ -2099,6 +2104,20 @@ mod tests {
                     "mcp-override.json",
                 ],
             ),
+            (
+                // An effort tier of its own: the parent's `/thinking` runtime
+                // tier goes, so the child starts from the role's tier table.
+                "[ai]\n[ai.reasoning_effort]\ndefault = \"low\"\n",
+                &["thinking-effort"],
+                &[
+                    "mode-override",
+                    "plan-model-override",
+                    "build-model-override",
+                    "model-override",
+                    "skill-override.json",
+                    "mcp-override.json",
+                ],
+            ),
         ];
 
         for (role, gone, kept) in cases {
@@ -2111,6 +2130,7 @@ mod tests {
                 "model-override",
                 "skill-override.json",
                 "mcp-override.json",
+                "thinking-effort",
             ] {
                 tokio::fs::write(parent_state.join(name), "provider/parent")
                     .await

@@ -190,7 +190,6 @@ fn base_config<'a>(
         current_channel: None,
         outbounds: None,
         context_window: None,
-        thinking_enabled: false,
         pricing: None,
         billing_mode: Default::default(),
         billing_dir: None,

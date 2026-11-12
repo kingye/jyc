@@ -286,6 +286,66 @@ mode = "static"
 }
 
 #[test]
+fn test_invalid_reasoning_effort_tier_fails() {
+    let toml = r#"
+[general]
+[channels.work]
+type = "email"
+[channels.work.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.work.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[agent]
+enabled = true
+mode = "agent"
+[agent.reasoning_effort]
+default = "low"
+build = "max"
+"#;
+    let config = load_config_from_str(toml).unwrap();
+    let errors = validate_config(&config, NO_BUILTINS);
+    assert!(
+        errors.iter().any(|e| e.path == "ai.reasoning_effort.build"),
+        "expected ai.reasoning_effort.build error, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn test_valid_reasoning_effort_passes() {
+    let toml = r#"
+[general]
+[channels.work]
+type = "email"
+[channels.work.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.work.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[agent]
+enabled = true
+mode = "agent"
+[agent.reasoning_effort]
+default = "medium"
+plan = "low"
+"#;
+    let config = load_config_from_str(toml).unwrap();
+    let errors = validate_config(&config, NO_BUILTINS);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+}
+
+#[test]
 fn test_invalid_mcp_in_agent() {
     let toml = r#"
 [general]

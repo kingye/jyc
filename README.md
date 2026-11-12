@@ -193,6 +193,8 @@ body line.
 | `/model <id>` | Switch AI model for this topic |
 | `/model` | List available models |
 | `/model reset` | Reset to default model |
+| `/thinking <tier>` | Set the reasoning-effort tier sent with each request: `low`, `medium`, or `high` — the tier maps to the model's native parameter via its `effort_map` (default: the tier string itself); persists until changed |
+| `/thinking` | Report the current reasoning-effort tier and its source (runtime override / config tier) |
 | `/plan` | Switch to plan mode (read-only) |
 | `/build` | Switch to build mode (default) |
 | `/reset` | Clear AI session (requires `-f`/`--force`) |
@@ -552,7 +554,10 @@ Key sections:
 - **`[channels.<name>.feishu]`** -- Feishu app credentials (app_id, app_secret, websocket)
 - **`[channels.<name>.github]`** -- GitHub settings (owner, repo, token, poll_interval)
 - **`[channels.<name>.agent]`** -- Per-channel agent override (model, system prompt)
-- **`[agent]`** -- AI agent settings (model, system prompt, progress updates)
+- **`[ai]`** -- AI agent settings (model, system prompt, progress updates,
+  `reasoning_effort` tiers: `default`/`build`/`plan`, sent with every request
+  and mapped to the model's native parameter through its `effort_map`; the
+  `/thinking` command overrides the tier at runtime)
 - **`[agent.providers.<name>]`** -- LLM provider (type, base_url, `api_key =
   "${ENV_VAR}"`, `pricing`);
   `[agent.providers.<name>.models.<id>]` overrides per model.
@@ -806,7 +811,7 @@ This is useful for diagnosing reply delivery failures.
 **AI replies are not sent:**
 - Check JYC logs for AI provider/API errors
 - Check the MCP reply tool log (`reply-tool.log` in the topic's state dir)
-- Verify the `[agent]` section in `config.toml` has valid API credentials
+- Verify the `[ai]` section in `config.toml` has valid API credentials
 
 **Session/context issues:**
 - Send `/reset --force` in an email to clear the AI session for that topic

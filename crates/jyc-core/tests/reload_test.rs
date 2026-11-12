@@ -139,6 +139,7 @@ fn create_test_config(pattern_names: Vec<&str>) -> jyc_types::AppConfig {
             providers: HashMap::new(),
             vision: None,
             context_strategy: None,
+            reasoning_effort: None,
         },
         inspect: None,
         attachments: None,

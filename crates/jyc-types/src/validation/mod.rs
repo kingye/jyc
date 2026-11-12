@@ -397,6 +397,11 @@ pub fn validate_config(config: &AppConfig, builtin_names: &[&str]) -> Vec<Valida
         });
     }
 
+    // Validate reasoning-effort tiers
+    if let Some(ref effort) = config.ai.reasoning_effort {
+        validate_reasoning_effort("ai.reasoning_effort", effort, &mut errors);
+    }
+
     // Validate agent attachment config
     if let Some(ref att) = config.ai.attachments {
         validate_outbound_attachment_config("ai.attachments", att, &mut errors);
@@ -847,6 +852,31 @@ fn validate_inbound_attachment_config(
             path: format!("{prefix}.max_per_message"),
             message: "must be at least 1".into(),
         });
+    }
+}
+
+/// Validate reasoning-effort tiers: each set tier must be a standard value.
+fn validate_reasoning_effort(
+    prefix: &str,
+    effort: &crate::config::ReasoningEffortConfig,
+    errors: &mut Vec<ValidationError>,
+) {
+    let tiers = [
+        ("default", effort.default.as_ref()),
+        ("build", effort.build.as_ref()),
+        ("plan", effort.plan.as_ref()),
+    ];
+    for (name, value) in tiers {
+        if let Some(tier) = value
+            && tier != "low"
+            && tier != "medium"
+            && tier != "high"
+        {
+            errors.push(ValidationError {
+                path: format!("{prefix}.{name}"),
+                message: format!("must be 'low', 'medium' or 'high', got '{tier}'"),
+            });
+        }
     }
 }
 

@@ -5,16 +5,17 @@ use jyc_types::state_dir::resolve_state_dir;
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use super::spec;
 
-/// `/thinking` command - control whether AI thinking/reasoning content is
-/// sent to the dashboard.
+/// `/thinking` command - control the reasoning-effort tier sent with each
+/// LLM request.
 ///
 /// Usage:
-/// - `/thinking show` - enable thinking content display (default)
-/// - `/thinking hide` - suppress thinking content; dashboard shows only "Thinking..."
-///
-/// State is persisted in `.jyc/thinking-state` and read by the agent loop
-/// before each processing cycle.
+/// - `/thinking low|medium|high` - set the tier, persisted in
+///   `.jyc/thinking-effort`; it overrides `[ai.reasoning_effort]` for this
+///   topic until changed again
+/// - `/thinking` - report the current tier (unset tier reported as unset)
 pub struct ThinkingCommandHandler;
+
+const TIERS: [&str; 3] = ["low", "medium", "high"];
 
 #[async_trait]
 impl CommandHandler for ThinkingCommandHandler {
@@ -28,25 +29,10 @@ impl CommandHandler for ThinkingCommandHandler {
             .first()
             .map(|s| s.to_lowercase())
             .unwrap_or_default();
-        let enabled = match arg.as_str() {
-            "show" => true,
-            "hide" => false,
-            "" => true, // default to show when no arg
-            other => {
-                return Ok(CommandResult {
-                    success: false,
-                    message: format!(
-                        "/thinking: unknown argument '{other}'. Use '/thinking show' or '/thinking hide'"
-                    ),
-                    error: None,
-                    append_body: None,
-                });
-            }
-        };
 
         // Defence in depth: the dispatcher already refuses commands for a
         // topic closed earlier in the same command block (`/close` +
-        // `/thinking show`), but the create below would rebuild the state dir
+        // `/thinking high`), but the create below would rebuild the state dir
         // the close just deleted if this is ever reached directly.
         if jyc_types::state_dir::is_closed(&context.topic_name) {
             return Ok(CommandResult::refusal(
@@ -55,21 +41,42 @@ impl CommandHandler for ThinkingCommandHandler {
         }
 
         let state_dir = resolve_state_dir(&context.topic_name, &context.topic_path);
+
+        if arg.is_empty() {
+            // Bare `/thinking`: report the current tier.
+            let current = tokio::fs::read_to_string(state_dir.join("thinking-effort"))
+                .await
+                .ok()
+                .map(|s| s.trim().to_string());
+            let message = match current.as_deref() {
+                Some(tier) => format!("/thinking: current tier is '{tier}'"),
+                None => "/thinking: no runtime tier set; [ai.reasoning_effort] applies".into(),
+            };
+            return Ok(CommandResult {
+                success: true,
+                message: message.into(),
+                error: None,
+                append_body: None,
+            });
+        }
+
+        if !TIERS.contains(&arg.as_str()) {
+            return Ok(CommandResult {
+                success: false,
+                message: format!(
+                    "/thinking: unknown tier '{arg}'. Use '/thinking low|medium|high'"
+                ),
+                error: None,
+                append_body: None,
+            });
+        }
+
         tokio::fs::create_dir_all(&state_dir).await?;
-
-        let state_path = state_dir.join("thinking-state");
-        let content = if enabled { "show" } else { "hide" };
-        tokio::fs::write(&state_path, content).await?;
-
-        let message = if enabled {
-            "/thinking: thinking content will be shown"
-        } else {
-            "/thinking: thinking content hidden, only \"Thinking...\" will be displayed"
-        };
+        tokio::fs::write(state_dir.join("thinking-effort"), &arg).await?;
 
         Ok(CommandResult {
             success: true,
-            message: message.into(),
+            message: format!("/thinking: reasoning effort set to '{arg}'").into(),
             error: None,
             append_body: None,
         })
@@ -86,62 +93,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_thinking_hide() {
+    async fn test_thinking_sets_tier() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_thinking_hide";
+        let topic = "test_thinking_sets_tier";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ThinkingCommandHandler;
         let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec!["hide".to_string()];
+        ctx.args = vec!["high".to_string()];
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
 
-        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/thinking-state"))
+        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/thinking-effort"))
             .await
             .unwrap();
-        assert_eq!(content, "hide");
+        assert_eq!(content, "high");
     }
 
     #[tokio::test]
-    async fn test_thinking_show() {
+    async fn test_thinking_bare_reports_unset() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_thinking_show";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let handler = ThinkingCommandHandler;
-        let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec!["show".to_string()];
-
-        let result = handler.execute(ctx).await.unwrap();
-        assert!(result.success);
-
-        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/thinking-state"))
-            .await
-            .unwrap();
-        assert_eq!(content, "show");
-    }
-
-    #[tokio::test]
-    async fn test_thinking_default_is_show() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_thinking_default_is_show";
+        let topic = "test_thinking_bare_reports_unset";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ThinkingCommandHandler;
         let ctx = test_context(topic, tmp.path());
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
-
-        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/thinking-state"))
-            .await
-            .unwrap();
-        assert_eq!(content, "show");
+        assert!(result.message.contains("no runtime tier set"));
     }
 
     #[tokio::test]
-    async fn test_thinking_invalid_arg() {
+    async fn test_thinking_bare_reports_current_tier() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "test_thinking_invalid_arg";
+        let topic = "test_thinking_bare_reports_current_tier";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let handler = ThinkingCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec!["medium".to_string()];
+        handler.execute(ctx).await.unwrap().success;
+
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec![];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        assert!(result.message.contains("current tier is 'medium'"));
+    }
+
+    #[tokio::test]
+    async fn test_thinking_invalid_tier() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_thinking_invalid_tier";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ThinkingCommandHandler;
         let mut ctx = test_context(topic, tmp.path());
@@ -149,6 +151,6 @@ mod tests {
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
-        assert!(result.message.contains("unknown argument"));
+        assert!(result.message.contains("unknown tier"));
     }
 }

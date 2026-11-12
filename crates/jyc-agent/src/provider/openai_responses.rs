@@ -61,6 +61,10 @@ pub struct OpenAiResponsesProvider {
     supports_images: bool,
     /// Optional User-Agent header override.
     user_agent: Option<String>,
+    /// Reasoning effort for this model, already translated from the generic
+    /// tier (see `ModelDef::effort_map`). Merged into the nested `reasoning`
+    /// object's `effort` key.
+    effort: Option<serde_json::Value>,
 }
 
 impl OpenAiResponsesProvider {
@@ -71,6 +75,7 @@ impl OpenAiResponsesProvider {
         params: Option<serde_json::Value>,
         supports_images: bool,
         user_agent: Option<&str>,
+        effort: Option<serde_json::Value>,
     ) -> Result<Self> {
         let client = super::http_client()?;
 
@@ -82,6 +87,7 @@ impl OpenAiResponsesProvider {
             params,
             supports_images,
             user_agent: user_agent.map(|s| s.to_string()),
+            effort,
         })
     }
 
@@ -136,6 +142,19 @@ impl OpenAiResponsesProvider {
 
         // Merge extra params from config (provider-level + model-level)
         crate::provider::merge_params(&mut body, &self.params);
+
+        // Reasoning effort — after the params merge, so a `reasoning` object
+        // in `[agent.providers.*.params]` keeps its other keys (e.g.
+        // `summary`) while this overrides only `effort`.
+        if let Some(effort) = &self.effort {
+            let mut reasoning = body
+                .get("reasoning")
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+            reasoning.insert("effort".to_string(), effort.clone());
+            body["reasoning"] = serde_json::Value::Object(reasoning);
+        }
 
         let req = self
             .client
@@ -726,6 +745,81 @@ fn extract_responses_error(value: &serde_json::Value) -> String {
 mod tests {
     use super::*;
     use crate::types::Message;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// An effort value lands inside the nested `reasoning.effort` object,
+    /// keeping any other `reasoning` keys already merged from params.
+    #[tokio::test]
+    async fn effort_lands_in_nested_reasoning_object() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "type": "response.completed",
+                "response": {"id": "r", "usage": {"input_tokens": 1, "output_tokens": 1}}
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = OpenAiResponsesProvider::new(
+            &server.uri(),
+            "gpt-5",
+            Some("k"),
+            Some(serde_json::json!({"reasoning": {"summary": "auto"}})),
+            false,
+            None,
+            Some(serde_json::json!("medium")),
+        )
+        .expect("provider construction");
+        let mut stream = provider
+            .complete(&[Message::user("hello")], &[], "")
+            .await
+            .expect("complete should return a stream");
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        assert_eq!(
+            sent["reasoning"],
+            serde_json::json!({"summary": "auto", "effort": "medium"}),
+            "effort merges into the reasoning object: {sent:#}"
+        );
+    }
+
+    /// No effort — no `reasoning` object is added by the effort path.
+    #[tokio::test]
+    async fn no_effort_omits_reasoning_object() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "type": "response.completed",
+                "response": {"id": "r", "usage": {"input_tokens": 1, "output_tokens": 1}}
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = OpenAiResponsesProvider::new(
+            &server.uri(),
+            "gpt-5",
+            Some("k"),
+            None,
+            false,
+            None,
+            None,
+        )
+        .expect("provider construction");
+        let mut stream = provider
+            .complete(&[Message::user("hello")], &[], "")
+            .await
+            .expect("complete should return a stream");
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        assert!(sent.get("reasoning").is_none(), "{sent:#}");
+    }
 
     #[test]
     fn parse_output_text_delta() {
@@ -1107,6 +1201,7 @@ mod tests {
             Some("test-key"),
             None,
             false,
+            None,
             None,
         )
         .expect("provider construction");

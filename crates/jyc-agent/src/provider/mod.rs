@@ -753,6 +753,7 @@ pub fn expand_params_placeholders(
 pub fn create_provider(
     model: &str,
     providers: &std::collections::HashMap<String, jyc_types::ProviderDef>,
+    effort_tier: Option<&str>,
 ) -> Result<Box<dyn Provider>> {
     let (provider_name, model_id) = model
         .split_once('/')
@@ -804,6 +805,22 @@ pub fn create_provider(
         .and_then(|m| m.user_agent.as_deref())
         .or(config.user_agent.as_deref());
 
+    // Translate the generic effort tier into this model's native value via
+    // the per-model `effort_map`. Without a map (or a matching key) the tier
+    // string itself is the native value — that is what the standard tiers
+    // (`low`/`medium`/`high`) are for. Anthropic legacy-Extended-thinking
+    // models express effort as a `budget_tokens` integer instead, which the
+    // map carries as a JSON number.
+    let effort = effort_tier.map(|tier| {
+        config
+            .models
+            .get(model_id)
+            .and_then(|m| m.effort_map.as_ref())
+            .and_then(|map| map.get(tier))
+            .cloned()
+            .unwrap_or_else(|| serde_json::Value::String(tier.to_string()))
+    });
+
     match config.provider_type.as_str() {
         "anthropic" => {
             let base_url = config
@@ -833,6 +850,7 @@ pub fn create_provider(
                 supports_images,
                 user_agent,
                 cache_ttl_1h,
+                effort,
             )?))
         }
         "openai-compatible" | "openai" => {
@@ -849,6 +867,7 @@ pub fn create_provider(
                 params,
                 supports_images,
                 user_agent,
+                effort,
             )?))
         }
         "openai-responses" => {
@@ -865,6 +884,7 @@ pub fn create_provider(
                 params,
                 supports_images,
                 user_agent,
+                effort,
             )?))
         }
         other => anyhow::bail!(
@@ -1541,6 +1561,7 @@ mod model_id_tests {
             user_agent: None,
             cache_ttl: None,
             pricing: None,
+            effort_map: None,
         }
     }
 
@@ -1573,7 +1594,7 @@ mod model_id_tests {
         models.insert("k3-high".to_string(), model_config(Some("k3")));
         let providers = providers_with(models);
 
-        let provider = create_provider("kimi/k3-high", &providers).unwrap();
+        let provider = create_provider("kimi/k3-high", &providers, None).unwrap();
         assert_eq!(provider.model(), "k3");
     }
 
@@ -1583,7 +1604,7 @@ mod model_id_tests {
         models.insert("k3".to_string(), model_config(None));
         let providers = providers_with(models);
 
-        let provider = create_provider("kimi/k3", &providers).unwrap();
+        let provider = create_provider("kimi/k3", &providers, None).unwrap();
         assert_eq!(provider.model(), "k3");
     }
 
@@ -1591,7 +1612,7 @@ mod model_id_tests {
     fn model_without_config_entry_falls_back_to_map_key() {
         let providers = providers_with(HashMap::new());
 
-        let provider = create_provider("kimi/k3", &providers).unwrap();
+        let provider = create_provider("kimi/k3", &providers, None).unwrap();
         assert_eq!(provider.model(), "k3");
     }
 
@@ -1604,8 +1625,8 @@ mod model_id_tests {
         models.insert("k3-low".to_string(), model_config(Some("k3")));
         let providers = providers_with(models);
 
-        let high = create_provider("kimi/k3-high", &providers).unwrap();
-        let low = create_provider("kimi/k3-low", &providers).unwrap();
+        let high = create_provider("kimi/k3-high", &providers, None).unwrap();
+        let low = create_provider("kimi/k3-low", &providers, None).unwrap();
         assert_eq!(high.model(), "k3");
         assert_eq!(low.model(), "k3");
     }
@@ -1631,6 +1652,7 @@ mod params_placeholder_tests {
                 user_agent: None,
                 cache_ttl: None,
                 pricing: None,
+                effort_map: None,
             },
         );
         let mut providers = HashMap::new();

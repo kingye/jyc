@@ -157,9 +157,7 @@ default = "medium"
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success, "{:?}", result.message);
         assert!(
-            result
-                .message
-                .contains("current tier is 'medium' (config default tier)"),
+            result.message.contains("current tier is 'medium' (config)"),
             "{:?}",
             result.message
         );

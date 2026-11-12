@@ -364,6 +364,8 @@ password = "p"
 [ai]
 enabled = true
 mode = "agent"
+[ai.providers.anthropic]
+type = "anthropic"
 [ai.providers.anthropic.models.claude-opus-4-6]
 model_id = "claude-opus-4-6"
 effort_map = { high = 16000, medium = 8000, low = "minimal" }
@@ -392,6 +394,8 @@ password = "p"
 [ai]
 enabled = true
 mode = "agent"
+[ai.providers.anthropic]
+type = "anthropic"
 [ai.providers.anthropic.models.claude-opus-4-6]
 model_id = "claude-opus-4-6"
 effort_map = { ultra = true }

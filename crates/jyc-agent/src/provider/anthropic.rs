@@ -195,7 +195,7 @@ impl Provider for AnthropicProvider {
         crate::provider::apply_effort(
             &mut body,
             self.effort.as_ref(),
-            crate::provider::EffortWire::AnthropicBudget,
+            crate::provider::EffortWire::Anthropic,
         );
 
         // Prompt-cache breakpoints. See `complete_raw` above for why this
@@ -322,7 +322,7 @@ impl Provider for AnthropicProvider {
         crate::provider::apply_effort(
             &mut body,
             self.effort.as_ref(),
-            crate::provider::EffortWire::AnthropicBudget,
+            crate::provider::EffortWire::Anthropic,
         );
 
         // Prompt-cache breakpoints. Applied last so a `system` or `tools`

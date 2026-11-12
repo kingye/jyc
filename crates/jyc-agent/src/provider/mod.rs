@@ -722,16 +722,14 @@ pub(crate) enum EffortWire {
     /// OpenAI Responses: `reasoning.effort` inside the `reasoning` object,
     /// merged into whatever `params` already put there (`summary`, …).
     Responses,
-    /// Anthropic legacy Extended-thinking: `thinking.type = "enabled"` +
-    /// `budget_tokens` from a JSON-number effort value. The budget must
-    /// stay below the request's `max_tokens` (Anthropic rejects
-    /// `budget_tokens >= max_tokens`, read from the merged body); a
-    /// too-large budget is dropped with a warning rather than sent to
-    /// fail upstream.
-    AnthropicBudget,
-    /// Anthropic adaptive: `thinking.type = "adaptive"` +
-    /// `output_config.effort` from any other effort value.
-    AnthropicAdaptive,
+    /// Anthropic: the effort value's shape picks the rendering. A JSON
+    /// number selects legacy Extended-thinking (`thinking.type = "enabled"`
+    /// + `budget_tokens`, which must stay below the request's `max_tokens`
+    /// read from the merged body — a too-large budget is dropped with a
+    /// warning rather than sent to fail upstream); any other value selects
+    /// the adaptive rendering (`thinking.type = "adaptive"` +
+    /// `output_config.effort`).
+    Anthropic,
 }
 
 /// Apply the reasoning effort to a request body. Rendering by value shape:
@@ -766,17 +764,21 @@ pub(crate) fn apply_effort(
                 });
             }
         }
-        EffortWire::AnthropicBudget => {
+        EffortWire::Anthropic => {
             if body.get("thinking").is_some() {
-                return; // explicit params `thinking` wins
+                return; // explicit params `thinking` wins — adaptive adds no output_config either
             }
             let Some(budget) = effort.as_u64() else {
-                tracing::warn!(
-                    effort = %effort,
-                    "effort_map gave a non-number for a legacy-budget model; dropping the thinking parameter"
-                );
+                // String tier: the adaptive rendering.
+                body["thinking"] = serde_json::json!({ "type": "adaptive" });
+                if body.get("output_config").is_none() {
+                    let mut output_config = serde_json::Map::new();
+                    output_config.insert("effort".to_string(), effort.clone());
+                    body["output_config"] = serde_json::Value::Object(output_config);
+                }
                 return;
             };
+            // Number: the legacy-budget rendering.
             let max_tokens = body.get("max_tokens").and_then(|m| m.as_u64()).unwrap_or(0);
             if budget < 1024 || max_tokens == 0 || budget >= max_tokens {
                 tracing::warn!(
@@ -790,17 +792,6 @@ pub(crate) fn apply_effort(
                 "type": "enabled",
                 "budget_tokens": budget,
             });
-        }
-        EffortWire::AnthropicAdaptive => {
-            if body.get("thinking").is_some() {
-                return; // explicit params `thinking` wins — don't add output_config either
-            }
-            body["thinking"] = serde_json::json!({ "type": "adaptive" });
-            if body.get("output_config").is_none() {
-                let mut output_config = serde_json::Map::new();
-                output_config.insert("effort".to_string(), effort.clone());
-                body["output_config"] = serde_json::Value::Object(output_config);
-            }
         }
     }
 }

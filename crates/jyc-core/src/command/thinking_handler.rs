@@ -2,6 +2,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use jyc_types::state_dir::resolve_state_dir;
 
+use crate::session_state::{THINKING_EFFORT_FILE, is_standard_effort_tier};
+
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use super::spec;
 
@@ -50,26 +52,16 @@ impl CommandHandler for ThinkingCommandHandler {
             // (runtime file > mode tier > default), not just the file. A
             // stale runtime file (a tier the current set no longer accepts)
             // falls through to the config chain, exactly as requests do.
-            let raw = tokio::fs::read_to_string(state_dir.join("thinking-effort")).await;
-            let (tier, source) = match raw {
-                Ok(text) => {
-                    let tier = text.trim();
-                    if matches!(tier, "low" | "high" | "max") {
-                        (tier.to_string(), "runtime override")
-                    } else {
-                        let tier = crate::session_state::resolve_effort_tier(
-                            &context.topic_name,
-                            &context.topic_path,
-                            context.config.as_ref(),
-                            &context.channel,
-                        )
-                        .await
-                        .map(|t| t.to_string())
-                        .unwrap_or_else(|| "auto".to_string());
-                        (tier, "config")
-                    }
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let runtime = match tokio::fs::read_to_string(state_dir.join(THINKING_EFFORT_FILE))
+                .await
+            {
+                Ok(text) => is_standard_effort_tier(text.trim()).then(|| text.trim().to_owned()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.into()),
+            };
+            let (tier, source) = match runtime {
+                Some(tier) => (tier.to_owned(), "runtime override"),
+                None => {
                     let tier = crate::session_state::resolve_effort_tier(
                         &context.topic_name,
                         &context.topic_path,
@@ -77,11 +69,9 @@ impl CommandHandler for ThinkingCommandHandler {
                         &context.channel,
                     )
                     .await
-                    .map(|t| t.to_string())
-                    .unwrap_or_else(|| "auto".to_string());
+                    .unwrap_or_else(|| "auto".to_owned());
                     (tier, "config")
                 }
-                Err(error) => return Err(error.into()),
             };
             let message = format!("/thinking: current effort is '{tier}' ({source})");
             return Ok(CommandResult {
@@ -98,7 +88,7 @@ impl CommandHandler for ThinkingCommandHandler {
             // reasoning parameter sent). Remove the override *first*, then
             // resolve: `resolve_effort_tier` reads this very file, so
             // resolving before the clear would report the override itself.
-            match tokio::fs::remove_file(state_dir.join("thinking-effort")).await {
+            match tokio::fs::remove_file(state_dir.join(THINKING_EFFORT_FILE)).await {
                 Ok(()) => {
                     let tier = crate::session_state::resolve_effort_tier(
                         &context.topic_name,
@@ -141,7 +131,7 @@ impl CommandHandler for ThinkingCommandHandler {
         }
 
         tokio::fs::create_dir_all(&state_dir).await?;
-        tokio::fs::write(state_dir.join("thinking-effort"), &arg).await?;
+        tokio::fs::write(state_dir.join(THINKING_EFFORT_FILE), &arg).await?;
 
         Ok(CommandResult {
             success: true,
@@ -235,6 +225,7 @@ default = "high"
         // config's own tier ("high") differs from the stale file's value,
         // so the assertion proves the file was ignored rather than shown.
         let state_dir = jyc_types::state_dir::resolve_state_dir(topic, &ctx.topic_path);
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
         tokio::fs::write(
             state_dir.join(crate::session_state::THINKING_EFFORT_FILE),
             "medium\n",

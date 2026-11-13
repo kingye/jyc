@@ -7,9 +7,9 @@
 
 ### Changed
 
-- The generic reasoning-effort tier set is now `low` / `high` / `max` (was `low` / `medium` / `high`), for `[ai.reasoning_effort]`, `/thinking`, and `effort_map` keys alike; no compatibility alias — existing `medium` config values and leftover `.jyc/thinking-effort` files are invalid and fall back to the config chain. Models capped below `high` keep native names via `effort_map` (e.g. `low = "minimal"`); mapped keys are independent, a partial map falls back to the tier string for unmapped tiers
+- The generic reasoning-effort tier set is now `low` / `high` / `max` (was `low` / `medium` / `high`), for `[ai.reasoning_effort]`, `/thinking`, and `effort_map` keys alike; no compatibility alias — a `medium` config value fails validation (startup/reload aborts on the global config; a topic-local one silently sends no effort), and a leftover `.jyc/thinking-effort` file with a retired tier is ignored in favor of the config chain. Models capped below `high` keep native names via `effort_map` (e.g. `low = "minimal"`); mapped keys are independent, a partial map falls back to the tier string for unmapped tiers
 
-- `/thinking` now sets the reasoning-effort tier (`low`/`medium`/`high`; bare `/thinking` reports the current tier) instead of toggling reasoning display; thinking display stays on the TUI leader key `t`. The `.jyc/thinking-state` file is no longer read — a leftover one is inert and can be deleted
+- `/thinking` now sets the reasoning-effort tier (`low`/`high`/`max`; bare `/thinking` reports the current tier) instead of toggling reasoning display; thinking display stays on the TUI leader key `t`. The `.jyc/thinking-state` file is no longer read — a leftover one is inert and can be deleted
 
 ### Fixed
 

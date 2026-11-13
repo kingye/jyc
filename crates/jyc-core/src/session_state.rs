@@ -784,6 +784,14 @@ fn context_window_for_model(model_str: &str, config: &AppConfig) -> Option<u64> 
 /// `max`).
 pub const THINKING_EFFORT_FILE: &str = "thinking-effort";
 
+/// Whether `tier` is one of the standard reasoning-effort tiers
+/// (`low` | `high` | `max`). Retired values (e.g. `medium`) fail this
+/// check wherever a tier enters the chain: startup validation rejects
+/// them in config, and runtime leftovers fall back to the config chain.
+pub fn is_standard_effort_tier(tier: &str) -> bool {
+    matches!(tier, "low" | "high" | "max")
+}
+
 /// The reasoning-effort tier this topic runs at right now, before any
 /// per-model mapping: the `/thinking` runtime override
 /// (`.jyc/thinking-effort`), else the tier the effective mode asks for
@@ -800,7 +808,7 @@ pub async fn resolve_effort_tier(
         // Only a standard tier applies (defence against a leftover file
         // written by an older tier set): anything else falls back to the
         // config chain, same as a missing file.
-        if matches!(tier, "low" | "high" | "max") {
+        if is_standard_effort_tier(tier) {
             return Some(tier.to_string());
         }
     }
@@ -821,7 +829,7 @@ pub async fn resolve_effort_tier(
             } else {
                 e.build.or(e.default)
             };
-            tier.filter(|t| matches!(t.as_str(), "low" | "high" | "max"))
+            tier.filter(|t| is_standard_effort_tier(t))
         }
         None => None,
     }
@@ -1374,7 +1382,7 @@ build = "{build}"
             .await
             .unwrap();
         let result = resolve_effort_tier(topic, tmp.path(), &config, "c").await;
-        assert_eq!(result, Some("high".to_string()));
+        assert_eq!(result, Some("max".to_string()));
         jyc_types::state_dir::unregister(topic);
         jyc_types::state_dir::clear_closed(topic);
     }

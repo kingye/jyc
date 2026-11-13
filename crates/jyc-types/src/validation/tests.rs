@@ -306,7 +306,7 @@ enabled = true
 mode = "agent"
 [agent.reasoning_effort]
 default = "low"
-build = "max"
+build = "medium"
 "#;
     let config = load_config_from_str(toml).unwrap();
     let errors = validate_config(&config, NO_BUILTINS);

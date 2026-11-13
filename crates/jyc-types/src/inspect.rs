@@ -808,6 +808,7 @@ mod tests {
                 queue_capacity: 10,
                 parent: None,
                 model: Some("anthropic/claude-opus-4-6".to_string()),
+                reasoning_effort: Some("medium".to_string()),
                 mode: Some("build".to_string()),
                 context_input_tokens: Some(45000),
                 context_output_tokens: Some(1200),

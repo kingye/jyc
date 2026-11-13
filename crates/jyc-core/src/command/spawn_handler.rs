@@ -1416,6 +1416,18 @@ mod tests {
             "provider/small",
             "the model reference still resolves to the channel's small model"
         );
+        // The effort tier rides with the model: the role pins it to the floor
+        // so a wait costs the smallest thinking budget the provider sells.
+        assert_eq!(
+            watch
+                .config
+                .ai
+                .as_ref()
+                .and_then(|ai| ai.reasoning_effort.as_ref())
+                .and_then(|e| e.default.as_deref()),
+            Some("low"),
+            "the watcher reasons at the low tier by default"
+        );
         // `bash` stays: `gh` is what watching is — a timed call. Nothing
         // published to a link either — the report is the only thing it sends
         // back.

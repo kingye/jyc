@@ -90,7 +90,6 @@ pub(crate) async fn collect_response(
     sse_read_timeout: std::time::Duration,
     event_bus: Option<&TopicEventBusRef>,
     topic_name: &str,
-    thinking_enabled: bool,
 ) -> Result<CollectedResponse> {
     let mut response = CollectedResponse::default();
     let mut current_tool_id: Option<String> = None;
@@ -122,27 +121,24 @@ pub(crate) async fn collect_response(
                 response.reasoning_content.push_str(&text);
 
                 // Publish a throttled Thinking event for the dashboard chat pane.
-                // Skipped entirely when the user has run `/thinking hide`.
-                if thinking_enabled {
-                    let now = std::time::Instant::now();
-                    let should_publish = match last_thinking_publish {
-                        None => true,
-                        Some(t) => now.duration_since(t) >= THINKING_PUBLISH_INTERVAL,
-                    };
-                    if should_publish {
-                        last_thinking_publish = Some(now);
-                        let text = response.reasoning_content.clone();
-                        publish_event(
-                            event_bus,
-                            TopicEvent::Thinking {
-                                topic_name: topic_name.to_string(),
-                                text,
-                                full_length: response.reasoning_content.len(),
-                                timestamp: Utc::now(),
-                            },
-                        )
-                        .await;
-                    }
+                let now = std::time::Instant::now();
+                let should_publish = match last_thinking_publish {
+                    None => true,
+                    Some(t) => now.duration_since(t) >= THINKING_PUBLISH_INTERVAL,
+                };
+                if should_publish {
+                    last_thinking_publish = Some(now);
+                    let text = response.reasoning_content.clone();
+                    publish_event(
+                        event_bus,
+                        TopicEvent::Thinking {
+                            topic_name: topic_name.to_string(),
+                            text,
+                            full_length: response.reasoning_content.len(),
+                            timestamp: Utc::now(),
+                        },
+                    )
+                    .await;
                 }
             }
             StreamEvent::ToolUseStart { id, name } => {
@@ -212,7 +208,7 @@ pub(crate) async fn collect_response(
     // Final thinking flush: the throttled publishes inside the stream loop
     // may have skipped the tail of the reasoning stream — emit one last
     // snapshot with the full text so live consumers don't lose the ending.
-    if thinking_enabled && !response.reasoning_content.is_empty() {
+    if !response.reasoning_content.is_empty() {
         publish_event(
             event_bus,
             TopicEvent::Thinking {
@@ -378,7 +374,6 @@ mod tests {
             std::time::Duration::from_secs(5),
             None,
             "topic",
-            false,
         )
         .await
         .expect("stream with Done marker must collect");
@@ -398,7 +393,6 @@ mod tests {
             std::time::Duration::from_secs(5),
             None,
             "topic",
-            false,
         )
         .await
         .expect_err("EOF without Done must fail");

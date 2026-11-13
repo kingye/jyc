@@ -28,6 +28,7 @@ fn base_app_config(model: Option<&str>) -> jyc_types::AppConfig {
             providers: HashMap::new(),
             vision: None,
             context_strategy: None,
+            reasoning_effort: None,
         },
         inspect: None,
         attachments: None,
@@ -315,6 +316,7 @@ fn reload_picks_up_new_model_context_window_without_restart() {
             },
             vision: None,
             context_strategy: None,
+            reasoning_effort: None,
         },
         inspect: None,
         attachments: None,
@@ -358,6 +360,7 @@ fn reload_picks_up_new_model_context_window_without_restart() {
                 user_agent: None,
                 cache_ttl: None,
                 pricing: None,
+                effort_map: None,
             },
         );
     }
@@ -424,6 +427,7 @@ fn derive_agent_config_applies_channel_overrides() {
             providers: HashMap::new(),
             vision: None,
             context_strategy: None,
+            reasoning_effort: None,
         },
         inspect: None,
         attachments: None,

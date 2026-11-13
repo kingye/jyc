@@ -26,6 +26,10 @@ pub struct OpenAiCompatProvider {
     supports_images: bool,
     /// Optional User-Agent header override.
     user_agent: Option<String>,
+    /// Reasoning effort for this model, already translated from the generic
+    /// tier (see `ModelDef::effort_map`). Sent as the top-level
+    /// `reasoning_effort` field.
+    effort: Option<serde_json::Value>,
 }
 
 impl OpenAiCompatProvider {
@@ -36,6 +40,7 @@ impl OpenAiCompatProvider {
         params: Option<serde_json::Value>,
         supports_images: bool,
         user_agent: Option<&str>,
+        effort: Option<serde_json::Value>,
     ) -> Result<Self> {
         let client = super::http_client()?;
 
@@ -47,6 +52,7 @@ impl OpenAiCompatProvider {
             params,
             supports_images,
             user_agent: user_agent.map(|s| s.to_string()),
+            effort,
         })
     }
 
@@ -170,6 +176,10 @@ impl Provider for OpenAiCompatProvider {
         &self.model
     }
 
+    fn effort(&self) -> Option<&serde_json::Value> {
+        self.effort.as_ref()
+    }
+
     fn supports_images(&self) -> bool {
         self.supports_images
     }
@@ -219,8 +229,16 @@ impl Provider for OpenAiCompatProvider {
             body["tools"] = serde_json::Value::Array(openai_tools);
         }
 
-        // Merge extra params from config (provider-level + model-level)
+        // Merge extra params from config (provider-level + model-level),
+        // then the reasoning effort — `apply_effort` only fills the key
+        // the params leave unset, so an explicit `reasoning_effort` in
+        // `[agent.providers.*.params]` wins.
         crate::provider::merge_params(&mut body, &self.params);
+        crate::provider::apply_effort(
+            &mut body,
+            self.effort.as_ref(),
+            crate::provider::EffortWire::ChatCompletions,
+        );
 
         self.send(body)
     }
@@ -292,8 +310,15 @@ impl Provider for OpenAiCompatProvider {
             body["tools"] = serde_json::Value::Array(openai_tools);
         }
 
-        // Merge extra params
+        // Merge extra params, then the reasoning effort — `apply_effort`
+        // only fills the key the params leave unset, so an explicit
+        // `reasoning_effort` in `[agent.providers.*.params]` wins.
         crate::provider::merge_params(&mut body, &self.params);
+        crate::provider::apply_effort(
+            &mut body,
+            self.effort.as_ref(),
+            crate::provider::EffortWire::ChatCompletions,
+        );
 
         self.send(body)
     }
@@ -926,6 +951,7 @@ mod tests {
             None,
             false,
             Some("opencode/1.15.13"),
+            None,
         )
         .expect("provider construction");
 
@@ -967,6 +993,7 @@ mod tests {
             None,
             false,
             Some("opencode/1.15.13"),
+            None,
         )
         .expect("provider construction");
 
@@ -1013,6 +1040,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         )
         .expect("provider construction");
         let mut stream = provider
@@ -1029,6 +1057,116 @@ mod tests {
         assert!(msg.starts_with("SSE stream error: "), "{msg}");
         assert!(msg.contains("400"), "{msg}");
         assert!(msg.contains("bad request"), "{msg}");
+    }
+
+    /// Params win: an explicit `reasoning_effort` in
+    /// `[agent.providers.*.params]` must not be clobbered by the tier.
+    #[tokio::test]
+    async fn params_reasoning_effort_beats_tier() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = OpenAiCompatProvider::new(
+            &server.uri(),
+            "m",
+            Some("k"),
+            Some(serde_json::json!({"reasoning_effort": "low"})),
+            false,
+            None,
+            Some(serde_json::json!("high")),
+        )
+        .expect("provider construction");
+
+        let messages = vec![Message::user("hi")];
+        let mut stream = provider.complete(&messages, &[], "").await.expect("stream");
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        assert_eq!(
+            sent["reasoning_effort"],
+            serde_json::json!("low"),
+            "params reasoning_effort must win over the tier: {sent:#}"
+        );
+    }
+
+    /// An effort value lands as the top-level `reasoning_effort` key.
+    #[tokio::test]
+    async fn effort_lands_as_top_level_reasoning_effort() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{
+                    "delta": {"content": "ok"},
+                    "finish_reason": "stop",
+                    "index": 0
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = OpenAiCompatProvider::new(
+            &server.uri(),
+            "kimi-k3",
+            Some("k"),
+            None,
+            false,
+            None,
+            Some(serde_json::json!("high")),
+        )
+        .expect("provider construction");
+        let mut stream = provider
+            .complete(&[Message::user("hello")], &[], "")
+            .await
+            .expect("complete should return a stream");
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        assert_eq!(
+            sent["reasoning_effort"], "high",
+            "top-level reasoning_effort: {sent:#}"
+        );
+    }
+
+    /// No effort — no `reasoning_effort` key.
+    #[tokio::test]
+    async fn no_effort_omits_reasoning_effort_key() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{
+                    "delta": {"content": "ok"},
+                    "finish_reason": "stop",
+                    "index": 0
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+
+        let provider =
+            OpenAiCompatProvider::new(&server.uri(), "kimi-k3", Some("k"), None, false, None, None)
+                .expect("provider construction");
+        let mut stream = provider
+            .complete(&[Message::user("hello")], &[], "")
+            .await
+            .expect("complete should return a stream");
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        assert!(sent.get("reasoning_effort").is_none(), "{sent:#}");
     }
 
     #[test]
@@ -1269,6 +1407,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         )
         .unwrap();
         let result =
@@ -1289,6 +1428,7 @@ mod tests {
             Some("k"),
             None,
             false,
+            None,
             None,
         )
         .unwrap();
@@ -1761,6 +1901,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         )
         .unwrap();
         let msg = provider.build_raw_assistant_message("the answer", "the thinking", &[]);
@@ -1781,6 +1922,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         )
         .unwrap();
         let msg = provider.build_raw_assistant_message("just text", "", &[]);
@@ -1797,6 +1939,7 @@ mod tests {
             Some("k"),
             None,
             false,
+            None,
             None,
         )
         .unwrap();
@@ -1824,6 +1967,7 @@ mod tests {
             Some("k"),
             None,
             false,
+            None,
             None,
         )
         .unwrap();
@@ -1853,6 +1997,7 @@ mod tests {
             Some("k"),
             None,
             false,
+            None,
             None,
         )
         .unwrap();

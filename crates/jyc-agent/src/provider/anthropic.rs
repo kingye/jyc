@@ -29,9 +29,16 @@ pub struct AnthropicProvider {
     /// default 5 minutes. Every breakpoint is written with `"ttl": "1h"`,
     /// billed at 2× input price instead of the 1.25× 5-minute write rate.
     cache_ttl_1h: bool,
+    /// Reasoning effort for this model, already translated from the generic
+    /// tier (see `ModelDef::effort_map`). Rendered as legacy thinking
+    /// (`thinking.type=enabled` + `budget_tokens`) when the value is a
+    /// number, or as adaptive thinking (`thinking.type=adaptive` +
+    /// `output_config.effort`) when it is a string.
+    effort: Option<serde_json::Value>,
 }
 
 impl AnthropicProvider {
+    #[allow(clippy::too_many_arguments)] // same shape as the OpenAI providers' `new`
     pub fn new(
         base_url: &str,
         model: &str,
@@ -40,6 +47,7 @@ impl AnthropicProvider {
         supports_images: bool,
         user_agent: Option<&str>,
         cache_ttl_1h: bool,
+        effort: Option<serde_json::Value>,
     ) -> Result<Self> {
         let client = super::http_client()?;
 
@@ -52,6 +60,7 @@ impl AnthropicProvider {
             supports_images,
             user_agent: user_agent.map(|s| s.to_string()),
             cache_ttl_1h,
+            effort,
         })
     }
 
@@ -130,6 +139,10 @@ impl Provider for AnthropicProvider {
         &self.model
     }
 
+    fn effort(&self) -> Option<&serde_json::Value> {
+        self.effort.as_ref()
+    }
+
     fn supports_images(&self) -> bool {
         self.supports_images
     }
@@ -174,8 +187,16 @@ impl Provider for AnthropicProvider {
             body["tools"] = serde_json::to_value(&api_tools)?;
         }
 
-        // Merge extra params from config (provider-level + model-level)
+        // Merge extra params from config (provider-level + model-level),
+        // then the reasoning effort — `apply_effort` only fills the keys
+        // the params leave unset, so an explicit `thinking` in
+        // `[agent.providers.*.params]` wins.
         crate::provider::merge_params(&mut body, &self.params);
+        crate::provider::apply_effort(
+            &mut body,
+            self.effort.as_ref(),
+            crate::provider::EffortWire::Anthropic,
+        );
 
         // Prompt-cache breakpoints. See `complete_raw` above for why this
         // runs after the params merge.
@@ -293,8 +314,16 @@ impl Provider for AnthropicProvider {
             body["tools"] = serde_json::to_value(&api_tools)?;
         }
 
-        // Merge extra params
+        // Merge extra params, then the reasoning effort — `apply_effort`
+        // only fills the keys the params leave unset, so an explicit
+        // `thinking` in `[agent.providers.*.params]` wins. Same rendering
+        // as `complete` above.
         crate::provider::merge_params(&mut body, &self.params);
+        crate::provider::apply_effort(
+            &mut body,
+            self.effort.as_ref(),
+            crate::provider::EffortWire::Anthropic,
+        );
 
         // Prompt-cache breakpoints. Applied last so a `system` or `tools`
         // override coming from `params` is marked too, and cannot clobber
@@ -817,6 +846,7 @@ mod tests {
             false,
             None,
             false,
+            None,
         )
         .unwrap();
         let stream = provider.complete_raw(&raw, &[], "").await.expect("stream");
@@ -918,6 +948,315 @@ mod tests {
         assert_eq!(result, schema, "clean object should pass through unchanged");
     }
 
+    /// A numeric effort (budget_tokens from the model's effort_map) renders
+    /// the legacy thinking block: `thinking.type = "enabled"` with a
+    /// `budget_tokens` floor.
+    #[tokio::test]
+    async fn effort_number_renders_legacy_thinking_budget() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "type": "message_start",
+                "message": {"id": "m", "type": "message", "role": "assistant", "content": [], "model": "claude-legacy", "stop_reason": null, "usage": {"input_tokens": 1, "output_tokens": 1}},
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = AnthropicProvider::new(
+            &server.uri(),
+            "claude-legacy",
+            Some("k"),
+            None,
+            false,
+            None,
+            false,
+            Some(json!(4096)),
+        )
+        .expect("provider construction");
+
+        let messages = vec![Message::user("hello")];
+        let mut stream = provider
+            .complete(&messages, &[], "")
+            .await
+            .expect("complete should return a stream");
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        assert_eq!(
+            sent["thinking"],
+            json!({"type": "enabled", "budget_tokens": 4096}),
+            "numeric effort renders the legacy budget block: {sent:#}"
+        );
+        assert!(sent.get("output_config").is_none());
+    }
+
+    /// The budget cap follows `max_tokens` *after* the params merge: params
+    /// lowering `max_tokens` below the budget drops the thinking parameter
+    /// instead of sending the API-rejected pair.
+    #[tokio::test]
+    async fn params_lowered_max_tokens_drops_oversized_budget() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "type": "message_start",
+                "message": {"id": "m", "type": "message", "role": "assistant", "content": [], "model": "claude-legacy", "stop_reason": null, "usage": {"input_tokens": 1, "output_tokens": 1}},
+            })))
+            .mount(&server)
+            .await;
+
+        let params = json!({"max_tokens": 8000});
+        let provider = AnthropicProvider::new(
+            &server.uri(),
+            "claude-legacy",
+            Some("k"),
+            Some(params),
+            false,
+            None,
+            false,
+            Some(json!(16000)),
+        )
+        .expect("provider construction");
+
+        let messages = vec![Message::user("hello")];
+        let mut stream = provider
+            .complete(&messages, &[], "")
+            .await
+            .expect("complete should return a stream");
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        assert_eq!(
+            sent["max_tokens"], 8000,
+            "params override applied: {sent:#}"
+        );
+        assert!(
+            sent.get("thinking").is_none(),
+            "budget 16000 >= merged max_tokens 8000 — dropped, not sent: {sent:#}"
+        );
+    }
+
+    /// Same cap, other direction: params raising `max_tokens` keeps a
+    /// budget that a fixed ceiling would have wrongly discarded.
+    #[tokio::test]
+    async fn params_raised_max_tokens_keeps_valid_budget() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "type": "message_start",
+                "message": {"id": "m", "type": "message", "role": "assistant", "content": [], "model": "claude-legacy", "stop_reason": null, "usage": {"input_tokens": 1, "output_tokens": 1}},
+            })))
+            .mount(&server)
+            .await;
+
+        let params = json!({"max_tokens": 32000});
+        let provider = AnthropicProvider::new(
+            &server.uri(),
+            "claude-legacy",
+            Some("k"),
+            Some(params),
+            false,
+            None,
+            false,
+            Some(json!(16000)),
+        )
+        .expect("provider construction");
+
+        let messages = vec![Message::user("hello")];
+        let mut stream = provider
+            .complete(&messages, &[], "")
+            .await
+            .expect("complete should return a stream");
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        assert_eq!(
+            sent["max_tokens"], 32000,
+            "params override applied: {sent:#}"
+        );
+        assert_eq!(
+            sent["thinking"],
+            json!({"type": "enabled", "budget_tokens": 16000}),
+            "budget 16000 < merged max_tokens 32000 — kept: {sent:#}"
+        );
+    }
+
+    /// Params win: an explicit `thinking` in `[agent.providers.*.params]`
+    /// must not be clobbered by the effort tier (`complete` path).
+    #[tokio::test]
+    async fn params_thinking_beats_effort_on_complete() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "type": "message_start",
+                "message": {"id": "m", "type": "message", "role": "assistant", "content": [], "model": "claude-x", "stop_reason": null, "usage": {"input_tokens": 1, "output_tokens": 1}},
+            })))
+            .mount(&server)
+            .await;
+
+        let params = json!({"thinking": {"type": "enabled", "budget_tokens": 999}});
+        let provider = AnthropicProvider::new(
+            &server.uri(),
+            "claude-x",
+            Some("k"),
+            Some(params),
+            false,
+            None,
+            false,
+            Some(json!("high")),
+        )
+        .expect("provider construction");
+
+        let messages = vec![Message::user("hello")];
+        let mut stream = provider
+            .complete(&messages, &[], "")
+            .await
+            .expect("complete should return a stream");
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        assert_eq!(
+            sent["thinking"],
+            json!({"type": "enabled", "budget_tokens": 999}),
+            "params thinking must win over the effort tier: {sent:#}"
+        );
+        assert!(sent.get("output_config").is_none(), "{sent:#}");
+    }
+
+    /// Same precedence on the `complete_raw` path (the journal-replay path).
+    #[tokio::test]
+    async fn params_thinking_beats_effort_on_complete_raw() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "type": "message_start",
+                "message": {"id": "m", "type": "message", "role": "assistant", "content": [], "model": "claude-x", "stop_reason": null, "usage": {"input_tokens": 1, "output_tokens": 1}},
+            })))
+            .mount(&server)
+            .await;
+
+        let params = json!({"thinking": {"type": "enabled", "budget_tokens": 999}});
+        let provider = AnthropicProvider::new(
+            &server.uri(),
+            "claude-x",
+            Some("k"),
+            Some(params),
+            false,
+            None,
+            false,
+            Some(json!("high")),
+        )
+        .expect("provider construction");
+
+        let raw = vec![json!({"role": "user", "content": "hi"})];
+        let mut stream = provider
+            .complete_raw(&raw, &[], "")
+            .await
+            .expect("complete_raw should return a stream");
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        assert_eq!(
+            sent["thinking"],
+            json!({"type": "enabled", "budget_tokens": 999}),
+            "params thinking must win over the effort tier: {sent:#}"
+        );
+        assert!(
+            sent.get("output_config").is_none(),
+            "params thinking wins the whole effort path — no adaptive output_config either: {sent:#}"
+        );
+    }
+
+    /// A string effort renders the new-generation adaptive block:
+    /// `thinking.type = "adaptive"` plus `output_config.effort`.
+    #[tokio::test]
+    async fn effort_string_renders_adaptive_thinking() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "type": "message_start",
+                "message": {"id": "m", "type": "message", "role": "assistant", "content": [], "model": "claude-new", "stop_reason": null, "usage": {"input_tokens": 1, "output_tokens": 1}},
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = AnthropicProvider::new(
+            &server.uri(),
+            "claude-new",
+            Some("k"),
+            None,
+            false,
+            None,
+            false,
+            Some(json!("high")),
+        )
+        .expect("provider construction");
+
+        let messages = vec![Message::user("hello")];
+        let mut stream = provider
+            .complete(&messages, &[], "")
+            .await
+            .expect("complete should return a stream");
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        assert_eq!(
+            sent["thinking"],
+            json!({"type": "adaptive"}),
+            "string effort renders the adaptive block: {sent:#}"
+        );
+        assert_eq!(sent["output_config"]["effort"], "high");
+    }
+
+    /// No effort at all — no thinking keys in the body.
+    #[tokio::test]
+    async fn no_effort_leaves_thinking_out_of_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "type": "message_start",
+                "message": {"id": "m", "type": "message", "role": "assistant", "content": [], "model": "claude-x", "stop_reason": null, "usage": {"input_tokens": 1, "output_tokens": 1}},
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = AnthropicProvider::new(
+            &server.uri(),
+            "claude-x",
+            Some("k"),
+            None,
+            false,
+            None,
+            false,
+            None,
+        )
+        .expect("provider construction");
+
+        let messages = vec![Message::user("hello")];
+        let mut stream = provider
+            .complete(&messages, &[], "")
+            .await
+            .expect("complete should return a stream");
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        assert!(sent.get("thinking").is_none(), "{sent:#}");
+        assert!(sent.get("output_config").is_none(), "{sent:#}");
+    }
+
     /// When Anthropic rejects the request with 400, the SSE client must
     /// surface the response body in the error message seen by the agent
     /// loop.
@@ -957,6 +1296,7 @@ mod tests {
             false,
             None,
             false,
+            None,
         )
         .expect("provider construction");
 
@@ -1021,6 +1361,7 @@ mod tests {
             false,
             None,
             false,
+            None,
         )
         .expect("provider construction");
         let raw = [json!({"role": "user", "content": "hello"})];
@@ -1062,6 +1403,7 @@ mod tests {
             false,
             Some("opencode/1.15.13"),
             false,
+            None,
         )
         .expect("provider construction");
 
@@ -1360,6 +1702,7 @@ mod tests {
             false,
             None,
             false,
+            None,
         )
         .unwrap();
         let stream = provider
@@ -1429,6 +1772,7 @@ mod tests {
             false,
             None,
             true,
+            None,
         )
         .unwrap();
         let stream = provider
@@ -1669,6 +2013,7 @@ mod tests {
             false,
             None,
             false,
+            None,
         )
         .unwrap();
         let stream = provider.complete_raw(&raw, &[], "").await.expect("stream");
@@ -1781,6 +2126,7 @@ mod tests {
             false,
             None,
             false,
+            None,
         )
         .unwrap();
         let stream = provider.complete_raw(&raw, &[], "").await.expect("stream");

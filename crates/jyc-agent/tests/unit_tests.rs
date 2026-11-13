@@ -2173,6 +2173,7 @@ mod skills {
                 providers: std::collections::HashMap::new(),
                 vision: None,
                 context_strategy: None,
+                reasoning_effort: None,
             },
             inspect: None,
             attachments: None,

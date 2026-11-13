@@ -1094,6 +1094,11 @@ fn superseded_overrides(config: &TopicConfig) -> Vec<&'static str> {
         if ai.model.is_some() || ai.build_model.is_some() {
             files.push("build-model-override");
         }
+        // The runtime effort tier outranks the type's `[ai.reasoning_effort]`
+        // in the same chain, so a type that sets any tier needs it gone.
+        if ai.reasoning_effort.is_some() {
+            files.push(crate::session_state::THINKING_EFFORT_FILE);
+        }
     }
     // A skill toggle cancels a config-level exclusion of the same name, so a
     // type that replaces the inherited skill list outright needs the parent's
@@ -2050,6 +2055,7 @@ mod tests {
                     "plan-model-override",
                     "build-model-override",
                     "model-override",
+                    "thinking-effort",
                     "skill-override.json",
                     "mcp-override.json",
                 ],
@@ -2063,6 +2069,7 @@ mod tests {
                 &["mode-override", "plan-model-override", "model-override"],
                 &[
                     "build-model-override",
+                    "thinking-effort",
                     "skill-override.json",
                     "mcp-override.json",
                 ],
@@ -2075,7 +2082,7 @@ mod tests {
                     "build-model-override",
                     "model-override",
                 ],
-                &["mode-override", "skill-override.json"],
+                &["mode-override", "thinking-effort", "skill-override.json"],
             ),
             (
                 // No `mode`: the parent's `mode-override` stands, so this child
@@ -2083,7 +2090,7 @@ mod tests {
                 // chain reads for it.
                 "[ai]\nbuild_model = \"provider/role\"\n",
                 &["build-model-override", "model-override"],
-                &["plan-model-override", "mode-override"],
+                &["plan-model-override", "mode-override", "thinking-effort"],
             ),
             (
                 // A skill allow-list of its own: the parent's `/skill`
@@ -2096,6 +2103,21 @@ mod tests {
                     "plan-model-override",
                     "build-model-override",
                     "model-override",
+                    "thinking-effort",
+                    "mcp-override.json",
+                ],
+            ),
+            (
+                // An effort tier of its own: the parent's `/thinking` runtime
+                // tier goes, so the child starts from the role's tier table.
+                "[ai]\n[ai.reasoning_effort]\ndefault = \"low\"\n",
+                &["thinking-effort"],
+                &[
+                    "mode-override",
+                    "plan-model-override",
+                    "build-model-override",
+                    "model-override",
+                    "skill-override.json",
                     "mcp-override.json",
                 ],
             ),
@@ -2111,6 +2133,7 @@ mod tests {
                 "model-override",
                 "skill-override.json",
                 "mcp-override.json",
+                "thinking-effort",
             ] {
                 tokio::fs::write(parent_state.join(name), "provider/parent")
                     .await

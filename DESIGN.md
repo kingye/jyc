@@ -1237,6 +1237,18 @@ agent actually runs; the context-window resolver; and the `/spawn` and
 spawn-tool triggers, which use `resolve_effective_model` (mode, then model) to
 hand a child its starting model.
 
+**One effort resolver.** `resolve_effort_tier` sits next to it with the same
+shape: the runtime tier `.jyc/thinking-effort` (written by `/thinking
+low|medium|high`), else the tier the effective mode asks for
+(`[ai.reasoning_effort]` `plan`/`build`), else `default`. The tier is generic —
+the per-model translation to the provider's native value happens in
+`create_provider`, through the model's `effort_map` (a number selects the
+Anthropic legacy `thinking.type=enabled` + `budget_tokens` rendering, a string
+the adaptive `thinking.type=adaptive` + `output_config.effort` one; openai
+completions and responses get `reasoning_effort` / `reasoning.effort`). No
+`effort_map` sends the tier string itself. The display toggle stays out of this
+chain: it is a TUI session state (`leader t`), never sent to a provider.
+
 Before this the chain existed three times and had drifted: the display had no
 topic-config layer at all and put the channel's generic `model` above the global
 per-mode fields, and each consumer picked the `<mode>-model-override` file by its
@@ -4563,7 +4575,7 @@ their own way — one function, called twice.
 
 ### Command Argument Values (`command/args.rs`)
 
-The TUI's `/` popup is multi-level: `/model <id>`, `/thinking show`,
+The TUI's `/` popup is multi-level: `/model <id>`, `/thinking high`,
 `/skill on <name>`, `/context dump on`. Which values a command accepts is
 handler knowledge, so it lives server-side, not in the client:
 `jyc_core::command::command_args(name, ctx)` returns a recursive

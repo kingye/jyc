@@ -11,8 +11,8 @@ use std::sync::LazyLock;
 
 use crate::channel::ContextStrategyConfig;
 use crate::config::{
-    AppConfig, McpServerConfig, parse_and_deserialize, parse_and_deserialize_from_value,
-    read_and_parse,
+    AppConfig, McpServerConfig, ReasoningEffortConfig, parse_and_deserialize,
+    parse_and_deserialize_from_value, read_and_parse,
 };
 
 pub fn load_config(path: &Path) -> Result<AppConfig> {
@@ -129,6 +129,7 @@ impl TopicConfig {
                 plan_model: over.plan_model.or(under.plan_model),
                 build_model: over.build_model.or(under.build_model),
                 small_model: over.small_model.or(under.small_model),
+                reasoning_effort: over.reasoning_effort.or(under.reasoning_effort),
             }),
             (over, under) => over.or(under),
         };
@@ -172,6 +173,10 @@ pub struct TopicAiConfig {
     /// Small model override (used for lightweight tasks).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub small_model: Option<String>,
+    /// Reasoning-effort tiers for this topic (`default`/`build`/`plan`,
+    /// same shape as `[ai.reasoning_effort]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffortConfig>,
 }
 
 /// How a spawn should start the child of a role: a type's own defaults for the

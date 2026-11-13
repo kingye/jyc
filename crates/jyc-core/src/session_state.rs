@@ -779,6 +779,45 @@ fn context_window_for_model(model_str: &str, config: &AppConfig) -> Option<u64> 
     Some(DEFAULT_CONTEXT_WINDOW)
 }
 
+/// File name for the runtime reasoning-effort tier written by the
+/// `/thinking` command. Plain text: a standard tier (`low` | `medium` |
+/// `high`).
+pub const THINKING_EFFORT_FILE: &str = "thinking-effort";
+
+/// The reasoning-effort tier this topic runs at right now, before any
+/// per-model mapping: the `/thinking` runtime override
+/// (`.jyc/thinking-effort`), else the tier the effective mode asks for
+/// (`[ai.reasoning_effort]` `plan`/`build`), else the `default` tier.
+pub async fn resolve_effort_tier(
+    topic_name: &str,
+    topic_path: &Path,
+    config: &AppConfig,
+    channel: &str,
+) -> Option<String> {
+    let state_dir = resolve_state_dir(topic_name, topic_path);
+    if let Ok(content) = tokio::fs::read_to_string(state_dir.join(THINKING_EFFORT_FILE)).await {
+        let tier = content.trim();
+        if !tier.is_empty() {
+            return Some(tier.to_string());
+        }
+    }
+    let mode = resolve_effective_mode(topic_name, topic_path, config, channel).await;
+    let effort = jyc_types::load_topic_config(topic_name, topic_path)
+        .and_then(|c| c.ai)
+        .and_then(|a| a.reasoning_effort)
+        .or_else(|| config.ai.reasoning_effort.clone());
+    match effort {
+        Some(e) => {
+            if mode.as_deref() == Some("plan") {
+                e.plan.or(e.default)
+            } else {
+                e.build.or(e.default)
+            }
+        }
+        None => None,
+    }
+}
+
 /// File name for the runtime context-strategy override written by the
 /// `/context` command. Persisted as JSON (mode + optional window).
 pub const CONTEXT_STRATEGY_FILE: &str = "context-strategy.json";
@@ -1171,7 +1210,7 @@ host = "h"
 port = 465
 username = "u"
 password = "p"
-[agent]
+[ai]
 enabled = true
 mode = "agent"
 "#,
@@ -1228,6 +1267,102 @@ mode = "agent"
         let config = config_with_pattern_mode("p1", Some("plan"));
         let result = resolve_effective_mode(topic, tmp.path(), &config, "c").await;
         assert_eq!(result, None);
+    }
+
+    // ── resolve_effort_tier ─────────────────────────────────────────
+
+    /// `[ai]` config with reasoning-effort tiers set.
+    fn config_with_effort(default: &str, plan: &str, build: &str) -> AppConfig {
+        let toml = format!(
+            r#"
+[general]
+[channels.c]
+type = "email"
+[channels.c.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.c.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[ai]
+enabled = true
+mode = "agent"
+[ai.reasoning_effort]
+default = "{default}"
+plan = "{plan}"
+build = "{build}"
+"#
+        );
+        jyc_types::load_config_from_str(&toml).expect("config should parse")
+    }
+
+    #[tokio::test]
+    async fn resolve_effort_runtime_file_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "resolve_effort_runtime_file_wins";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(state_dir.join(THINKING_EFFORT_FILE), "low\n")
+            .await
+            .unwrap();
+        let config = config_with_effort("medium", "low", "high");
+        let result = resolve_effort_tier(topic, tmp.path(), &config, "c").await;
+        assert_eq!(result, Some("low".to_string()));
+        jyc_types::state_dir::unregister(topic);
+        jyc_types::state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn resolve_effort_mode_tier_in_build() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "resolve_effort_mode_tier_in_build";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        let config = config_with_effort("medium", "low", "high");
+        tokio::fs::write(state_dir.join("mode-override"), "build\n")
+            .await
+            .unwrap();
+        let result = resolve_effort_tier(topic, tmp.path(), &config, "c").await;
+        assert_eq!(result, Some("high".to_string()));
+        jyc_types::state_dir::unregister(topic);
+        jyc_types::state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn resolve_effort_mode_tier_in_plan() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "resolve_effort_mode_tier_in_plan";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        let config = config_with_effort("medium", "low", "high");
+        tokio::fs::write(state_dir.join("mode-override"), "plan\n")
+            .await
+            .unwrap();
+        let result = resolve_effort_tier(topic, tmp.path(), &config, "c").await;
+        assert_eq!(result, Some("low".to_string()));
+        jyc_types::state_dir::unregister(topic);
+        jyc_types::state_dir::clear_closed(topic);
+    }
+
+    #[tokio::test]
+    async fn resolve_effort_none_without_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "resolve_effort_none_without_config";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        let config = config_with_pattern_mode("p1", Some("plan"));
+        let result = resolve_effort_tier(topic, tmp.path(), &config, "c").await;
+        assert_eq!(result, None);
+        jyc_types::state_dir::unregister(topic);
+        jyc_types::state_dir::clear_closed(topic);
     }
 
     #[tokio::test]

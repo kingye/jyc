@@ -104,7 +104,6 @@ pub(crate) async fn complete_with_retry(
     event_bus: Option<&TopicEventBusRef>,
     sse_read_timeout: std::time::Duration,
     cancel: &CancellationToken,
-    thinking_enabled: bool,
     transient_backoff_ms: &[u64],
 ) -> Result<CollectedResponse> {
     let mut last_err: anyhow::Error =
@@ -135,7 +134,6 @@ pub(crate) async fn complete_with_retry(
             event_bus,
             sse_read_timeout,
             cancel,
-            thinking_enabled,
             repair_hint,
         )
         .await;
@@ -234,7 +232,6 @@ async fn issue_call(
     event_bus: Option<&TopicEventBusRef>,
     sse_read_timeout: std::time::Duration,
     cancel: &CancellationToken,
-    thinking_enabled: bool,
     repair_hint: bool,
 ) -> Result<CollectedResponse> {
     let hinted_context: Vec<serde_json::Value>;
@@ -261,7 +258,6 @@ async fn issue_call(
                 sse_read_timeout,
                 event_bus,
                 topic_name,
-                thinking_enabled,
             )
             .await?;
             // Provider format-failure guard (#786): raw tool-call syntax in
@@ -517,7 +513,6 @@ mod retry_tests {
             Some(&bus),
             std::time::Duration::from_secs(120),
             &CancellationToken::new(),
-            true,
             &[1, 2],
         )
         .await;
@@ -554,7 +549,6 @@ mod retry_tests {
             Some(&bus),
             std::time::Duration::from_secs(120),
             &CancellationToken::new(),
-            true,
             &[1, 2],
         )
         .await;
@@ -604,7 +598,6 @@ mod retry_tests {
             Some(&bus),
             std::time::Duration::from_secs(120),
             &CancellationToken::new(),
-            true,
             &[1, 2],
         )
         .await;
@@ -652,7 +645,6 @@ mod retry_tests {
             Some(&bus),
             std::time::Duration::from_secs(120),
             &CancellationToken::new(),
-            true,
             &[1, 2],
         )
         .await;
@@ -703,7 +695,6 @@ mod retry_tests {
             Some(&bus),
             std::time::Duration::from_secs(120),
             &CancellationToken::new(),
-            true,
             &[1, 2],
         )
         .await;
@@ -740,7 +731,6 @@ mod retry_tests {
             Some(&bus),
             std::time::Duration::from_secs(120),
             &CancellationToken::new(),
-            true,
             &[1, 2],
         )
         .await;
@@ -777,7 +767,6 @@ mod retry_tests {
             Some(&bus),
             std::time::Duration::from_secs(120),
             &CancellationToken::new(),
-            true,
             &[1, 2],
         )
         .await;
@@ -835,7 +824,6 @@ mod retry_tests {
             Some(&bus),
             std::time::Duration::from_secs(120),
             &CancellationToken::new(),
-            true,
             &[1, 2],
         )
         .await;
@@ -886,7 +874,6 @@ mod retry_tests {
             Some(&bus),
             std::time::Duration::from_secs(120),
             &CancellationToken::new(),
-            true,
             &[1, 2],
         )
         .await;

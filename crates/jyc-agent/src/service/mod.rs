@@ -354,9 +354,21 @@ impl AgentService for JycAgentService {
 
         let t_before_provider = std::time::Instant::now();
 
-        // 2. Create provider
+        // 2. Create provider. The reasoning-effort tier follows the same
+        // runtime > topic config > global config chain as the model.
+        let effort_tier = jyc_core::session_state::resolve_effort_tier(
+            topic_name,
+            topic_path,
+            &self.config.load(),
+            &self.channel_name,
+        )
+        .await;
         let provider = self
-            .create_provider(&agent_cfg, model_override.as_deref())
+            .create_provider(
+                &agent_cfg,
+                model_override.as_deref(),
+                effort_tier.as_deref(),
+            )
             .context("Failed to create LLM provider")?;
         let t_provider = std::time::Instant::now();
 
@@ -403,7 +415,9 @@ impl AgentService for JycAgentService {
 
         let small_provider: Option<Box<dyn provider::Provider>> =
             small_model_resolved.and_then(|m| {
-                match provider::create_provider(&m, &agent_cfg.providers) {
+                // Ancillary calls (titles, summaries) run at the provider's
+                // default effort — the turn's tier is for the main model.
+                match provider::create_provider(&m, &agent_cfg.providers, None) {
                     Ok(p) => {
                         tracing::info!(
                             small_provider = %p.name(),
@@ -642,7 +656,6 @@ impl AgentService for JycAgentService {
             current_channel: Some(self.channel_name.clone()),
             outbounds,
             context_window,
-            thinking_enabled: read_thinking_enabled(topic_name, topic_path),
             pricing,
             billing_mode,
             billing_dir: jyc_core::billing_log_store::BillingLogStore::billing_dir(),
@@ -806,8 +819,6 @@ mod skills;
 #[cfg(test)]
 mod tests;
 mod tools;
-
-use prompt::read_thinking_enabled;
 
 pub use jyc_types::skill::format_skills_section;
 pub use skills::parse_skill_frontmatter;

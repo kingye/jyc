@@ -47,7 +47,8 @@ mod integration_tests {
             },
         );
 
-        let provider = provider::create_provider("anthropic/claude-opus-4-6", &providers).unwrap();
+        let provider =
+            provider::create_provider("anthropic/claude-opus-4-6", &providers, None).unwrap();
         let messages = vec![Message::user("Say hello in exactly 3 words.")];
         let stream = provider
             .complete(&messages, &[], "You are a helpful assistant.")
@@ -92,7 +93,8 @@ mod integration_tests {
             },
         );
 
-        let provider = provider::create_provider("anthropic/claude-opus-4-6", &providers).unwrap();
+        let provider =
+            provider::create_provider("anthropic/claude-opus-4-6", &providers, None).unwrap();
 
         // Create a temp dir as working directory
         let tmp = tempfile::tempdir().unwrap();
@@ -128,7 +130,6 @@ mod integration_tests {
             current_channel: None,
             outbounds: None,
             context_window: None,
-            thinking_enabled: true,
             pricing: None,
             billing_mode: Default::default(),
             billing_dir: None,

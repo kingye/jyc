@@ -101,7 +101,7 @@ impl CommandRegistry {
 
                     if let Some(handler) = self.handlers.get(&cmd_name) {
                         // One command block can stack several commands
-                        // (`/close --force` then `/thinking show`), and each
+                        // (`/close --force` then `/thinking high`), and each
                         // runs after the previous one has taken effect — so by
                         // the time the second runs, its topic is gone and any
                         // state write it does would recreate the directory the

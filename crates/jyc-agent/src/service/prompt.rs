@@ -829,19 +829,6 @@ pub(crate) fn reply_request_notice(source: &crate::service::reply_guard::ReplySo
     )
 }
 
-/// Read the thinking-display state from `.jyc/thinking-state` in the topic directory.
-///
-/// Returns `true` (default) if the file is missing or contains anything other
-/// than `"hide"`. The `/thinking hide` command writes `"hide"` to this file;
-/// `/thinking show` writes `"show"`.
-pub(crate) fn read_thinking_enabled(topic_name: &str, topic_path: &Path) -> bool {
-    match std::fs::read_to_string(resolve_state_dir(topic_name, topic_path).join("thinking-state"))
-    {
-        Ok(content) => content.trim() != "hide",
-        Err(_) => true,
-    }
-}
-
 /// Expand a tilde (`~`) prefix to `$HOME`. Other paths are returned as-is.
 fn expand_path(p: &str) -> PathBuf {
     if let Some(rest) = p.strip_prefix("~/")

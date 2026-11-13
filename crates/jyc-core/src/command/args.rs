@@ -105,10 +105,11 @@ pub static CONTEXT_ARGS: ArgSource = ArgSource::Declared(&[
     ),
 ]);
 
-/// `/thinking`: show or hide the reasoning content.
+/// `/thinking`: set the reasoning-effort tier.
 pub static THINKING_ARGS: ArgSource = ArgSource::Declared(&[
-    ArgDef::leaf("show", "Show reasoning content"),
-    ArgDef::leaf("hide", "Hide reasoning content"),
+    ArgDef::leaf("low", "Low reasoning effort"),
+    ArgDef::leaf("medium", "Medium reasoning effort"),
+    ArgDef::leaf("high", "High reasoning effort"),
 ]);
 
 /// `/backlog`'s verbs. Their arguments are free text (`/backlog push <text>`),

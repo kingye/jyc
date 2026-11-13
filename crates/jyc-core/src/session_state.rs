@@ -811,11 +811,17 @@ pub async fn resolve_effort_tier(
         .or_else(|| config.ai.reasoning_effort.clone());
     match effort {
         Some(e) => {
-            if mode.as_deref() == Some("plan") {
+            // Only a standard tier applies — the same rule the runtime
+            // file follows above. Topic-local configs (state-dir config,
+            // `<topic_path>/.jyc/config.toml`) bypass startup validation
+            // (`load_topic_config` parses without tier checking), so a
+            // leftover `medium` there must not reach the provider.
+            let tier = if mode.as_deref() == Some("plan") {
                 e.plan.or(e.default)
             } else {
                 e.build.or(e.default)
-            }
+            };
+            tier.filter(|t| matches!(t.as_str(), "low" | "high" | "max"))
         }
         None => None,
     }
@@ -1316,6 +1322,42 @@ build = "{build}"
         let config = config_with_effort("high", "low", "max");
         let result = resolve_effort_tier(topic, tmp.path(), &config, "c").await;
         assert_eq!(result, Some("low".to_string()));
+        jyc_types::state_dir::unregister(topic);
+        jyc_types::state_dir::clear_closed(topic);
+    }
+
+    /// A leftover runtime file with a retired tier (`medium`) is inert:
+    /// the resolver falls through to the config chain, same as a missing
+    /// file.
+    #[tokio::test]
+    async fn resolve_effort_stale_runtime_file_falls_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "resolve_effort_stale_runtime_file_falls_back";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(state_dir.join(THINKING_EFFORT_FILE), "medium\n")
+            .await
+            .unwrap();
+        let config = config_with_effort("high", "low", "max");
+        let result = resolve_effort_tier(topic, tmp.path(), &config, "c").await;
+        assert_eq!(result, Some("high".to_string()));
+        jyc_types::state_dir::unregister(topic);
+        jyc_types::state_dir::clear_closed(topic);
+    }
+
+    /// A retired tier in the config chain never reaches the provider:
+    /// `load_topic_config` parses without tier validation, so the resolver
+    /// itself must filter. `default = "medium"` resolves to `None` rather
+    /// than being sent verbatim.
+    #[tokio::test]
+    async fn resolve_effort_stale_config_tier_is_dropped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "resolve_effort_stale_config_tier_is_dropped";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let config = config_with_effort("medium", "low", "max");
+        let result = resolve_effort_tier(topic, tmp.path(), &config, "c").await;
+        assert_eq!(result, None);
         jyc_types::state_dir::unregister(topic);
         jyc_types::state_dir::clear_closed(topic);
     }

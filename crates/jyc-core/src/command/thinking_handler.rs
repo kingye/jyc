@@ -2,6 +2,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use jyc_types::state_dir::resolve_state_dir;
 
+use crate::session_state::THINKING_EFFORT_FILE;
+
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use super::spec;
 
@@ -47,11 +49,16 @@ impl CommandHandler for ThinkingCommandHandler {
         if arg.is_empty() {
             // Bare `/thinking`: report the tier that would actually apply —
             // the same chain `resolve_effort_tier` walks for every request
-            // (runtime file > mode tier > default), not just the file.
-            let (tier, source) =
-                match tokio::fs::read_to_string(state_dir.join("thinking-effort")).await {
-                    Ok(raw) => (raw.trim().to_string(), "runtime override"),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // (runtime file > mode tier > default), not just the file. A
+            // stale runtime file (a tier the current set no longer accepts)
+            // falls through to the config chain, exactly as requests do.
+            let raw = tokio::fs::read_to_string(state_dir.join("thinking-effort")).await;
+            let (tier, source) = match raw {
+                Ok(text) => {
+                    let tier = text.trim();
+                    if matches!(tier, "low" | "high" | "max") {
+                        (tier.to_string(), "runtime override")
+                    } else {
                         let tier = crate::session_state::resolve_effort_tier(
                             &context.topic_name,
                             &context.topic_path,
@@ -63,8 +70,21 @@ impl CommandHandler for ThinkingCommandHandler {
                         .unwrap_or_else(|| "auto".to_string());
                         (tier, "config")
                     }
-                    Err(error) => return Err(error.into()),
-                };
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    let tier = crate::session_state::resolve_effort_tier(
+                        &context.topic_name,
+                        &context.topic_path,
+                        context.config.as_ref(),
+                        &context.channel,
+                    )
+                    .await
+                    .map(|t| t.to_string())
+                    .unwrap_or_else(|| "auto".to_string());
+                    (tier, "config")
+                }
+                Err(error) => return Err(error.into()),
+            };
             let message = format!("/thinking: current effort is '{tier}' ({source})");
             return Ok(CommandResult {
                 success: true,
@@ -212,6 +232,15 @@ default = "high"
         let handler = ThinkingCommandHandler;
         let ctx = test_context(topic, tmp.path());
 
+        // A leftover runtime file with a retired tier ("medium") must be
+        // inert: the bare report falls back to the config chain, and the
+        // config's own tier ("high") differs from the stale file's value,
+        // so the assertion proves the file was ignored rather than shown.
+        let state_dir = jyc_types::state_dir::resolve_state_dir(topic, &ctx.topic_path);
+        tokio::fs::write(state_dir.join(THINKING_EFFORT_FILE), "medium\n")
+            .await
+            .unwrap();
+
         // The standard fixture has no [ai.reasoning_effort], so the chain
         // ends at "auto" (reported with the config source).
         let result = handler.execute(ctx).await.unwrap();
@@ -302,7 +331,7 @@ default = "high"
 
     /// `/thinking auto` reports the configured tier it falls back to,
     /// not a hard-coded `auto`: the fixture's config sets default = "high"
-    /// while the runtime override is `high`, so the clear must resolve
+    /// while the runtime override is `max`, so the clear must resolve
     /// *after* the removal to see the config tier rather than the override.
     #[tokio::test]
     async fn test_thinking_auto_reports_configured_tier() {
@@ -334,12 +363,13 @@ mode = "agent"
 default = "high"
 "#,
         );
-        ctx.args = vec!["high".to_string()];
+        ctx.args = vec!["max".to_string()];
         handler.execute(ctx.clone()).await.unwrap();
 
         // Same configured context for the `auto` call: the override file
-        // was just written by `high`, and the fallback below must resolve
-        // THIS config's tier (high), not the standard fixture's (none).
+        // was just written by `max`, and the fallback below must resolve
+        // THIS config's tier (high), not the standard fixture's (none) —
+        // the two values differ so the assertion can tell them apart.
         ctx.args = vec!["auto".to_string()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success, "{:?}", result.message);

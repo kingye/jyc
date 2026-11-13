@@ -1745,7 +1745,6 @@ mod model_id_tests {
             [
                 ("low".to_string(), serde_json::json!(1024)),
                 ("high".to_string(), serde_json::json!(2048)),
-                ("max".to_string(), serde_json::json!("high")),
             ]
             .into_iter()
             .collect(),
@@ -1759,11 +1758,10 @@ mod model_id_tests {
         assert_eq!(p.effort(), Some(&serde_json::json!(1024)));
         let p = create_provider("kimi/k3", &providers, Some("high")).unwrap();
         assert_eq!(p.effort(), Some(&serde_json::json!(2048)));
-        let p = create_provider("kimi/k3", &providers, Some("max")).unwrap();
-        assert_eq!(p.effort(), Some(&serde_json::json!("high")));
 
-        // No map entry for that tier: the tier string passes through.
-        let p = create_provider("kimi/plain", &providers, Some("max")).unwrap();
+        // No map entry for that tier (`max` absent from k3's map): the tier
+        // string passes through.
+        let p = create_provider("kimi/k3", &providers, Some("max")).unwrap();
         assert_eq!(p.effort(), Some(&serde_json::json!("max")));
 
         // Model with no `effort_map` at all: same fallback.

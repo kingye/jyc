@@ -791,7 +791,8 @@ pub struct AiConfig {
 
 /// Reasoning-effort tiers for the in-process agent.
 ///
-/// The tier is a generic low|high|max selector; how it reaches the API is
+/// The tier is a generic none|minimal|low|medium|high|xhigh|max selector; how
+/// it reaches the API is
 /// decided per API format (see the provider layer). A model's `effort_map`
 /// translates the tier into that model's native value when the standard
 /// strings are not what the model expects (e.g. Anthropic budget_tokens).

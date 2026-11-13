@@ -253,9 +253,10 @@ mode = "agent"
 # audit = "anthropic/claude-opus-4-6"
 
 # Reasoning-effort tiers, sent with every request as the model's native
-# reasoning parameter. Tiers are the standard values `low` / `high` /
-# `max`; `default` applies everywhere, `build` and `plan` override it per
-# mode. The `/thinking low|high|max` command writes a runtime override
+# reasoning parameter. Tiers are the standard values `none` / `minimal` /
+# `low` / `medium` / `high` / `xhigh` / `max`; `default` applies everywhere,
+# `build` and `plan` override it per
+# mode. The `/thinking <tier>` command writes a runtime override
 # that outranks all three, and `/thinking auto` clears it again (falling
 # back to this config); a subagent type's `[ai.reasoning_effort]` table
 # replaces the inherited one at spawn.

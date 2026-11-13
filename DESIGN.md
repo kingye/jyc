@@ -1239,7 +1239,7 @@ hand a child its starting model.
 
 **One effort resolver.** `resolve_effort_tier` sits next to it with the same
 shape: the runtime tier `.jyc/thinking-effort` (written by `/thinking
-low|high|max`), else the tier the effective mode asks for
+low|minimal|none|medium|high|xhigh|max`), else the tier the effective mode asks for
 (`[ai.reasoning_effort]` `plan`/`build`), else `default`. The tier is generic —
 the per-model translation to the provider's native value happens in
 `create_provider`, through the model's `effort_map` (a number selects the

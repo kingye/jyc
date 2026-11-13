@@ -375,8 +375,9 @@ pub struct TopicInfo {
     pub parent: Option<String>,
     /// AI model in use (from model-override or default)
     pub model: Option<String>,
-    /// Reasoning-effort tier this topic's LLM calls send — `low`,
-    /// `high` or `max`. `None` when nothing is configured (no runtime
+    /// Reasoning-effort tier this topic's LLM calls send — `none`,
+    /// `minimal`, `low`, `medium`, `high`, `xhigh` or `max`. `None` when
+    /// nothing is configured (no runtime
     /// override, no config tier): no reasoning parameter is sent, and the
     /// display surfaces render "auto".
     #[serde(default)]

@@ -11,15 +11,17 @@ use super::spec;
 /// LLM request.
 ///
 /// Usage:
-/// - `/thinking low|high|max` - set the tier, persisted in
-///   `.jyc/thinking-effort`; it overrides `[ai.reasoning_effort]` for this
-///   topic until changed again
+/// - `/thinking none|minimal|low|medium|high|xhigh|max` - set the tier,
+///   persisted in `.jyc/thinking-effort`; it overrides
+///   `[ai.reasoning_effort]` for this topic until changed again
 /// - `/thinking auto` - clear the runtime override; the topic falls back to
 ///   the config tier, and with no config tier no reasoning parameter is sent
 /// - `/thinking` - report the current tier (unset reported as `auto`)
 pub struct ThinkingCommandHandler;
 
-const TIERS: [&str; 4] = ["low", "high", "max", "auto"];
+const TIERS: [&str; 8] = [
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "auto",
+];
 
 #[async_trait]
 impl CommandHandler for ThinkingCommandHandler {
@@ -123,7 +125,7 @@ impl CommandHandler for ThinkingCommandHandler {
             return Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/thinking: unknown tier '{arg}'. Use '/thinking low|high|max|auto'"
+                    "/thinking: unknown tier '{arg}'. Use '/thinking none|minimal|low|medium|high|xhigh|max|auto'"
                 ),
                 error: None,
                 append_body: None,
@@ -220,14 +222,14 @@ default = "high"
         let handler = ThinkingCommandHandler;
         let ctx = test_context(topic, tmp.path());
 
-        // A leftover runtime file with a retired tier ("medium") must be
-        // inert: the bare report falls back to the config chain instead
+        // A leftover runtime file with a non-standard tier ("turbo") must
+        // be inert: the bare report falls back to the config chain instead
         // of echoing the stale file's value.
         let state_dir = jyc_types::state_dir::resolve_state_dir(topic, &ctx.topic_path);
         tokio::fs::create_dir_all(&state_dir).await.unwrap();
         tokio::fs::write(
             state_dir.join(crate::session_state::THINKING_EFFORT_FILE),
-            "medium\n",
+            "turbo\n",
         )
         .await
         .unwrap();

@@ -2,8 +2,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use jyc_types::state_dir::resolve_state_dir;
 
-use crate::session_state::THINKING_EFFORT_FILE;
-
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use super::spec;
 
@@ -237,9 +235,12 @@ default = "high"
         // config's own tier ("high") differs from the stale file's value,
         // so the assertion proves the file was ignored rather than shown.
         let state_dir = jyc_types::state_dir::resolve_state_dir(topic, &ctx.topic_path);
-        tokio::fs::write(state_dir.join(THINKING_EFFORT_FILE), "medium\n")
-            .await
-            .unwrap();
+        tokio::fs::write(
+            state_dir.join(crate::session_state::THINKING_EFFORT_FILE),
+            "medium\n",
+        )
+        .await
+        .unwrap();
 
         // The standard fixture has no [ai.reasoning_effort], so the chain
         // ends at "auto" (reported with the config source).

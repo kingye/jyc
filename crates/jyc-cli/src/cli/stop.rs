@@ -246,9 +246,15 @@ fn pid_is_zombie(pid: u32) -> bool {
         )
     };
     if ret != size {
-        // Without a readable status, keep the `kill(pid, 0)` result rather
-        // than treating an inspectable process as gone.
-        return false;
+        // On macOS `kill(pid, 0)` succeeds for a zombie until its parent
+        // reaps it (XNU `kill` special-cases zombies via `pzfind`), so a
+        // `proc_pidinfo` failure means the process is already reaped and
+        // gone — treat it as exited, not as alive. The Linux fallback can
+        // safely keep `kill(pid, 0)` alive because `/proc/<pid>/stat`
+        // becomes unreadable only after full teardown; the ESRCH-then-
+        // readable window on macOS (reaped PID not yet reused) is the
+        // failure case here, and the state that matters is "gone".
+        return true;
     }
     info.pbsi_status == libc::SZOMB
 }

@@ -14,6 +14,7 @@
 
 ### Fixed
 
+- `jyc stop` on macOS no longer reports "still appears to be running after SIGKILL" for a fully reaped process: when `proc_pidinfo` cannot read the process status (the process is gone), it is now treated as exited instead of falling back to `kill(pid, 0)`, which on macOS keeps succeeding for unreaped zombies (and the read-failure window after a reap)
 - Opening the TUI chat topic-info pane (leader-key `i`) now also shows the status block inside it, so `Ctrl+P i` from a zen-opened chat yields a fully populated pane; closing the pane still leaves the status toggle (`s`) untouched
 
 ## [0.9.1] - 2026-11-10

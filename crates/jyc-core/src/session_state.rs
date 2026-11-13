@@ -1290,6 +1290,16 @@ mode = "agent"
 
     /// `[ai]` config with reasoning-effort tiers set.
     fn config_with_effort(default: &str, plan: &str, build: &str) -> AppConfig {
+        let plan_line = if plan.is_empty() {
+            String::new()
+        } else {
+            format!("plan = \"{plan}\"\n")
+        };
+        let build_line = if build.is_empty() {
+            String::new()
+        } else {
+            format!("build = \"{build}\"\n")
+        };
         let toml = format!(
             r#"
 [general]
@@ -1310,9 +1320,7 @@ enabled = true
 mode = "agent"
 [ai.reasoning_effort]
 default = "{default}"
-plan = "{plan}"
-build = "{build}"
-"#
+{plan_line}{build_line}"#
         );
         jyc_types::load_config_from_str(&toml).expect("config should parse")
     }
@@ -1336,7 +1344,9 @@ build = "{build}"
 
     /// A leftover runtime file with a retired tier (`medium`) is inert:
     /// the resolver falls through to the config chain, same as a missing
-    /// file.
+    /// file. The chain here resolves the **build** tier (`max`), which
+    /// differs from both the stale file's value and the default (`high`)
+    /// — so a regression to either value fails the assertion.
     #[tokio::test]
     async fn resolve_effort_stale_runtime_file_falls_back() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1347,9 +1357,12 @@ build = "{build}"
         tokio::fs::write(state_dir.join(THINKING_EFFORT_FILE), "medium\n")
             .await
             .unwrap();
+        tokio::fs::write(state_dir.join("mode-override"), "build\n")
+            .await
+            .unwrap();
         let config = config_with_effort("high", "low", "max");
         let result = resolve_effort_tier(topic, tmp.path(), &config, "c").await;
-        assert_eq!(result, Some("high".to_string()));
+        assert_eq!(result, Some("max".to_string()));
         jyc_types::state_dir::unregister(topic);
         jyc_types::state_dir::clear_closed(topic);
     }
@@ -1357,13 +1370,14 @@ build = "{build}"
     /// A retired tier in the config chain never reaches the provider:
     /// `load_topic_config` parses without tier validation, so the resolver
     /// itself must filter. `default = "medium"` resolves to `None` rather
-    /// than being sent verbatim.
+    /// than being sent verbatim. (`plan`/`build` stay unset so the chain
+    /// falls through to the retired default; setting them would shadow it.)
     #[tokio::test]
     async fn resolve_effort_stale_config_tier_is_dropped() {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "resolve_effort_stale_config_tier_is_dropped";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let config = config_with_effort("medium", "low", "max");
+        let config = config_with_effort("medium", "", "");
         let result = resolve_effort_tier(topic, tmp.path(), &config, "c").await;
         assert_eq!(result, None);
         jyc_types::state_dir::unregister(topic);

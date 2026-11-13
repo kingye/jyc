@@ -246,9 +246,14 @@ fn pid_is_zombie(pid: u32) -> bool {
         )
     };
     if ret != size {
-        // Without a readable status, keep the `kill(pid, 0)` result rather
-        // than treating an inspectable process as gone.
-        return false;
+        // XNU's `proc_pidinfo` returns ESRCH both for an absent PID and when
+        // only a zombie remains (reaped but not yet off the process list) —
+        // `kill(pid, 0)` still succeeds for that zombie, so ESRCH here means
+        // "gone". Any other failure (short read, MACF/sandbox denial) keeps
+        // the conservative "alive" reading: denying a live process's status
+        // read must not let `stop` delete its PID file or report success.
+        let errno = std::io::Error::last_os_error().raw_os_error();
+        return errno == Some(libc::ESRCH);
     }
     info.pbsi_status == libc::SZOMB
 }

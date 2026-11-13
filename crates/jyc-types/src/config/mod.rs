@@ -783,8 +783,9 @@ pub struct AiConfig {
     pub context_strategy: Option<ContextStrategyConfig>,
 
     /// Reasoning-effort tiers. `default` applies everywhere; `build` and
-    /// `plan` override it per mode. Values are one of "low" | "high" |
-    /// "max" (validated). When unset, no effort parameter is sent.
+    /// `plan` override it per mode. Values are one of "none" | "minimal" |
+    /// "low" | "medium" | "high" | "xhigh" | "max" (validated). When unset,
+    /// no effort parameter is sent.
     #[serde(default)]
     pub reasoning_effort: Option<ReasoningEffortConfig>,
 }
@@ -1094,7 +1095,8 @@ pub struct ModelDef {
     /// Billing rates for this specific model. Overrides
     /// `ProviderDef.pricing`.
     pub pricing: Option<ModelPricing>,
-    /// Translates a generic effort tier ("low" | "high" | "max") into
+    /// Translates a generic effort tier ("none" | "minimal" | "low" |
+    /// "medium" | "high" | "xhigh" | "max") into
     /// this model's native value. Optional: without it (or when the tier is
     /// not a key here), the tier string itself is the native value. The
     /// value form decides the wire shape for Anthropic: an integer means

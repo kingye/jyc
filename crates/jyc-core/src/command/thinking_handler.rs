@@ -102,7 +102,7 @@ impl CommandHandler for ThinkingCommandHandler {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     return Ok(CommandResult {
                         success: true,
-                        message: format!("/thinking: no runtime override"),
+                        message: "/thinking: no runtime override".to_string(),
                         error: None,
                         append_body: None,
                     });

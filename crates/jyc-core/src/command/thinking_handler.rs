@@ -221,9 +221,8 @@ default = "high"
         let ctx = test_context(topic, tmp.path());
 
         // A leftover runtime file with a retired tier ("medium") must be
-        // inert: the bare report falls back to the config chain, and the
-        // config's own tier ("high") differs from the stale file's value,
-        // so the assertion proves the file was ignored rather than shown.
+        // inert: the bare report falls back to the config chain instead
+        // of echoing the stale file's value.
         let state_dir = jyc_types::state_dir::resolve_state_dir(topic, &ctx.topic_path);
         tokio::fs::create_dir_all(&state_dir).await.unwrap();
         tokio::fs::write(

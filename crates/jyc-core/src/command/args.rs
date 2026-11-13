@@ -108,8 +108,8 @@ pub static CONTEXT_ARGS: ArgSource = ArgSource::Declared(&[
 /// `/thinking`: set the reasoning-effort tier.
 pub static THINKING_ARGS: ArgSource = ArgSource::Declared(&[
     ArgDef::leaf("low", "Low reasoning effort"),
-    ArgDef::leaf("medium", "Medium reasoning effort"),
     ArgDef::leaf("high", "High reasoning effort"),
+    ArgDef::leaf("max", "Max reasoning effort"),
     ArgDef::leaf(
         "auto",
         "Clear the runtime override; use the configured tier",

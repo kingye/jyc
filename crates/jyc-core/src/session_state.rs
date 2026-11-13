@@ -780,8 +780,8 @@ fn context_window_for_model(model_str: &str, config: &AppConfig) -> Option<u64> 
 }
 
 /// File name for the runtime reasoning-effort tier written by the
-/// `/thinking` command. Plain text: a standard tier (`low` | `medium` |
-/// `high`).
+/// `/thinking` command. Plain text: a standard tier (`low` | `high` |
+/// `max`).
 pub const THINKING_EFFORT_FILE: &str = "thinking-effort";
 
 /// The reasoning-effort tier this topic runs at right now, before any
@@ -797,7 +797,10 @@ pub async fn resolve_effort_tier(
     let state_dir = resolve_state_dir(topic_name, topic_path);
     if let Ok(content) = tokio::fs::read_to_string(state_dir.join(THINKING_EFFORT_FILE)).await {
         let tier = content.trim();
-        if !tier.is_empty() {
+        // Only a standard tier applies (defence against a leftover file
+        // written by an older tier set): anything else falls back to the
+        // config chain, same as a missing file.
+        if matches!(tier, "low" | "high" | "max") {
             return Some(tier.to_string());
         }
     }
@@ -1310,7 +1313,7 @@ build = "{build}"
         tokio::fs::write(state_dir.join(THINKING_EFFORT_FILE), "low\n")
             .await
             .unwrap();
-        let config = config_with_effort("medium", "low", "high");
+        let config = config_with_effort("high", "low", "max");
         let result = resolve_effort_tier(topic, tmp.path(), &config, "c").await;
         assert_eq!(result, Some("low".to_string()));
         jyc_types::state_dir::unregister(topic);
@@ -1324,7 +1327,7 @@ build = "{build}"
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let state_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&state_dir).await.unwrap();
-        let config = config_with_effort("medium", "low", "high");
+        let config = config_with_effort("high", "low", "max");
         tokio::fs::write(state_dir.join("mode-override"), "build\n")
             .await
             .unwrap();
@@ -1341,7 +1344,7 @@ build = "{build}"
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let state_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&state_dir).await.unwrap();
-        let config = config_with_effort("medium", "low", "high");
+        let config = config_with_effort("high", "low", "max");
         tokio::fs::write(state_dir.join("mode-override"), "plan\n")
             .await
             .unwrap();

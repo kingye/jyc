@@ -468,7 +468,7 @@ builtin_commands! {
         make: |_| Arc::new(TemplateCommandHandler)
     },
     "/thinking" => {
-        desc: "Set the reasoning-effort tier (low|medium|high|auto); bare reports current",
+        desc: "Set the reasoning-effort tier (low|high|max|auto); bare reports current",
         shape: Shape::Subcommand {
             labels: &[],
             rest: None,

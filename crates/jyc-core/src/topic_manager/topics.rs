@@ -1407,7 +1407,7 @@ mode = "agent"
         assert_eq!(state.context_pct(), Some(15));
 
         // A runtime thinking-effort file outranks the config tier —
-        // the same file `/thinking low|medium|high` writes.
+        // the same file `/thinking low|high|max` writes.
         tokio::fs::write(topic_path.join(".jyc").join("thinking-effort"), "low\n")
             .await
             .unwrap();

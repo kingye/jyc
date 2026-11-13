@@ -337,7 +337,7 @@ password = "p"
 enabled = true
 mode = "agent"
 [agent.reasoning_effort]
-default = "medium"
+default = "high"
 plan = "low"
 "#;
     let config = load_config_from_str(toml).unwrap();
@@ -368,7 +368,7 @@ mode = "agent"
 type = "anthropic"
 [ai.providers.anthropic.models.claude-opus-4-6]
 model_id = "claude-opus-4-6"
-effort_map = { high = 16000, medium = 8000, low = "minimal" }
+effort_map = { high = 16000, max = "high", low = "minimal" }
 "#;
     let config = load_config_from_str(toml).unwrap();
     let errors = validate_config(&config, NO_BUILTINS);

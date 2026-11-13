@@ -9,7 +9,7 @@ use super::spec;
 /// LLM request.
 ///
 /// Usage:
-/// - `/thinking low|medium|high` - set the tier, persisted in
+/// - `/thinking low|high|max` - set the tier, persisted in
 ///   `.jyc/thinking-effort`; it overrides `[ai.reasoning_effort]` for this
 ///   topic until changed again
 /// - `/thinking auto` - clear the runtime override; the topic falls back to
@@ -17,7 +17,7 @@ use super::spec;
 /// - `/thinking` - report the current tier (unset reported as `auto`)
 pub struct ThinkingCommandHandler;
 
-const TIERS: [&str; 4] = ["low", "medium", "high", "auto"];
+const TIERS: [&str; 4] = ["low", "high", "max", "auto"];
 
 #[async_trait]
 impl CommandHandler for ThinkingCommandHandler {
@@ -115,7 +115,7 @@ impl CommandHandler for ThinkingCommandHandler {
             return Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/thinking: unknown tier '{arg}'. Use '/thinking low|medium|high|auto'"
+                    "/thinking: unknown tier '{arg}'. Use '/thinking low|high|max|auto'"
                 ),
                 error: None,
                 append_body: None,
@@ -189,16 +189,14 @@ password = "p"
 enabled = true
 mode = "agent"
 [ai.reasoning_effort]
-default = "medium"
+default = "high"
 "#,
         );
         let handler = ThinkingCommandHandler;
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success, "{:?}", result.message);
         assert!(
-            result
-                .message
-                .contains("current effort is 'medium' (config)"),
+            result.message.contains("current effort is 'high' (config)"),
             "{:?}",
             result.message
         );
@@ -234,7 +232,7 @@ default = "medium"
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ThinkingCommandHandler;
         let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec!["medium".to_string()];
+        ctx.args = vec!["high".to_string()];
         handler.execute(ctx).await.unwrap();
 
         let mut ctx = test_context(topic, tmp.path());
@@ -244,7 +242,7 @@ default = "medium"
         assert!(
             result
                 .message
-                .contains("current effort is 'medium' (runtime override)"),
+                .contains("current effort is 'high' (runtime override)"),
             "{:?}",
             result.message
         );
@@ -280,7 +278,7 @@ default = "medium"
 
         // Same configured context for the `auto` call: the override file
         // was just written by `high`, and the fallback below must resolve
-        // THIS config's tier (medium), not the standard fixture's (none).
+        // THIS config's tier (high), not the standard fixture's (none).
         ctx.args = vec!["auto".to_string()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success, "{:?}", result.message);
@@ -303,7 +301,7 @@ default = "medium"
     }
 
     /// `/thinking auto` reports the configured tier it falls back to,
-    /// not a hard-coded `auto`: the fixture's config sets default = "medium"
+    /// not a hard-coded `auto`: the fixture's config sets default = "high"
     /// while the runtime override is `high`, so the clear must resolve
     /// *after* the removal to see the config tier rather than the override.
     #[tokio::test]
@@ -333,7 +331,7 @@ password = "p"
 enabled = true
 mode = "agent"
 [ai.reasoning_effort]
-default = "medium"
+default = "high"
 "#,
         );
         ctx.args = vec!["high".to_string()];
@@ -341,14 +339,14 @@ default = "medium"
 
         // Same configured context for the `auto` call: the override file
         // was just written by `high`, and the fallback below must resolve
-        // THIS config's tier (medium), not the standard fixture's (none).
+        // THIS config's tier (high), not the standard fixture's (none).
         ctx.args = vec!["auto".to_string()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success, "{:?}", result.message);
         assert!(
             result
                 .message
-                .contains("runtime override cleared; now using 'medium' (config)"),
+                .contains("runtime override cleared; now using 'high' (config)"),
             "{:?}",
             result.message
         );

@@ -754,7 +754,7 @@ mod tests {
             parse_plain("/thinking", &args(&["-x"]))
                 .unwrap_err()
                 .to_string(),
-            "unknown flag -x (expected: low|medium|high|auto)"
+            "unknown flag -x (expected: low|high|max|auto)"
         );
     }
 

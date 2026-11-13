@@ -747,6 +747,7 @@ mod tests {
     ) -> TopicInfo {
         TopicInfo {
             name: "t".into(),
+            reasoning_effort: None,
             channel: "c".into(),
             pattern: None,
             status: jyc_types::TopicStatus::Idle,

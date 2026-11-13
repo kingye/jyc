@@ -193,8 +193,9 @@ body line.
 | `/model <id>` | Switch AI model for this topic |
 | `/model` | List available models |
 | `/model reset` | Reset to default model |
-| `/thinking <tier>` | Set the reasoning-effort tier sent with each request: `low`, `medium`, or `high` — the tier maps to the model's native parameter via its `effort_map` (default: the tier string itself); persists until changed |
-| `/thinking` | Report the current reasoning-effort tier and its source (runtime override / config tier) |
+| `/thinking <tier>` | Set the reasoning effort sent with each request: `low`, `medium`, or `high` — mapped to the model's native parameter via its `effort_map` (default: the tier string itself); persists until changed |
+| `/thinking` | Report the current reasoning effort and its source (runtime override / config tier); `auto` when nothing is set |
+| `/thinking auto` | Clear the runtime override; fall back to the configured tier (or none) |
 | `/plan` | Switch to plan mode (read-only) |
 | `/build` | Switch to build mode (default) |
 | `/reset` | Clear AI session (requires `-f`/`--force`) |

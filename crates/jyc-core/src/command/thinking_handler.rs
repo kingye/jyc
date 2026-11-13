@@ -12,10 +12,12 @@ use super::spec;
 /// - `/thinking low|medium|high` - set the tier, persisted in
 ///   `.jyc/thinking-effort`; it overrides `[ai.reasoning_effort]` for this
 ///   topic until changed again
-/// - `/thinking` - report the current tier (unset tier reported as unset)
+/// - `/thinking auto` - clear the runtime override; the topic falls back to
+///   the config tier, and with no config tier no reasoning parameter is sent
+/// - `/thinking` - report the current tier (unset reported as `auto`)
 pub struct ThinkingCommandHandler;
 
-const TIERS: [&str; 3] = ["low", "medium", "high"];
+const TIERS: [&str; 4] = ["low", "medium", "high", "auto"];
 
 #[async_trait]
 impl CommandHandler for ThinkingCommandHandler {
@@ -58,12 +60,12 @@ impl CommandHandler for ThinkingCommandHandler {
                         )
                         .await
                         .map(|t| t.to_string())
-                        .unwrap_or_else(|| "none".to_string());
+                        .unwrap_or_else(|| "auto".to_string());
                         (tier, "config")
                     }
                     Err(error) => return Err(error.into()),
                 };
-            let message = format!("/thinking: current tier is '{tier}' ({source})");
+            let message = format!("/thinking: current effort is '{tier}' ({source})");
             return Ok(CommandResult {
                 success: true,
                 message,
@@ -72,11 +74,38 @@ impl CommandHandler for ThinkingCommandHandler {
             });
         }
 
+        if arg == "auto" {
+            // `auto` clears the runtime override; the topic falls back to
+            // whatever the config chain resolves (possibly none — no
+            // reasoning parameter sent).
+            match tokio::fs::remove_file(state_dir.join("thinking-effort")).await {
+                Ok(()) => {
+                    return Ok(CommandResult {
+                        success: true,
+                        message: "/thinking: runtime override cleared; using config tier (auto)"
+                            .to_string(),
+                        error: None,
+                        append_body: None,
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(CommandResult {
+                        success: true,
+                        message: "/thinking: no runtime override; already using config tier (auto)"
+                            .to_string(),
+                        error: None,
+                        append_body: None,
+                    });
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+
         if !TIERS.contains(&arg.as_str()) {
             return Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/thinking: unknown tier '{arg}'. Use '/thinking low|medium|high'"
+                    "/thinking: unknown tier '{arg}'. Use '/thinking low|medium|high|auto'"
                 ),
                 error: None,
                 append_body: None,
@@ -157,7 +186,9 @@ default = "medium"
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success, "{:?}", result.message);
         assert!(
-            result.message.contains("current tier is 'medium' (config)"),
+            result
+                .message
+                .contains("current effort is 'medium' (config)"),
             "{:?}",
             result.message
         );
@@ -174,11 +205,11 @@ default = "medium"
         let ctx = test_context(topic, tmp.path());
 
         // The standard fixture has no [ai.reasoning_effort], so the chain
-        // ends at "none".
+        // ends at "auto".
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
         assert!(
-            result.message.contains("current tier is 'none' (config)"),
+            result.message.contains("current effort is 'auto' (config)"),
             "{:?}",
             result.message
         );
@@ -203,7 +234,7 @@ default = "medium"
         assert!(
             result
                 .message
-                .contains("current tier is 'medium' (runtime override)"),
+                .contains("current effort is 'medium' (runtime override)"),
             "{:?}",
             result.message
         );
@@ -223,5 +254,56 @@ default = "medium"
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
         assert!(result.message.contains("unknown tier"));
+    }
+
+    /// `/thinking auto` clears the runtime override; a subsequent bare
+    /// report falls back to the config tier.
+    #[tokio::test]
+    async fn test_thinking_auto_clears_runtime_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_thinking_auto_clears_runtime_override";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let handler = ThinkingCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec!["high".to_string()];
+        handler.execute(ctx).await.unwrap();
+
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec!["auto".to_string()];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success, "{:?}", result.message);
+        assert!(
+            !tmp.path().join(".jyc/thinking-effort").exists(),
+            "override file should be removed"
+        );
+
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec![];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        assert!(
+            result.message.contains("current effort is 'auto' (config)"),
+            "{:?}",
+            result.message
+        );
+        jyc_types::state_dir::unregister(topic);
+        jyc_types::state_dir::clear_closed(topic);
+    }
+
+    /// `/thinking auto` with no override still succeeds.
+    #[tokio::test]
+    async fn test_thinking_auto_without_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_thinking_auto_without_override";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let handler = ThinkingCommandHandler;
+        let mut ctx = test_context(topic, tmp.path());
+        ctx.args = vec!["auto".to_string()];
+
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success, "{:?}", result.message);
+        assert!(result.message.contains("no runtime override"));
+        jyc_types::state_dir::unregister(topic);
+        jyc_types::state_dir::clear_closed(topic);
     }
 }

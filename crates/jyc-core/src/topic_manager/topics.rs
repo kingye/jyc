@@ -27,6 +27,9 @@ pub struct TopicDisplayState {
     pub mode: Option<String>,
     /// Effective model after the full override chain.
     pub model: Option<String>,
+    /// Reasoning-effort tier the topic's requests send; `None` when
+    /// nothing is configured (surfaces render "auto").
+    pub reasoning_effort: Option<String>,
     /// The input the most recent LLM call was sent, from the session
     /// state file.
     pub input_tokens: Option<u64>,
@@ -149,8 +152,8 @@ impl TopicManager {
     /// the Feishu status card can never drift apart. Small state-file
     /// reads only — no workspace scan, no git calls.
     ///
-    /// Returns `(pattern, token_state, mode, model)` where `token_state`
-    /// is the struct from `read_token_state()`.
+    /// Returns `(pattern, token_state, mode, model, effort)` where
+    /// `token_state` is the struct from `read_token_state()`.
     async fn resolve_display_state(
         &self,
         topic_name: &str,
@@ -158,6 +161,7 @@ impl TopicManager {
     ) -> (
         Option<String>,
         crate::session_state::TokenState,
+        Option<String>,
         Option<String>,
         Option<String>,
     ) {
@@ -198,7 +202,18 @@ impl TopicManager {
         )
         .await;
 
-        (pattern, token_state, mode, model)
+        // Same one-resolver rule as the model: what the display renders
+        // is what the topic's requests send. `None` means no tier is
+        // configured (no reasoning parameter sent) — surfaces show "auto".
+        let effort = crate::session_state::resolve_effort_tier(
+            topic_name,
+            topic_path,
+            &self.config.load(),
+            &self.channel_name,
+        )
+        .await;
+
+        (pattern, token_state, mode, model, effort)
     }
 
     /// Lightweight display state for one topic (mode, model, context
@@ -209,11 +224,12 @@ impl TopicManager {
         let Some(topic_path) = self.topic_path(topic_name).await else {
             return TopicDisplayState::default();
         };
-        let (_pattern, token_state, mode, model) =
+        let (_pattern, token_state, mode, model, reasoning_effort) =
             self.resolve_display_state(topic_name, &topic_path).await;
         TopicDisplayState {
             mode,
             model,
+            reasoning_effort,
             input_tokens: token_state.context_input_tokens,
             output_tokens: token_state.context_output_tokens,
             max_tokens: token_state.context_window,
@@ -678,7 +694,7 @@ impl TopicManager {
             // Resolve display state (pattern, mode, model, token usage) —
             // shared with `topic_display_state()` so consumers can never
             // drift apart.
-            let (pattern, token_state, mode, model) =
+            let (pattern, token_state, mode, model, reasoning_effort) =
                 self.resolve_display_state(name, &topic_path).await;
             let input_tokens = token_state.context_input_tokens;
             let context_output_tokens = token_state.context_output_tokens;
@@ -799,6 +815,7 @@ impl TopicManager {
                 // lineage — the one answer the list and the detail share.
                 parent: entry.parent.clone(),
                 model,
+                reasoning_effort,
                 mode,
                 context_input_tokens: input_tokens,
                 context_output_tokens,

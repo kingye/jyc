@@ -1701,6 +1701,7 @@ fn app_with_topic_summary() -> App {
     });
     app.topic_detail = Some(jyc_types::TopicInfo {
         name: "jyc".to_string(),
+        reasoning_effort: None,
         channel: "agents".to_string(),
         pattern: None,
         status: jyc_types::TopicStatus::Idle,

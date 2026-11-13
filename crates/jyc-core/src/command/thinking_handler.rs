@@ -2,6 +2,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use jyc_types::state_dir::resolve_state_dir;
 
+use crate::session_state::{THINKING_EFFORT_FILE, is_standard_effort_tier};
+
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use super::spec;
 
@@ -9,7 +11,7 @@ use super::spec;
 /// LLM request.
 ///
 /// Usage:
-/// - `/thinking low|medium|high` - set the tier, persisted in
+/// - `/thinking low|high|max` - set the tier, persisted in
 ///   `.jyc/thinking-effort`; it overrides `[ai.reasoning_effort]` for this
 ///   topic until changed again
 /// - `/thinking auto` - clear the runtime override; the topic falls back to
@@ -17,7 +19,7 @@ use super::spec;
 /// - `/thinking` - report the current tier (unset reported as `auto`)
 pub struct ThinkingCommandHandler;
 
-const TIERS: [&str; 4] = ["low", "medium", "high", "auto"];
+const TIERS: [&str; 4] = ["low", "high", "max", "auto"];
 
 #[async_trait]
 impl CommandHandler for ThinkingCommandHandler {
@@ -47,24 +49,30 @@ impl CommandHandler for ThinkingCommandHandler {
         if arg.is_empty() {
             // Bare `/thinking`: report the tier that would actually apply —
             // the same chain `resolve_effort_tier` walks for every request
-            // (runtime file > mode tier > default), not just the file.
-            let (tier, source) =
-                match tokio::fs::read_to_string(state_dir.join("thinking-effort")).await {
-                    Ok(raw) => (raw.trim().to_string(), "runtime override"),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        let tier = crate::session_state::resolve_effort_tier(
-                            &context.topic_name,
-                            &context.topic_path,
-                            context.config.as_ref(),
-                            &context.channel,
-                        )
-                        .await
-                        .map(|t| t.to_string())
-                        .unwrap_or_else(|| "auto".to_string());
-                        (tier, "config")
-                    }
-                    Err(error) => return Err(error.into()),
-                };
+            // (runtime file > mode tier > default), not just the file. A
+            // stale runtime file (a tier the current set no longer accepts)
+            // falls through to the config chain, exactly as requests do.
+            let runtime = match tokio::fs::read_to_string(state_dir.join(THINKING_EFFORT_FILE))
+                .await
+            {
+                Ok(text) => is_standard_effort_tier(text.trim()).then(|| text.trim().to_owned()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.into()),
+            };
+            let (tier, source) = match runtime {
+                Some(tier) => (tier.to_owned(), "runtime override"),
+                None => {
+                    let tier = crate::session_state::resolve_effort_tier(
+                        &context.topic_name,
+                        &context.topic_path,
+                        context.config.as_ref(),
+                        &context.channel,
+                    )
+                    .await
+                    .unwrap_or_else(|| "auto".to_owned());
+                    (tier, "config")
+                }
+            };
             let message = format!("/thinking: current effort is '{tier}' ({source})");
             return Ok(CommandResult {
                 success: true,
@@ -80,7 +88,7 @@ impl CommandHandler for ThinkingCommandHandler {
             // reasoning parameter sent). Remove the override *first*, then
             // resolve: `resolve_effort_tier` reads this very file, so
             // resolving before the clear would report the override itself.
-            match tokio::fs::remove_file(state_dir.join("thinking-effort")).await {
+            match tokio::fs::remove_file(state_dir.join(THINKING_EFFORT_FILE)).await {
                 Ok(()) => {
                     let tier = crate::session_state::resolve_effort_tier(
                         &context.topic_name,
@@ -115,7 +123,7 @@ impl CommandHandler for ThinkingCommandHandler {
             return Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/thinking: unknown tier '{arg}'. Use '/thinking low|medium|high|auto'"
+                    "/thinking: unknown tier '{arg}'. Use '/thinking low|high|max|auto'"
                 ),
                 error: None,
                 append_body: None,
@@ -123,7 +131,7 @@ impl CommandHandler for ThinkingCommandHandler {
         }
 
         tokio::fs::create_dir_all(&state_dir).await?;
-        tokio::fs::write(state_dir.join("thinking-effort"), &arg).await?;
+        tokio::fs::write(state_dir.join(THINKING_EFFORT_FILE), &arg).await?;
 
         Ok(CommandResult {
             success: true,
@@ -189,16 +197,14 @@ password = "p"
 enabled = true
 mode = "agent"
 [ai.reasoning_effort]
-default = "medium"
+default = "high"
 "#,
         );
         let handler = ThinkingCommandHandler;
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success, "{:?}", result.message);
         assert!(
-            result
-                .message
-                .contains("current effort is 'medium' (config)"),
+            result.message.contains("current effort is 'high' (config)"),
             "{:?}",
             result.message
         );
@@ -213,6 +219,18 @@ default = "medium"
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ThinkingCommandHandler;
         let ctx = test_context(topic, tmp.path());
+
+        // A leftover runtime file with a retired tier ("medium") must be
+        // inert: the bare report falls back to the config chain instead
+        // of echoing the stale file's value.
+        let state_dir = jyc_types::state_dir::resolve_state_dir(topic, &ctx.topic_path);
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(
+            state_dir.join(crate::session_state::THINKING_EFFORT_FILE),
+            "medium\n",
+        )
+        .await
+        .unwrap();
 
         // The standard fixture has no [ai.reasoning_effort], so the chain
         // ends at "auto" (reported with the config source).
@@ -234,7 +252,7 @@ default = "medium"
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ThinkingCommandHandler;
         let mut ctx = test_context(topic, tmp.path());
-        ctx.args = vec!["medium".to_string()];
+        ctx.args = vec!["high".to_string()];
         handler.execute(ctx).await.unwrap();
 
         let mut ctx = test_context(topic, tmp.path());
@@ -244,7 +262,7 @@ default = "medium"
         assert!(
             result
                 .message
-                .contains("current effort is 'medium' (runtime override)"),
+                .contains("current effort is 'high' (runtime override)"),
             "{:?}",
             result.message
         );
@@ -280,7 +298,7 @@ default = "medium"
 
         // Same configured context for the `auto` call: the override file
         // was just written by `high`, and the fallback below must resolve
-        // THIS config's tier (medium), not the standard fixture's (none).
+        // THIS config's tier (high), not the standard fixture's (none).
         ctx.args = vec!["auto".to_string()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success, "{:?}", result.message);
@@ -303,8 +321,8 @@ default = "medium"
     }
 
     /// `/thinking auto` reports the configured tier it falls back to,
-    /// not a hard-coded `auto`: the fixture's config sets default = "medium"
-    /// while the runtime override is `high`, so the clear must resolve
+    /// not a hard-coded `auto`: the fixture's config sets default = "high"
+    /// while the runtime override is `max`, so the clear must resolve
     /// *after* the removal to see the config tier rather than the override.
     #[tokio::test]
     async fn test_thinking_auto_reports_configured_tier() {
@@ -333,22 +351,23 @@ password = "p"
 enabled = true
 mode = "agent"
 [ai.reasoning_effort]
-default = "medium"
+default = "high"
 "#,
         );
-        ctx.args = vec!["high".to_string()];
+        ctx.args = vec!["max".to_string()];
         handler.execute(ctx.clone()).await.unwrap();
 
         // Same configured context for the `auto` call: the override file
-        // was just written by `high`, and the fallback below must resolve
-        // THIS config's tier (medium), not the standard fixture's (none).
+        // was just written by `max`, and the fallback below must resolve
+        // THIS config's tier (high), not the standard fixture's (none) —
+        // the two values differ so the assertion can tell them apart.
         ctx.args = vec!["auto".to_string()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success, "{:?}", result.message);
         assert!(
             result
                 .message
-                .contains("runtime override cleared; now using 'medium' (config)"),
+                .contains("runtime override cleared; now using 'high' (config)"),
             "{:?}",
             result.message
         );

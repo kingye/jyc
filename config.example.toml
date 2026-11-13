@@ -253,15 +253,15 @@ mode = "agent"
 # audit = "anthropic/claude-opus-4-6"
 
 # Reasoning-effort tiers, sent with every request as the model's native
-# reasoning parameter. Tiers are the standard values `low` / `medium` /
-# `high`; `default` applies everywhere, `build` and `plan` override it per
-# mode. The `/thinking low|medium|high` command writes a runtime override
+# reasoning parameter. Tiers are the standard values `low` / `high` /
+# `max`; `default` applies everywhere, `build` and `plan` override it per
+# mode. The `/thinking low|high|max` command writes a runtime override
 # that outranks all three, and `/thinking auto` clears it again (falling
 # back to this config); a subagent type's `[ai.reasoning_effort]` table
 # replaces the inherited one at spawn.
 # [ai.reasoning_effort]
-# default = "medium"
-# build = "high"
+# default = "high"
+# build = "max"
 # plan = "low"
 #
 # Per-model translation: a model whose API names the values differently maps
@@ -274,13 +274,13 @@ mode = "agent"
 # (`thinking = { type = "adaptive" }` + `output_config.effort = <value>`).
 # [ai.providers.anthropic.models.claude-opus-4-6]
 # model_id = "claude-opus-4-6"
-# effort_map = { high = 16000, medium = 8000, low = 1024 }
+# effort_map = { max = 16000, high = 8000, low = 1024 }
 # [ai.providers.anthropic.models.claude-opus-4-5]
 # model_id = "claude-opus-4-5"
-# effort_map = { high = "high", medium = "medium", low = "low" }
+# effort_map = { max = "high", high = "medium", low = "low" }
 # [ai.providers.deepseek.models.deepseek-v4]
 # model_id = "deepseek-reasoner"
-# effort_map = { low = "low", medium = "medium", high = "high" }
+# effort_map = { low = "low", high = "high", max = "max" }
 
 # App-wide system prompt injected into every agent's system prompt as a
 # "## Global Instructions" section (before skills and topic instructions).

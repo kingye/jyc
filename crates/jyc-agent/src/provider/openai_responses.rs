@@ -769,7 +769,7 @@ mod tests {
             Some(serde_json::json!({"reasoning": {"summary": "auto"}})),
             false,
             None,
-            Some(serde_json::json!("medium")),
+            Some(serde_json::json!("high")),
         )
         .expect("provider construction");
         let mut stream = provider
@@ -782,7 +782,7 @@ mod tests {
         let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
         assert_eq!(
             sent["reasoning"],
-            serde_json::json!({"summary": "auto", "effort": "medium"}),
+            serde_json::json!({"summary": "auto", "effort": "high"}),
             "effort merges into the reasoning object: {sent:#}"
         );
     }

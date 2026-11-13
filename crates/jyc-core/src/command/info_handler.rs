@@ -275,7 +275,7 @@ mod tests {
             queue_capacity: 10,
             parent: None,
             model: Some("kimi/k3-256k".into()),
-            reasoning_effort: Some("medium".into()),
+            reasoning_effort: Some("high".into()),
             mode: Some("plan".into()),
             context_input_tokens: Some(105_432),
             context_output_tokens: Some(2_048),
@@ -339,7 +339,7 @@ mod tests {
         let expected = "\
 Topic: issue-42
 Pattern: gh-issue
-Model: kimi/k3-256k (medium)
+Model: kimi/k3-256k (high)
 Mode: plan
 Branch: fix/issue-42-timeout
 Status: Idle · queue 2 / 10

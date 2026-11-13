@@ -906,12 +906,12 @@ fn validate_reasoning_effort(
     for (name, value) in tiers {
         if let Some(tier) = value
             && tier != "low"
-            && tier != "medium"
             && tier != "high"
+            && tier != "max"
         {
             errors.push(ValidationError {
                 path: format!("{prefix}.{name}"),
-                message: format!("must be 'low', 'medium' or 'high', got '{tier}'"),
+                message: format!("must be 'low', 'high' or 'max', got '{tier}'"),
             });
         }
     }
@@ -925,10 +925,10 @@ fn validate_effort_map(
     errors: &mut Vec<ValidationError>,
 ) {
     for (tier, value) in map {
-        if tier != "low" && tier != "medium" && tier != "high" {
+        if tier != "low" && tier != "high" && tier != "max" {
             errors.push(ValidationError {
                 path: format!("{prefix}.{tier}"),
-                message: format!("key must be 'low', 'medium' or 'high', got '{tier}'"),
+                message: format!("key must be 'low', 'high' or 'max', got '{tier}'"),
             });
         }
         if !value.is_string() && !value.is_number() {

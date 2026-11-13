@@ -899,7 +899,7 @@ pub fn create_provider(
     // Translate the generic effort tier into this model's native value via
     // the per-model `effort_map`. Without a map (or a matching key) the tier
     // string itself is the native value — that is what the standard tiers
-    // (`low`/`medium`/`high`) are for. Anthropic legacy-Extended-thinking
+    // (`low`/`high`/`max`) are for. Anthropic legacy-Extended-thinking
     // models express effort as a `budget_tokens` integer instead, which the
     // map carries as a JSON number. A mapped value must be a string or a
     // number — anything else is a config error, not something to silently
@@ -1744,7 +1744,7 @@ mod model_id_tests {
         mapped.effort_map = Some(
             [
                 ("low".to_string(), serde_json::json!(1024)),
-                ("high".to_string(), serde_json::json!("max")),
+                ("high".to_string(), serde_json::json!(2048)),
             ]
             .into_iter()
             .collect(),
@@ -1757,11 +1757,12 @@ mod model_id_tests {
         let p = create_provider("kimi/k3", &providers, Some("low")).unwrap();
         assert_eq!(p.effort(), Some(&serde_json::json!(1024)));
         let p = create_provider("kimi/k3", &providers, Some("high")).unwrap();
-        assert_eq!(p.effort(), Some(&serde_json::json!("max")));
+        assert_eq!(p.effort(), Some(&serde_json::json!(2048)));
 
-        // No map entry for `medium`: the tier string passes through.
-        let p = create_provider("kimi/k3", &providers, Some("medium")).unwrap();
-        assert_eq!(p.effort(), Some(&serde_json::json!("medium")));
+        // No map entry for that tier (`max` absent from k3's map): the tier
+        // string passes through.
+        let p = create_provider("kimi/k3", &providers, Some("max")).unwrap();
+        assert_eq!(p.effort(), Some(&serde_json::json!("max")));
 
         // Model with no `effort_map` at all: same fallback.
         let p = create_provider("kimi/plain", &providers, Some("high")).unwrap();

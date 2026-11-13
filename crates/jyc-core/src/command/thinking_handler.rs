@@ -276,9 +276,11 @@ default = "medium"
         let handler = ThinkingCommandHandler;
         let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["high".to_string()];
-        handler.execute(ctx).await.unwrap();
+        handler.execute(ctx.clone()).await.unwrap();
 
-        let mut ctx = test_context(topic, tmp.path());
+        // Same configured context for the `auto` call: the override file
+        // was just written by `high`, and the fallback below must resolve
+        // THIS config's tier (medium), not the standard fixture's (none).
         ctx.args = vec!["auto".to_string()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success, "{:?}", result.message);
@@ -335,9 +337,11 @@ default = "medium"
 "#,
         );
         ctx.args = vec!["high".to_string()];
-        handler.execute(ctx).await.unwrap();
+        handler.execute(ctx.clone()).await.unwrap();
 
-        let mut ctx = test_context(topic, tmp.path());
+        // Same configured context for the `auto` call: the override file
+        // was just written by `high`, and the fallback below must resolve
+        // THIS config's tier (medium), not the standard fixture's (none).
         ctx.args = vec!["auto".to_string()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success, "{:?}", result.message);

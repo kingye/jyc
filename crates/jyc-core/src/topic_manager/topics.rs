@@ -968,7 +968,7 @@ name = "p1"
 mode = "plan"
 plan_model = "deepseek/deepseek-reasoner"
 build_model = "deepseek/deepseek-chat"
-[agent]
+[ai]
 enabled = true
 mode = "agent"
 [ai.reasoning_effort]

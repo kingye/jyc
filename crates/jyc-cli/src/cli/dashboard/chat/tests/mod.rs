@@ -1676,8 +1676,8 @@ fn input_area_rows_reserves_the_bottom_rule() {
 }
 
 /// A polled topic with its detail, so the status line has real content:
-/// `plan · jyc · main` on the left, `[ kimi/kimi-for-coding · 10% ]` on the
-/// right. The list carries the topic, the detail its figures — the same
+/// `plan · jyc · main` on the left, `[ kimi/kimi-for-coding (auto) ·
+/// 10% ]` on the right. The list carries the topic, the detail its figures — the same
 /// split the server keeps.
 fn app_with_topic_summary() -> App {
     let mut app = chatting_app();
@@ -1756,7 +1756,7 @@ fn status_line_renders_at_the_bottom_below_the_popup() {
         crossterm::event::KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
         &mut test_terminal(),
     );
-    let buffer = draw_80x24(&mut app);
+    let buffer = draw_sized(&mut app, 87, 24);
 
     let bottom = row_text(&buffer, buffer.area.height - 1);
     assert!(

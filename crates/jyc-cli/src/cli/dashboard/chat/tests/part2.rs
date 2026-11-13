@@ -1574,8 +1574,8 @@ fn status_line_drops_chip_when_narrow() {
     // should be dropped, left segment preserved.
     let detail = visible_status_detail();
     // Left "plan · jyc" = 10 display cols.
-    // Chip "[ claude-opus-4-6 (auto) · 10% ]" = 23 display cols.
-    // total = 33 cols + 1 separating space. Width 32 forces dropping
+    // Chip "[ claude-opus-4-6 (auto) · 10% ]" = 30 display cols.
+    // total = 40 cols + 1 separating space. Width 32 forces dropping
     // the chip.
     let line = build_status_line(32, Some(&detail), true);
     let text = line_text(&line);

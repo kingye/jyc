@@ -77,23 +77,23 @@ impl CommandHandler for ThinkingCommandHandler {
         if arg == "auto" {
             // `auto` clears the runtime override; the topic falls back to
             // whatever the config chain resolves (possibly none — no
-            // reasoning parameter sent). The reply reports the resolved
-            // value, not a hard-coded `auto`: a configured tier survives
-            // the clear.
-            let config_tier = crate::session_state::resolve_effort_tier(
-                &context.topic_name,
-                &context.topic_path,
-                context.config.as_ref(),
-                &context.channel,
-            )
-            .await
-            .unwrap_or_else(|| "auto".to_string());
+            // reasoning parameter sent). Remove the override *first*, then
+            // resolve: `resolve_effort_tier` reads this very file, so
+            // resolving before the clear would report the override itself.
             match tokio::fs::remove_file(state_dir.join("thinking-effort")).await {
                 Ok(()) => {
+                    let tier = crate::session_state::resolve_effort_tier(
+                        &context.topic_name,
+                        &context.topic_path,
+                        context.config.as_ref(),
+                        &context.channel,
+                    )
+                    .await
+                    .unwrap_or_else(|| "auto".to_string());
                     return Ok(CommandResult {
                         success: true,
                         message: format!(
-                            "/thinking: runtime override cleared; now using '{config_tier}' (config)"
+                            "/thinking: runtime override cleared; now using '{tier}' (config)"
                         ),
                         error: None,
                         append_body: None,
@@ -102,9 +102,7 @@ impl CommandHandler for ThinkingCommandHandler {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     return Ok(CommandResult {
                         success: true,
-                        message: format!(
-                            "/thinking: no runtime override; already using '{config_tier}' (config)"
-                        ),
+                        message: format!("/thinking: no runtime override"),
                         error: None,
                         append_body: None,
                     });
@@ -217,13 +215,11 @@ default = "medium"
         let ctx = test_context(topic, tmp.path());
 
         // The standard fixture has no [ai.reasoning_effort], so the chain
-        // ends at "auto".
+        // ends at "auto" (reported with the config source).
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
         assert!(
-            result
-                .message
-                .contains("current effort is 'medium' (config)"),
+            result.message.contains("current effort is 'auto' (config)"),
             "{:?}",
             result.message
         );
@@ -296,9 +292,7 @@ default = "medium"
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
         assert!(
-            result
-                .message
-                .contains("current effort is 'medium' (config)"),
+            result.message.contains("current effort is 'auto' (config)"),
             "{:?}",
             result.message
         );
@@ -307,14 +301,39 @@ default = "medium"
     }
 
     /// `/thinking auto` reports the configured tier it falls back to,
-    /// not a hard-coded `auto`: the fixture's config default is medium.
+    /// not a hard-coded `auto`: the fixture's config sets default = "medium"
+    /// while the runtime override is `high`, so the clear must resolve
+    /// *after* the removal to see the config tier rather than the override.
     #[tokio::test]
     async fn test_thinking_auto_reports_configured_tier() {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_thinking_auto_reports_configured_tier";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ThinkingCommandHandler;
-        let mut ctx = test_context(topic, tmp.path());
+        let mut ctx = crate::test_support::test_context_with_config(
+            topic,
+            tmp.path(),
+            r#"
+[general]
+[channels.test]
+type = "email"
+[channels.test.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.test.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[ai]
+enabled = true
+mode = "agent"
+[ai.reasoning_effort]
+default = "medium"
+"#,
+        );
         ctx.args = vec!["high".to_string()];
         handler.execute(ctx).await.unwrap();
 

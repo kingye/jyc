@@ -386,6 +386,7 @@ Files (2):
     fn omits_missing_rows_like_the_pane() {
         let mut t = full_info();
         t.model = None;
+        t.reasoning_effort = None;
         t.mode = None;
         t.branch = None;
         t.context_input_tokens = None;

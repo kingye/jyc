@@ -1766,7 +1766,7 @@ fn status_line_renders_at_the_bottom_below_the_popup() {
     let bar = "━".repeat(10);
     assert!(
         bottom.trim_end().ends_with(&format!(
-            "[ kimi/kimi-for-coding · {bar} 10% ↑0/0% ↓0/0 →0s/0 ]"
+            "[ kimi/kimi-for-coding (auto) · {bar} 10% ↑0/0% ↓0/0 →0s/0 ]"
         )),
         "model chip stays right-aligned on the status line: {bottom:?}"
     );
@@ -1793,7 +1793,8 @@ fn status_line_renders_at_the_bottom_below_the_popup() {
 #[test]
 fn status_line_sits_right_below_the_rule_and_keeps_padding_gray() {
     let mut app = app_with_topic_summary();
-    let buffer = draw_80x24(&mut app);
+    // The chip grew by "(auto) " (7 cols); 87 still fits it whole.
+    let buffer = draw_sized(&mut app, 87, 24);
 
     let rule = rule_row(&buffer);
     let status = rule + 1;

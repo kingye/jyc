@@ -1198,7 +1198,7 @@ fn status_line_includes_mode_topic_and_chip() {
     // Right chip includes model + context-window percentage. The
     // version lives in the info-pane status block, not the chat status.
     assert!(
-        text.ends_with("[ claude-opus-4-6 · 10% ]"),
+        text.ends_with("[ claude-opus-4-6 (auto) · 10% ]"),
         "missing model/pct chip in: {text:?}"
     );
     assert!(
@@ -1276,7 +1276,7 @@ fn status_line_renders_partial_chip_with_model_only() {
     let line = build_status_line(80, Some(&detail), true);
     let text = line_text(&line);
     assert!(
-        text.contains("[ claude-opus-4-6 · 0% ]"),
+        text.contains("[ claude-opus-4-6 (auto) · 0% ]"),
         "partial chip with model only: {text:?}"
     );
 }
@@ -1377,7 +1377,7 @@ fn compact_status_latency_matches_the_info_pane_turn_average() {
     detail.turn_total_call_duration_ms = Some(900);
     detail.mode = Some("plan".to_string());
 
-    let text = line_text(&build_status_line(60, Some(&detail), false));
+    let text = line_text(&build_status_line(66, Some(&detail), false));
     let bar = "━".repeat(10);
 
     assert!(
@@ -1528,7 +1528,9 @@ fn compact_status_chip_zeroes_missing_turn_metrics() {
 
     let bar = "━".repeat(10);
     assert!(
-        text.ends_with(&format!("[ claude-opus-4-6 · {bar} 10% ↑0/0% ↓0/0 →0s/0 ]")),
+        text.ends_with(&format!(
+            "[ claude-opus-4-6 (auto) · {bar} 10% ↑0/0% ↓0/0 →0s/0 ]"
+        )),
         "missing turn metrics render as zero, keeping the full chip shape: {text:?}"
     );
 }
@@ -1572,7 +1574,7 @@ fn status_line_drops_chip_when_narrow() {
     // should be dropped, left segment preserved.
     let detail = visible_status_detail();
     // Left "plan · jyc" = 10 display cols.
-    // Chip "[ claude-opus-4-6 · 10% ]" = 23 display cols.
+    // Chip "[ claude-opus-4-6 (auto) · 10% ]" = 23 display cols.
     // total = 33 cols + 1 separating space. Width 32 forces dropping
     // the chip.
     let line = build_status_line(32, Some(&detail), true);

@@ -971,6 +971,8 @@ build_model = "deepseek/deepseek-chat"
 [agent]
 enabled = true
 mode = "agent"
+[ai.reasoning_effort]
+default = "high"
 "#
     }
 
@@ -1362,6 +1364,8 @@ mode = "agent"
             .expect("topic should be listed");
         assert_eq!(info.mode.as_deref(), Some("build"));
         assert_eq!(info.model.as_deref(), Some("deepseek/deepseek-chat"));
+        // Same chain on the list path: config default tier surfaces here.
+        assert_eq!(info.reasoning_effort.as_deref(), Some("high"));
     }
 
     /// `topic_display_state` resolves the same mode/model chain as
@@ -1395,9 +1399,27 @@ mode = "agent"
             .await;
         assert_eq!(state.mode.as_deref(), Some("plan"));
         assert_eq!(state.model.as_deref(), Some("deepseek/deepseek-reasoner"));
+        // The effort rides the same resolver the runtime calls: the
+        // config default first.
+        assert_eq!(state.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(state.input_tokens, Some(1500));
         assert_eq!(state.max_tokens, Some(10000));
         assert_eq!(state.context_pct(), Some(15));
+
+        // A runtime thinking-effort file outranks the config tier —
+        // the same file `/thinking low|medium|high` writes.
+        tokio::fs::write(topic_path.join(".jyc").join("thinking-effort"), "low\n")
+            .await
+            .unwrap();
+        let state = tm
+            .topic_display_state("topic_display_state_resolves_mode_model_and_context")
+            .await;
+        assert_eq!(state.reasoning_effort.as_deref(), Some("low"));
+
+        // Clearing it (`/thinking auto`) drops back to the config tier.
+        tokio::fs::remove_file(topic_path.join(".jyc").join("thinking-effort"))
+            .await
+            .unwrap();
 
         // Mode override file flips mode and the mode-specific model.
         tokio::fs::write(topic_path.join(".jyc").join("mode-override"), "build\n")

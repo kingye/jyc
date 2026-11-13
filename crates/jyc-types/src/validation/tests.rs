@@ -306,7 +306,7 @@ enabled = true
 mode = "agent"
 [agent.reasoning_effort]
 default = "low"
-build = "medium"
+build = "turbo"
 "#;
     let config = load_config_from_str(toml).unwrap();
     let errors = validate_config(&config, NO_BUILTINS);
@@ -338,7 +338,7 @@ enabled = true
 mode = "agent"
 [agent.reasoning_effort]
 default = "high"
-plan = "low"
+plan = "xhigh"
 "#;
     let config = load_config_from_str(toml).unwrap();
     let errors = validate_config(&config, NO_BUILTINS);
@@ -368,7 +368,7 @@ mode = "agent"
 type = "anthropic"
 [ai.providers.anthropic.models.claude-opus-4-6]
 model_id = "claude-opus-4-6"
-effort_map = { high = 16000, max = "high", low = "minimal" }
+effort_map = { high = 16000, max = "high", minimal = "low", none = "minimal" }
 "#;
     let config = load_config_from_str(toml).unwrap();
     let errors = validate_config(&config, NO_BUILTINS);

@@ -3,13 +3,14 @@
 ### Added
 - `/thinking auto` clears the runtime reasoning-effort override; bare `/thinking` and all display surfaces (`/info`, dashboard info pane, status chip) now show the configured effort beside the model, `auto` when nothing is configured (#1089, follow-up to #1088)
 
-- Reasoning-effort control: `[ai.reasoning_effort]` (`default`/`build`/`plan`) and the `/thinking low|high|max` command pick a standard tier per topic; the tier reaches the provider as the model's native reasoning parameter — `reasoning_effort` (Chat Completions), `reasoning.effort` (Responses API), or Anthropic thinking (`effort_map` translates the tier, a number meaning legacy `budget_tokens`, a string the adaptive `output_config.effort`; without a map the tier string itself is sent). A subagent type's `[ai.reasoning_effort]` replaces the inherited one and clears the parent's runtime tier at spawn
+- Reasoning-effort tiers expand to `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`, accepted everywhere a tier enters (`[ai.reasoning_effort]`, `effort_map` keys, the `/thinking` command)
+- Reasoning-effort control: `[ai.reasoning_effort]` (`default`/`build`/`plan`) and the `/thinking <tier>` command pick a standard tier per topic; the tier reaches the provider as the model's native reasoning parameter — `reasoning_effort` (Chat Completions), `reasoning.effort` (Responses API), or Anthropic thinking (`effort_map` translates the tier, a number meaning legacy `budget_tokens`, a string the adaptive `output_config.effort`; without a map the tier string itself is sent). A subagent type's `[ai.reasoning_effort]` replaces the inherited one and clears the parent's runtime tier at spawn
 
 ### Changed
 
-- The generic reasoning-effort tier set is now `low` / `high` / `max` (was `low` / `medium` / `high`), for `[ai.reasoning_effort]`, `/thinking`, and `effort_map` keys alike; no compatibility alias — a `medium` config value fails validation (startup/reload aborts on the global config; a topic-local one silently sends no effort), and a leftover `.jyc/thinking-effort` file with a retired tier is ignored in favor of the config chain. Models capped below `high` keep native names via `effort_map` (e.g. `low = "minimal"`); mapped keys are independent, a partial map falls back to the tier string for unmapped tiers
+- The generic reasoning-effort tier set was `low` / `high` / `max` (was `low` / `medium` / `high`); it now expands to the full seven-tier set above — see Added. Models capped below `high` keep native names via `effort_map` (e.g. `minimal = "low"`); mapped keys are independent, a partial map falls back to the tier string for unmapped tiers
 
-- `/thinking` now sets the reasoning-effort tier (`low`/`high`/`max`; bare `/thinking` reports the current tier) instead of toggling reasoning display; thinking display stays on the TUI leader key `t`. The `.jyc/thinking-state` file is no longer read — a leftover one is inert and can be deleted
+- `/thinking` now sets the reasoning-effort tier (one of the seven standard tiers; bare `/thinking` reports the current tier) instead of toggling reasoning display; thinking display stays on the TUI leader key `t`. The `.jyc/thinking-state` file is no longer read — a leftover one is inert and can be deleted
 
 ### Fixed
 

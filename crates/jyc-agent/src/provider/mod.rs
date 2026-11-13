@@ -899,7 +899,7 @@ pub fn create_provider(
     // Translate the generic effort tier into this model's native value via
     // the per-model `effort_map`. Without a map (or a matching key) the tier
     // string itself is the native value — that is what the standard tiers
-    // (`low`/`high`/`max`) are for. Anthropic legacy-Extended-thinking
+    // (`none` … `max`) are for. Anthropic legacy-Extended-thinking
     // models express effort as a `budget_tokens` integer instead, which the
     // map carries as a JSON number. A mapped value must be a string or a
     // number — anything else is a config error, not something to silently

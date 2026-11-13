@@ -892,6 +892,9 @@ fn validate_inbound_attachment_config(
     }
 }
 
+/// The standard reasoning-effort tiers a config value may name.
+const EFFORT_TIERS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 /// Validate reasoning-effort tiers: each set tier must be a standard value.
 fn validate_reasoning_effort(
     prefix: &str,
@@ -905,13 +908,13 @@ fn validate_reasoning_effort(
     ];
     for (name, value) in tiers {
         if let Some(tier) = value
-            && tier != "low"
-            && tier != "high"
-            && tier != "max"
+            && !EFFORT_TIERS.contains(&tier.as_str())
         {
             errors.push(ValidationError {
                 path: format!("{prefix}.{name}"),
-                message: format!("must be 'low', 'high' or 'max', got '{tier}'"),
+                message: format!(
+                    "must be one of 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', got '{tier}'"
+                ),
             });
         }
     }
@@ -925,10 +928,12 @@ fn validate_effort_map(
     errors: &mut Vec<ValidationError>,
 ) {
     for (tier, value) in map {
-        if tier != "low" && tier != "high" && tier != "max" {
+        if !EFFORT_TIERS.contains(&tier.as_str()) {
             errors.push(ValidationError {
                 path: format!("{prefix}.{tier}"),
-                message: format!("key must be 'low', 'high' or 'max', got '{tier}'"),
+                message: format!(
+                    "key must be one of 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', got '{tier}'"
+                ),
             });
         }
         if !value.is_string() && !value.is_number() {

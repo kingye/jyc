@@ -779,6 +779,9 @@ mod tests {
         let full = TopicDisplayState {
             mode: Some("plan".to_string()),
             model: Some("kimi/k3-256k".to_string()),
+            // The status card stays terse: model without the effort
+            // suffix (that lives on the interactive surfaces).
+            reasoning_effort: None,
             input_tokens: Some(108_134),
             output_tokens: None,
             max_tokens: Some(262_144),

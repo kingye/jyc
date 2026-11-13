@@ -69,7 +69,13 @@ fn format_topic_info(t: &TopicInfo) -> String {
     lines.push(format!("Topic: {}", t.name));
     lines.push(format!("Pattern: {}", t.pattern.as_deref().unwrap_or("-")));
     if let Some(model) = &t.model {
-        lines.push(format!("Model: {model}"));
+        // The effort rides beside the model: a configured tier in
+        // parentheses, else `auto` (nothing configured, no reasoning
+        // parameter sent). Never the word "tier" on a display surface.
+        let effort = t.reasoning_effort.as_deref().unwrap_or("auto");
+        lines.push(format!("Model: {model} ({effort})"));
+    } else if let Some(effort) = &t.reasoning_effort {
+        lines.push(format!("Reasoning effort: {effort}"));
     }
     lines.push(format!("Mode: {}", t.mode.as_deref().unwrap_or("build")));
     if let Some(branch) = &t.branch {
@@ -269,6 +275,7 @@ mod tests {
             queue_capacity: 10,
             parent: None,
             model: Some("kimi/k3-256k".into()),
+            reasoning_effort: Some("medium".into()),
             mode: Some("plan".into()),
             context_input_tokens: Some(105_432),
             context_output_tokens: Some(2_048),
@@ -332,7 +339,7 @@ mod tests {
         let expected = "\
 Topic: issue-42
 Pattern: gh-issue
-Model: kimi/k3-256k
+Model: kimi/k3-256k (medium)
 Mode: plan
 Branch: fix/issue-42-timeout
 Status: Idle · queue 2 / 10
@@ -379,6 +386,7 @@ Files (2):
     fn omits_missing_rows_like_the_pane() {
         let mut t = full_info();
         t.model = None;
+        t.reasoning_effort = None;
         t.mode = None;
         t.branch = None;
         t.context_input_tokens = None;

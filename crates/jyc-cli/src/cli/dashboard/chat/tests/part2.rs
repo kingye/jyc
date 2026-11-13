@@ -679,6 +679,7 @@ fn info_pane_separates_a_failed_fetch_from_a_pending_one() {
 fn topic_detail_for(name: &str, channel: &str) -> jyc_types::TopicInfo {
     jyc_types::TopicInfo {
         name: name.to_string(),
+        reasoning_effort: None,
         channel: channel.to_string(),
         pattern: None,
         status: jyc_types::TopicStatus::Idle,
@@ -802,6 +803,7 @@ fn files_section_colors_uncommitted_paths_yellow() {
     // reads.
     app.topic_detail = Some(jyc_types::TopicInfo {
         name: "jyc".to_string(),
+        reasoning_effort: None,
         channel: "local_dev".to_string(),
         pattern: Some("jyc".to_string()),
         status: jyc_types::TopicStatus::Idle,
@@ -1065,6 +1067,7 @@ fn info_scroll_is_clamped_after_render() {
     // reads.
     app.topic_detail = Some(jyc_types::TopicInfo {
         name: "jyc".to_string(),
+        reasoning_effort: None,
         channel: "local_dev".to_string(),
         pattern: Some("jyc".to_string()),
         status: jyc_types::TopicStatus::Idle,
@@ -1195,7 +1198,7 @@ fn status_line_includes_mode_topic_and_chip() {
     // Right chip includes model + context-window percentage. The
     // version lives in the info-pane status block, not the chat status.
     assert!(
-        text.ends_with("[ claude-opus-4-6 · 10% ]"),
+        text.ends_with("[ claude-opus-4-6 (auto) · 10% ]"),
         "missing model/pct chip in: {text:?}"
     );
     assert!(
@@ -1273,7 +1276,7 @@ fn status_line_renders_partial_chip_with_model_only() {
     let line = build_status_line(80, Some(&detail), true);
     let text = line_text(&line);
     assert!(
-        text.contains("[ claude-opus-4-6 · 0% ]"),
+        text.contains("[ claude-opus-4-6 (auto) · 0% ]"),
         "partial chip with model only: {text:?}"
     );
 }
@@ -1337,7 +1340,7 @@ fn compact_status_chip_carries_the_hidden_info_pane_metrics() {
         "the hidden pane's task counter joins the left segment: {text:?}"
     );
     let expected = format!(
-        "[ gpt-5.5 · {} 2% ↑1.0M/93% ↓948/2.9K →10.5s/80 ]",
+        "[ gpt-5.5 (auto) · {} 2% ↑1.0M/93% ↓948/2.9K →10.5s/80 ]",
         "━".repeat(10)
     );
     assert!(
@@ -1374,11 +1377,11 @@ fn compact_status_latency_matches_the_info_pane_turn_average() {
     detail.turn_total_call_duration_ms = Some(900);
     detail.mode = Some("plan".to_string());
 
-    let text = line_text(&build_status_line(60, Some(&detail), false));
+    let text = line_text(&build_status_line(66, Some(&detail), false));
     let bar = "━".repeat(10);
 
     assert!(
-        text.ends_with(&format!("[ gpt-5.5 · {bar} 0% ↑0/0% ↓0/0 →0.3s/3 ]")),
+        text.ends_with(&format!("[ gpt-5.5 (auto) · {bar} 0% ↑0/0% ↓0/0 →0.3s/3 ]")),
         "latency must match the info pane's turn average: {text:?}"
     );
 }
@@ -1391,7 +1394,7 @@ fn visible_info_pane_keeps_the_terse_status_chip() {
     let text = line_text(&line);
 
     assert!(
-        text.ends_with("[ gpt-5.5 · 2% ]"),
+        text.ends_with("[ gpt-5.5 (auto) · 2% ]"),
         "a visible info pane owns the detail, so the chip stays terse: {text:?}"
     );
     assert!(
@@ -1422,7 +1425,10 @@ fn compact_status_chip_renders_zero_metrics_and_empty_composition() {
     let line = build_status_line(120, Some(&t), false);
     let text = line_text(&line);
     assert!(text.starts_with("plan · jyc · main"));
-    let expected = format!("[ kimi/k3.1-pro · {} 0% ↑0/0% ↓0/0 →0s/3 ]", "━".repeat(10));
+    let expected = format!(
+        "[ kimi/k3.1-pro (auto) · {} 0% ↑0/0% ↓0/0 →0s/3 ]",
+        "━".repeat(10)
+    );
     assert!(
         text.ends_with(&expected),
         "zero turn metrics keep the chip's full shape: {text:?}"
@@ -1451,7 +1457,7 @@ fn hidden_info_pane_status_line_counts_active_subagents_and_changed_files() {
 
     let text = line_text(&build_status_line(110, Some(&detail), false));
     let expected = format!(
-        "[ gpt-5.5 · {} 2% ↑1.0M/93% ↓948/2.9K →10.5s/80 ]",
+        "[ gpt-5.5 (auto) · {} 2% ↑1.0M/93% ↓948/2.9K →10.5s/80 ]",
         "━".repeat(10)
     );
     assert!(
@@ -1522,7 +1528,9 @@ fn compact_status_chip_zeroes_missing_turn_metrics() {
 
     let bar = "━".repeat(10);
     assert!(
-        text.ends_with(&format!("[ claude-opus-4-6 · {bar} 10% ↑0/0% ↓0/0 →0s/0 ]")),
+        text.ends_with(&format!(
+            "[ claude-opus-4-6 (auto) · {bar} 10% ↑0/0% ↓0/0 →0s/0 ]"
+        )),
         "missing turn metrics render as zero, keeping the full chip shape: {text:?}"
     );
 }
@@ -1566,8 +1574,8 @@ fn status_line_drops_chip_when_narrow() {
     // should be dropped, left segment preserved.
     let detail = visible_status_detail();
     // Left "plan · jyc" = 10 display cols.
-    // Chip "[ claude-opus-4-6 · 10% ]" = 23 display cols.
-    // total = 33 cols + 1 separating space. Width 32 forces dropping
+    // Chip "[ claude-opus-4-6 (auto) · 10% ]" = 30 display cols.
+    // total = 40 cols + 1 separating space. Width 32 forces dropping
     // the chip.
     let line = build_status_line(32, Some(&detail), true);
     let text = line_text(&line);
@@ -2242,6 +2250,7 @@ fn info_pane_app(tasks: jyc_types::task::TaskList) -> App {
     // section — come from the detail, the same source `/info` reads.
     app.topic_detail = Some(jyc_types::TopicInfo {
         name: "jyc".to_string(),
+        reasoning_effort: None,
         channel: "local_dev".to_string(),
         pattern: Some("jyc".to_string()),
         status: jyc_types::TopicStatus::Idle,
@@ -3318,6 +3327,7 @@ fn info_pane_end_reaches_the_last_wrapped_row() {
     // reads.
     app.topic_detail = Some(jyc_types::TopicInfo {
         name: "t".to_string(),
+        reasoning_effort: None,
         channel: "test".to_string(),
         pattern: None,
         status: jyc_types::TopicStatus::Idle,
@@ -4396,7 +4406,7 @@ fn info_pane_aligns_every_value_in_one_column() {
     for (label, value) in [
         ("Topic: ", "jyc"),
         ("Pattern: ", "jyc"),
-        ("Model: ", "minimax/Minimax-M3"),
+        ("Model: ", "minimax/Minimax-M3 (auto)"),
         ("Mode: ", "build"),
         ("Status: ", "Idle"),
         ("Output: ", "0 turn · 1.21K"),

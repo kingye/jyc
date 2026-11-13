@@ -1850,9 +1850,17 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
             Span::raw(t.pattern.as_deref().unwrap_or("-")),
         ]));
         if let Some(ref model) = t.model {
+            // Effort rides beside the model: configured tier or `auto`
+            // (nothing configured — no reasoning parameter sent).
+            let effort = t.reasoning_effort.as_deref().unwrap_or("auto");
             rows.push(InfoRow::Field(vec![
                 label_span("Model: "),
-                Span::raw(model),
+                Span::raw(format!("{model} ({effort})")),
+            ]));
+        } else if let Some(ref effort) = t.reasoning_effort {
+            rows.push(InfoRow::Field(vec![
+                label_span("Reasoning effort: "),
+                Span::raw(effort),
             ]));
         }
         rows.push(InfoRow::Field(vec![
@@ -2602,7 +2610,12 @@ fn build_status_chip(
         // missing percentage reads as zero; only a missing model (and thus no
         // percentage source before the first detail poll) drops the chip.
         let text = match t.model.as_deref() {
-            Some(m) => format!("[ {m} · {}% ]", pct.unwrap_or(0)),
+            // The effort rides beside the model: configured tier or `auto`
+            // (nothing configured — no reasoning parameter sent).
+            Some(m) => {
+                let effort = t.reasoning_effort.as_deref().unwrap_or("auto");
+                format!("[ {m} ({effort}) · {}% ]", pct.unwrap_or(0))
+            }
             None if pct.is_some() => format!("[ {}% ]", pct.unwrap_or(0)),
             None => return None,
         };
@@ -2612,7 +2625,8 @@ fn build_status_chip(
     let mut inner: Vec<Span<'static>> = Vec::new();
     let mut has_segment = false;
     if let Some(model) = t.model.as_deref() {
-        inner.push(Span::styled(model.to_string(), style));
+        let effort = t.reasoning_effort.as_deref().unwrap_or("auto");
+        inner.push(Span::styled(format!("{model} ({effort})"), style));
         has_segment = true;
     }
     // Context composition — the same region-colored bar the pane draws, at a

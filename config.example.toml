@@ -256,7 +256,8 @@ mode = "agent"
 # reasoning parameter. Tiers are the standard values `low` / `medium` /
 # `high`; `default` applies everywhere, `build` and `plan` override it per
 # mode. The `/thinking low|medium|high` command writes a runtime override
-# that outranks all three; a subagent type's `[ai.reasoning_effort]` table
+# that outranks all three, and `/thinking auto` clears it again (falling
+# back to this config); a subagent type's `[ai.reasoning_effort]` table
 # replaces the inherited one at spawn.
 # [ai.reasoning_effort]
 # default = "medium"

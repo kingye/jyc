@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 ### Added
+- `/thinking auto` clears the runtime reasoning-effort override; bare `/thinking` and all display surfaces (`/info`, dashboard info pane, status chip) now show the configured effort beside the model, `auto` when nothing is configured (#1089, follow-up to #1088)
 
 - Reasoning-effort control: `[ai.reasoning_effort]` (`default`/`build`/`plan`) and the `/thinking low|medium|high` command pick a standard tier per topic; the tier reaches the provider as the model's native reasoning parameter — `reasoning_effort` (Chat Completions), `reasoning.effort` (Responses API), or Anthropic thinking (`effort_map` translates the tier, a number meaning legacy `budget_tokens`, a string the adaptive `output_config.effort`; without a map the tier string itself is sent). A subagent type's `[ai.reasoning_effort]` replaces the inherited one and clears the parent's runtime tier at spawn
 

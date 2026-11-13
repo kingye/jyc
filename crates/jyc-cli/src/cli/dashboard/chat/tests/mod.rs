@@ -1676,8 +1676,8 @@ fn input_area_rows_reserves_the_bottom_rule() {
 }
 
 /// A polled topic with its detail, so the status line has real content:
-/// `plan · jyc · main` on the left, `[ kimi/kimi-for-coding · 10% ]` on the
-/// right. The list carries the topic, the detail its figures — the same
+/// `plan · jyc · main` on the left, `[ kimi/kimi-for-coding (auto) ·
+/// 10% ]` on the right. The list carries the topic, the detail its figures — the same
 /// split the server keeps.
 fn app_with_topic_summary() -> App {
     let mut app = chatting_app();
@@ -1701,6 +1701,7 @@ fn app_with_topic_summary() -> App {
     });
     app.topic_detail = Some(jyc_types::TopicInfo {
         name: "jyc".to_string(),
+        reasoning_effort: None,
         channel: "agents".to_string(),
         pattern: None,
         status: jyc_types::TopicStatus::Idle,
@@ -1755,7 +1756,7 @@ fn status_line_renders_at_the_bottom_below_the_popup() {
         crossterm::event::KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
         &mut test_terminal(),
     );
-    let buffer = draw_80x24(&mut app);
+    let buffer = draw_sized(&mut app, 87, 24);
 
     let bottom = row_text(&buffer, buffer.area.height - 1);
     assert!(
@@ -1765,7 +1766,7 @@ fn status_line_renders_at_the_bottom_below_the_popup() {
     let bar = "━".repeat(10);
     assert!(
         bottom.trim_end().ends_with(&format!(
-            "[ kimi/kimi-for-coding · {bar} 10% ↑0/0% ↓0/0 →0s/0 ]"
+            "[ kimi/kimi-for-coding (auto) · {bar} 10% ↑0/0% ↓0/0 →0s/0 ]"
         )),
         "model chip stays right-aligned on the status line: {bottom:?}"
     );
@@ -1792,7 +1793,8 @@ fn status_line_renders_at_the_bottom_below_the_popup() {
 #[test]
 fn status_line_sits_right_below_the_rule_and_keeps_padding_gray() {
     let mut app = app_with_topic_summary();
-    let buffer = draw_80x24(&mut app);
+    // The chip grew by "(auto) " (7 cols); 87 still fits it whole.
+    let buffer = draw_sized(&mut app, 87, 24);
 
     let rule = rule_row(&buffer);
     let status = rule + 1;

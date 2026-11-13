@@ -375,6 +375,12 @@ pub struct TopicInfo {
     pub parent: Option<String>,
     /// AI model in use (from model-override or default)
     pub model: Option<String>,
+    /// Reasoning-effort tier this topic's LLM calls send — `low`,
+    /// `medium` or `high`. `None` when nothing is configured (no runtime
+    /// override, no config tier): no reasoning parameter is sent, and the
+    /// display surfaces render "auto".
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
     /// Current mode (plan/build)
     pub mode: Option<String>,
     /// Current input tokens used in this session (= the input the most
@@ -802,6 +808,7 @@ mod tests {
                 queue_capacity: 10,
                 parent: None,
                 model: Some("anthropic/claude-opus-4-6".to_string()),
+                reasoning_effort: Some("medium".to_string()),
                 mode: Some("build".to_string()),
                 context_input_tokens: Some(45000),
                 context_output_tokens: Some(1200),

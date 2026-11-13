@@ -110,6 +110,10 @@ pub static THINKING_ARGS: ArgSource = ArgSource::Declared(&[
     ArgDef::leaf("low", "Low reasoning effort"),
     ArgDef::leaf("medium", "Medium reasoning effort"),
     ArgDef::leaf("high", "High reasoning effort"),
+    ArgDef::leaf(
+        "auto",
+        "Clear the runtime override; use the configured tier",
+    ),
 ]);
 
 /// `/backlog`'s verbs. Their arguments are free text (`/backlog push <text>`),

@@ -89,6 +89,10 @@ turn_tool_result_cap = 512
 # global one). A model id can be written here instead.
 [ai]
 model = "${ai.small_model}"
+# Watchers need attention, not brilliance: keep the reasoning tier at the
+# floor so waits stay cheap and the hand-off summary stays terse.
+[ai.reasoning_effort]
+default = "low"
 
 # The spawn defaults. Last, because a `[table]` header claims every key after
 # it: a `[spawn]` put higher swallows the topic keys below it — refused at

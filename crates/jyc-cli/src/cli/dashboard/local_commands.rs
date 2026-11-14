@@ -34,29 +34,8 @@ pub enum LocalAction {
     ReloadConfig,
     /// Quit the TUI.
     Quit,
-    /// Toggle the topic explorer pane (left side).
-    ToggleExplorer,
-    /// Toggle zen mode (hide all aux panes; restore the snapshot on exit).
-    ToggleZen,
-    /// Show/hide the activity pane (bottom 20% on, hidden off).
-    ToggleActivity,
-    /// Show/hide the chat status block in the topic info pane.
-    ToggleStatus,
-    /// Show/hide the topic info pane (right side).
-    ToggleInfo,
     /// Open the chat input in an external editor ($EDITOR).
     OpenExternalEditor,
-    /// Toggle terminal mouse capture. While on, the wheel scrolls the
-    /// chat message area (PR #484); while off, tmux/terminal-native
-    /// text selection works. Default is on. A right-aligned status-bar
-    /// chip (mirroring the status-bar chip format) shows the state.
-    ToggleMouseCapture,
-    /// Focus the chat message area for keyboard scrolling.
-    FocusChat,
-    /// Scroll the message area to the top.
-    ScrollTop,
-    /// Scroll the message area to the bottom.
-    ScrollBottom,
     /// Clear the chat input field. An open `/` popup follows the empty
     /// filter — its filter is the field itself.
     ClearInput,
@@ -136,41 +115,6 @@ pub fn local_commands() -> &'static [LocalCommand] {
             leader_keys: "q",
         },
         LocalCommand {
-            name: "toggle explorer",
-            description: "Show/hide topic explorer pane",
-            scope: Chat,
-            action: LocalAction::ToggleExplorer,
-            leader_keys: "e",
-        },
-        LocalCommand {
-            name: "toggle zen",
-            description: "Zen mode: hide all panes, restore on exit",
-            scope: Chat,
-            action: LocalAction::ToggleZen,
-            leader_keys: "z",
-        },
-        LocalCommand {
-            name: "toggle activity",
-            description: "Show/hide the activity pane",
-            scope: Chat,
-            action: LocalAction::ToggleActivity,
-            leader_keys: "a",
-        },
-        LocalCommand {
-            name: "toggle status",
-            description: "Show/hide status info in the topic info pane",
-            scope: Chat,
-            action: LocalAction::ToggleStatus,
-            leader_keys: "s",
-        },
-        LocalCommand {
-            name: "toggle info",
-            description: "Show/hide topic info pane",
-            scope: Chat,
-            action: LocalAction::ToggleInfo,
-            leader_keys: "i",
-        },
-        LocalCommand {
             name: "open in editor",
             description: "Compose input in external $EDITOR",
             scope: Chat,
@@ -206,34 +150,6 @@ pub fn local_commands() -> &'static [LocalCommand] {
             // The space bar. Displayed as `␣` (see `leader::key_label`) —
             // a bare space would render as an empty key column.
             leader_keys: " ",
-        },
-        LocalCommand {
-            name: "toggle mouse",
-            description: "Toggle mouse capture",
-            scope: Shared,
-            action: LocalAction::ToggleMouseCapture,
-            leader_keys: "m",
-        },
-        LocalCommand {
-            name: "focus chat",
-            description: "Focus the message area (j/k move the cursor, J/K select, y copies; typing returns to input)",
-            scope: Chat,
-            action: LocalAction::FocusChat,
-            leader_keys: "c",
-        },
-        LocalCommand {
-            name: "scroll top",
-            description: "Scroll messages to the top",
-            scope: Chat,
-            action: LocalAction::ScrollTop,
-            leader_keys: "gg",
-        },
-        LocalCommand {
-            name: "scroll bottom",
-            description: "Scroll messages to the bottom",
-            scope: Chat,
-            action: LocalAction::ScrollBottom,
-            leader_keys: "G",
         },
     ]
 }
@@ -356,13 +272,11 @@ mod tests {
         // list of commands.
         assert!(!chat_keys.contains(&"/"));
         assert!(chat_keys.contains(&"d"));
-        assert!(chat_keys.contains(&"z"));
         assert!(chat_keys.contains(&"r"));
         assert!(chat_keys.contains(&"q"));
-        // `c` is focus chat on the chat screen, open chat on the dashboard.
-        assert!(chat_keys.contains(&"c"), "focus chat must be on chat");
-        let chat_c = chat.iter().find(|e| e.keys == "c").unwrap();
-        assert_eq!(chat_c.action, LocalAction::FocusChat);
+        // `c` is open chat on the dashboard only; the chat screen has no
+        // message-area focus any more (the transcript is scrollback).
+        assert!(!chat_keys.contains(&"c"), "focus chat must be gone");
         let dash_c = dashboard.iter().find(|e| e.keys == "c").unwrap();
         assert_eq!(dash_c.action, LocalAction::OpenChat);
     }

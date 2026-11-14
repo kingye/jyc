@@ -381,6 +381,53 @@ impl<W: Write> Backend for HyperlinkBackend<W> {
         execute!(self.writer, Hide)
     }
 
+    /// Scroll a screen region up, pushing its top rows into scrollback.
+    /// Emits `CSI first;last r` (set scrolling region) + `CSI N S` (scroll
+    /// up) + `CSI r` (reset region), the same sequence upstream's crossterm
+    /// backend sends under ratatui's `scrolling-regions` feature.
+    fn scroll_region_up(
+        &mut self,
+        region: std::ops::Range<u16>,
+        line_count: u16,
+    ) -> io::Result<()> {
+        if line_count == 0 || region.is_empty() {
+            return Ok(());
+        }
+        write!(
+            self.writer,
+            "\x1b[{};{}r\x1b[{}S\x1b[r",
+            region.start + 1,
+            region.end,
+            line_count
+        )?;
+        self.writer.flush()
+    }
+
+    /// Scroll a screen region down: rows move toward the bottom, the top
+    /// `line_count` rows become blank. Emits `CSI first;last r` + `CSI N T`
+    /// + `CSI r`.
+    ///
+    /// Note the scrollback asymmetry: scrolling down never adds lines to
+    /// scrollback (that is how terminals implement it), which is what the
+    /// inline viewport wants — the transcript must stay where it is.
+    fn scroll_region_down(
+        &mut self,
+        region: std::ops::Range<u16>,
+        line_count: u16,
+    ) -> io::Result<()> {
+        if line_count == 0 || region.is_empty() {
+            return Ok(());
+        }
+        write!(
+            self.writer,
+            "\x1b[{};{}r\x1b[{}T\x1b[r",
+            region.start + 1,
+            region.end,
+            line_count
+        )?;
+        self.writer.flush()
+    }
+
     fn show_cursor(&mut self) -> io::Result<()> {
         execute!(self.writer, Show)
     }

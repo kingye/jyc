@@ -10,39 +10,20 @@ use super::token_render::{
 };
 use super::*;
 use jyc_core::duration::{DurationStyle, format_duration_ms, format_duration_secs};
-use jyc_core::topic_manager::topic_tree::{Lineage, node_count, topic_forest};
+use jyc_core::topic_manager::topic_tree::node_count;
 
 pub(super) mod clipboard;
-mod render;
+pub(crate) mod inline;
+
+/// Re-exported for the dashboard run loop, which prints the transcript
+/// tail through `InlinePrinter::sync` each frame.
+pub(crate) use render::render_history_lines;
+pub(crate) mod render;
 mod table_wrap;
 
 use render::{
-    RenderFingerprint, entry_activity_text, entry_severity, render_chat_conversation,
-    tail_to_width, truncate_to_width,
+    entry_activity_text, entry_severity, render_chat_viewport, tail_to_width, truncate_to_width,
 };
-
-/// Inactive color for the input area (header line and bottom rule) when the
-/// chat pane loses focus.
-const LINE_DRAWING: Style = Style::new().fg(Color::Rgb(0x39, 0x35, 0x52));
-
-/// Rows the status line takes off the bottom of the chat pane. Both sides
-/// need this number: the renderer reserves it as its last chunk, and
-/// `page_size` subtracts it from the scrollable message rows.
-pub(super) const STATUS_LINE_ROWS: u16 = 1;
-
-/// The overview's list as the tree's input: the same topics, in the shape
-/// the tree walks.
-///
-/// The list already carries each topic's parent — the topic manager resolved
-/// it — so this is a shape change, not a second resolution.
-///
-/// The price is a `Vec` and three cloned strings per topic, and the
-/// explorer pays it once per frame while it is open. That is the same order
-/// as the forest the frame builds anyway; if it ever shows up in a profile,
-/// build the `Vec` once per state update and pass it down.
-fn lineage_of(topics: &[jyc_types::TopicSummary]) -> Vec<Lineage> {
-    topics.iter().map(Lineage::from).collect()
-}
 
 /// An `ask_user` question pushed by the daemon, awaiting the user's answer.
 pub(super) struct PendingQuestion {
@@ -94,16 +75,6 @@ pub(super) struct ChatMessage {
     pub(super) client_id: Option<String>,
 }
 
-/// Aux-pane visibility snapshot taken when entering zen mode and restored
-/// on exit (see `ChatState::zen_saved`).
-#[derive(Debug, Clone, Copy)]
-pub(super) struct ZenSnapshot {
-    activity_split: u8,
-    info_visible: bool,
-    status_visible: bool,
-    explorer_visible: bool,
-}
-
 /// The chat pane's WebSocket state.
 ///
 /// Three states, not a bool: "not talking to the hub yet" and "the link is
@@ -149,48 +120,11 @@ pub(super) struct ChatState {
     /// Stored during render and used to clamp `scroll_up` / `page_up` at
     /// the source — without this the offset overshoots the top and the
     /// overshoot must be scrolled back off before the view visibly moves.
-    pub(super) last_max_scroll: usize,
     /// Text a yank key (`yy`, `y3y`, or `y` on a selection) put on the clipboard,
     /// waiting for the event loop to send it as OSC 52 — queued because the
     /// handlers run inside `terminal.draw` and cannot write to stdout, see
     /// [`clipboard`].
     pub(super) pending_clipboard: Option<String>,
-    /// A `y` was pressed and is waiting for the second half of `yy` / `y3y`.
-    pub(super) pending_y: bool,
-    /// Line of the rendered transcript the message-pane cursor sits on, absolute
-    /// (independent of scrolling) so the view can move under it. `usize::MAX`
-    /// until the transcript is measured — the renderer resolves it to the end of
-    /// the newest message, and leaves it alone while there are no messages yet;
-    /// it also keeps it inside the line count. Visible only while
-    /// `focus == Focus::MessageArea`. Every entry into the pane re-arms the
-    /// sentinel (`focus_message_area`), so the cursor starts from the last line
-    /// each time the pane gains focus.
-    pub(super) cursor_line: usize,
-    /// How many lines the transcript rendered last frame — the cursor's
-    /// movement range. Written by the renderer, read by the keys.
-    pub(super) last_total_lines: usize,
-    /// Digit prefix for a movement or yank command: `3j`, `y3y`, `20k`.
-    pub(super) pending_count: usize,
-    /// The far end of a selection started with a Shift movement key, as an
-    /// absolute transcript row (`None` = nothing selected). The cursor is the
-    /// other end, so movement keeps growing (or shrinking) the range until `y`
-    /// copies it — ending on the first row of the range, as linewise vim does —
-    /// or `Esc` drops it and leaves the cursor where it moved to; scrolling
-    /// leaves both ends alone, so a selection never changes just because the view
-    /// moved.
-    ///
-    /// ponytail: both ends are absolute *row* indices, so a transcript that
-    /// reflows underneath (the streaming reply turning into history) can leave
-    /// the range on other text — clamped, never past the end. Anchoring to the
-    /// text itself is the next step if that ever bites.
-    pub(super) selection_anchor: Option<usize>,
-    /// Rendered transcript lines cache — rebuilt only when the message
-    /// history or pane width changes (see `history_fingerprint`). Avoids
-    /// re-parsing the full transcript markdown on every frame (each
-    /// keystroke / 50ms poll / 1Hz tick used to cost O(history)). The third
-    /// element is the transcript line of every user turn's opening rule —
-    /// the `[`/`]` section-jump boundaries.
-    pub(super) render_cache: Option<(RenderFingerprint, Vec<Line<'static>>, Vec<usize>)>,
     /// Pending `g` keypress for the `gg` (jump to top) sequence.
     pub(super) pending_g: bool,
     /// Horizontal scroll offset for the activity pane (left-right).
@@ -199,25 +133,6 @@ pub(super) struct ChatState {
     /// the topic is processing or has completed. Bridges the gap between
     /// sending a message and the inspect server reporting Processing status.
     pub(super) awaiting_response: bool,
-    /// Activity pane visibility/size state.
-    /// 0 = hidden, 1 = bottom 20%, 2 = bottom 80%, 3 = activity-only (full pane)
-    pub(super) activity_split: u8,
-    /// Topic info pane (right side, 20% width) visibility. Default
-    /// visible; toggled via the leader-key popup (`i`).
-    pub(super) info_visible: bool,
-    /// Chat status block visibility — the version/stats (or transient
-    /// message) lines at the top of the topic info pane. Default
-    /// visible; toggled via the leader-key popup (`s`). Re-shown
-    /// whenever the enclosing info pane is opened (`i`).
-    pub(super) status_visible: bool,
-    /// Topic explorer pane (left side, 20% width). Default hidden;
-    /// toggled via the leader-key popup (`e`).
-    pub(super) explorer_visible: bool,
-    /// Aux-pane snapshot taken when entering zen mode (leader `z`),
-    /// restored exactly on exit. `Some` = currently in zen mode.
-    pub(super) zen_saved: Option<ZenSnapshot>,
-    /// Selected row in the explorer pane.
-    pub(super) explorer_selected: usize,
     pub(super) ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     pub(super) ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
     /// The chat socket's state — see [`WsState`].
@@ -646,7 +561,7 @@ pub(super) fn wrap_styled_lines(lines: Vec<Line<'_>>, max_width: usize) -> Vec<L
 /// editor runs and restored afterwards regardless of the editor outcome.
 pub(super) fn edit_input_externally<B: ratatui::backend::Backend>(
     app: &mut App,
-    terminal: &mut Terminal<B>,
+    _terminal: &mut Terminal<B>,
 ) -> Result<()>
 where
     // ratatui 0.30 no longer bounds `Backend::Error` by Send + Sync, but
@@ -661,9 +576,10 @@ where
     std::fs::write(tmp.path(), app.chat.text())
         .with_context(|| format!("Failed to write {}", tmp.path().display()))?;
 
-    // Suspend the TUI so the editor takes over the terminal
+    // Suspend the TUI so the editor takes over the terminal. There is no
+    // alternate screen to leave — the chat UI is inline (its transcript is
+    // the native scrollback), so raw mode off is the whole suspension.
     disable_raw_mode()?;
-    stdout().execute(LeaveAlternateScreen)?;
 
     let editor = std::env::var("VISUAL")
         .ok()
@@ -675,8 +591,6 @@ where
 
     // Resume the TUI regardless of the editor outcome
     enable_raw_mode()?;
-    stdout().execute(EnterAlternateScreen)?;
-    terminal.clear()?;
 
     match status {
         Ok(s) if s.success() => {
@@ -694,162 +608,6 @@ where
         }
     }
     Ok(())
-}
-
-/// Refocus the chat input, consuming the key — the user can scroll any
-/// pane, then press any key to return to the input and start typing.
-fn refocus_input(app: &mut App) {
-    app.chat.focus = Focus::ChatPane;
-    // A half-typed command (`3`, or an armed `y`) and an open selection must not
-    // survive the way back into the input, or the next keystroke would complete
-    // them against a transcript the user is no longer pointing at.
-    app.chat.pending_count = 0;
-    app.chat.pending_y = false;
-    app.chat.selection_anchor = None;
-}
-
-/// Move the cursor (see `ChatState::cursor_step`) and tell the status line what
-/// a selection now covers, so the growing range is readable without hunting for
-/// it on screen.
-fn step_cursor(app: &mut App, dir: i32, extend: bool) {
-    let rows = app.chat.cursor_step(dir, extend);
-    report_selection(app, rows);
-}
-
-/// `gg` / `G` with the cursor showing.
-fn jump_cursor(app: &mut App, to_top: bool) {
-    let rows = app.chat.cursor_jump(to_top);
-    report_selection(app, rows);
-}
-
-/// `[` / `]` — previous / next user turn — with the cursor showing.
-fn section_cursor(app: &mut App, dir: i32, extend: bool) {
-    let rows = app.chat.cursor_section_jump(dir, extend);
-    report_selection(app, rows);
-}
-
-/// Say how much the cursor now has selected, if anything.
-fn report_selection(app: &mut App, rows: usize) {
-    if rows > 0 {
-        let noun = if rows == 1 { "line" } else { "lines" };
-        app.set_status(format!("{rows} {noun} selected"));
-    }
-}
-
-/// `y` while rows are selected: copy the selection, then leave visual mode with
-/// the cursor on the *first* row of what was copied — the row the selection grew
-/// out of, the way linewise vim ends a yank — following the view if that row
-/// ended up off screen. (`Esc` drops the selection without
-/// moving the cursor; see the message-pane keys.) The count is for the
-/// no-selection form (`y3y`), so a stray digit must not carry into the next
-/// command.
-fn yank_selection(app: &mut App) {
-    let Some((start, end)) = app.chat.selection_range() else {
-        return;
-    };
-    app.chat.selection_anchor = None;
-    app.chat.pending_count = 0;
-    app.chat.pending_y = false;
-    let (text, rows) = copy_rows(app, start, end - start + 1);
-    app.chat.cursor_line = start;
-    app.chat.scroll_to_show(start);
-    report_yank(app, text, rows);
-}
-
-/// `yy` / `y3y`: copy `count` transcript rows starting at the cursor.
-fn yank_from_cursor(app: &mut App, count: usize) {
-    let start = app.chat.cursor_line;
-    let (text, rows) = copy_rows(app, start, count);
-    report_yank(app, text, rows);
-}
-
-/// Text of `count` rendered transcript rows from `start`, and how many there
-/// were.
-///
-/// The rows are the rendered ones — the same wrapping the user sees — so one
-/// message can copy as several lines, exactly as it reads on screen. The live
-/// tail (activity progress, the streaming reply) is rebuilt every frame and is
-/// not part of the transcript, so a range reaching it is truncated to the
-/// history and a cursor sitting in it copies nothing.
-fn copy_rows(app: &App, start: usize, count: usize) -> (String, usize) {
-    let Some((_, lines, _)) = app.chat.render_cache.as_ref() else {
-        return (String::new(), 0);
-    };
-    let end = start.saturating_add(count).min(lines.len());
-    let rows = &lines[start.min(lines.len())..end];
-    (
-        rows.iter().map(line_text).collect::<Vec<_>>().join("\n"),
-        rows.len(),
-    )
-}
-
-/// Hand the text to the event loop, which sends it to the terminal, and say how
-/// much of the request actually made it.
-fn report_yank(app: &mut App, text: String, rows: usize) {
-    if rows == 0 {
-        app.set_status("Nothing to copy".to_string());
-        return;
-    }
-    app.chat.pending_clipboard = Some(text);
-    let noun = if rows == 1 { "line" } else { "lines" };
-    app.set_status(format!("Copied {rows} {noun}"));
-}
-
-/// The plain text of one rendered row, without the padding the renderer adds so
-/// a message's background reaches the edge of the pane.
-fn line_text(line: &Line<'_>) -> String {
-    line.spans
-        .iter()
-        .map(|s| s.content.as_ref())
-        .collect::<String>()
-        .trim_end()
-        .to_string()
-}
-
-/// Move the explorer selection by `delta` rows, clamped to the current
-/// topic list.
-fn explorer_move(app: &mut App, delta: i64) {
-    // The explorer's rows are the lineage forest flattened, and the forest
-    // holds every topic exactly once — so the row count is the topic count,
-    // and the forest does not have to be built to know it.
-    let len = app.state.as_ref().map_or(0, |s| s.topics.len());
-    if len == 0 {
-        app.chat.explorer_selected = 0;
-        return;
-    }
-    let cur = app.chat.explorer_selected as i64;
-    app.chat.explorer_selected = cur.saturating_add(delta).clamp(0, len as i64 - 1) as usize;
-}
-
-/// Open the topic currently selected in the explorer pane. All channel
-/// types use the unified `/ws/<channel>/<topic>` endpoint.
-fn explorer_open_selected(app: &mut App) {
-    let keep_explorer_visible = app.chat.explorer_visible;
-    let info = app.state.as_ref().and_then(|s| {
-        let forest = topic_forest(&lineage_of(&s.topics));
-        let rows = explorer_rows(&forest);
-        let node = rows.get(app.chat.explorer_selected)?.node;
-        Some((node.name.clone(), node.channel.clone()))
-    });
-    let Some((name, channel)) = info else {
-        return;
-    };
-    match app.chat.open_addr.clone() {
-        Some(addr) => {
-            let token = app.chat.token.clone();
-            app.chat.open(&addr, Some(&channel), &name, token);
-            // Hydration runs on the async poll loop (sync key handler
-            // can't await on InspectClient).
-            app.pending_hydrate = Some((channel, name));
-            // `open()` resets the chat to zen defaults; keep the explorer that
-            // initiated the switch visible, including the zen-mode snapshot.
-            app.chat.explorer_visible = keep_explorer_visible;
-            if let Some(saved) = app.chat.zen_saved.as_mut() {
-                saved.explorer_visible = keep_explorer_visible;
-            }
-        }
-        None => app.set_status("No server address available".to_string()),
-    }
 }
 
 /// Execute a TUI-local action selected from the leader-key popup.
@@ -873,11 +631,6 @@ pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
         LocalAction::OpenChat => {}
         LocalAction::ReloadConfig => app.pending_reload_config = true,
         LocalAction::Quit => app.should_quit = true,
-        LocalAction::ToggleExplorer => toggle_explorer_snapped(app),
-        LocalAction::ToggleZen => app.chat.toggle_zen_mode(),
-        LocalAction::ToggleActivity => app.chat.toggle_activity(),
-        LocalAction::ToggleStatus => app.chat.toggle_status_bar(),
-        LocalAction::ToggleInfo => app.chat.toggle_info_pane(),
         LocalAction::OpenExternalEditor => {
             if app.chat.focus == Focus::ChatPane
                 && let Err(e) = edit_input_externally(app, terminal)
@@ -885,10 +638,6 @@ pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
                 app.set_status(format!("Editor error: {e:#}"));
             }
         }
-        LocalAction::FocusChat => app.chat.focus_message_area(),
-        LocalAction::ScrollTop => app.chat.scroll_to_top(),
-        LocalAction::ScrollBottom => app.chat.scroll_to_bottom(),
-        LocalAction::ToggleMouseCapture => super::toggle_mouse_capture(app),
         LocalAction::ClearInput => {
             app.chat.editor = empty_chat_editor();
             // The popup has no field of its own — it filters off this one,
@@ -922,26 +671,6 @@ fn toggle_topic_mode(app: &mut App) {
         .is_some_and(|m| m.eq_ignore_ascii_case("plan"));
     app.chat
         .send_message_inner(if in_plan { "/build" } else { "/plan" }.to_string());
-}
-
-/// Toggle the topic explorer. When opening, snap the selection to the
-/// topic currently open in the chat pane — `sync_explorer_selection`
-/// only follows the chat topic while the explorer is *unfocused*, so
-/// without this the explorer would open on a stale row.
-fn toggle_explorer_snapped(app: &mut App) {
-    app.chat.toggle_explorer();
-    if !app.chat.explorer_visible {
-        return;
-    }
-    let idx = app.state.as_ref().and_then(|s| {
-        let topic = app.chat.topic.as_deref()?;
-        let channel = app.chat.channel.as_deref()?;
-        let forest = topic_forest(&lineage_of(&s.topics));
-        row_of(&explorer_rows(&forest), topic, channel)
-    });
-    if let Some(idx) = idx {
-        app.chat.explorer_selected = idx;
-    }
 }
 
 pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
@@ -1054,19 +783,6 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
         return;
     }
 
-    // "[" on an empty input jumps to the previous user turn: `focus_message_area`
-    // resets the cursor past the end of the transcript, so one jump up is the
-    // newest turn. The bracket is not typed. Out of the way of a pending
-    // question for the same reason as `/` above.
-    let is_bracket = key.code == KeyCode::Char('[')
-        && !key.modifiers.contains(KeyModifiers::CONTROL)
-        && !app.chat.active_question();
-    if is_bracket && app.chat.focus == Focus::ChatPane && app.chat.text().trim().is_empty() {
-        app.chat.focus_message_area();
-        section_cursor(app, -1, false);
-        return;
-    }
-
     // Pending questions own the keyboard while visible: the box is the answer
     // surface for a turn that already ended. Esc only closes it — the user can
     // still type an answer (or anything else) afterwards.
@@ -1107,8 +823,9 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
 
     {
         // `gg` sequence: a second consecutive `g` jumps to the top; any
-        // other key resets the sequence state.
-        let gg_jump = app.chat.gg_step(key.code == KeyCode::Char('g'));
+        // other key resets the sequence state. The bool result is unused
+        // here — the jump itself already scrolled via `gg_step`.
+        let _gg_jump = app.chat.gg_step(key.code == KeyCode::Char('g'));
 
         // App-level keys take precedence over the editor.
         match key.code {
@@ -1116,140 +833,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                 app.chat.toggle_focus();
                 return;
             }
-            KeyCode::PageUp => {
-                if app.chat.focus == Focus::ExplorerPane {
-                    explorer_move(app, -10);
-                } else {
-                    app.chat.page_up();
-                }
-                return;
-            }
-            KeyCode::PageDown => {
-                if app.chat.focus == Focus::ExplorerPane {
-                    explorer_move(app, 10);
-                } else {
-                    app.chat.page_down();
-                }
-                return;
-            }
-            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if app.chat.focus == Focus::ExplorerPane {
-                    explorer_move(app, -10);
-                } else {
-                    app.chat.page_up();
-                }
-                return;
-            }
-            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if app.chat.focus == Focus::ExplorerPane {
-                    explorer_move(app, 10);
-                } else {
-                    app.chat.page_down();
-                }
-                return;
-            }
             _ => {}
-        }
-
-        // Explorer pane: navigate the topic list; Enter switches the
-        // chat to the selected topic. Esc returns focus to the input.
-        // Any other key refocuses the input (consumed, not forwarded),
-        // so the user can browse then just start typing.
-        if app.chat.focus == Focus::ExplorerPane {
-            match key.code {
-                KeyCode::Esc => {
-                    app.chat.focus = Focus::ChatPane;
-                }
-                KeyCode::Up | KeyCode::Char('k') => explorer_move(app, -1),
-                KeyCode::Down | KeyCode::Char('j') => explorer_move(app, 1),
-                KeyCode::Char('g') if gg_jump => explorer_move(app, i64::MIN),
-                KeyCode::Char('G') => explorer_move(app, i64::MAX),
-                KeyCode::Enter => explorer_open_selected(app),
-                _ => refocus_input(app),
-            }
-            return;
-        }
-
-        if app.chat.focus == Focus::InfoPane {
-            // Vertical scroll only — file paths are short enough
-            // that horizontal overflow isn't a concern. No Esc-back:
-            // leaving the info pane is via Tab (focus cycle) or
-            // the leader-key popup, same as ActivityPane. Any other
-            // key refocuses the input (consumed, not forwarded), so
-            // the user can scroll then just start typing.
-            if key.code != KeyCode::Esc && !app.chat.scroll_pane_key(key, gg_jump) {
-                refocus_input(app);
-            }
-            return;
-        }
-
-        if app.chat.focus == Focus::ActivityPane {
-            // No Esc-back here: returning to the dashboard is done
-            // via the leader-key popup (`open dashboard`, Ctrl+P).
-            // Any other key refocuses the input, consumed (same
-            // as MessageArea).
-            if key.code != KeyCode::Esc && !app.chat.scroll_pane_key(key, gg_jump) {
-                refocus_input(app);
-            }
-            return;
-        }
-
-        // Message area: the cursor is showing here, so these keys move the
-        // cursor rather than scrolling (the wheel and PgUp/PgDn still
-        // scroll, and the cursor rides along — see `carry_cursor`). Digits
-        // before a key count lines: `5j`, `y3y`. A Shifted movement key
-        // opens a selection that every later movement grows, and `y` copies
-        // it. `Esc` drops the selection first and only then returns focus to
-        // the input field (it never exits the chat); any other key refocuses
-        // the input, so the user can move around and then just start typing.
-        if app.chat.focus == Focus::MessageArea {
-            // Terminals differ in whether they report Shift+arrow at all
-            // (many send the same bytes as the plain key), so Shift+J/K is
-            // the reliable way to start a selection; Shift+arrow works
-            // wherever the terminal can tell them apart.
-            let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-            match key.code {
-                KeyCode::Esc => {
-                    // Dropping an open selection comes first, and the next
-                    // `Esc` returns to the input — leaving both at once
-                    // would throw a selection away by accident. Staying in
-                    // the pane is how `Esc` leaves visual mode in vim.
-                    if app.chat.selection_anchor.take().is_none() {
-                        refocus_input(app)
-                    }
-                }
-                KeyCode::Up => step_cursor(app, -1, shift),
-                KeyCode::Down => step_cursor(app, 1, shift),
-                // Uppercase means Shift was held (that is how a terminal
-                // reports it), so `J`/`K` are the selection-friendly forms.
-                KeyCode::Char('k') => step_cursor(app, -1, false),
-                KeyCode::Char('K') => step_cursor(app, -1, true),
-                KeyCode::Char('j') => step_cursor(app, 1, false),
-                KeyCode::Char('J') => step_cursor(app, 1, true),
-                KeyCode::Char('G') => jump_cursor(app, false),
-                KeyCode::Char('g') if gg_jump => jump_cursor(app, true),
-                KeyCode::Char('g') => {}
-                // `[` / `]` step between user turns; the shifted forms grow a
-                // selection (that is how a terminal reports Shift+[ / Shift+]).
-                KeyCode::Char('[') => section_cursor(app, -1, false),
-                KeyCode::Char(']') => section_cursor(app, 1, false),
-                KeyCode::Char('{') => section_cursor(app, -1, true),
-                KeyCode::Char('}') => section_cursor(app, 1, true),
-                // With rows selected, one `y` copies them. Without a
-                // selection `y` is the first half of a yank: arming it lets
-                // a count sit between the halves, so `yy`, `y3y` and `3yy`
-                // all mean the same thing.
-                KeyCode::Char('y') if app.chat.selection_anchor.is_some() => yank_selection(app),
-                KeyCode::Char('y') if app.chat.pending_y => {
-                    app.chat.pending_y = false;
-                    let count = app.chat.take_count();
-                    yank_from_cursor(app, count)
-                }
-                KeyCode::Char('y') => app.chat.pending_y = true,
-                KeyCode::Char(c) if c.is_ascii_digit() => app.chat.push_count_digit(c),
-                _ => refocus_input(app),
-            }
-            return;
         }
 
         // Chat input field. Everything not matched here is delegated
@@ -1312,154 +896,19 @@ fn sync_command_popup(app: &mut App) {
     }
 }
 
-/// Handle a mouse event while the chat screen is visible.
-///
-/// Mouse capture is enabled in `dashboard::run`, so this only fires for the
-/// chat screen (the event loop filters with `app.chat.visible`). We only
-/// act on `ScrollUp` / `ScrollDown`; all other mouse kinds (clicks, moves,
-/// drags) are intentionally ignored to avoid hijacking the input field
-/// while the user is editing.
-///
-/// Hit-testing: the wheel scrolls the pane it hovers — the message area or,
-/// when it is visible, the topic info pane. The activity log, the explorer
-/// and the input area keep absorbing the event, so wheeling next to the editor
-/// does nothing. Neither pane drags focus around: the info pane's offset is
-/// advanced directly (it has no cursor), while the message area takes
-/// `MessageArea` focus because its cursor and the focus-routed `scroll_up` /
-/// `scroll_down` belong together.
-pub(super) fn handle_chat_mouse(app: &mut App, mouse: MouseEvent) {
-    // Defensive guard — crossterm shouldn't deliver mouse events when
-    // capture is off, but if one sneaks through (e.g. a queued event
-    // from the toggle moment), do nothing.
-    if !app.mouse_capture_enabled {
-        return;
-    }
-    if !app.chat.visible {
-        return;
-    }
-    let pos = Position::new(mouse.column, mouse.row);
-    if app.chat.info_visible && app.chat.last_info_area.is_some_and(|r| r.contains(pos)) {
-        // Advance the offset directly rather than routing through
-        // `scroll_up`/`scroll_down`: those go by focus, and pulling focus away
-        // from the editor mid-typing is exactly what this handler must not do.
-        // The info pane has no cursor, so nothing here needs it.
-        match mouse.kind {
-            MouseEventKind::ScrollUp => {
-                app.chat.info_scroll = app.chat.info_scroll.saturating_sub(1)
-            }
-            MouseEventKind::ScrollDown => app.chat.info_scroll += 1,
-            _ => {}
-        }
-        return;
-    }
-    if !app.chat.last_message_area.is_some_and(|r| r.contains(pos)) {
-        return;
-    }
-    // The message area does take focus: its cursor and the focus-routed scroll
-    // belong together, and wheeling is how the user aims at a row.
-    app.chat.focus_message_area();
-    match mouse.kind {
-        MouseEventKind::ScrollUp => app.chat.scroll_up(),
-        MouseEventKind::ScrollDown => app.chat.scroll_down(),
-        _ => {}
-    }
-}
-
 pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
-    // Layout for the chat screen — no channel bar, borderless chat pane.
+    // Layout for the inline chat viewport — the transcript lives in the
+    // terminal's own scrollback above this viewport (see `chat::inline`),
+    // so what the viewport holds is only the live furniture:
     //
-    //   ┌─────────── top row (chat + optional 20% info pane) ───────────┐
-    //   │  chat conversation (borderless, fills horizontally)            │
-    //   │  ┌── topic info pane (20% wide, only when info_visible) ──┐  │
-    //   │  │   ...                                                   │  │
-    //   │  └─────────────────────────────────────────────────────────┘  │
-    //   ├────────── bottom area: activity pane ─────────────────────────┤
-    //   │  activity pane (bottom 20% / 80% / full when visible)         │
-    //   └───────────────────────────────────────────────────────────────┘
-    //
-    // No bottom status bar on the chat screen: status info (version,
-    // stats, transient messages) renders in a sub-pane pinned to the
-    // bottom of the topic info pane instead (leader `s` toggles it). The
-    // sub-pane never scrolls. Zen mode hides the info pane, which hides
-    // the status info with it.
-
-    let show_activity = app.chat.activity_split != 0;
-    let show_explorer = app.chat.explorer_visible;
-    if show_explorer {
-        sync_explorer_selection(app);
-    }
-
-    // Main area: horizontal [explorer?, right column]. The right column
-    // holds chat, info, and activity.
-    let (explorer_area, right_area) = if show_explorer {
-        let h = Layout::horizontal([Constraint::Percentage(20), Constraint::Percentage(80)])
-            .split(area);
-        (Some(h[0]), h[1])
-    } else {
-        (None, area)
-    };
-
-    // Right column: vertical [top(chat+info), activity?].
-    let activity_pct = match app.chat.activity_split {
-        1 => 20,
-        2 => 80,
-        3 => 100,
-        _ => 0,
-    };
-    let right_constraints: Vec<Constraint> = if show_activity {
-        vec![Constraint::Min(0), Constraint::Percentage(activity_pct)]
-    } else {
-        vec![Constraint::Min(0)]
-    };
-    let right_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(right_constraints)
-        .split(right_area);
-
-    // Top row inside the right column: chat + optional info pane.
-    let top_row = right_chunks[0];
-    let top_cols = if app.chat.info_visible {
-        Layout::horizontal([Constraint::Percentage(80), Constraint::Percentage(20)]).split(top_row)
-    } else {
-        Layout::horizontal([Constraint::Percentage(100)]).split(top_row)
-    };
-    render_chat_conversation(frame, top_cols[0], app);
-    if app.chat.info_visible {
-        render_topic_info_pane(frame, top_cols[1], app);
-    }
-
-    if let Some(exp) = explorer_area {
-        render_explorer(frame, exp, app);
-    }
-
-    if show_activity {
-        render_activity_log(frame, right_chunks[1], app);
-    }
-}
-
-/// Keep the explorer selection valid and, while the explorer is not
-/// focused, following the topic currently open in the chat pane.
-fn sync_explorer_selection(app: &mut App) {
-    let Some(s) = app.state.as_ref() else {
-        app.chat.explorer_selected = 0;
-        return;
-    };
-    let forest = topic_forest(&lineage_of(&s.topics));
-    let rows = explorer_rows(&forest);
-    let len = rows.len();
-    if len == 0 {
-        app.chat.explorer_selected = 0;
-        return;
-    }
-    if app.chat.explorer_selected >= len {
-        app.chat.explorer_selected = len - 1;
-    }
-    if app.chat.focus != Focus::ExplorerPane
-        && let (Some(topic), Some(channel)) = (&app.chat.topic, &app.chat.channel)
-        && let Some(idx) = row_of(&rows, topic, channel)
-    {
-        app.chat.explorer_selected = idx;
-    }
+    //   ┌──────────────────────────────────────────────────┐
+    //   │  composer (editor, question box covers it)        │
+    //   ├──────────────────────────────────────────────────┤
+    //   │  `/` command popup (only while a `/` is typed)    │
+    //   ├──────────────────────────────────────────────────┤
+    //   │  status line (left chips ⇢ right chips)           │
+    //   └──────────────────────────────────────────────────┘
+    render_chat_viewport(frame, area, app);
 }
 
 /// The status dot colour used by the explorer and the info pane's subagent
@@ -1473,141 +922,33 @@ fn status_dot_style(status: &TopicStatus) -> Style {
     }
 }
 
-/// A row of a tree view: the node it shows plus the box-drawing prefix
-/// that puts it at its depth (`""` for a root).
+/// A row of the info pane's subagent tree: the node plus its box-drawing
+/// prefix (`├─`, `└─`, `│  `).
 struct TreeRow<'a> {
     node: &'a jyc_types::TopicNode,
     prefix: String,
 }
 
-/// The most columns of indent a level hands down to the next. A row is drawn
-/// as that prefix plus its branch mark, so this is what caps how far a row
-/// starts: the explorer pane is 20% wide — about fifteen columns — and a level
-/// per three columns would leave a deep name nothing to print in. A level that
-/// would add more freezes at `…  `, the same width as the one before it, so a
-/// child never starts further left than its parent.
-const MAX_PREFIX_COLS: usize = 3;
-
-/// Append `nodes`' rows to `rows`, depth-first, each indented under its
-/// parent — up to [`MAX_PREFIX_COLS`] columns handed down, past which the
-/// indent freezes so the names stay readable.
-///
-/// The nesting is the core's: these rows draw a tree the lineage rules
-/// already built, so the explorer's tree, the info pane's tree and a topic's
-/// own `subagents` are the same shape.
+/// Flattens a subagent tree into prefixed rows (depth-first, `├─`/`└─`).
 fn push_tree_rows<'a>(
     rows: &mut Vec<TreeRow<'a>>,
     nodes: &'a [jyc_types::TopicNode],
-    child_prefix: &str,
+    prefix: &str,
 ) {
-    for (n, node) in nodes.iter().enumerate() {
-        let last = n + 1 == nodes.len();
-        let mut prefix = String::with_capacity(child_prefix.len() + 3);
-        prefix.push_str(child_prefix);
-        prefix.push_str(if last { "└─ " } else { "├─ " });
-        rows.push(TreeRow { node, prefix });
-        let mut next = String::with_capacity(child_prefix.len() + 3);
-        next.push_str(child_prefix);
-        next.push_str(if last { "   " } else { "│  " });
-        let next = if next.chars().count() > MAX_PREFIX_COLS {
-            "…  "
-        } else {
-            next.as_str()
-        };
-        push_tree_rows(rows, &node.children, next);
-    }
-}
-
-/// The explorer's rows: every root, each followed by its subtree.
-fn explorer_rows(forest: &[jyc_types::TopicNode]) -> Vec<TreeRow<'_>> {
-    let mut rows = Vec::with_capacity(forest.len());
-    for node in forest {
+    for (i, node) in nodes.iter().enumerate() {
+        let last = i == nodes.len() - 1;
+        let branch = if last { "└─ " } else { "├─ " };
         rows.push(TreeRow {
             node,
-            prefix: String::new(),
+            prefix: format!("{prefix}{branch}"),
         });
-        push_tree_rows(&mut rows, &node.children, "");
+        let next = if last {
+            format!("{prefix}   ")
+        } else {
+            format!("{prefix}│  ")
+        };
+        push_tree_rows(rows, &node.children, &next);
     }
-    rows
-}
-
-/// The row showing `(name, channel)`, if the tree holds it.
-fn row_of(rows: &[TreeRow], name: &str, channel: &str) -> Option<usize> {
-    rows.iter()
-        .position(|r| r.node.name == name && r.node.channel == channel)
-}
-
-/// Render the left-side topic explorer pane (20% wide when shown).
-///
-/// Lists all topics from the latest overview poll as a tree — a subagent is
-/// indented under the topic that spawned it — with a status dot
-/// (green = processing, yellow = queued, red = error, grey = idle),
-/// highlighting the topic currently open in the chat pane. The cursor row is
-/// marked whether or not this pane has focus, so switching focus back to the
-/// input never hides which topic the arrow keys would move. The list is
-/// rebuilt from `app.state` on every render, so it stays live.
-pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
-    let focused = app.chat.focus == Focus::ExplorerPane;
-    let border_style = pane_border_style(focused);
-    // Only the right edge (against the chat pane) gets a border — no
-    // title, no top edge — with one row of top padding so the topic
-    // list breathes a little.
-    let block = Block::default()
-        .borders(Borders::RIGHT)
-        .border_style(border_style)
-        .padding(Padding::top(1));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let Some(s) = app.state.as_ref() else {
-        return;
-    };
-
-    let current = app.chat.topic.as_ref().zip(app.chat.channel.as_ref());
-    let selected = app.chat.explorer_selected;
-
-    // Tree rows: a subagent sits under the topic that spawned it.
-    // Scroll window: keep the selected row visible.
-    let forest = topic_forest(&lineage_of(&s.topics));
-    let rows = explorer_rows(&forest);
-    let height = inner.height as usize;
-    let offset = window_offset(rows.len(), selected, height);
-
-    let lines: Vec<Line> = rows
-        .iter()
-        .enumerate()
-        .skip(offset)
-        .take(height)
-        .map(|(i, row)| {
-            let t = row.node;
-            let is_current = current == Some((&t.name, &t.channel));
-            let is_selected = i == selected;
-            let name_style = if is_current {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-
-            // The selected row uses the same two-column `→` gutter + DIM as
-            // the command and question popups. The status dot keeps its own
-            // color on that row too, so it stays readable at a glance.
-            let sel = if is_selected {
-                Style::default().add_modifier(Modifier::DIM)
-            } else {
-                Style::default()
-            };
-            Line::from(vec![
-                Span::styled(if is_selected { "→ " } else { "  " }, sel),
-                Span::styled(row.prefix.as_str(), sel),
-                Span::styled("● ", status_dot_style(&t.status)),
-                Span::styled(t.name.as_str(), name_style.patch(sel)),
-            ])
-        })
-        .collect();
-
-    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// The topic's detail, when it is the one on screen.
@@ -1642,17 +983,17 @@ fn detail_fetch_failed(app: &App) -> bool {
 /// One row of the info pane: a `label: value` field, a value that belongs
 /// to the row above it, or a line of a section that keeps its own shape
 /// (the task list, the changed files).
-enum InfoRow<'a> {
+enum InfoRow {
     /// A `label: value` row: the first span is the label, the rest is
     /// the value.
-    Field(Vec<Span<'a>>),
+    Field(Vec<Span<'static>>),
     /// A value that belongs to the row above it — the figures of a bar
     /// row, which have a row of their own under the bar, in the column
     /// the bar starts in. A span group, like a field's value: a legend row
     /// carries its own coloured label beside its share.
-    Value(Vec<Span<'a>>),
+    Value(Vec<Span<'static>>),
     /// A line that is not a `label: value` row and keeps its own shape.
-    Raw(Line<'a>),
+    Raw(Line<'static>),
 }
 
 /// Lay the info pane's rows out. A field is laid out by the pane's
@@ -1674,7 +1015,11 @@ enum InfoRow<'a> {
 /// narrower than its label has no value column to lay the values out in.
 /// The pane picks that layout only when the column can hold a label and a
 /// value (see [`PaneLayout`]), so every call satisfies it.
-fn layout_info_rows(rows: Vec<InfoRow>, layout: PaneLayout, inner_width: u16) -> Vec<Line> {
+fn layout_info_rows(
+    rows: Vec<InfoRow>,
+    layout: PaneLayout,
+    inner_width: u16,
+) -> Vec<Line<'static>> {
     use unicode_width::UnicodeWidthStr;
 
     let mut out = Vec::with_capacity(rows.len());
@@ -1746,92 +1091,14 @@ fn layout_info_rows(rows: Vec<InfoRow>, layout: PaneLayout, inner_width: u16) ->
     out
 }
 
-/// Render the topic info pane (the right-hand column, always 20% wide when
-/// shown).
-///
-/// Displays topic name, channel, pattern, model, mode, tokens, a
-/// processing indicator, and the changed-files list (which can scroll
-/// when it overflows the pane). The pane is one bordered column: the left
-/// border runs the full height and the interior splits into a borderless,
-/// scrollable topic sub-pane and a fixed status sub-pane at the bottom
-/// (see [`chat_status_block`]). Both screens render it — the overview
-/// column is the same pane, not a second lookalike.
-/// Takes `&mut App` because the changed-files section owns
-/// `app.chat.info_scroll`, which is clamped on every render.
-pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut App) {
-    let focused = app.chat.focus == Focus::InfoPane;
-    // One border for both screens: a vertical border on the left edge (against
-    // the topics table or the chat pane) and no title, plus one row of top
-    // padding so the content does not hug the pane top. While this pane owns
-    // the scroll keys its border lights up in the focus colour, like every
-    // other pane (see `pane_border_style`).
-    let block = Block::default()
-        .borders(Borders::LEFT)
-        .padding(Padding::top(1))
-        .border_style(pane_border_style(focused));
-    // The status block (version + gray stats, or a transient message) gets its
-    // own sub-pane pinned to the bottom of the info column, separated by a
-    // gray top border. It never scrolls — wheel and keys only move the topic
-    // info above it. On the chat screen leader `s` hides the block, handing
-    // the whole column back to the topic info; the overview has no such
-    // command, so the block is always part of its info column. Both screens
-    // render it from [`chat_status_block`]; there is no overview-only variant.
-    //
-    // The stats wrap to the pane's inner width, so the block is built once the
-    // inner region is known. The sub-pane renders inside the border, pinned to
-    // the bottom of the column: the outer block is drawn over the whole column
-    // first so its left border runs the full height, and only the inner region
-    // is split into the borderless topic sub-pane and the status sub-pane.
-    let inner = block.inner(area);
-    // `Ctrl+P` `s` is a chat-screen command, so it decides for the chat
-    // screen only; the overview's info column always carries the block.
-    let status = if !app.chat.visible || app.chat.status_visible {
-        chat_status_block(app, inner.width)
-    } else {
-        Vec::new()
-    };
-    frame.render_widget(block, area);
-    // The sub-pane is all-or-nothing: its top border, every wrapped row, and
-    // the rows the topic info keeps for itself must all fit. A column that
-    // cannot afford that loses the block entirely — rendering only the rows
-    // that happen to fit would clip the stats again, which is what this block
-    // exists to stop (a short terminal with the activity pane open is exactly
-    // that column).
-    const TOPIC_INFO_MIN_ROWS: u16 = 6;
-    // +1: the sub-pane's top border costs a row.
-    let needed = status.len() as u16 + 1;
-    let (topic_inner, status_area) = if status.is_empty()
-        || inner.height < needed + TOPIC_INFO_MIN_ROWS
-    {
-        (inner, None)
-    } else {
-        let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(needed)]).split(inner);
-        (rows[0], Some(rows[1]))
-    };
-    if let Some(status_area) = status_area {
-        let status_block = Block::default()
-            .borders(Borders::TOP)
-            .border_style(pane_border_style(false));
-        let status_inner = status_block.inner(status_area);
-        frame.render_widget(status_block, status_area);
-        frame.render_widget(Paragraph::new(status), status_inner);
-        // Join the sub-pane's top border with the pane's left border: ratatui
-        // only draws corner glyphs when both adjacent borders are set, so the
-        // cell left of the sub-pane's top border stays a plain vertical line
-        // without this patch.
-        if status_area.x > area.x {
-            frame.buffer_mut()[(status_area.x - 1, status_area.y)].set_symbol("├");
-        }
-    }
-    // The content rect rather than the topic sub-area: the pane's left
-    // border separates it from the chat pane, and the wheel belongs to the
-    // chat side of that line.
-    app.chat.last_info_area = Some(topic_inner);
-
+/// The topic info pane’s content lines at `width` columns — the same
+/// builder the overview pane renders, extracted so `/info` can print it
+/// into the chat transcript (the inline chat screen has no side pane).
+pub(crate) fn topic_info_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // The whole pane lays its rows out one way, decided by its inner
     // width: the table layout while the pane can hold a label column and
     // a value column, the stacked one below that (see `PaneLayout`).
-    let layout = layout_for(topic_inner.width);
+    let layout = layout_for(width);
     let lines: Vec<Line> = if let Some(t) = selected_topic_detail(app) {
         // The pane's `label: value` rows are kept as span groups — the
         // label first, the value after it — until the layout is known:
@@ -1843,11 +1110,11 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         let mut rows: Vec<InfoRow> = Vec::new();
         rows.push(InfoRow::Field(vec![
             label_span("Topic: "),
-            Span::raw(&t.name),
+            Span::raw(t.name.to_string()),
         ]));
         rows.push(InfoRow::Field(vec![
             label_span("Pattern: "),
-            Span::raw(t.pattern.as_deref().unwrap_or("-")),
+            Span::raw(t.pattern.as_deref().unwrap_or("-").to_string()),
         ]));
         if let Some(ref model) = t.model {
             // Effort rides beside the model: configured tier or `auto`
@@ -1860,12 +1127,12 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         } else if let Some(ref effort) = t.reasoning_effort {
             rows.push(InfoRow::Field(vec![
                 label_span("Reasoning effort: "),
-                Span::raw(effort),
+                Span::raw(effort.to_string()),
             ]));
         }
         rows.push(InfoRow::Field(vec![
             label_span("Mode: "),
-            Span::raw(t.mode.as_deref().unwrap_or("build")),
+            Span::raw(t.mode.as_deref().unwrap_or("build").to_string()),
         ]));
         // Branch comes from the topic's detail — the same source `/info`
         // reads. Skipped when the topic's topic_path isn't a git repo
@@ -1873,13 +1140,13 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         if let Some(branch) = t.branch.as_deref() {
             rows.push(InfoRow::Field(vec![
                 label_span("Branch: "),
-                Span::raw(branch),
+                Span::raw(branch.to_string()),
             ]));
         }
         // The width the pane's values get: what the label leaves in the
         // table layout, the whole row in the stacked one. The status row
         // lays its backlog out in it.
-        let value_cells = value_width(topic_inner.width, layout);
+        let value_cells = value_width(width, layout);
         // Status row — the topic's live status and the backlog its queue
         // holds, on one row: `Processing · queue •••••• 2 / 10` (the first
         // of the six dots yellow and bold, the split read by colour and
@@ -1895,7 +1162,7 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         // allows — never wider, or the wrapping would cut it in half, and
         // never narrower than a bar can carry the share honestly: a pane
         // too narrow for that gets the figures alone.
-        let bar_cells = bar_width(topic_inner.width, layout);
+        let bar_cells = bar_width(width, layout);
         // Tokens row — the label and the bar, with the figures on the row
         // under them: the bar has the row to itself, so it can reach for
         // the pane's edge, and the figures line up with it.
@@ -2056,7 +1323,7 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
                 rows.push(InfoRow::Raw(Line::from(vec![
                     Span::raw(format!(" {}", row.prefix)),
                     Span::styled("● ", status_dot_style(&row.node.status)),
-                    Span::raw(row.node.name.as_str()),
+                    Span::raw(row.node.name.as_str().to_string()),
                 ])));
             }
         }
@@ -2134,7 +1401,7 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         }
         // The pane's rows in the order they are drawn: the fields and the
         // sections share one list, so a row added to either keeps its place.
-        layout_info_rows(rows, layout, topic_inner.width)
+        layout_info_rows(rows, layout, width)
     } else if super::shown_topic_key(app).is_some() {
         // A topic is on screen, but its detail has not landed yet — the
         // fetch runs on a timer. Say so instead of claiming that no topic
@@ -2153,6 +1420,86 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
     } else {
         vec![Line::from("Select a topic")]
     };
+    lines
+}
+
+/// Render the topic info pane (the right-hand column, always 20% wide when
+/// shown).
+///
+/// Displays topic name, channel, pattern, model, mode, tokens, a
+/// processing indicator, and the changed-files list (which can scroll
+/// when it overflows the pane). The pane is one bordered column: the left
+/// border runs the full height and the interior splits into a borderless,
+/// scrollable topic sub-pane and a fixed status sub-pane at the bottom
+/// (see [`chat_status_block`]). Both screens render it — the overview
+/// column is the same pane, not a second lookalike.
+/// Takes `&mut App` because the changed-files section owns
+/// `app.chat.info_scroll`, which is clamped on every render.
+pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut App) {
+    let focused = app.chat.focus == Focus::InfoPane;
+    // One border for both screens: a vertical border on the left edge (against
+    // the topics table or the chat pane) and no title, plus one row of top
+    // padding so the content does not hug the pane top. While this pane owns
+    // the scroll keys its border lights up in the focus colour, like every
+    // other pane (see `pane_border_style`).
+    let block = Block::default()
+        .borders(Borders::LEFT)
+        .padding(Padding::top(1))
+        .border_style(pane_border_style(focused));
+    // The status block (version + gray stats, or a transient message) gets its
+    // own sub-pane pinned to the bottom of the info column, separated by a
+    // gray top border. It never scrolls — wheel and keys only move the topic
+    // info above it. On the chat screen leader `s` hides the block, handing
+    // the whole column back to the topic info; the overview has no such
+    // command, so the block is always part of its info column. Both screens
+    // render it from [`chat_status_block`]; there is no overview-only variant.
+    //
+    // The stats wrap to the pane's inner width, so the block is built once the
+    // inner region is known. The sub-pane renders inside the border, pinned to
+    // the bottom of the column: the outer block is drawn over the whole column
+    // first so its left border runs the full height, and only the inner region
+    // is split into the borderless topic sub-pane and the status sub-pane.
+    let inner = block.inner(area);
+    // `Ctrl+P` `s` is a chat-screen command, so it decides for the chat
+    // screen only; the overview's info column always carries the block.
+    let status = chat_status_block(app, inner.width);
+    frame.render_widget(block, area);
+    // The sub-pane is all-or-nothing: its top border, every wrapped row, and
+    // the rows the topic info keeps for itself must all fit. A column that
+    // cannot afford that loses the block entirely — rendering only the rows
+    // that happen to fit would clip the stats again, which is what this block
+    // exists to stop (a short terminal with the activity pane open is exactly
+    // that column).
+    const TOPIC_INFO_MIN_ROWS: u16 = 6;
+    // +1: the sub-pane's top border costs a row.
+    let needed = status.len() as u16 + 1;
+    let (topic_inner, status_area) = if status.is_empty()
+        || inner.height < needed + TOPIC_INFO_MIN_ROWS
+    {
+        (inner, None)
+    } else {
+        let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(needed)]).split(inner);
+        (rows[0], Some(rows[1]))
+    };
+    if let Some(status_area) = status_area {
+        let status_block = Block::default()
+            .borders(Borders::TOP)
+            .border_style(pane_border_style(false));
+        let status_inner = status_block.inner(status_area);
+        frame.render_widget(status_block, status_area);
+        frame.render_widget(Paragraph::new(status), status_inner);
+        // Join the sub-pane's top border with the pane's left border: ratatui
+        // only draws corner glyphs when both adjacent borders are set, so the
+        // cell left of the sub-pane's top border stays a plain vertical line
+        // without this patch.
+        if status_area.x > area.x {
+            frame.buffer_mut()[(status_area.x - 1, status_area.y)].set_symbol("├");
+        }
+    }
+    // The content rect rather than the topic sub-area: the pane's left
+    // border separates it from the chat pane, and the wheel belongs to the
+    // chat side of that line.
+    app.chat.last_info_area = Some(topic_inner);
 
     // Wrap here rather than with `Paragraph::wrap()` so that the row count the
     // scroll clamp uses is the count actually drawn. This pane is 20% of the
@@ -2166,7 +1513,10 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
     // `usize::MAX` — what `End`/`G` store — out of `Paragraph::scroll`, whose
     // `offset_y + height` math would overflow and panic the TUI.
     // Offset-from-top: `info_scroll == 0` shows the first rows, the max the last.
-    let wrapped = wrap_styled_lines(lines, topic_inner.width as usize);
+    let wrapped = wrap_styled_lines(
+        topic_info_lines(app, topic_inner.width),
+        topic_inner.width as usize,
+    );
     let max_skip = wrapped.len().saturating_sub(topic_inner.height as usize);
     let skip = app.chat.info_scroll.min(max_skip);
     frame.render_widget(
@@ -2935,23 +2285,10 @@ impl ChatState {
             activity_scroll: 0,
             last_message_area: None,
             last_info_area: None,
-            last_max_scroll: 0,
             pending_clipboard: None,
-            pending_y: false,
-            cursor_line: usize::MAX,
-            last_total_lines: 0,
-            pending_count: 0,
-            selection_anchor: None,
-            render_cache: None,
             pending_g: false,
             activity_hscroll: 0,
             awaiting_response: false,
-            activity_split: 0,
-            info_visible: true,
-            status_visible: true,
-            explorer_visible: false,
-            zen_saved: None,
-            explorer_selected: 0,
             ws_tx: None,
             ws_rx,
             ws_state: WsState::Connecting,
@@ -3039,23 +2376,6 @@ impl ChatState {
         self.messages.clear();
         self.editor = empty_chat_editor();
         self.focus = Focus::ChatPane;
-        self.scroll = 0;
-        self.activity_scroll = 0;
-        self.info_scroll = 0;
-        self.last_message_area = None;
-        self.last_max_scroll = 0;
-        self.reset_cursor();
-        self.render_cache = None;
-        self.activity_hscroll = 0;
-        self.pending_g = false;
-        self.activity_split = 0;
-        self.info_visible = true;
-        self.status_visible = true;
-        self.explorer_visible = false;
-        self.zen_saved = None;
-        // Every chat opens zoomed in; the leader-key `z` toggle restores the
-        // standard aux panes through the normal zen-exit path.
-        self.toggle_zen_mode();
         self.ws_state = WsState::Connecting;
         self.input_history.clear();
         self.history_pos = None;
@@ -3081,443 +2401,84 @@ impl ChatState {
         }
     }
 
-    /// Cycle focus: Input → MessageArea → InfoPane → ActivityPane →
-    /// ExplorerPane → Input. Each pane is skipped when it is hidden so
-    /// the cycle never lands on an invisible pane. The info pane's
-    /// "hidden" state is `!self.info_visible`; the activity pane's is
-    /// `self.activity_split == 0`.
+    /// Focus: the inline chat viewport has one focusable pane — the input.
+    /// Tab stays on it (the transcript above is the terminal's scrollback,
+    /// not a pane that takes focus).
     pub(super) fn toggle_focus(&mut self) {
-        self.focus = match self.focus {
-            Focus::ChatPane => {
-                // Entering the message pane resets the cursor (as
-                // `focus_message_area` does) so the Tab cycle starts reading
-                // at the last line, not where a previous visit left it.
-                self.reset_cursor();
-                Focus::MessageArea
-            }
-            Focus::MessageArea => {
-                if self.info_visible {
-                    Focus::InfoPane
-                } else if self.activity_split != 0 {
-                    Focus::ActivityPane
-                } else if self.explorer_visible {
-                    Focus::ExplorerPane
-                } else {
-                    Focus::ChatPane
-                }
-            }
-            Focus::InfoPane => {
-                if self.activity_split != 0 {
-                    Focus::ActivityPane
-                } else if self.explorer_visible {
-                    Focus::ExplorerPane
-                } else {
-                    Focus::ChatPane
-                }
-            }
-            Focus::ActivityPane => {
-                if self.explorer_visible {
-                    Focus::ExplorerPane
-                } else {
-                    Focus::ChatPane
-                }
-            }
-            Focus::ExplorerPane => Focus::ChatPane,
-            // The topics table belongs to the overview screen, which runs
-            // its own cycle (`overview_cycle_focus`); it is never reached
-            // from the chat screen, so it falls back to the input.
-            Focus::TopicsTable => Focus::ChatPane,
-        };
+        self.focus = Focus::ChatPane;
     }
 
-    /// Toggle the activity pane on/off. Showing it restores the bottom 20%
-    /// size (`activity_split = 1`); hiding it zeroes the state and moves
-    /// focus back to the input field when the pane was focused, or when
-    /// the info pane was focused (since the info pane sits "behind" the
-    /// activity pane in the focus cycle, hiding the activity pane would
-    /// otherwise leave focus on a pane whose neighbor just disappeared).
-    pub(super) fn toggle_activity(&mut self) {
-        if self.activity_split == 0 {
-            self.activity_split = 1;
-        } else {
-            self.activity_split = 0;
-            if self.focus == Focus::ActivityPane || self.focus == Focus::InfoPane {
-                self.focus = Focus::ChatPane;
-            }
-        }
-    }
-
-    /// Toggle zen mode. Entering zen snapshots the aux-pane state
-    /// (activity, topic info, status bar, explorer) and hides all of
-    /// them, leaving only the chat pane. Exiting zen restores the
-    /// snapshot exactly — panes toggled individually while in zen are
-    /// discarded in favor of the snapshot.
-    pub(super) fn toggle_zen_mode(&mut self) {
-        if let Some(saved) = self.zen_saved.take() {
-            self.activity_split = saved.activity_split;
-            self.info_visible = saved.info_visible;
-            self.status_visible = saved.status_visible;
-            self.explorer_visible = saved.explorer_visible;
-            return;
-        }
-        self.zen_saved = Some(ZenSnapshot {
-            activity_split: self.activity_split,
-            info_visible: self.info_visible,
-            status_visible: self.status_visible,
-            explorer_visible: self.explorer_visible,
-        });
-        self.activity_split = 0;
-        self.info_visible = false;
-        self.status_visible = false;
-        self.explorer_visible = false;
-        if self.focus == Focus::ActivityPane
-            || self.focus == Focus::InfoPane
-            || self.focus == Focus::ExplorerPane
-        {
-            self.focus = Focus::ChatPane;
-        }
-    }
-
-    /// Toggle the chat status block in the topic info pane (leader-key
-    /// popup `s`).
-    pub(super) fn toggle_status_bar(&mut self) {
-        self.status_visible = !self.status_visible;
-    }
-
-    /// Toggle the topic info pane (leader-key popup `i`). Opening it
-    /// also shows the status block inside it, so `i` from the zen-open
-    /// state yields a fully populated pane; hiding it while focused
-    /// moves focus back to the chat pane.
-    pub(super) fn toggle_info_pane(&mut self) {
-        self.info_visible = !self.info_visible;
-        if self.info_visible {
-            self.status_visible = true;
-        }
-        if !self.info_visible && self.focus == Focus::InfoPane {
-            self.focus = Focus::ChatPane;
-        }
-    }
-
-    /// Toggle the topic explorer pane (left side). Opening moves focus
-    /// into it so j/k/Enter are immediately usable; closing returns
-    /// focus to the chat input.
-    pub(super) fn toggle_explorer(&mut self) {
-        self.explorer_visible = !self.explorer_visible;
-        if self.explorer_visible {
-            self.focus = Focus::ExplorerPane;
-        } else if self.focus == Focus::ExplorerPane {
-            self.focus = Focus::ChatPane;
-        }
-    }
-
-    /// Put the cursor away because the transcript is being replaced: a new
-    /// topic starts reading at the end of its newest message (the renderer places
-    /// it, once there are messages to place it on), with nothing selected and no
-    /// half-finished command.
-    fn reset_cursor(&mut self) {
-        self.cursor_line = usize::MAX;
-        self.selection_anchor = None;
-        self.pending_count = 0;
-        self.pending_y = false;
-    }
-
-    /// Focus the scrollable message area, cursor reset to the newest content:
-    /// every entry into the pane starts reading from the last line, the way
-    /// `reset_cursor` leaves a freshly loaded transcript. A no-op when the
-    /// pane already has focus — a wheel tick or a repeated key must not yank
-    /// the cursor off the row the user is reading.
-    fn focus_message_area(&mut self) {
-        if self.focus == Focus::MessageArea {
-            return;
-        }
-        self.focus = Focus::MessageArea;
-        self.reset_cursor();
-    }
-
-    /// Transcript line the viewport starts at. `scroll` counts lines from the
-    /// *bottom* of the scrollable range, so the two convert through
-    /// `last_max_scroll`, which the renderer measures every frame.
-    fn view_start_line(&self) -> usize {
-        self.last_max_scroll - self.scroll.min(self.last_max_scroll)
-    }
-
-    /// Consume the digit prefix a command was typed with (`3j`, `y3y`); 1 when
-    /// there was none.
-    pub(super) fn take_count(&mut self) -> usize {
-        let n = self.pending_count.max(1);
-        self.pending_count = 0;
-        n
-    }
-
-    /// Extend the digit prefix with `digit`, capped so a held key cannot run
-    /// away from any reasonable transcript.
-    fn push_count_digit(&mut self, digit: char) {
-        debug_assert!(digit.is_ascii_digit(), "only called for digit keys");
-        let value = digit as usize - '0' as usize;
-        self.pending_count = (self.pending_count * 10 + value).min(999);
-    }
-
-    /// Scroll the view the minimum needed to bring `line` inside it.
-    fn scroll_to_show(&mut self, line: usize) {
-        let Some(height) = self
-            .last_message_area
-            .map(|a| a.height as usize)
-            .filter(|h| *h > 0)
-        else {
-            return;
-        };
-        let start = self.view_start_line();
-        if line >= start + height {
-            self.scroll = self.last_max_scroll.saturating_sub(line - height + 1);
-        } else if line < start {
-            self.scroll = self.last_max_scroll.saturating_sub(line);
-        }
-    }
-
-    /// The selected rows, lowest first, clamped to the transcript; `None` when
-    /// nothing is selected. The ends are the anchor and the cursor in whichever
-    /// order they came out, so moving back across the anchor shrinks the
-    /// selection and crossing it flips which end is which.
-    pub(super) fn selection_range(&self) -> Option<(usize, usize)> {
-        let anchor = self.selection_anchor?;
-        let last = self.last_total_lines.checked_sub(1)?;
-        let from = anchor.min(self.cursor_line).min(last);
-        let to = anchor.max(self.cursor_line).min(last);
-        Some((from, to))
-    }
-
-    /// Move the cursor by the pending count of lines in direction `dir`
-    /// (`j`/`k`, Up/Down). The view only starts scrolling once the cursor runs
-    /// into its top or bottom edge, so a big count stops at the edge instead of
-    /// dragging the whole screen along.
-    ///
-    /// `extend` (a Shift movement key) opens a selection anchored where the
-    /// cursor was. From then on *every* movement grows it, Shift or not — vim's
-    /// visual-line mode, where `Esc` is the way out. Returns the number of
-    /// selected rows, 0 when nothing is selected.
-    pub(super) fn cursor_step(&mut self, dir: i32, extend: bool) -> usize {
-        let Some(last) = self.last_total_lines.checked_sub(1) else {
-            return 0;
-        };
-        let from = self.cursor_line.min(last);
-        if extend {
-            self.selection_anchor = Some(self.selection_anchor.unwrap_or(from));
-        }
-        let to = (from as i32 + dir * self.take_count() as i32).clamp(0, last as i32) as usize;
-        self.cursor_line = to;
-        self.scroll_to_show(to);
-        self.selected_rows()
-    }
-
-    /// `[` / `]`: cursor and view to the previous / next user turn — a section
-    /// is the user's message plus the agent's replies up to the next user
-    /// message. The boundaries are the opening-rule lines recorded by
-    /// `render_history_lines` and carried in `render_cache`; history comes
-    /// first in the transcript, so they are directly comparable to
-    /// `cursor_line`.
-    ///
-    /// Lands on the nearest boundary strictly in `dir` — sitting exactly on
-    /// one walks to the next, so a held key steps section by section (vim
-    /// paragraph semantics) — and clamps to the transcript edge past the
-    /// first/last turn. `count` (`3]`) repeats the jump; `extend` (a Shift
-    /// key) grows a selection like `cursor_step`. Returns the number of
-    /// selected rows, 0 when nothing is selected.
-    pub(super) fn cursor_section_jump(&mut self, dir: i32, extend: bool) -> usize {
-        let Some(last) = self.last_total_lines.checked_sub(1) else {
-            return 0;
-        };
-        // Cloned: the search below must not hold the cache borrow while the
-        // cursor and view are updated. One entry per user turn — small.
-        let Some(turns) = self.render_cache.as_ref().map(|(_, _, t)| t.clone()) else {
-            return 0;
-        };
-        let mut from = self.cursor_line.min(last);
-        if extend {
-            self.selection_anchor = Some(self.selection_anchor.unwrap_or(from));
-        }
-        let count = self.take_count();
-        for _ in 0..count {
-            let target = if dir < 0 {
-                turns
-                    .iter()
-                    .rev()
-                    .find(|&&b| b < from)
-                    .copied()
-                    .unwrap_or(0)
-            } else {
-                turns.iter().find(|&&b| b > from).copied().unwrap_or(last)
-            };
-            // A clamped jump lands on the edge; the next step would find no
-            // boundary past it and stick there too — stop instead.
-            if target == from {
-                break;
-            }
-            from = target;
-        }
-        self.cursor_line = from;
-        self.scroll_to_show(from);
-        self.selected_rows()
-    }
-
-    /// `gg` / `G`: cursor and view to the first / last transcript line, growing
-    /// an open selection along the way. Returns the number of selected rows.
-    pub(super) fn cursor_jump(&mut self, to_top: bool) -> usize {
-        self.pending_count = 0;
-        let Some(last) = self.last_total_lines.checked_sub(1) else {
-            return 0;
-        };
-        self.cursor_line = if to_top { 0 } else { last };
-        self.scroll = if to_top { self.last_max_scroll } else { 0 };
-        self.selected_rows()
-    }
-
-    /// How many rows the selection covers, for the status line.
-    fn selected_rows(&self) -> usize {
-        self.selection_range().map_or(0, |(from, to)| to - from + 1)
-    }
-
-    /// Carry the cursor along a view-only move (wheel, `PgUp`/`PgDn`,
-    /// `Ctrl+B`/`Ctrl+F`, jumping): `before` and `after` are the viewport's
-    /// start line around the move, and the cursor travels the same distance, so
-    /// it keeps the screen row it was on while the text slides underneath. A
-    /// move that clamps to nothing — the wheel at the bottom, a page at the top
-    /// — leaves the cursor alone. Applies while the cursor is hidden too, so
-    /// focusing the pane later finds it where the user was reading.
-    fn carry_cursor(&mut self, before: usize, after: usize) {
-        // While a selection is open the cursor is pinned to its text: scrolling
-        // to look elsewhere must not grow or shrink what is selected. With
-        // nothing selected the cursor rides the view instead, keeping the screen
-        // row it was on (see the `PgUp`/`PgDn` rule).
-        if self.selection_anchor.is_some() {
-            return;
-        }
-        let Some(last) = self.last_total_lines.checked_sub(1) else {
-            return;
-        };
-        let moved = after as i64 - before as i64;
-        let cur = self.cursor_line.min(last) as i64 + moved;
-        self.cursor_line = cur.clamp(0, last as i64) as usize;
-    }
-
-    pub(super) fn scroll_up(&mut self) {
-        match self.focus {
-            Focus::ChatPane | Focus::MessageArea => {
-                let before = self.view_start_line();
-                self.scroll = self.scroll.saturating_add(1).min(self.last_max_scroll);
-                self.carry_cursor(before, self.view_start_line());
-            }
-            Focus::ActivityPane => self.activity_scroll = self.activity_scroll.saturating_add(1),
-            // Info pane uses offset-from-top semantics (vs activity's
-            // offset-from-bottom). `scroll_up` → earlier rows → smaller
-            // offset.
-            Focus::InfoPane => self.info_scroll = self.info_scroll.saturating_sub(1),
-            Focus::ExplorerPane | Focus::TopicsTable => {}
-        }
-    }
-
-    /// Advance the `gg` key-sequence state machine.
-    ///
-    /// Returns `true` when `pressed_g` completes the sequence (the previous
-    /// key was also `g`); the caller should then jump to the top. Any non-`g`
-    /// key resets the state.
     pub(super) fn gg_step(&mut self, pressed_g: bool) -> bool {
-        let jump = self.pending_g && pressed_g;
+        let jump = pressed_g && self.pending_g;
+        // A completed jump re-arms from scratch: the third `g` starts a fresh
+        // sequence, it does not fire again.
         self.pending_g = pressed_g && !jump;
         jump
     }
 
-    pub(super) fn scroll_down(&mut self) {
-        match self.focus {
-            Focus::ChatPane | Focus::MessageArea => {
-                let before = self.view_start_line();
-                self.scroll = self.scroll.saturating_sub(1);
-                self.carry_cursor(before, self.view_start_line());
-            }
-            Focus::ActivityPane => self.activity_scroll = self.activity_scroll.saturating_sub(1),
-            // Info pane: scroll down → later rows → larger offset.
-            Focus::InfoPane => self.info_scroll = self.info_scroll.saturating_add(1),
-            Focus::ExplorerPane | Focus::TopicsTable => {}
-        }
-    }
-
-    /// Jump to the oldest message (top) of the focused pane.
-    ///
-    /// The offset is clamped to the actual maximum during rendering, so
-    /// setting it to `usize::MAX` is a safe "scroll all the way up".
+    /// `G` / `gg`: jump to the far end of whatever pane has focus. The
+    /// transcript is the terminal's scrollback (no programmatic jump), so
+    /// only the activity pane — which keeps its in-memory window — moves.
     pub(super) fn scroll_to_top(&mut self) {
-        match self.focus {
-            Focus::ChatPane | Focus::MessageArea => {
-                let before = self.view_start_line();
-                self.scroll = usize::MAX;
-                self.carry_cursor(before, self.view_start_line());
-            }
-            Focus::ActivityPane => self.activity_scroll = usize::MAX,
-            // Info pane: offset-from-top, so "top" is offset = 0.
-            Focus::InfoPane => self.info_scroll = 0,
-            Focus::ExplorerPane | Focus::TopicsTable => {}
+        if self.focus == Focus::ActivityPane {
+            self.activity_scroll = usize::MAX;
         }
     }
 
-    /// Jump to the latest message (bottom) of the focused pane.
     pub(super) fn scroll_to_bottom(&mut self) {
-        match self.focus {
-            Focus::ChatPane | Focus::MessageArea => {
-                let before = self.view_start_line();
-                self.scroll = 0;
-                self.carry_cursor(before, self.view_start_line());
-            }
-            Focus::ActivityPane => self.activity_scroll = 0,
-            // Info pane: clamped to max in render.
-            Focus::InfoPane => self.info_scroll = usize::MAX,
-            Focus::ExplorerPane | Focus::TopicsTable => {}
+        if self.focus == Focus::ActivityPane {
+            self.activity_scroll = 0;
         }
     }
 
-    /// Apply a scroll key to the pane that owns the keys.
-    ///
-    /// The one key map for the scrollable panes — `j`/`k`, `↑`/`↓`, `G`, `gg`
-    /// and the horizontal step on the activity pane — on both screens. The
-    /// scroll direction rules live in `scroll_up`/`scroll_down` and friends,
-    /// which read `self.focus`, so the caller only has to name the pane once
-    /// (through the shared `Focus`). Returns `true` when `key` was a scroll
-    /// key, letting a caller tell "handled" from "not one": the chat screen
-    /// refocuses the input on the latter, the overview leaves it to its own
-    /// keys. `Esc` is not a scroll key and never reaches here.
-    ///
-    /// `gg_jump` is the second half of the `gg` sequence (`gg_step`); a lone
-    /// `g` is swallowed so the caller does not read it as "not one".
     pub(super) fn scroll_pane_key(&mut self, key: event::KeyEvent, gg_jump: bool) -> bool {
+        let consumed = true;
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => self.scroll_up(),
-            KeyCode::Down | KeyCode::Char('j') => self.scroll_down(),
-            KeyCode::Char('G') => self.scroll_to_bottom(),
-            KeyCode::Char('g') => {
-                if gg_jump {
-                    self.scroll_to_top();
+            KeyCode::Up | KeyCode::Char('k') => match self.focus {
+                Focus::ActivityPane | Focus::InfoPane => self.activity_scroll += 1,
+                _ => {}
+            },
+            KeyCode::Down | KeyCode::Char('j') => match self.focus {
+                Focus::ActivityPane | Focus::InfoPane => {
+                    self.activity_scroll = self.activity_scroll.saturating_sub(1)
                 }
-            }
-            // Horizontal step, activity pane only: the info pane's rows are
-            // short enough that overflow is not a concern.
-            KeyCode::Left if self.focus == Focus::ActivityPane => {
-                self.activity_hscroll = self.activity_hscroll.saturating_sub(1)
-            }
-            KeyCode::Right if self.focus == Focus::ActivityPane => {
-                self.activity_hscroll = self.activity_hscroll.saturating_add(1)
-            }
-            _ => return false,
+                _ => {}
+            },
+            KeyCode::Char('G') => self.scroll_to_bottom(),
+            KeyCode::Char('g') if gg_jump => self.scroll_to_top(),
+            _ => return !consumed,
         }
-        true
+        consumed
     }
 
-    /// Rows the input area occupies: 1 mode header row, the wrapped editor
-    /// rows (or the question box), and the full-width bottom rule. The
-    /// renderer (`render_chat_conversation`) and `page_size` must agree on
-    /// this number — this helper is the single place that measures it.
-    /// Widths mirror where content actually wraps: the editor spans the
-    /// full body width, the question box two columns narrower for its own
-    /// borders. `body_height` is the height of that whole body: a question
-    /// box's ceiling comes from it, so both callers must hand over the same
-    /// number or the box would be sized against a screen it is not drawn on.
+    pub(super) fn page_size(&self) -> usize {
+        let h = self
+            .last_message_area
+            .map(|a| a.height as usize)
+            .unwrap_or(20);
+        h.saturating_sub(1).max(1)
+    }
+
+    pub(super) fn page_up(&mut self) {
+        let page = self.page_size();
+        match self.focus {
+            Focus::ActivityPane => self.activity_scroll += page,
+            // Info pane: offset-from-top, so "page up" → smaller offset.
+            Focus::InfoPane => self.info_scroll = self.info_scroll.saturating_sub(page),
+            _ => {}
+        }
+    }
+
+    pub(super) fn page_down(&mut self) {
+        let page = self.page_size();
+        match self.focus {
+            Focus::ActivityPane => self.activity_scroll = self.activity_scroll.saturating_sub(page),
+            // Info pane: offset-from-top, so "page down" → larger offset.
+            Focus::InfoPane => self.info_scroll = self.info_scroll.saturating_add(page),
+            _ => {}
+        }
+    }
+
     fn input_area_rows(&self, width: u16, body_height: u16) -> u16 {
         let body = if self.active_question() {
             let q = self.current_question().expect("active question");
@@ -3541,68 +2502,6 @@ impl ChatState {
         };
         // +1: the bottom rule row below the editor.
         body + 1
-    }
-
-    pub(super) fn page_size(&self) -> usize {
-        // What the renderer last gave the messages is the page: it already has
-        // the input area, the popup slot and the status line taken out of it,
-        // and it is the only source that also knows how tall the question box
-        // came out. Before the first frame there is nothing to agree with, so
-        // fall back to the arithmetic below.
-        if matches!(self.focus, Focus::ChatPane | Focus::MessageArea)
-            && let Some(area) = self.last_message_area
-        {
-            return (area.height as usize).max(1);
-        }
-        let base = crossterm::terminal::size()
-            .map(|(_, h)| h.saturating_sub(7) as usize)
-            .unwrap_or(10);
-        match self.focus {
-            Focus::ChatPane | Focus::MessageArea => {
-                let term_width = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
-                // The status line is permanent chrome, exactly like the
-                // input area above it — `STATUS_LINE_ROWS` is the same
-                // count the renderer gives its last chunk.
-                base.saturating_sub(
-                    self.input_area_rows(term_width, base as u16) as usize
-                        + STATUS_LINE_ROWS as usize,
-                )
-                .max(1)
-            }
-            Focus::ActivityPane | Focus::ExplorerPane | Focus::InfoPane | Focus::TopicsTable => {
-                base.max(1)
-            }
-        }
-    }
-
-    pub(super) fn page_up(&mut self) {
-        let page = self.page_size();
-        match self.focus {
-            Focus::ChatPane | Focus::MessageArea => {
-                let before = self.view_start_line();
-                self.scroll = self.scroll.saturating_add(page).min(self.last_max_scroll);
-                self.carry_cursor(before, self.view_start_line());
-            }
-            Focus::ActivityPane => self.activity_scroll = self.activity_scroll.saturating_add(page),
-            // Info pane: offset-from-top, so "page up" → smaller offset.
-            Focus::InfoPane => self.info_scroll = self.info_scroll.saturating_sub(page),
-            Focus::ExplorerPane | Focus::TopicsTable => {}
-        }
-    }
-
-    pub(super) fn page_down(&mut self) {
-        let page = self.page_size();
-        match self.focus {
-            Focus::ChatPane | Focus::MessageArea => {
-                let before = self.view_start_line();
-                self.scroll = self.scroll.saturating_sub(page);
-                self.carry_cursor(before, self.view_start_line());
-            }
-            Focus::ActivityPane => self.activity_scroll = self.activity_scroll.saturating_sub(page),
-            // Info pane: offset-from-top, so "page down" → larger offset.
-            Focus::InfoPane => self.info_scroll = self.info_scroll.saturating_add(page),
-            Focus::ExplorerPane | Focus::TopicsTable => {}
-        }
     }
 
     /// Current chat input text (editor lines joined with newlines).

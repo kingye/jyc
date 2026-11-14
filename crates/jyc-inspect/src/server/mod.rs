@@ -280,6 +280,10 @@ impl InspectServer {
         // the platform data home is unavailable, and read a home outside it as
         // agentless.
         let agents_dir = context.agents_dir.clone();
+        let all_topics: Vec<(String, String)> = topics
+            .iter()
+            .map(|t| (t.name.clone(), t.channel.clone()))
+            .collect();
         let mut summaries: Vec<TopicSummary> = topics
             .into_iter()
             .map(|t| {
@@ -291,6 +295,7 @@ impl InspectServer {
                     &subagent_types,
                     &t.name,
                     &agents,
+                    &all_topics,
                 );
                 // The agent from the home the state dir sits in — by name
                 // rather than by `topic_path`, which a pinned topic points
@@ -379,6 +384,10 @@ impl InspectServer {
             jyc_utils::paths::config_dir().as_deref(),
         );
         let agents = agents_of(&topics);
+        let all_topics: Vec<(String, String)> = topics
+            .iter()
+            .map(|t| (t.name.clone(), t.channel.clone()))
+            .collect();
         let topics: Vec<TopicInfo> = topics
             .into_iter()
             .map(|mut t| {
@@ -390,6 +399,7 @@ impl InspectServer {
                     &subagent_types,
                     &t.name,
                     &agents,
+                    &all_topics,
                 );
                 t
             })
@@ -557,6 +567,7 @@ fn commands_for_topic(
     subagent_types: &[(String, String)],
     name: &str,
     agents: &[String],
+    all_topics: &[(String, String)],
 ) -> Vec<CommandInfo> {
     let per_agent = pattern
         .map(|p| per_agent_commands(cfg, p))
@@ -573,6 +584,7 @@ fn commands_for_topic(
         subagent_types,
         agents,
         subagents: &subagents,
+        all_topics,
     };
     let mut commands = all_commands_with(&cfg.commands, &per_agent, available);
     for cmd in &mut commands {
@@ -609,6 +621,7 @@ mod command_args_tests {
             &models,
             &subagent_types,
             "command-args-test",
+            &[],
             &[],
         );
 

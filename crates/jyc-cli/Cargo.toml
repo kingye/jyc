@@ -19,7 +19,7 @@ clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 anyhow = "1"
-ratatui = "0.30"
+ratatui = { version = "0.30", features = ["scrolling-regions"] }
 # `default-features = false` drops `highlight-code`, and with it syntect,
 # onig/onig_sys (a C library linked in) and plist — several MB of the jyc
 # binary. Code blocks render as plain text in the default stylesheet.

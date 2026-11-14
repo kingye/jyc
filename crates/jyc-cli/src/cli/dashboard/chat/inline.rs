@@ -78,11 +78,11 @@ impl<B: Backend> InlinePrinter<B> {
     /// caller re-derives the full `Vec<Line>` each frame; this method owns
     /// the diff, so no mutation site needs a printer hook.
     ///
-    /// - Width change (terminal resize) or a shorter transcript: silent
-    ///   rebase — nothing prints this frame; the next frame's full
-    ///   transcript prints as one append. Rows already in scrollback keep
-    ///   their old wrapping (tmux rewraps its own pane; a bare terminal
-    ///   cannot), and no row prints twice.
+    /// - Width change (terminal resize) or a shorter transcript: rebase —
+    ///   the baseline resets and this frame's transcript prints in full as
+    ///   one append (rows already in scrollback keep their old wrapping;
+    ///   tmux rewraps its own pane, a bare terminal cannot). No row prints
+    ///   twice because the baseline only ever moves forward on success.
     /// - Otherwise: the tail past the baseline prints.
     pub(crate) fn sync(&mut self, lines: Vec<Line<'static>>, width: u16) -> Result<(), B::Error> {
         let rebased = width != self.printed_width || lines.len() < self.printed;
@@ -190,9 +190,9 @@ mod tests {
         assert_eq!(buffer[(0, 1)].fg, Color::Reset);
     }
 
-    /// A width change rebases silently: nothing prints on the rebase frame,
-    /// and the next frame's full transcript prints once — no duplicated
-    /// rows in the scrollback buffer.
+    /// A width change rebases: the baseline resets and the same transcript
+    /// prints once at the new width — no duplicated rows in the scrollback
+    /// buffer.
     #[test]
     fn width_change_rebases_without_duplicating() {
         let backend = TestBackend::new(20, 5);

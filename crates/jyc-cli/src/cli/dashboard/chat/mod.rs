@@ -118,9 +118,6 @@ pub(super) struct ChatState {
     pub(super) pending_clipboard: Option<String>,
     /// Pending `g` keypress for the `gg` (jump to top) sequence.
     pub(super) pending_g: bool,
-    /// Last rect the info pane rendered into (dashboard overview only);
-    /// wheel hit-testing reads it.
-    pub(super) last_info_area: Option<Rect>,
     /// A `/topics <name>` delivery marker intercepted from the live stream:
     /// the run loop consumes this to re-open the chat screen on the named
     /// topic (WS reconnect + printer reset + hydrate).
@@ -1473,7 +1470,6 @@ pub(crate) fn topic_info_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 /// column is the same pane, not a second lookalike.
 /// Takes `&mut App` because the changed-files section owns
 /// `app.chat.info_scroll`, which is clamped on every render.
-#[cfg(test)]
 pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut App) {
     let focused = app.chat.focus == Focus::InfoPane;
     // One border for both screens: a vertical border on the left edge (against
@@ -1535,11 +1531,6 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
             frame.buffer_mut()[(status_area.x - 1, status_area.y)].set_symbol("├");
         }
     }
-    // The content rect rather than the topic sub-area: the pane's left
-    // border separates it from the chat pane, and the wheel belongs to the
-    // chat side of that line.
-    app.chat.last_info_area = Some(topic_inner);
-
     // Wrap here rather than with `Paragraph::wrap()` so that the row count the
     // scroll clamp uses is the count actually drawn. This pane is 20% of the
     // width, so a changed-file path or a long topic title occupies several
@@ -2323,7 +2314,6 @@ impl ChatState {
             info_scroll: 0,
             activity_scroll: 0,
             pending_clipboard: None,
-            last_info_area: None,
             pending_g: false,
             pending_topics_switch: None,
             activity_hscroll: 0,

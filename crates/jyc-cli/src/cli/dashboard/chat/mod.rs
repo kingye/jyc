@@ -822,11 +822,6 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
     }
 
     {
-        // `gg` sequence: a second consecutive `g` jumps to the top; any
-        // other key resets the sequence state. The bool result is unused
-        // here — the jump itself already scrolled via `gg_step`.
-        let _gg_jump = app.chat.gg_step(key.code == KeyCode::Char('g'));
-
         // App-level keys take precedence over the editor.
         match key.code {
             KeyCode::Tab => {

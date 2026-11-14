@@ -59,9 +59,10 @@ pub struct ArgCtx<'a> {
     /// This topic's own direct subagents — the only names `/close` accepts.
     /// Read per topic by the caller (`spawn_handler::subagents_of`).
     pub subagents: &'a [String],
-    /// Every live topic as `(name, channel)` — what `/topics` lists. Read by
-    /// the caller once for the whole payload, like `agents`.
-    pub all_topics: &'a [(String, String)],
+    /// Every live topic as `(name, channel, parent)` — what `/topics` lists,
+    /// parented so the popup can render the spawn tree as an indented outline.
+    /// Read by the caller once for the whole payload, like `agents`.
+    pub all_topics: &'a [(String, String, Option<String>)],
 }
 
 /// The values a command's first argument level offers, resolved against
@@ -210,18 +211,51 @@ fn send_args(ctx: &ArgCtx) -> Vec<CommandArg> {
     args
 }
 
-/// `/topics`' next level: every live topic, `(name, channel)` — picking one
-/// opens the chat screen for it.
+/// `/topics`'s single level: every live topic, rendered as a parent→child
+/// outline. Roots (user-started topics, and any topic whose breadcrumb is
+/// unreadable) sit at indent 0 in name order; each topic's direct children
+/// follow it one level deeper — a depth-first walk of the spawn tree. The
+/// description is only the indent: the tree itself is the message, so no
+/// per-topic text repeats behind every name.
 fn topics_args(ctx: &ArgCtx) -> Vec<CommandArg> {
-    ctx.all_topics
+    let roots: Vec<&(String, String, Option<String>)> = ctx
+        .all_topics
         .iter()
-        .map(|(name, channel)| {
-            val(
-                name,
-                &format!("Open the chat screen for this topic ({channel})"),
-            )
+        .filter(|(_, _, parent)| match parent {
+            Some(p) => !ctx.all_topics.iter().any(|(n, _, _)| n == p),
+            None => true,
         })
-        .collect()
+        .collect();
+    let mut rows: Vec<CommandArg> = Vec::with_capacity(ctx.all_topics.len());
+    fn walk(
+        topic: &(String, String, Option<String>),
+        all: &[(String, String, Option<String>)],
+        depth: usize,
+        rows: &mut Vec<CommandArg>,
+    ) {
+        let (name, _, _) = topic;
+        let description: String = "  ".repeat(depth);
+        rows.push(val(name, &description));
+        for child in all
+            .iter()
+            .filter(|(_, _, p)| p.as_deref() == Some(name.as_str()))
+        {
+            walk(child, all, depth + 1, rows);
+        }
+    }
+    for root in roots {
+        walk(root, ctx.all_topics, 0, &mut rows);
+    }
+    // A cycle would drop rows; append anything the walk missed at the top
+    // level so `/topics` still lists every live topic.
+    if rows.len() < ctx.all_topics.len() {
+        for (name, _, _) in ctx.all_topics {
+            if !rows.iter().any(|r| r.value == *name) {
+                rows.push(val(name, ""));
+            }
+        }
+    }
+    rows
 }
 
 /// `/close`'s next levels: this topic's own subagents — the only names it

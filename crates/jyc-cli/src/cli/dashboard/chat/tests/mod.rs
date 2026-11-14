@@ -5,6 +5,7 @@ fn history_msg(sender: &str, text: &str, ts: Option<&str>) -> ChatMessage {
     ChatMessage {
         id: 0,
         client_id: None,
+        styled_lines: None,
         sender: sender.to_string(),
         text: text.to_string(),
         timestamp: ts.map(|s| s.to_string()),
@@ -107,6 +108,7 @@ fn topic_switch_clears_chat_messages() {
     app.chat.messages.push(ChatMessage {
         id: 0,
         client_id: None,
+        styled_lines: None,
         sender: "user".to_string(),
         text: "hello from topic A".to_string(),
         timestamp: None,
@@ -114,6 +116,7 @@ fn topic_switch_clears_chat_messages() {
     app.chat.messages.push(ChatMessage {
         id: 0,
         client_id: None,
+        styled_lines: None,
         sender: "ai".to_string(),
         text: "reply from topic A".to_string(),
         timestamp: None,

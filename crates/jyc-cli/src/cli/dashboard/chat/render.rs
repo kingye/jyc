@@ -1235,6 +1235,14 @@ pub(crate) fn render_thinking_block(app: &App, width: u16) -> Vec<Line<'static>>
         .and_then(|(c, t)| app.chat.live_thinking_for(c, t))
         .map(|blocks| blocks.iter().map(String::as_str).collect())
         .unwrap_or_default();
+    // Compact progress hides the whole live stack (progress tail and
+    // thinking alike) — the inline viewport is meant to stay nearly
+    // static while a turn is in flight. The post-turn summary of a
+    // completed turn stays: like the progress section, only the live
+    // thinking is suppressed.
+    if !live.is_empty() && app.chat.minimal_progress {
+        return Vec::new();
+    }
     if !live.is_empty() {
         if app.chat.thinking_expanded {
             let joined = live.join("\n\n");
@@ -1418,6 +1426,9 @@ mod tests {
         let mut app = App::new(rx, None);
         app.chat.channel = Some("chan".into());
         app.chat.topic = Some("t1".into());
+        // This fixture exercises the FULL layout: compact progress (the
+        // default) suppresses live thinking entirely, so pin it off.
+        app.chat.minimal_progress = false;
         let width = 40;
         // Idle + no thinking: just the editor, its rules, and the status
         // line.
@@ -1535,6 +1546,9 @@ mod tests {
         let mut app = App::new(rx, None);
         app.chat.channel = Some("chan".into());
         app.chat.topic = Some("t1".into());
+        // Full layout: the priority test is about tail vs thinking, which
+        // only exists when minimal progress is off.
+        app.chat.minimal_progress = false;
         app.chat.awaiting_response = true;
         app.chat
             .live_thinking

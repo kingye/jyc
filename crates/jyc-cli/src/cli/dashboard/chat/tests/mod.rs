@@ -2305,6 +2305,54 @@ fn minimal_progress_command_flips_the_flag_the_render_reads() {
     }
 }
 
+/// Compact progress must suppress the live thinking summary too — the user
+/// expects the whole live stack (progress tail + thinking) to disappear in
+/// minimal mode, not just the progress section.
+#[test]
+fn compact_progress_suppresses_live_thinking_but_not_the_post_turn_summary() {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.channel = Some("chan".into());
+    app.chat.topic = Some("t1".into());
+    app.chat.handle_ws_message(
+        &serde_json::json!({
+            "type": "thinking",
+            "channel": "chan",
+            "topic": "t1",
+            "text": "in-flight chain of thought"
+        })
+        .to_string(),
+    );
+
+    app.chat.minimal_progress = true;
+    assert!(
+        super::render::render_thinking_block(&app, 80).is_empty(),
+        "compact progress must hide the live thinking summary"
+    );
+
+    // Full mode shows it again.
+    app.chat.minimal_progress = false;
+    let lines = super::render::render_thinking_block(&app, 80);
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+        .collect();
+    assert!(text.contains("💭"), "got: {text}");
+
+    // The summary of a COMPLETED turn survives compact mode.
+    app.chat.live_thinking.clear();
+    app.chat
+        .messages
+        .push(history_msg("thinking", "finished chain of thought", None));
+    app.chat.minimal_progress = true;
+    let lines = super::render::render_thinking_block(&app, 80);
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+        .collect();
+    assert!(text.contains("finished chain of thought"), "got: {text}");
+}
+
 #[test]
 fn protect_leading_whitespace_replaces_all_leading_spaces() {
     let nbsp = |n: usize| "\u{00A0}".repeat(n);

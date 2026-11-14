@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use crossterm::{
     ExecutableCommand,
+    cursor::Show,
     event::{
         self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
         KeyModifiers,
@@ -975,9 +976,14 @@ pub async fn run(
 
     // Restore terminal — safe now that no buffered escape codes remain.
     // Leaving the alternate screen is a no-op when the chat screen was up
-    // at exit; it matters when the loop ended on the overview.
+    // at exit; it matters when the loop ended on the overview. The inline
+    // viewport leaves the cursor on its last draw, so print a newline to
+    // move the shell prompt to a fresh line, and re-show the cursor that
+    // the inline viewport kept hidden.
     stdout().execute(LeaveAlternateScreen)?;
     stdout().execute(DisableBracketedPaste)?;
+    stdout().execute(Show)?;
+    println!();
     disable_raw_mode()?;
 
     result

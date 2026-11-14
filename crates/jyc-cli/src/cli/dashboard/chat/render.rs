@@ -1193,6 +1193,98 @@ fn format_tool_input_full(text: &str) -> Vec<String> {
     out
 }
 
+/// Renders the inline chat viewport — the live furniture only, since the
+/// transcript lives in the terminal's own scrollback above (see
+/// `chat::inline`). Replaces the old pane renderer
+/// (`render_chat_conversation`): same widgets, but laid out top-to-bottom
+/// inside the viewport rows instead of under a transcript.
+pub(super) fn render_chat_viewport(frame: &mut Frame, area: Rect, app: &mut App) {
+    // Rows: top rule, editor body (question box replaces it while a
+    // question is pending), popup slot, status line.
+    let input_line_count = app.chat.input_area_rows(area.width, area.height);
+    let popup_rows = match (app.chat.command_popup.as_ref(), app.chat.leader.as_ref()) {
+        (Some(state), _) => crate::cli::command_popup::popup_height(state, &app.chat.commands),
+        (None, Some(leader)) => leader.popup_height(area.width as usize),
+        (None, None) => 0,
+    };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            // The viewport may be taller than its furniture (a tall terminal):
+            // all slack goes to the top, so the composer + status line hug the
+            // bottom edge like the inline panes they replace.
+            Constraint::Min(0),
+            Constraint::Length(1),
+            // Editor body: `input_area_rows` already counts the bottom rule.
+            Constraint::Length(input_line_count.saturating_sub(1)),
+            Constraint::Length(1),
+            Constraint::Length(popup_rows),
+            Constraint::Length(1),
+        ])
+        .split(area);
+
+    // Top rule of the input area: also the popup's top boundary.
+    let rule_style = if app.chat.active_question() {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let rule = Paragraph::new(Line::styled(
+        "─".repeat(chunks[1].width as usize),
+        rule_style,
+    ));
+    frame.render_widget(rule, chunks[1]);
+
+    // Editor body (or the question box over it).
+    frame.render_widget(&app.chat.editor, chunks[2]);
+    if app.chat.active_question() {
+        super::render_question_box(frame, chunks[2], app, area.height);
+    }
+
+    // Bottom rule below the editor.
+    let rule = Paragraph::new(Line::styled(
+        "─".repeat(chunks[2].width as usize),
+        rule_style,
+    ));
+    frame.render_widget(rule, chunks[3]);
+
+    // Popup slot — only rows the popup actually needs are reserved, so the
+    // status line sits flush under the editor when no popup is open.
+    if popup_rows > 0
+        && let Some(ref popup) = app.chat.command_popup
+    {
+        let popup_area = Rect {
+            x: chunks[4].x,
+            y: chunks[4].y,
+            width: chunks[4].width,
+            height: popup_rows,
+        };
+        crate::cli::command_popup::render_command_popup(
+            frame,
+            popup_area,
+            popup,
+            &app.chat.commands,
+        );
+    } else if let Some(ref leader) = app.chat.leader {
+        // The leader popup fills the reserved slot the same way the `/`
+        // popup does.
+        leader.render(
+            frame,
+            Rect {
+                x: chunks[4].x,
+                y: chunks[4].y,
+                width: chunks[4].width,
+                height: popup_rows.max(1),
+            },
+        );
+    }
+
+    // Status line — the same left counters + right chips strip, at the
+    // viewport's last row.
+    let status = build_status_line(chunks[5].width as usize, selected_topic_detail(app), false);
+    frame.render_widget(Paragraph::new(status), chunks[5]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1938,84 +2030,4 @@ mod tests {
             "LoopTick (1000ms)",
         );
     }
-}
-
-/// Renders the inline chat viewport — the live furniture only, since the
-/// transcript lives in the terminal's own scrollback above (see
-/// `chat::inline`). Replaces the old pane renderer
-/// (`render_chat_conversation`): same widgets, but laid out top-to-bottom
-/// inside the viewport rows instead of under a transcript.
-pub(super) fn render_chat_viewport(frame: &mut Frame, area: Rect, app: &mut App) {
-    // Rows: top rule, editor body (question box replaces it while a
-    // question is pending), popup slot, status line.
-    let input_line_count = app.chat.input_area_rows(area.width, area.height);
-    let popup_rows = match (app.chat.command_popup.as_ref(), app.chat.leader.as_ref()) {
-        (Some(state), _) => crate::cli::command_popup::popup_height(state, &app.chat.commands),
-        (None, Some(leader)) => leader.popup_height(area.width as usize),
-        (None, None) => 0,
-    };
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            // The viewport may be taller than its furniture (a tall terminal):
-            // all slack goes to the top, so the composer + status line hug the
-            // bottom edge like the inline panes they replace.
-            Constraint::Min(0),
-            Constraint::Length(1),
-            // Editor body: `input_area_rows` already counts the bottom rule.
-            Constraint::Length(input_line_count.saturating_sub(1)),
-            Constraint::Length(1),
-            Constraint::Length(popup_rows),
-            Constraint::Length(1),
-        ])
-        .split(area);
-
-    // Top rule of the input area: also the popup's top boundary.
-    let rule_style = if app.chat.active_question() {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    let rule = Paragraph::new(Line::styled(
-        "─".repeat(chunks[1].width as usize),
-        rule_style,
-    ));
-    frame.render_widget(rule, chunks[1]);
-
-    // Editor body (or the question box over it).
-    frame.render_widget(&app.chat.editor, chunks[2]);
-    if app.chat.active_question() {
-        super::render_question_box(frame, chunks[2], app, area.height);
-    }
-
-    // Bottom rule below the editor.
-    let rule = Paragraph::new(Line::styled(
-        "─".repeat(chunks[2].width as usize),
-        rule_style,
-    ));
-    frame.render_widget(rule, chunks[3]);
-
-    // Popup slot — only rows the popup actually needs are reserved, so the
-    // status line sits flush under the editor when no popup is open.
-    if popup_rows > 0
-        && let Some(ref popup) = app.chat.command_popup
-    {
-        let popup_area = Rect {
-            x: chunks[4].x,
-            y: chunks[4].y,
-            width: chunks[4].width,
-            height: popup_rows,
-        };
-        crate::cli::command_popup::render_command_popup(
-            frame,
-            popup_area,
-            popup,
-            &app.chat.commands,
-        );
-    }
-
-    // Status line — the same left counters + right chips strip, at the
-    // viewport's last row.
-    let status = build_status_line(chunks[5].width as usize, selected_topic_detail(app), false);
-    frame.render_widget(Paragraph::new(status), chunks[5]);
 }

@@ -107,15 +107,6 @@ pub(super) struct ChatState {
     pub(super) activity_scroll: usize,
     /// Last rendered rectangle of the scrollable message area (top chunk
     /// inside the chat pane). Stored during render and used by mouse-wheel
-    /// hit-testing so the wheel only acts when the cursor is over a pane it
-    /// serves — the message area or the info pane — while the editor, the
-    /// activity log and the explorer keep absorbing it.
-    pub(super) last_message_area: Option<Rect>,
-    /// Last rendered content rectangle of the topic info pane. Like
-    /// [`Self::last_message_area`], lets the wheel scroll what it hovers.
-    /// Only consulted while `info_visible`, and refreshed by every render that
-    /// shows the pane, so no reset path needs to clear it.
-    pub(super) last_info_area: Option<Rect>,
     /// Last rendered maximum message-area scroll offset (`max_skip`).
     /// Stored during render and used to clamp `scroll_up` / `page_up` at
     /// the source — without this the offset overshoots the top and the
@@ -127,6 +118,13 @@ pub(super) struct ChatState {
     pub(super) pending_clipboard: Option<String>,
     /// Pending `g` keypress for the `gg` (jump to top) sequence.
     pub(super) pending_g: bool,
+    /// Last rect the info pane rendered into (dashboard overview only);
+    /// wheel hit-testing reads it.
+    pub(super) last_info_area: Option<Rect>,
+    /// A `/topics <name>` delivery marker intercepted from the live stream:
+    /// the run loop consumes this to re-open the chat screen on the named
+    /// topic (WS reconnect + printer reset + hydrate).
+    pub(super) pending_topics_switch: Option<(String, String)>,
     /// Horizontal scroll offset for the activity pane (left-right).
     pub(super) activity_hscroll: usize,
     /// Set locally when user sends a message, cleared when the poll confirms
@@ -823,12 +821,9 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
 
     {
         // App-level keys take precedence over the editor.
-        match key.code {
-            KeyCode::Tab => {
-                app.chat.toggle_focus();
-                return;
-            }
-            _ => {}
+        if key.code == KeyCode::Tab {
+            app.chat.toggle_focus();
+            return;
         }
 
         // Chat input field. Everything not matched here is delegated
@@ -843,7 +838,16 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                 if !key.modifiers.contains(KeyModifiers::SHIFT)
                     && !key.modifiers.contains(KeyModifiers::ALT) =>
             {
-                app.chat.send_message()
+                let text = app.chat.text();
+                if text.trim() == "/info" {
+                    // Local interception: the info pane's rich rows render
+                    // from the already-polled detail instead of a server
+                    // round-trip whose plain-text answer would lose the
+                    // layout.
+                    render_local_info(app, text);
+                } else {
+                    app.chat.send_message()
+                }
             }
             // Shift/Alt+Enter inserts a newline.
             KeyCode::Enter => {
@@ -871,6 +875,45 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
 /// input field. Mirror the text into the popup, and close it once the field
 /// is empty again (the user deleted the `/`) or its text walks off the
 /// command tree into free text (`/grant <path>`, `/plan on`).
+/// `/info` answered locally: echo the command, then the topic info pane's
+/// rows as one transcript message. The detail is already on `App` (the
+/// overview poll keeps it fresh), so no server round-trip is needed.
+fn render_local_info(app: &mut App, text: String) {
+    app.chat.input_history.push(text);
+    if app.chat.input_history.len() > 100 {
+        app.chat.input_history.remove(0);
+    }
+    app.chat.history_pos = None;
+    app.chat.push_message(ChatMessage {
+        sender: "user".to_string(),
+        text: "/info".to_string(),
+        timestamp: Some(chrono::Utc::now().to_rfc3339()),
+        id: 0,
+        client_id: None,
+    });
+    // The pane's labels carry their own `": "` separators; the transcript
+    // path renders plain text, so the styled rows flatten to their spans.
+    let info = topic_info_lines(app, 100)
+        .into_iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    app.chat.push_message(ChatMessage {
+        sender: "ai".to_string(),
+        text: info,
+        timestamp: Some(chrono::Utc::now().to_rfc3339()),
+        id: 0,
+        client_id: None,
+    });
+    app.chat.editor = empty_chat_editor();
+    app.chat.scroll = 0;
+}
+
 fn sync_command_popup(app: &mut App) {
     if app.chat.command_popup.is_none() {
         return;
@@ -1430,6 +1473,7 @@ pub(crate) fn topic_info_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 /// column is the same pane, not a second lookalike.
 /// Takes `&mut App` because the changed-files section owns
 /// `app.chat.info_scroll`, which is clamped on every render.
+#[cfg(test)]
 pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut App) {
     let focused = app.chat.focus == Focus::InfoPane;
     // One border for both screens: a vertical border on the left edge (against
@@ -2278,10 +2322,10 @@ impl ChatState {
             scroll: 0,
             info_scroll: 0,
             activity_scroll: 0,
-            last_message_area: None,
-            last_info_area: None,
             pending_clipboard: None,
+            last_info_area: None,
             pending_g: false,
+            pending_topics_switch: None,
             activity_hscroll: 0,
             awaiting_response: false,
             ws_tx: None,
@@ -2446,12 +2490,11 @@ impl ChatState {
         consumed
     }
 
+    /// Rows a PageUp/PageDown moves the focused in-memory pane (the activity
+    /// pane — the transcript itself is the terminal's scrollback and pages
+    /// natively).
     pub(super) fn page_size(&self) -> usize {
-        let h = self
-            .last_message_area
-            .map(|a| a.height as usize)
-            .unwrap_or(20);
-        h.saturating_sub(1).max(1)
+        20
     }
 
     pub(super) fn page_up(&mut self) {
@@ -3061,6 +3104,18 @@ impl ChatState {
                 if let Some(entry) = payload.get("entry").and_then(|v| {
                     serde_json::from_value::<jyc_types::ChatMessageEntry>(v.clone()).ok()
                 }) {
+                    // A `/topics <name>` command's delivery is this marker
+                    // row, not a transcript line: intercept it before the
+                    // watermark/insert logic and hand it to the run loop
+                    // (which owns the WS reconnect and the printer).
+                    if let Some(rest) = entry.text.strip_prefix("\u{1}topics-switch\u{1}") {
+                        let mut parts = rest.split('\u{1}');
+                        if let (Some(channel), Some(name)) = (parts.next(), parts.next()) {
+                            self.pending_topics_switch =
+                                Some((channel.to_string(), name.to_string()));
+                        }
+                        return;
+                    }
                     // Chat rows are numbered by the chat log, not by the
                     // activity stream, so they use their own watermark.
                     let last = self.last_seen_chat_seq.get(&key).copied().unwrap_or(0);

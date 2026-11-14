@@ -345,6 +345,67 @@ fn test_terminal() -> Terminal<ratatui::backend::TestBackend> {
     Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap()
 }
 
+/// A `/topics <name>` delivery marker never reaches the transcript: the
+/// live-event handler parks it on `pending_topics_switch` for the run loop
+/// to re-open the chat screen on the named topic.
+#[test]
+fn topics_marker_is_intercepted_not_rendered() {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut chat = super::ChatState::new(rx);
+    chat.handle_live_event(&serde_json::json!({
+        "type": "chat_message",
+        "channel": "email",
+        "topic": "billing",
+        "entry": {
+            "sender": "user",
+            "text": "\u{1}topics-switch\u{1}email\u{1}invoice",
+            "id": 7,
+        }
+    }));
+    assert_eq!(
+        chat.pending_topics_switch
+            .as_ref()
+            .map(|(c, t)| (c.as_str(), t.as_str())),
+        Some(("email", "invoice")),
+        "the run loop re-opens the chat on the marker's topic"
+    );
+    assert!(
+        chat.messages.is_empty(),
+        "the marker must not appear in the transcript"
+    );
+}
+
+/// `/info` renders locally from the polled detail: one user echo, one info
+/// reply, and no message queued for the server.
+#[test]
+fn info_command_renders_locally_without_server_round_trip() {
+    let mut app = app_with_topic_summary();
+    let before = app.chat.messages.len();
+    let mut editor = super::chat_editor("/info");
+    editor.input(crossterm::event::KeyEvent::new(
+        KeyCode::End,
+        KeyModifiers::NONE,
+    ));
+    app.chat.editor = editor;
+    super::handle_chat_keys(
+        &mut app,
+        crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &mut test_terminal(),
+    );
+    assert_eq!(app.chat.messages.len(), before + 2, "echo + info reply");
+    assert_eq!(app.chat.messages[before].sender, "user");
+    assert_eq!(app.chat.messages[before].text, "/info");
+    assert!(
+        app.chat.messages[before + 1].text.contains("Topic:"),
+        "the reply carries the pane's label rows: {:?}",
+        app.chat.messages[before + 1].text
+    );
+    assert!(
+        app.chat.ws_tx.is_none(),
+        "no server round-trip for a local command"
+    );
+}
+
 #[test]
 fn esc_does_not_close_chat_with_input_focused() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();

@@ -124,10 +124,16 @@ struct App {
     table_state: TableState,
     should_quit: bool,
     status_message: Option<(String, std::time::Instant)>,
-    /// Set by the explorer pane when it switches the chat to a new
-    /// topic; the async poll loop picks it up and hydrates the live
-    /// buffers so the chat pane shows the new topic's history.
+    /// Set when the chat opens on a new topic (table selection, `/topics`
+    /// delivery marker); the async poll loop picks it up and hydrates the
+    /// live buffers so the transcript shows the new topic's history.
     pending_hydrate: Option<(String, String)>,
+
+    /// Set when the chat screen opens a different topic (dashboard Enter
+    /// key or a `/topics` switch); the run loop drops the inline printer's
+    /// print baseline so the new topic's history prints fresh instead of
+    /// being diffed against the old topic's row count.
+    pending_print_reset: bool,
 
     /// Set by the leader `reload config` action; the async poll loop runs
     /// the reload (needs InspectClient).
@@ -215,6 +221,7 @@ impl App {
             should_quit: false,
             status_message: None,
             pending_hydrate: None,
+            pending_print_reset: false,
             pending_reload_config: false,
             leader: None,
             token,
@@ -793,9 +800,24 @@ pub async fn run(
                 }
             }
 
-            // Hydrate the new topic's history when the explorer pane
-            // switches the chat. Deferred here because the sync key
-            // handler can't await on InspectClient.
+            // A `/topics <name>` delivery marker: re-open the chat screen on
+            // the named topic. Deferred here because the live-event handler
+            // can't await on InspectClient or touch the printer.
+            if let Some((channel, topic)) = app.chat.pending_topics_switch.take() {
+                let addr = app.chat.open_addr.clone().unwrap_or_default();
+                app.chat
+                    .open(&addr, Some(&channel), &topic, app.token.clone());
+                printer.reset();
+                app.pending_hydrate = Some((channel, topic));
+            }
+            if app.pending_print_reset {
+                app.pending_print_reset = false;
+                printer.reset();
+            }
+
+            // Hydrate the new topic's history after a switch. Deferred here
+            // because neither the key handler nor the live-event handler can
+            // await on InspectClient.
             if let Some((channel, topic)) = app.pending_hydrate.take() {
                 hydrate_live(&client, &mut app, &channel, &topic).await;
             }
@@ -832,6 +854,13 @@ pub async fn run(
             // overview switch), so while chat is hidden the terminal is
             // fullscreen and ratatui just draws there.
             if app.chat.visible {
+                // A topic switch landed this round: the old topic's rows are
+                // history in the scrollback, so the printer re-baselines and
+                // the next sync prints the new transcript in full.
+                if app.pending_print_reset {
+                    app.pending_print_reset = false;
+                    printer.reset();
+                }
                 // Transcript: re-derive and print the tail that has not been
                 // printed yet. Runs before the viewport draw so a round-trip
                 // that both appends and updates the composer lands in one
@@ -1282,6 +1311,9 @@ async fn open_selected_topic_chat(app: &mut App, client: &InspectClient, addr: &
     if let Some((name, channel)) = topic_info {
         app.chat
             .open(addr, Some(&channel), &name, app.token.clone());
+        // The new topic's transcript starts fresh in the scrollback: the
+        // run loop drops the printer baseline before the next sync.
+        app.pending_print_reset = true;
         // Chat WS takes over live events. Close the overview WS
         // so we don't have two connections to the same topic.
         close_overview_ws(app);

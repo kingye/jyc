@@ -39,8 +39,24 @@ use ratatui::widgets::Widget;
 /// `make_terminal` rebuilds the terminal at a new inline viewport height
 /// (see [`InlinePrinter::resize_viewport`]); it must return an inline
 /// terminal anchored at the *current* cursor position.
+/// Rebuilds the inline terminal at a new viewport height (see
+/// [`InlinePrinter::resize_viewport`]).
+pub(crate) trait TerminalFactory<B: Backend> {
+    fn rebuild(&mut self, rows: u16) -> Result<Terminal<B>, B::Error>;
+}
+
+impl<B, F> TerminalFactory<B> for F
+where
+    B: Backend,
+    F: FnMut(u16) -> Result<Terminal<B>, B::Error>,
+{
+    fn rebuild(&mut self, rows: u16) -> Result<Terminal<B>, B::Error> {
+        self(rows)
+    }
+}
+
 pub(crate) struct InlinePrinter<B: Backend> {
-    make_terminal: Box<dyn FnMut(u16) -> Result<Terminal<B>, B::Error>>,
+    make_terminal: Box<dyn TerminalFactory<B>>,
     terminal: Terminal<B>,
     /// Current inline viewport height (rows of live furniture).
     viewport_height: u16,
@@ -169,7 +185,7 @@ impl<B: Backend> InlinePrinter<B> {
                 old.y
             },
         })?;
-        self.terminal = (self.make_terminal)(new_height)?;
+        self.terminal = self.make_terminal.rebuild(new_height)?;
         self.viewport_height = new_height;
         // Best guess until the next draw reports the real area — same math
         // as `compute_inline_size` for the parked cursor above.

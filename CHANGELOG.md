@@ -1,4 +1,4 @@
-## [Unreleased]
+## [0.10.0] - 2026-11-14
 
 ### Added
 - `/thinking auto` clears the runtime reasoning-effort override; bare `/thinking` and all display surfaces (`/info`, dashboard info pane, status chip) now show the configured effort beside the model, `auto` when nothing is configured (#1089, follow-up to #1088)

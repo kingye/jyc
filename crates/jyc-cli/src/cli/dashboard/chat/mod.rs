@@ -73,6 +73,10 @@ pub(super) struct ChatMessage {
     /// Identifies this client's optimistic echo of a message it sent, so the
     /// server's row replaces it instead of being appended as a second copy.
     pub(super) client_id: Option<String>,
+    /// Pre-styled transcript rows for a locally-answered command (`/info`):
+    /// rendered as-is instead of going through the markdown path, which
+    /// would flatten the pane's colored labels to plain text.
+    pub(super) styled_lines: Option<Vec<ratatui::text::Line<'static>>>,
 }
 
 /// The chat pane's WebSocket state.
@@ -891,25 +895,28 @@ fn render_local_info(app: &mut App, text: String) {
         timestamp: Some(chrono::Utc::now().to_rfc3339()),
         id: 0,
         client_id: None,
+        styled_lines: None,
     });
-    // The pane's labels carry their own `": "` separators; the transcript
-    // path renders plain text, so the styled rows flatten to their spans.
-    let info = topic_info_lines(app, 100)
-        .into_iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    // The pane's labels carry their own `": "` separators and their colors;
+    // the rows go over as pre-styled lines so the transcript keeps them (a
+    // plain-text round-trip would flatten them through the markdown path).
+    let info = topic_info_lines(app, 100);
     app.chat.push_message(ChatMessage {
         sender: "ai".to_string(),
-        text: info,
+        text: info
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
         timestamp: Some(chrono::Utc::now().to_rfc3339()),
         id: 0,
         client_id: None,
+        styled_lines: Some(wrap_styled_lines(info, 100)),
     });
     app.chat.editor = empty_chat_editor();
     app.chat.scroll = 0;
@@ -2586,6 +2593,7 @@ impl ChatState {
             timestamp: Some(chrono::Utc::now().to_rfc3339()),
             id: 0,
             client_id: Some(client_id.clone()),
+            styled_lines: None,
         });
         // The /ws/<channel>/<topic> URL already carries the topic name.
         // Both ScopedWsHandler (websocket channel) and TopicProxyHandler
@@ -3181,6 +3189,7 @@ impl ChatState {
                             timestamp: Some(chrono::Utc::now().to_rfc3339()),
                             id: 0,
                             client_id: None,
+                            styled_lines: None,
                         });
                     }
                     // Processing completed - the fold above already removed
@@ -3371,6 +3380,7 @@ impl ChatState {
                     timestamp: msg.timestamp.clone(),
                     id: msg.id,
                     client_id: msg.client_msg_id.clone(),
+                    styled_lines: None,
                 });
                 changed = true;
             }

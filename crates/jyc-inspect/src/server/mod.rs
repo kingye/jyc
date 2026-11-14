@@ -280,9 +280,9 @@ impl InspectServer {
         // the platform data home is unavailable, and read a home outside it as
         // agentless.
         let agents_dir = context.agents_dir.clone();
-        let all_topics: Vec<(String, String)> = topics
+        let all_topics: Vec<(String, String, Option<String>)> = topics
             .iter()
-            .map(|t| (t.name.clone(), t.channel.clone()))
+            .map(|t| (t.name.clone(), t.channel.clone(), t.parent.clone()))
             .collect();
         let mut summaries: Vec<TopicSummary> = topics
             .into_iter()
@@ -382,9 +382,9 @@ impl InspectServer {
             jyc_utils::paths::config_dir().as_deref(),
         );
         let agents = agents_of(&topics);
-        let all_topics: Vec<(String, String)> = topics
+        let all_topics: Vec<(String, String, Option<String>)> = topics
             .iter()
-            .map(|t| (t.name.clone(), t.channel.clone()))
+            .map(|t| (t.name.clone(), t.channel.clone(), t.parent.clone()))
             .collect();
         let topics: Vec<TopicInfo> = topics
             .into_iter()
@@ -562,7 +562,7 @@ struct CommandEnv<'a> {
     models: &'a [ModelInfo],
     subagent_types: &'a [(String, String)],
     agents: &'a [String],
-    all_topics: &'a [(String, String)],
+    all_topics: &'a [(String, String, Option<String>)],
 }
 
 fn commands_for_topic(topic: &TopicInfo, env: &CommandEnv<'_>) -> Vec<CommandInfo> {

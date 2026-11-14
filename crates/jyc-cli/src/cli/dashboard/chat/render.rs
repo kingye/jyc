@@ -1426,6 +1426,9 @@ mod tests {
         let mut app = App::new(rx, None);
         app.chat.channel = Some("chan".into());
         app.chat.topic = Some("t1".into());
+        // This fixture exercises the FULL layout: compact progress (the
+        // default) suppresses live thinking entirely, so pin it off.
+        app.chat.minimal_progress = false;
         let width = 40;
         // Idle + no thinking: just the editor, its rules, and the status
         // line.
@@ -1543,6 +1546,9 @@ mod tests {
         let mut app = App::new(rx, None);
         app.chat.channel = Some("chan".into());
         app.chat.topic = Some("t1".into());
+        // Full layout: the priority test is about tail vs thinking, which
+        // only exists when minimal progress is off.
+        app.chat.minimal_progress = false;
         app.chat.awaiting_response = true;
         app.chat
             .live_thinking

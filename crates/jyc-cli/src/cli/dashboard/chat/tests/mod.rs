@@ -2339,18 +2339,27 @@ fn compact_progress_suppresses_live_thinking_but_not_the_post_turn_summary() {
         .collect();
     assert!(text.contains("💭"), "got: {text}");
 
-    // The summary of a COMPLETED turn survives compact mode.
+    // The summary of a COMPLETED turn survives compact mode. The message
+    // is rendered collapsed by default (`thinking_expanded` stays false),
+    // so the visible text is the one-line summary, never the body.
     app.chat.live_thinking.clear();
-    app.chat
-        .messages
-        .push(history_msg("thinking", "finished chain of thought", None));
+    let body = "finished chain of thought";
+    app.chat.messages.push(history_msg("thinking", body, None));
     app.chat.minimal_progress = true;
     let lines = super::render::render_thinking_block(&app, 80);
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
         .collect();
-    assert!(text.contains("finished chain of thought"), "got: {text}");
+    let chars = body.chars().count();
+    assert!(
+        text.contains(&format!("💭 thinking — {chars} chars (ctrl+p t to expand)")),
+        "got: {text}"
+    );
+    assert!(
+        !text.contains(body),
+        "collapsed completed thinking must not render the body: {text}"
+    );
 }
 
 #[test]

@@ -975,16 +975,38 @@ pub async fn run(
     }; // terminal + backend dropped here
 
     // Restore terminal — safe now that no buffered escape codes remain.
-    // Leaving the alternate screen is a no-op when the chat screen was up
-    // at exit; it matters when the loop ended on the overview. The inline
-    // viewport leaves the cursor on its last draw, so print a newline to
-    // move the shell prompt to a fresh line, and re-show the cursor that
-    // the inline viewport kept hidden.
-    stdout().execute(LeaveAlternateScreen)?;
-    stdout().execute(DisableBracketedPaste)?;
-    stdout().execute(Show)?;
+    // Every step runs even when an earlier one fails: skipping
+    // `disable_raw_mode` after a failed escape write would strand the
+    // terminal in raw mode, which is exactly what this cleanup exists to
+    // prevent.
+    let mut cleanup_err: Option<anyhow::Error> = None;
+    let record = |err: &std::io::Error, what: &str, slot: &mut Option<anyhow::Error>| {
+        if slot.is_none() {
+            *slot = Some(anyhow::anyhow!(
+                "terminal cleanup step {what} failed: {err}"
+            ));
+        }
+        tracing::warn!("terminal cleanup step {what} failed: {err}");
+    };
+    if let Err(e) = stdout().execute(LeaveAlternateScreen) {
+        record(&e, "leave alternate screen", &mut cleanup_err);
+    }
+    if let Err(e) = stdout().execute(DisableBracketedPaste) {
+        record(&e, "disable bracketed paste", &mut cleanup_err);
+    }
+    if let Err(e) = stdout().execute(Show) {
+        record(&e, "show cursor", &mut cleanup_err);
+    }
+    if let Err(e) = disable_raw_mode() {
+        record(&e, "disable raw mode", &mut cleanup_err);
+    }
+    // Cooked mode first: raw mode maps a bare LF to "move down" only, so a
+    // newline printed while still raw would leave the shell prompt at the
+    // cursor's old column.
     println!();
-    disable_raw_mode()?;
+    if let Some(e) = cleanup_err {
+        return Err(e);
+    }
 
     result
 }

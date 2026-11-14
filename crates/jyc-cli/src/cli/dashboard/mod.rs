@@ -3,15 +3,15 @@ use clap::{Args, Subcommand};
 use crossterm::{
     ExecutableCommand,
     event::{
-        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
+        KeyModifiers,
     },
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode},
 };
 use jyc_core::duration::{DurationStyle, format_duration_secs};
 use ratatui::{
     Frame, Terminal,
-    layout::{Constraint, Direction, Layout, Position, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Padding, Paragraph, Row, Table, TableState, Wrap},
@@ -124,31 +124,25 @@ struct App {
     table_state: TableState,
     should_quit: bool,
     status_message: Option<(String, std::time::Instant)>,
-    /// Set by the explorer pane when it switches the chat to a new
-    /// topic; the async poll loop picks it up and hydrates the live
-    /// buffers so the chat pane shows the new topic's history.
+    /// Set when the chat opens on a new topic (table selection, `/topics`
+    /// delivery marker); the async poll loop picks it up and hydrates the
+    /// live buffers so the transcript shows the new topic's history.
     pending_hydrate: Option<(String, String)>,
+
+    /// Set when the chat screen opens a different topic (dashboard Enter
+    /// key or a `/topics` switch); the run loop drops the inline printer's
+    /// print baseline so the new topic's history prints fresh instead of
+    /// being diffed against the old topic's row count.
+    pending_print_reset: bool,
 
     /// Set by the leader `reload config` action; the async poll loop runs
     /// the reload (needs InspectClient).
     pending_reload_config: bool,
 
-    /// Whether terminal mouse capture is currently enabled. When on, the
-    /// chat message area scrolls on wheel events but tmux/terminal-native
-    /// text selection is hijacked by the app. When off, tmux select works
-    /// but the wheel does nothing. Flipped at runtime by the `toggle
-    /// mouse` leader-key popup entry. Default is `true` to match the
-    /// behaviour introduced by PR #484 — opt out via leader popup when
-    /// working inside tmux.
-    mouse_capture_enabled: bool,
-
-    /// One-shot flag: the render loop calls `terminal.clear()` before the
-    /// next draw, rebuilding ratatui's diff baseline. Set when the real
-    /// screen may have changed out-of-band — e.g. while mouse capture was
-    /// off, the wheel scrolls the terminal's own scrollback (or tmux
-    /// copy-mode), moving content without ratatui knowing; the following
-    /// diff repaint would ghost-mix old and new frames.
-    needs_full_redraw: bool,
+    /// The inline printer for the chat screen: owns the ratatui `Terminal`
+    /// (inline viewport) that draws the composer and prints transcript
+    /// lines into the native scrollback. `None` in tests, which have no
+    /// real terminal.
 
     /// Open leader-key popup on the dashboard screen (dashboard + shared
     /// commands). Triggered by `Ctrl+P`.
@@ -189,14 +183,10 @@ struct App {
 pub enum Focus {
     /// The chat input field.
     ChatPane,
-    /// The scrollable message area above the input field.
-    MessageArea,
     /// The right-hand topic info pane (topic metadata + changed files).
     InfoPane,
     /// The activity log pane.
     ActivityPane,
-    /// The left-side topic explorer pane.
-    ExplorerPane,
     /// The overview's topic table.
     TopicsTable,
 }
@@ -231,9 +221,8 @@ impl App {
             should_quit: false,
             status_message: None,
             pending_hydrate: None,
+            pending_print_reset: false,
             pending_reload_config: false,
-            mouse_capture_enabled: true,
-            needs_full_redraw: false,
             leader: None,
             token,
             overview_ws_tx: Some(overview_ws_cmd_tx),
@@ -254,34 +243,6 @@ impl App {
         {
             self.status_message = None;
         }
-    }
-
-    /// Pure flip — returns the new state without touching the terminal.
-    /// Split from the I/O so tests can exercise the toggle without a real
-    /// stdout.
-    fn flip_mouse_capture(&mut self) -> bool {
-        self.mouse_capture_enabled = !self.mouse_capture_enabled;
-        self.mouse_capture_enabled
-    }
-
-    /// Emit the terminal escape sequence that matches the current
-    /// `mouse_capture_enabled` state. Writes to an arbitrary writer so
-    /// tests can pass a `Vec<u8>` and assert the emitted bytes; the
-    /// thin `apply_mouse_capture` wrapper below topics through stdout.
-    /// Crossterm mouse toggles don't go through the ratatui backend, so
-    /// we write directly here (matches the `EnableMouseCapture` /
-    /// `DisableMouseCapture` usage at startup and shutdown).
-    fn apply_mouse_capture_to<W: std::io::Write>(&self, mut out: W) -> std::io::Result<()> {
-        use crossterm::ExecutableCommand;
-        if self.mouse_capture_enabled {
-            out.execute(EnableMouseCapture).map(|_| ())
-        } else {
-            out.execute(DisableMouseCapture).map(|_| ())
-        }
-    }
-
-    fn apply_mouse_capture(&self) -> std::io::Result<()> {
-        self.apply_mouse_capture_to(std::io::stdout().lock())
     }
 
     fn next_topic(&mut self) {
@@ -596,100 +557,11 @@ async fn read_log_tail(path: &std::path::Path, n: usize) -> String {
     tail.join("\n")
 }
 
-/// How long a lone `Esc` is held while we wait to see whether it is the
-/// head of a split mouse escape sequence.
-const ESC_FRAGMENT_WINDOW: Duration = Duration::from_millis(20);
-
 /// How often the dashboard re-fetches the overview (topic rows and status
 /// line). Chat messages do not ride this clock: they are folded into the pane
 /// as the websocket delivers them, and after a hydrated fetch — see
 /// `ChatState::sync_live_if_visible`.
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
-
-/// Outcome of feeding one key through [`MouseFragmentFilter`].
-enum Filtered {
-    /// Dispatch the key normally.
-    Dispatch(KeyEvent),
-    /// A held `Esc` turned out to be a real keypress: dispatch it first,
-    /// then the current key.
-    Replay(KeyEvent, KeyEvent),
-    /// The key is part of a mouse escape fragment — drop it.
-    Swallow,
-}
-
-/// Swallows mouse escape fragments (`[<65;35;12M`) that leak through
-/// crossterm as plain character keys.
-///
-/// crossterm 0.29 assumes more input is pending only when a read fills
-/// its whole 1024-byte buffer (`more = read_count == TTY_BUFFER_SIZE`).
-/// During a fast wheel burst the pty chunks the byte stream arbitrarily;
-/// when a chunk ends exactly at ESC, the parser emits a lone `Esc` key
-/// and the remaining `[<65;35;12M` bytes arrive as plain `Char` keys,
-/// which the composer would insert as garbage. A real `Esc` press is
-/// held for [`ESC_FRAGMENT_WINDOW`] and replayed unless `[` follows
-/// immediately — humans cannot type that fast, and pastes arrive as
-/// `Event::Paste`, so there are no false positives.
-// ponytail: local workaround for crossterm's incomplete-read heuristic
-// (more = read_count == TTY_BUFFER_SIZE); delete this filter if crossterm
-// ever buffers partial escape sequences across reads.
-#[derive(Default)]
-struct MouseFragmentFilter {
-    /// A lone `Esc` held for the fragment window, with its arrival time.
-    pending_esc: Option<(KeyEvent, std::time::Instant)>,
-    /// Whether we are inside a fragment body (after `ESC` `[`).
-    swallowing: bool,
-}
-
-impl MouseFragmentFilter {
-    fn feed(&mut self, key: KeyEvent, now: std::time::Instant) -> Filtered {
-        if self.swallowing {
-            return match key.code {
-                // Fragment body: parameters, separators, SGR marker.
-                KeyCode::Char(c) if c.is_ascii_digit() || c == ';' || c == '<' => Filtered::Swallow,
-                // Final byte: M (press/scroll) or m (release).
-                KeyCode::Char('M') | KeyCode::Char('m') => {
-                    self.swallowing = false;
-                    Filtered::Swallow
-                }
-                // Not a fragment after all — stop filtering. Characters
-                // already swallowed are lost; accepted trade-off inside a
-                // 20ms window after Esc.
-                _ => {
-                    self.swallowing = false;
-                    Filtered::Dispatch(key)
-                }
-            };
-        }
-        if let Some((esc, at)) = self.pending_esc.take() {
-            if now.duration_since(at) <= ESC_FRAGMENT_WINDOW
-                && key.code == KeyCode::Char('[')
-                && key.modifiers.is_empty()
-            {
-                self.swallowing = true;
-                return Filtered::Swallow;
-            }
-            return Filtered::Replay(esc, key);
-        }
-        if key.code == KeyCode::Esc {
-            self.pending_esc = Some((key, now));
-            return Filtered::Swallow;
-        }
-        Filtered::Dispatch(key)
-    }
-
-    /// Flush a held `Esc` whose fragment window has expired (a real
-    /// `Esc` press). Call once per event-loop iteration; the loop's 50ms
-    /// poll cadence guarantees it runs.
-    fn flush(&mut self, now: std::time::Instant) -> Option<KeyEvent> {
-        match self.pending_esc {
-            Some((esc, at)) if now.duration_since(at) > ESC_FRAGMENT_WINDOW => {
-                self.pending_esc = None;
-                Some(esc)
-            }
-            _ => None,
-        }
-    }
-}
 
 pub async fn run(
     args: &DashboardArgs,
@@ -728,41 +600,46 @@ pub async fn run(
         None => InspectClient::new(&addr),
     };
 
-    // Setup terminal
+    // Setup terminal — raw mode only, no alternate screen. The chat screen
+    // is an inline UI: its transcript lives in the native scrollback above
+    // the composer, so it must print into the same buffer the user scrolls
+    // with tmux. The overview screen enters the alternate screen on demand
+    // (see `App::set_chat_visible`) and leaves it when chat opens again.
     enable_raw_mode()?;
-    stdout().execute(EnterAlternateScreen)?;
     stdout().execute(EnableBracketedPaste)?;
-    // Enable mouse capture so the chat pane can scroll on wheel events.
-    // Without this, crossterm swallows mouse events at the terminal level.
-    stdout().execute(EnableMouseCapture)?;
 
     // Restore the terminal on panic. Without this a crash leaves raw mode
-    // and mouse capture enabled, and wheel scrolling at the shell prompt
-    // sprays mouse escape sequences into readline. Best-effort: ignore
-    // errors, then defer to the default hook for the panic message.
+    // and bracketed paste enabled, and pasting at the shell prompt replays
+    // stale chunks. Best-effort: ignore errors, then defer to the default
+    // hook for the panic message.
     // (Not restored on normal exit — the process ends after `run`.)
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = stdout().execute(DisableBracketedPaste);
-        let _ = stdout().execute(DisableMouseCapture);
         let _ = disable_raw_mode();
-        let _ = stdout().execute(LeaveAlternateScreen);
         default_hook(info);
     }));
 
     // Terminal and its backend are scoped so they drop *before* we restore
     // the terminal. Otherwise the backend's Drop flushes buffered escape
-    // codes after LeaveAlternateScreen, corrupting line alignment.
+    // codes after the restore, corrupting line alignment.
     let result = {
         let link_regions: hyperlink::LinkRegions = Rc::new(RefCell::new(Vec::new()));
         let backend = hyperlink::HyperlinkBackend::new(stdout(), link_regions.clone());
-        let mut terminal = Terminal::new(backend)?;
+        // Inline viewport, not the alternate screen: the chat transcript
+        // prints into the native scrollback above (see `chat::inline`), so
+        // only the composer + popup + status line are ratatui's to draw.
+        // The overview screen (when reached) still owns the full window —
+        // it renders into this same viewport, which is tall enough to hold
+        // the whole terminal because the viewport height is resolved from
+        // the real terminal size at each draw.
+        let terminal = chat::inline::InlinePrinter::new(backend, crossterm::terminal::size()?.1)?;
 
         let (_, ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let mut app = App::new(ws_rx, token);
         app.link_regions = link_regions;
         app.chat.link_rewrite = args.link_rewrite.clone();
-        let mut mouse_frag_filter = MouseFragmentFilter::default();
+        let mut printer = terminal;
         let mut last_poll = std::time::Instant::now() - POLL_INTERVAL; // Force immediate poll
         // Overview fetches run off-loop: each poll is spawned and its
         // result arrives on this channel, so the HTTP round-trip never
@@ -923,9 +800,24 @@ pub async fn run(
                 }
             }
 
-            // Hydrate the new topic's history when the explorer pane
-            // switches the chat. Deferred here because the sync key
-            // handler can't await on InspectClient.
+            // A `/topics <name>` delivery marker: re-open the chat screen on
+            // the named topic. Deferred here because the live-event handler
+            // can't await on InspectClient or touch the printer.
+            if let Some((channel, topic)) = app.chat.pending_topics_switch.take() {
+                let addr = app.chat.open_addr.clone().unwrap_or_default();
+                app.chat
+                    .open(&addr, Some(&channel), &topic, app.token.clone());
+                printer.reset();
+                app.pending_hydrate = Some((channel, topic));
+            }
+            if app.pending_print_reset {
+                app.pending_print_reset = false;
+                printer.reset();
+            }
+
+            // Hydrate the new topic's history after a switch. Deferred here
+            // because neither the key handler nor the live-event handler can
+            // await on InspectClient.
             if let Some((channel, topic)) = app.pending_hydrate.take() {
                 hydrate_live(&client, &mut app, &channel, &topic).await;
             }
@@ -948,16 +840,6 @@ pub async fn run(
             // Clear expired status messages
             app.tick_status();
 
-            // Dispatch a held `Esc` whose fragment window has expired —
-            // it was a real keypress, not a split mouse sequence.
-            if let Some(esc) = mouse_frag_filter.flush(std::time::Instant::now()) {
-                if app.chat.visible {
-                    handle_chat_keys(&mut app, esc, &mut terminal);
-                } else {
-                    handle_normal_keys(&mut app, esc, &client, &mut last_poll, &addr).await;
-                }
-            }
-
             // Flush a yank's clipboard write, if any. Here rather than in the key
             // handlers: those run inside `terminal.draw`, and OSC 52 has to write
             // to the real stdout.
@@ -965,12 +847,37 @@ pub async fn run(
                 chat::clipboard::apply(&text);
             }
 
-            // Draw
-            if app.needs_full_redraw {
-                app.needs_full_redraw = false;
-                terminal.clear()?;
+            // Draw. The chat screen only owns its inline viewport
+            // (composer + popup + status line); the transcript above is
+            // printed by `InlinePrinter` as messages arrive. The overview
+            // screen runs in the alternate screen (entered on the chat →
+            // overview switch), so while chat is hidden the terminal is
+            // fullscreen and ratatui just draws there.
+            if app.chat.visible {
+                // A topic switch landed this round: the old topic's rows are
+                // history in the scrollback, so the printer re-baselines and
+                // the next sync prints the new transcript in full.
+                if app.pending_print_reset {
+                    app.pending_print_reset = false;
+                    printer.reset();
+                }
+                // Transcript: re-derive and print the tail that has not been
+                // printed yet. Runs before the viewport draw so a round-trip
+                // that both appends and updates the composer lands in one
+                // consistent frame.
+                let width = printer.size().width;
+                let (mut lines, _) = chat::render_history_lines(
+                    &app.chat.messages,
+                    width as usize,
+                    app.chat.thinking_expanded,
+                    app.chat.minimal_progress,
+                );
+                lines.extend(chat::render::render_progress_tail(&app, width));
+                printer.sync(lines, width)?;
+                printer.draw_viewport(|f| ui(f, &mut app))?;
+            } else {
+                printer.draw_fullscreen(|f| ui(f, &mut app))?;
             }
-            terminal.draw(|f| ui(f, &mut app))?;
 
             // Handle input: block up to 50ms for the first event, then
             // drain everything already pending. One draw per burst (above)
@@ -990,15 +897,9 @@ pub async fn run(
                             app.chat.editor.insert_str(data);
                         }
                         Event::Key(key) if key.kind == KeyEventKind::Press => {
-                            let (first, second) =
-                                match mouse_frag_filter.feed(key, std::time::Instant::now()) {
-                                    Filtered::Dispatch(k) => (Some(k), None),
-                                    Filtered::Replay(esc, k) => (Some(esc), Some(k)),
-                                    Filtered::Swallow => (None, None),
-                                };
-                            for key in [first, second].into_iter().flatten() {
+                            for key in [Some(key)].into_iter().flatten() {
                                 if app.chat.visible {
-                                    handle_chat_keys(&mut app, key, &mut terminal);
+                                    handle_chat_keys(&mut app, key, printer.terminal_mut());
                                 } else {
                                     handle_normal_keys(
                                         &mut app,
@@ -1011,9 +912,9 @@ pub async fn run(
                                 }
                             }
                         }
-                        Event::Mouse(mouse) if app.chat.visible => {
-                            handle_chat_mouse(&mut app, mouse);
-                        }
+                        // No mouse handling: the chat screen never captures
+                        // the mouse (the transcript lives in the terminal's
+                        // own scrollback, and tmux owns wheel + selection).
                         _ => {}
                     }
                     if !event::poll(Duration::ZERO)? {
@@ -1030,9 +931,7 @@ pub async fn run(
 
     // Restore terminal — safe now that no buffered escape codes remain
     stdout().execute(DisableBracketedPaste)?;
-    stdout().execute(DisableMouseCapture)?;
     disable_raw_mode()?;
-    stdout().execute(LeaveAlternateScreen)?;
 
     result
 }
@@ -1412,6 +1311,9 @@ async fn open_selected_topic_chat(app: &mut App, client: &InspectClient, addr: &
     if let Some((name, channel)) = topic_info {
         app.chat
             .open(addr, Some(&channel), &name, app.token.clone());
+        // The new topic's transcript starts fresh in the scrollback: the
+        // run loop drops the printer baseline before the next sync.
+        app.pending_print_reset = true;
         // Chat WS takes over live events. Close the overview WS
         // so we don't have two connections to the same topic.
         close_overview_ws(app);
@@ -1468,7 +1370,6 @@ async fn handle_normal_keys(
                     LocalAction::OpenChat => open_selected_topic_chat(app, client, addr).await,
                     LocalAction::ReloadConfig => reload_server_config(app, client, last_poll).await,
                     LocalAction::Quit => app.should_quit = true,
-                    LocalAction::ToggleMouseCapture => toggle_mouse_capture(app),
                     // Chat-scoped actions are never offered on the dashboard.
                     _ => {}
                 }
@@ -1539,37 +1440,8 @@ fn cycle_overview_focus(app: &mut App) {
         Focus::InfoPane => Focus::ActivityPane,
         // The chat screen's own panes: the overview never cycles into them,
         // and leaving the overview puts focus back on its table.
-        Focus::ActivityPane | Focus::ChatPane | Focus::MessageArea | Focus::ExplorerPane => {
-            Focus::TopicsTable
-        }
+        Focus::ActivityPane | Focus::ChatPane => Focus::TopicsTable,
     };
-}
-
-/// Flip the terminal mouse-capture mode (used by the `toggle mouse`
-/// leader-key action on both dashboard and chat screens). Splits the pure
-/// state flip from the terminal I/O so the rollback path can restore the
-/// previous state if the escape write fails.
-fn toggle_mouse_capture(app: &mut App) {
-    let on = app.flip_mouse_capture();
-    if let Err(e) = app.apply_mouse_capture() {
-        // Roll back the flip so `mouse_capture_enabled` matches the
-        // terminal's actual mode.
-        app.mouse_capture_enabled = !on;
-        app.set_status(format!("Mouse capture toggle failed: {e}"));
-    } else {
-        if on {
-            // While capture was off, scrolling went to the terminal's own
-            // scrollback — the real screen no longer matches ratatui's
-            // previous buffer. Repaint everything once (same pattern as
-            // the editor-suspend resume, which also `terminal.clear()`s).
-            app.needs_full_redraw = true;
-        }
-        app.set_status(if on {
-            "Mouse capture: on".to_string()
-        } else {
-            "Mouse capture: off".to_string()
-        });
-    }
 }
 
 fn ui(frame: &mut Frame, app: &mut App) {
@@ -2022,120 +1894,6 @@ mod tests {
         );
         assert!(err.to_string().contains("--addr"), "{err:#}");
         answer.await.unwrap();
-    }
-
-    fn char_key(c: char) -> KeyEvent {
-        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
-    }
-
-    fn assert_swallow(f: Filtered) {
-        assert!(matches!(f, Filtered::Swallow), "expected Swallow");
-    }
-
-    fn assert_dispatch(f: Filtered, code: KeyCode) {
-        match f {
-            Filtered::Dispatch(k) => assert_eq!(k.code, code),
-            _ => panic!("expected Dispatch({code:?})"),
-        }
-    }
-
-    fn assert_replay(f: Filtered, first: KeyCode, second: KeyCode) {
-        match f {
-            Filtered::Replay(a, b) => {
-                assert_eq!(a.code, first);
-                assert_eq!(b.code, second);
-            }
-            _ => panic!("expected Replay({first:?}, {second:?})"),
-        }
-    }
-
-    #[test]
-    fn sgr_mouse_fragment_is_swallowed() {
-        let mut filter = MouseFragmentFilter::default();
-        let t0 = std::time::Instant::now();
-        assert_swallow(filter.feed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), t0));
-        for c in "[<65;35;12M".chars() {
-            assert_swallow(filter.feed(char_key(c), t0 + Duration::from_millis(1)));
-        }
-        // Keys after the fragment flow normally again.
-        assert_dispatch(
-            filter.feed(char_key('a'), t0 + Duration::from_millis(2)),
-            KeyCode::Char('a'),
-        );
-    }
-
-    #[test]
-    fn rxvt_mouse_fragment_is_swallowed() {
-        let mut filter = MouseFragmentFilter::default();
-        let t0 = std::time::Instant::now();
-        assert_swallow(filter.feed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), t0));
-        for c in "[65;35;12M".chars() {
-            assert_swallow(filter.feed(char_key(c), t0 + Duration::from_millis(1)));
-        }
-    }
-
-    #[test]
-    fn esc_then_letter_replays_both() {
-        let mut filter = MouseFragmentFilter::default();
-        let t0 = std::time::Instant::now();
-        assert_swallow(filter.feed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), t0));
-        assert_replay(
-            filter.feed(char_key('a'), t0 + Duration::from_millis(5)),
-            KeyCode::Esc,
-            KeyCode::Char('a'),
-        );
-    }
-
-    #[test]
-    fn slow_bracket_after_esc_replays_both() {
-        // A human typing Esc then '[' cannot beat the fragment window.
-        let mut filter = MouseFragmentFilter::default();
-        let t0 = std::time::Instant::now();
-        assert_swallow(filter.feed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), t0));
-        assert_replay(
-            filter.feed(
-                char_key('['),
-                t0 + ESC_FRAGMENT_WINDOW + Duration::from_millis(10),
-            ),
-            KeyCode::Esc,
-            KeyCode::Char('['),
-        );
-    }
-
-    #[test]
-    fn held_esc_flushes_after_window() {
-        let mut filter = MouseFragmentFilter::default();
-        let t0 = std::time::Instant::now();
-        assert_swallow(filter.feed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), t0));
-        assert!(filter.flush(t0 + Duration::from_millis(10)).is_none());
-        let esc = filter
-            .flush(t0 + ESC_FRAGMENT_WINDOW + Duration::from_millis(10))
-            .expect("stale Esc must flush");
-        assert_eq!(esc.code, KeyCode::Esc);
-        // Already flushed — nothing pending.
-        assert!(
-            filter
-                .flush(t0 + ESC_FRAGMENT_WINDOW + Duration::from_millis(20))
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn deviation_mid_fragment_stops_swallowing() {
-        let mut filter = MouseFragmentFilter::default();
-        let t0 = std::time::Instant::now();
-        assert_swallow(filter.feed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), t0));
-        assert_swallow(filter.feed(char_key('['), t0 + Duration::from_millis(1)));
-        assert_swallow(filter.feed(char_key('<'), t0 + Duration::from_millis(1)));
-        // 'x' is not fragment syntax — filtering stops and it dispatches.
-        assert_dispatch(
-            filter.feed(char_key('x'), t0 + Duration::from_millis(1)),
-            KeyCode::Char('x'),
-        );
-        assert_dispatch(
-            filter.feed(char_key('5'), t0 + Duration::from_millis(1)),
-            KeyCode::Char('5'),
-        );
     }
 
     #[test]
@@ -2911,13 +2669,6 @@ mod tests {
         let mut app = make_test_app();
         app.state = Some(make_overview_with_topics(&["alpha"]));
         app.table_state.select(Some(0));
-        // The chat screen's visibility flags are all in their "closed" state
-        // here: they are its own commands' state, and the overview must
-        // render its three panes regardless of them.
-        app.chat.activity_split = 0;
-        app.chat.info_visible = false;
-        app.chat.status_visible = false;
-
         let width: u16 = 100;
         let height: u16 = 24;
         let backend = TestBackend::new(width, height);
@@ -2970,16 +2721,11 @@ mod tests {
     }
 
     /// The overview's three panes are always on screen, so `Tab` cycles
-    /// through all of them without consulting the chat screen's visibility
-    /// flags — and the chat screen's own panes stay out of the cycle.
+    /// through all of them and never into the chat screen's own focus.
     #[test]
-    fn overview_focus_cycles_all_three_panes_whatever_the_chat_flags_say() {
+    fn overview_focus_cycles_all_three_panes() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(rx, None);
-        // Every one of these would close a pane on the chat screen.
-        app.chat.activity_split = 0;
-        app.chat.info_visible = false;
-        app.chat.status_visible = false;
 
         assert_eq!(app.chat.focus, Focus::TopicsTable);
         cycle_overview_focus(&mut app);
@@ -2989,9 +2735,9 @@ mod tests {
         cycle_overview_focus(&mut app);
         assert_eq!(app.chat.focus, Focus::TopicsTable);
 
-        // A focus left on one of the chat screen's panes — leaving a chat
-        // with the info pane focused, say — comes back to the table.
-        app.chat.focus = Focus::ExplorerPane;
+        // A focus left on the chat screen — leaving a chat with the input
+        // focused, say — comes back to the table.
+        app.chat.focus = Focus::ChatPane;
         cycle_overview_focus(&mut app);
         assert_eq!(app.chat.focus, Focus::TopicsTable);
     }

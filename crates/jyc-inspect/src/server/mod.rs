@@ -280,18 +280,21 @@ impl InspectServer {
         // the platform data home is unavailable, and read a home outside it as
         // agentless.
         let agents_dir = context.agents_dir.clone();
+        let all_topics: Vec<(String, String)> = topics
+            .iter()
+            .map(|t| (t.name.clone(), t.channel.clone()))
+            .collect();
         let mut summaries: Vec<TopicSummary> = topics
             .into_iter()
             .map(|t| {
-                let commands = commands_for_topic(
-                    t.pattern.as_deref(),
-                    cfg_ref,
-                    &t.available_skills,
-                    &models,
-                    &subagent_types,
-                    &t.name,
-                    &agents,
-                );
+                let env = CommandEnv {
+                    cfg: cfg_ref,
+                    models: &models,
+                    subagent_types: &subagent_types,
+                    agents: &agents,
+                    all_topics: &all_topics,
+                };
+                let commands = commands_for_topic(&t, &env);
                 // The agent from the home the state dir sits in — by name
                 // rather than by `topic_path`, which a pinned topic points
                 // outside the agents dir.
@@ -379,18 +382,21 @@ impl InspectServer {
             jyc_utils::paths::config_dir().as_deref(),
         );
         let agents = agents_of(&topics);
+        let all_topics: Vec<(String, String)> = topics
+            .iter()
+            .map(|t| (t.name.clone(), t.channel.clone()))
+            .collect();
         let topics: Vec<TopicInfo> = topics
             .into_iter()
             .map(|mut t| {
-                t.commands = commands_for_topic(
-                    t.pattern.as_deref(),
-                    cfg_ref,
-                    &t.available_skills,
-                    &models,
-                    &subagent_types,
-                    &t.name,
-                    &agents,
-                );
+                let env = CommandEnv {
+                    cfg: cfg_ref,
+                    models: &models,
+                    subagent_types: &subagent_types,
+                    agents: &agents,
+                    all_topics: &all_topics,
+                };
+                t.commands = commands_for_topic(&t, &env);
                 t
             })
             .collect();
@@ -549,32 +555,41 @@ fn agents_of(topics: &[TopicInfo]) -> Vec<String> {
 ///
 /// `agents` is `/send`'s first level (the same for every topic), and `name` is
 /// the topic this list belongs to — `/close`'s subagent list is read from it.
-fn commands_for_topic(
-    pattern: Option<&str>,
-    cfg: &AppConfig,
-    available: &[jyc_types::SkillMeta],
-    models: &[ModelInfo],
-    subagent_types: &[(String, String)],
-    name: &str,
-    agents: &[String],
-) -> Vec<CommandInfo> {
-    let per_agent = pattern
-        .map(|p| per_agent_commands(cfg, p))
+/// Shared non-topic inputs to [`commands_for_topic`]: the config plus the
+/// name lists the same for every topic in one payload.
+struct CommandEnv<'a> {
+    cfg: &'a AppConfig,
+    models: &'a [ModelInfo],
+    subagent_types: &'a [(String, String)],
+    agents: &'a [String],
+    all_topics: &'a [(String, String)],
+}
+
+fn commands_for_topic(topic: &TopicInfo, env: &CommandEnv<'_>) -> Vec<CommandInfo> {
+    let per_agent = topic
+        .pattern
+        .as_deref()
+        .map(|p| per_agent_commands(env.cfg, p))
         .unwrap_or_default();
-    let skill_names: Vec<String> = available.iter().map(|s| s.name.clone()).collect();
-    let subagents: Vec<String> = jyc_core::command::spawn_handler::subagents_of(name)
+    let skill_names: Vec<String> = topic
+        .available_skills
+        .iter()
+        .map(|s| s.name.clone())
+        .collect();
+    let subagents: Vec<String> = jyc_core::command::spawn_handler::subagents_of(&topic.name)
         .into_iter()
         .map(|(child, _)| child)
         .collect();
     let arg_ctx = ArgCtx {
-        config: cfg,
+        config: env.cfg,
         skills: &skill_names,
-        models,
-        subagent_types,
-        agents,
+        models: env.models,
+        subagent_types: env.subagent_types,
+        agents: env.agents,
         subagents: &subagents,
+        all_topics: env.all_topics,
     };
-    let mut commands = all_commands_with(&cfg.commands, &per_agent, available);
+    let mut commands = all_commands_with(&env.cfg.commands, &per_agent, &topic.available_skills);
     for cmd in &mut commands {
         cmd.args = command_args(&cmd.name, &arg_ctx);
     }
@@ -602,15 +617,19 @@ mod command_args_tests {
             "review".to_string(),
             "Reviews a change before you push (shares your directory)".to_string(),
         )];
-        let commands = commands_for_topic(
-            None,
-            &cfg,
-            &skills,
-            &models,
-            &subagent_types,
-            "command-args-test",
-            &[],
-        );
+        let topic = TopicInfo {
+            name: "command-args-test".to_string(),
+            available_skills: skills.clone(),
+            ..Default::default()
+        };
+        let env = CommandEnv {
+            cfg: &cfg,
+            models: &models,
+            subagent_types: &subagent_types,
+            agents: &[],
+            all_topics: &[],
+        };
+        let commands = commands_for_topic(&topic, &env);
 
         let find = |name: &str| commands.iter().find(|c| c.name == name).expect(name);
         assert_eq!(find("/model").args[0].value, "deepseek/deepseek-chat");

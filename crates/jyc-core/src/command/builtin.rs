@@ -58,7 +58,9 @@ use super::spec::{self, ArgSource, Shape, Syntax};
 use super::template_handler::TemplateCommandHandler;
 use super::thinking_handler::ThinkingCommandHandler;
 use super::toggle_handler::ToggleCommandHandler;
+use super::topics_handler::TopicsCommandHandler;
 use super::unpin_handler::UnpinCommandHandler;
+use super::version_handler::VersionCommandHandler;
 use crate::topic_manager::TopicManager;
 
 /// One built-in command: what it is called, what the popup says about it, and
@@ -405,6 +407,16 @@ builtin_commands! {
     "/info" => {
         desc: "Show topic info (status, mode, model, tokens, cost, tasks, files)",
         make: |tm| Arc::new(InfoCommandHandler::new(tm))
+    },
+    "/version" => {
+        desc: "Show the running build's version",
+        make: |_| Arc::new(VersionCommandHandler)
+    },
+    "/topics" => {
+        desc: "Switch the chat screen to another topic",
+        shape: Shape::Args { labels: &["topic"] },
+        args: super::args::TOPICS_ARGS,
+        make: |tm| Arc::new(TopicsCommandHandler::new(tm))
     },
     "/mcp" => {
         desc: "Toggle an MCP server for this topic",

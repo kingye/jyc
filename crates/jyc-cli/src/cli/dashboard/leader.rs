@@ -97,19 +97,6 @@ impl Leader {
     pub fn popup_height(&self, width: usize) -> u16 {
         (1 + leader_grid_rows(&self.entries, width)) as u16
     }
-
-    /// Render as a compact grid inside `rect` — the slot the chat layout
-    /// placed directly below the input field. No borders at all, same
-    /// treatment as the `/` command popup.
-    ///
-    /// The grid rather than the descriptive list on purpose: the chat screen
-    /// has ~17 entries, and one row each made a popup taller than the screen,
-    /// so the bottom entries fell off it entirely. Descriptions stay on the
-    /// dashboard's centered popup, which has few enough commands to fit them.
-    pub fn render_anchored(&self, frame: &mut Frame, rect: Rect) {
-        let lines = leader_grid_lines(&self.entries, &self.buffer, rect.width as usize);
-        render_leader_body(frame, rect, lines, &self.buffer);
-    }
 }
 
 /// Width of the leader-key column (longest key, at least 2).
@@ -184,34 +171,6 @@ fn leader_entry_line(entry: &LeaderEntry, buffer: &str, key_col: usize) -> Line<
         Span::raw("  "),
         Span::styled(entry.description, Style::default().fg(Color::DarkGray)),
     ])
-}
-
-/// The entries laid out in as many columns as `width` allows, so the anchored
-/// popup stays short enough to show every one of them. Cells are laid out at
-/// exactly [`leader_cell_width`] each; the last one in a row gets no trailing
-/// gutter, which is what keeps a row from wrapping into two.
-fn leader_grid_lines(entries: &[LeaderEntry], buffer: &str, width: usize) -> Vec<Line<'static>> {
-    let key_col = leader_key_col_width(entries);
-    let cell = leader_cell_width(entries);
-    entries
-        .chunks(leader_grid_cols(entries, width))
-        .map(|row| {
-            let mut spans = Vec::with_capacity(row.len() * 4);
-            for (i, entry) in row.iter().enumerate() {
-                spans.push(leader_key_span(entry, buffer, key_col));
-                spans.push(Span::raw("  "));
-                spans.push(Span::styled(
-                    entry.name,
-                    Style::default().add_modifier(Modifier::BOLD),
-                ));
-                if i + 1 < row.len() {
-                    let used = key_col + 2 + entry.name.width();
-                    spans.push(Span::raw(" ".repeat(cell.saturating_sub(used))));
-                }
-            }
-            Line::from(spans)
-        })
-        .collect()
 }
 
 /// Title line for both render styles: the pending key buffer as a chip.
@@ -325,45 +284,27 @@ mod tests {
     fn single_char_hit_dispatches_and_closes() {
         let mut leader = Leader::new(CommandScope::Chat);
         assert_eq!(
-            leader.handle_key(key('e')),
-            LeaderResult::Action(LocalAction::ToggleExplorer)
+            leader.handle_key(key('x')),
+            LeaderResult::Action(LocalAction::ClearInput)
         );
         // Buffer is reset after dispatch.
         assert_eq!(leader.buffer(), "");
     }
 
     #[test]
-    fn multi_char_sequence_dispatches_after_completion() {
+    fn invalid_after_dispatch_resets_buffer() {
         let mut leader = Leader::new(CommandScope::Chat);
-        // First `g` is a prefix of `gg` — wait, no dispatch yet.
-        assert_eq!(leader.handle_key(key('g')), LeaderResult::Consumed);
-        assert_eq!(leader.buffer(), "g");
-        // Second `g` completes `gg` — dispatch scroll top.
+        // `t` dispatches immediately.
         assert_eq!(
-            leader.handle_key(key('g')),
-            LeaderResult::Action(LocalAction::ScrollTop)
+            leader.handle_key(key('t')),
+            LeaderResult::Action(LocalAction::ToggleThinking)
         );
         assert_eq!(leader.buffer(), "");
-    }
-
-    #[test]
-    fn capital_g_dispatches_scroll_bottom() {
-        let mut leader = Leader::new(CommandScope::Chat);
+        // The dispatch already reset the buffer; the next key starts fresh.
         assert_eq!(
-            leader.handle_key(key('G')),
-            LeaderResult::Action(LocalAction::ScrollBottom)
+            leader.handle_key(key('t')),
+            LeaderResult::Action(LocalAction::ToggleThinking)
         );
-    }
-
-    #[test]
-    fn invalid_after_partial_resets_buffer() {
-        let mut leader = Leader::new(CommandScope::Chat);
-        // `g` is a prefix — wait.
-        assert_eq!(leader.handle_key(key('g')), LeaderResult::Consumed);
-        assert_eq!(leader.buffer(), "g");
-        // `x` is not a valid completion for any entry starting with `g`
-        // and the buffer `gx` is not a prefix of any entry — reset.
-        assert_eq!(leader.handle_key(key('x')), LeaderResult::Consumed);
         assert_eq!(leader.buffer(), "");
     }
 
@@ -395,28 +336,6 @@ mod tests {
 
     /// The space key has to be visible in the popup: a bare space renders as
     /// an empty key column, and as a blank chip in the title while the buffer
-    /// holds it.
-    #[test]
-    fn space_key_renders_as_the_open_box_glyph() {
-        let leader = Leader::new(CommandScope::Chat);
-        let grid: String = leader_grid_lines(&leader.entries, "", 80)
-            .iter()
-            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-            .collect();
-        assert!(
-            grid.contains('␣'),
-            "space key invisible in the grid: {grid}"
-        );
-        let title: String = leader_title(" ")
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert!(
-            title.contains('␣'),
-            "space-key chip invisible in the title: {title:?}"
-        );
-    }
 
     #[test]
     fn dashboard_open_chat_uses_c_key() {
@@ -425,43 +344,6 @@ mod tests {
             leader.handle_key(key('c')),
             LeaderResult::Action(LocalAction::OpenChat)
         );
-    }
-
-    /// The anchored popup has to show every command. The chat scope is the
-    /// crowded one, and one row per entry made the popup taller than the screen
-    /// so its tail fell off the bottom; the grid keeps it short, and the height
-    /// the layout reserves must be the height the grid actually draws.
-    #[test]
-    fn anchored_popup_shows_every_entry_without_wrapping() {
-        let leader = Leader::new(CommandScope::Chat);
-        let width = 80;
-        assert!(
-            leader.entries.len() >= 15,
-            "the chat scope should be the crowded one, got {}",
-            leader.entries.len()
-        );
-        let lines = leader_grid_lines(&leader.entries, "", width);
-        assert!(
-            lines.len() < leader.entries.len(),
-            "the grid should pack {} entries into fewer rows, got {}",
-            leader.entries.len(),
-            lines.len()
-        );
-        assert_eq!(
-            leader.popup_height(width) as usize,
-            lines.len() + 1,
-            "reserved rows must equal rendered rows plus the footer hint"
-        );
-        let text: String = lines
-            .iter()
-            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-            .collect();
-        for entry in &leader.entries {
-            assert!(text.contains(entry.name), "{} missing", entry.name);
-        }
-        for line in &lines {
-            assert!(line.width() <= width, "a row would wrap: {line:?}");
-        }
     }
 
     /// One cell per row when the terminal is too narrow for two, and an empty

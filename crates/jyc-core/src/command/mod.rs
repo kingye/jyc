@@ -27,7 +27,9 @@ pub mod spec;
 pub mod template_handler;
 pub mod thinking_handler;
 pub mod toggle_handler;
+pub mod topics_handler;
 pub mod unpin_handler;
+pub mod version_handler;
 
 use jyc_types::{CommandInfo, CustomCommand};
 

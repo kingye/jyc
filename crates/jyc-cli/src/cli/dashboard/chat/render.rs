@@ -2,7 +2,7 @@
 
 use super::table_wrap::wrap_tables;
 use super::*;
-use super::{App, ChatMessage, LINE_DRAWING};
+use super::{App, ChatMessage};
 
 /// Max lines a tool detail expansion can render before trailing it with
 /// a `… (N more lines)` marker. Shared by `render_file_tool_diff` (edit /
@@ -74,51 +74,6 @@ pub(super) fn tail_to_width(s: &str, max_width: usize) -> String {
     format!("…{}", kept.into_iter().collect::<String>())
 }
 
-/// Fingerprint of the message history + pane width used to invalidate
-/// `ChatState::render_cache`. Covers every message mutation in the
-/// codebase (push, last-message streaming append, clear) — messages are
-/// never edited in place mid-history. The cache is additionally reset on
-/// `open()` so a cross-topic collision (same count/lengths/timestamp)
-/// can never serve the previous topic's lines.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RenderFingerprint {
-    count: usize,
-    text_len_sum: usize,
-    last_timestamp: Option<String>,
-    width: usize,
-    /// How many messages render as the human side (the background block).
-    /// The sender is otherwise invisible to the fingerprint, so a message
-    /// that flips sides with the same length and timestamp would serve stale
-    /// styled lines from the cache.
-    human_side: usize,
-    /// Thinking expand/collapse affects the rendered lines of
-    /// `sender == "thinking"` pseudo-messages, so it must bust the cache.
-    thinking_expanded: bool,
-    /// Minimal progress mode drops that same thinking line, so it affects the
-    /// cached history too — see [`thinking_expanded`].
-    minimal_progress: bool,
-}
-
-pub(super) fn history_fingerprint(
-    messages: &[ChatMessage],
-    width: usize,
-    thinking_expanded: bool,
-    minimal_progress: bool,
-) -> RenderFingerprint {
-    RenderFingerprint {
-        count: messages.len(),
-        text_len_sum: messages.iter().map(|m| m.text.len()).sum(),
-        last_timestamp: messages.last().and_then(|m| m.timestamp.clone()),
-        width,
-        human_side: messages
-            .iter()
-            .filter(|m| is_user_message(&m.sender))
-            .count(),
-        thinking_expanded,
-        minimal_progress,
-    }
-}
-
 /// Background of a human turn's block (see [`render_history_lines`]).
 ///
 /// `#393552` — the muted violet backdrop for human turns. It is a hardcoded
@@ -128,41 +83,6 @@ pub(super) fn history_fingerprint(
 /// which is what makes a human turn read at exactly the same brightness as the
 /// agent's reply.
 pub(super) const USER_BG: Color = Color::Rgb(0x39, 0x35, 0x52);
-
-/// Background for the message-pane highlight: the same bar for the cursor row and
-/// for every selected row (`Shift+J` to start a selection, any movement key to
-/// extend it), so a selection reads as one thing instead of two.
-///
-/// A bright teal-blue, far enough from [`USER_BG`]'s dark violet to read as a highlight
-/// rather than as part of a message. Unlike [`USER_BG`] it cannot be an ANSI name
-/// — no theme color is both distinct from the message background and light-theme safe —
-/// so a *selected* row additionally forces a light foreground (on a light-theme
-/// terminal the default foreground is black, which would vanish on this teal),
-/// while the cursor row gives up its background alone — it is the highlight that
-/// sits on screen while you are merely reading, and the text's own colours (dim
-/// metadata, markdown colours) are worth more there than they are mid-selection.
-/// Inside a selection the cursor row is painted with the range, so it takes the
-/// light foreground like its neighbours.
-pub(super) const SELECT_BG: Color = Color::Rgb(0, 95, 135);
-
-/// Paint one transcript row with the highlight bar (the cursor row, or a selected
-/// row — both on [`SELECT_BG`]).
-///
-/// `bar` says what the row gives up: a selected row overrides the foreground as
-/// well (it has to stay legible on the teal — see [`SELECT_BG`]), the cursor row
-/// only the background, so the text under it keeps its own colour. Either way the
-/// row is padded out with
-/// spaces because `Paragraph` paints a style only where it has glyphs — without
-/// the padding the bar stops at the last character instead of crossing the pane.
-fn paint_row(line: &mut Line<'static>, width: u16, bar: Style) {
-    for span in &mut line.spans {
-        span.style = span.style.patch(bar);
-    }
-    let pad = width.saturating_sub(line.width() as u16);
-    if pad > 0 {
-        line.spans.push(Span::styled(" ".repeat(pad as usize), bar));
-    }
-}
 
 /// Whether a chat message belongs to the human side of the conversation.
 ///
@@ -186,7 +106,7 @@ fn is_user_message(sender: &str) -> bool {
 /// Also returns the transcript line index of every user turn's opening rule —
 /// the boundaries the message-area `[`/`]` keys jump between (see
 /// [`crate::cli::dashboard::chat::ChatState::cursor_section_jump`]).
-pub(super) fn render_history_lines(
+pub(crate) fn render_history_lines(
     messages: &[ChatMessage],
     width: usize,
     thinking_expanded: bool,
@@ -516,79 +436,17 @@ fn minimal_progress_line(
     Line::from(spans)
 }
 
-pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
-    // Borderless chat pane — no outer block, no side borders, no
-    // per-message `│ ` gutter. Each chat round is bounded by a horizontal
-    // top rule (time on the left) and a horizontal bottom rule (duration
-    // right-aligned). When the chat pane is focused, draw a faint
-    // background so the cursor position is still discoverable.
-    if app.chat.focus == Focus::ChatPane {
-        let bg = Block::default().style(Style::default().bg(Color::Reset));
-        frame.render_widget(bg, area);
-    }
-
-    // Split: scrollable messages (top), then the input field, the popup
-    // slot, and the status line (bottom).
-    // Input field = a top rule + editor rows (grows with content, up to
-    // 10) + a bottom rule, measured once by `input_area_rows` — the same
-    // helper `page_size` uses, so rendering and scrolling always agree.
-    // A row missing here is a row the question box loses, or an editor row
-    // the field clips.
-    let input_line_count = app.chat.input_area_rows(area.width, area.height);
-    // Rows reserved for an open popup, directly BELOW the input field: the
-    // popup is a layout participant, not an overlay, so it can never be
-    // clipped by the pane edge or cover the field the user is typing in.
-    // The status line takes the pane's last row, below the popup.
-    let popup_rows = match (app.chat.command_popup.as_ref(), app.chat.leader.as_ref()) {
-        (Some(state), _) => crate::cli::command_popup::popup_height(state, &app.chat.commands),
-        (None, Some(leader)) => leader.popup_height(area.width as usize),
-        (None, None) => 0,
-    };
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(0),
-            Constraint::Length(input_line_count),
-            Constraint::Length(popup_rows),
-            Constraint::Length(STATUS_LINE_ROWS),
-        ])
-        .split(area);
-    // Cache the message-area rect so mouse-wheel events can hit-test
-    // against it from the input loop.
-    app.chat.last_message_area = Some(chunks[0]);
-    // Register the message area as the OSC 8 link-scanning region: the
-    // backend clips URL detection to pane columns, so neighbouring pane
-    // text can never merge into a link target.
-    app.link_regions.borrow_mut().push(chunks[0]);
-
-    // --- Messages area (markdown-rendered) ---
-    // tui-markdown renders without wrapping, so messages are word-wrapped
-    // to the pane width here — the scroll math below counts one entry per
-    // visual row.
-    let messages_width = chunks[0].width as usize;
-
-    // Message-history lines are cached: they only change when a message
-    // arrives / streams / clears or the pane width changes. Without the
-    // cache every frame (each keystroke, 50ms poll, 1Hz tick) re-parsed
-    // the whole transcript's markdown — the per-keystroke input lag.
-    let fingerprint = history_fingerprint(
-        &app.chat.messages,
-        messages_width,
-        app.chat.thinking_expanded,
-        app.chat.minimal_progress,
-    );
-    let cache_hit = matches!(&app.chat.render_cache, Some((fp, _, _)) if *fp == fingerprint);
-    if !cache_hit {
-        let (lines, user_turn_lines) = render_history_lines(
-            &app.chat.messages,
-            messages_width,
-            app.chat.thinking_expanded,
-            app.chat.minimal_progress,
-        );
-        app.chat.render_cache = Some((fingerprint, lines, user_turn_lines));
-    }
-
-    // Dynamic progress tail (thinking / activity / live ticker) — small,
+/// Rebuild the one-line text the backend used to compose, now from the raw
+/// event the entry carries. Wording matches the old server-side formatter
+/// exactly — the render pipeline below (`render_activity_entry`) consumes
+/// these lines unchanged. Legacy rows written before the raw-event shape
+/// have no `event.type`; their prose rides in `text` and passes through.
+/// Dynamic progress tail (thinking / activity / live ticker) — rebuilt
+/// every frame and printed after the transcript by the inline sync
+/// (see `chat::inline::InlinePrinter::sync`). Extracted from the old pane
+/// renderer byte-for-byte: only the data source (`app`) and the width
+/// parameter remain.
+pub(crate) fn render_progress_tail(app: &App, width: u16) -> Vec<Line<'static>> {
     // rebuilt every frame, appended after the cached history lines.
     let mut tail_lines: Vec<Line> = Vec::new();
 
@@ -686,7 +544,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             // The 2 accounts for the "  " indent prefix below; each wrapped
             // segment becomes its own `Line` so the scroll calculation sees
             // the correct visual row count.
-            let avail = chunks[0].width.saturating_sub(2) as usize;
+            let avail = width.saturating_sub(2) as usize;
             if app.chat.thinking_expanded {
                 let joined = blocks.join("\n\n");
                 for line in wrap_text_to_width(&joined, avail) {
@@ -699,7 +557,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                 let chars: usize = blocks.iter().map(|b| b.chars().count()).sum();
                 push_tail_rows(
                     &mut tail_lines,
-                    chunks[0].width,
+                    width,
                     "💭 ",
                     Style::default(),
                     format!(
@@ -815,13 +673,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                         .collect();
 
                 for (prefix, spans) in rendered_lines {
-                    push_tail_rows_spans(
-                        &mut tail_lines,
-                        chunks[0].width,
-                        &prefix,
-                        spinner_style(),
-                        spans,
-                    );
+                    push_tail_rows_spans(&mut tail_lines, width, &prefix, spinner_style(), spans);
                 }
             }
         }
@@ -853,193 +705,16 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             .collect::<String>();
         push_tail_rows(
             &mut tail_lines,
-            chunks[0].width,
+            width,
             "⚠ ",
             Style::default(),
             message,
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         );
     }
-
-    let inner_height = chunks[0].height as usize;
-    // Borrow the cached history lines without cloning; scroll math below
-    // only touches disjoint fields (`last_max_scroll`, `scroll`).
-    let history: &[Line] = &app
-        .chat
-        .render_cache
-        .as_ref()
-        .expect("render cache stored above")
-        .1;
-    let history_len = history.len();
-    let total_lines = history_len + tail_lines.len();
-    let max_skip = total_lines.saturating_sub(inner_height);
-    app.chat.last_max_scroll = max_skip;
-    // The cursor's range and the viewport height are only known here, so the
-    // geometry the keys move against is always last frame's.
-    app.chat.last_total_lines = total_lines;
-    app.chat.scroll = app.chat.scroll.min(max_skip);
-    let skip = max_skip.saturating_sub(app.chat.scroll);
-    if app.chat.cursor_line == usize::MAX {
-        // Never placed: resolving the sentinel against the empty transcript of a
-        // topic switch would park it on row 0 for the session, so it waits for
-        // content. Otherwise it lands at the end of the *visible page* — the
-        // bottom visible row — so a refocus while scrolled up parks the cursor
-        // where the reader is looking, not off-screen at the transcript end.
-        // Pinned to the bottom (`scroll == 0`) the min() yields the last row
-        // with text, not the blank spacer that closes a reply nor the pending
-        // rows after the history.
-        let last_text = history
-            .iter()
-            .rposition(|line| line.spans.iter().any(|s| !s.content.trim().is_empty()))
-            .unwrap_or(usize::MAX);
-        app.chat.cursor_line = if last_text == usize::MAX {
-            usize::MAX
-        } else {
-            last_text.min(skip + inner_height.saturating_sub(1))
-        };
-    } else {
-        // Clamp against *this* frame too: switching topics or a resize that
-        // shortened the transcript must not leave the cursor past the end.
-        app.chat.cursor_line = app.chat.cursor_line.min(total_lines.saturating_sub(1));
-    }
-    // The selection belongs to the message pane alone. Focus can leave it by
-    // routes that do not go through `refocus_input` (`Tab`, a click, the
-    // explorer), and a selection left behind is invisible yet still live: it
-    // would pin the cursor against `carry_cursor` and could be yanked later.
-    if app.chat.focus != Focus::MessageArea {
-        app.chat.selection_anchor = None;
-    }
-    // Clone only the visible window (≤ inner_height lines) — the
-    // Paragraph clips anything beyond the area anyway.
-    let hist_slice: &[Line] = if skip < history_len {
-        &history[skip..]
-    } else {
-        &[]
-    };
-    let tail_start = skip.saturating_sub(history_len);
-    let mut visible_lines: Vec<Line> = hist_slice
-        .iter()
-        .chain(&tail_lines[tail_start..])
-        .take(inner_height)
-        .cloned()
-        .collect();
-    // The highlight belongs to the message pane alone: while any other pane has
-    // focus the transcript is plain text. One transcript line is exactly one
-    // screen row here (the markdown renderer wraps to the pane width and the
-    // `Paragraph` does not wrap again), hence the direct line -> row mapping.
-    // The cursor row and the selected rows share the one background — how many
-    // rows are selected is in the status line, so a second colour would be noise.
-    let cursor = app.chat.cursor_line;
-    let selection = app.chat.selection_range();
-    if app.chat.focus == Focus::MessageArea {
-        let bar = Style::default().bg(SELECT_BG);
-        let selected_bar = bar.fg(Color::White);
-        for (row, line) in visible_lines.iter_mut().enumerate() {
-            let line_no = skip + row;
-            if selection.is_some_and(|(from, to)| line_no >= from && line_no <= to) {
-                paint_row(line, chunks[0].width, selected_bar);
-            } else if line_no == cursor {
-                paint_row(line, chunks[0].width, bar);
-            }
-        }
-    }
-
-    let messages_para = Paragraph::new(visible_lines);
-    frame.render_widget(messages_para, chunks[0]);
-
-    // --- Input area (text editor, at bottom) ---
-    // The editor renders its own wrapping and scroll-follow, full width,
-    // framed by a full-width rule above and below — both take the same
-    // style, so the field reads as one box and dims together when focus
-    // leaves the pane. The bottom rule also closes the input area toward
-    // the popup slot below. The cursor is a blinking reversed block when
-    // the input has focus and invisible when another pane does (a
-    // default-styled cursor cell is indistinguishable from the text under
-    // it). While a question is pending the editor is covered by the
-    // question box, so the cursor stays hidden.
-    app.chat
-        .editor
-        .set_cursor_style(if app.chat.active_question() {
-            Style::default()
-        } else {
-            match app.chat.focus {
-                Focus::ChatPane => Style::default()
-                    .add_modifier(Modifier::REVERSED)
-                    .add_modifier(Modifier::SLOW_BLINK),
-                Focus::MessageArea
-                | Focus::ActivityPane
-                | Focus::ExplorerPane
-                | Focus::InfoPane
-                | Focus::TopicsTable => Style::default(),
-            }
-        });
-    let [top_rule_area, body_area, bottom_rule_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .areas(chunks[1]);
-    let focused = app.chat.focus == Focus::ChatPane;
-    // Both rules share one style: sapphire + bold when focused, inactive
-    // #393552 when focus moves away — the field's frame dims together.
-    let rule_style = if focused {
-        Style::default()
-            .fg(Color::Rgb(116, 199, 236)) // Catppuccin sapphire
-            .add_modifier(Modifier::BOLD)
-    } else {
-        LINE_DRAWING
-    };
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            "─".repeat(top_rule_area.width as usize),
-            rule_style,
-        )),
-        top_rule_area,
-    );
-    frame.render_widget(&app.chat.editor, body_area);
-    if app.chat.active_question() {
-        super::render_question_box(frame, body_area, app, area.height);
-    }
-    // Bottom rule of the input area: also the popup's top boundary — the
-    // popups below no longer draw a rule of their own.
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            "─".repeat(bottom_rule_area.width as usize),
-            rule_style,
-        )),
-        bottom_rule_area,
-    );
-
-    // ── Popups: the slot right below the input field (chunks[2]) ──
-    if let Some(ref popup) = app.chat.command_popup {
-        render_command_popup(frame, chunks[2], popup, &app.chat.commands);
-    }
-
-    // ── Leader-key popup (TUI-local commands) ──
-    if let Some(ref leader) = app.chat.leader {
-        leader.render_anchored(frame, chunks[2]);
-    }
-
-    // ── Status line: the pane's last row (chunks[3]) ──
-    // A presentation of the selected topic's TopicInfo: identity and, while
-    // the info pane is hidden, its compact counters on the left; model,
-    // context usage and turn metrics on the right. It sits below the popup
-    // slot so a popup never covers it.
-    frame.render_widget(
-        build_status_line(
-            chunks[3].width as usize,
-            selected_topic_detail(app),
-            app.chat.info_visible,
-        ),
-        chunks[3],
-    );
+    tail_lines
 }
 
-/// Rebuild the one-line text the backend used to compose, now from the raw
-/// event the entry carries. Wording matches the old server-side formatter
-/// exactly — the render pipeline below (`render_activity_entry`) consumes
-/// these lines unchanged. Legacy rows written before the raw-event shape
-/// have no `event.type`; their prose rides in `text` and passes through.
 pub(super) fn entry_activity_text(entry: &jyc_types::ActivityEntry) -> String {
     let event = &entry.event;
     let Some(kind) = event.get("type").and_then(|t| t.as_str()) else {
@@ -1516,6 +1191,98 @@ fn format_tool_input_full(text: &str) -> Vec<String> {
         out.push(format!("  … ({more} more lines)"));
     }
     out
+}
+
+/// Renders the inline chat viewport — the live furniture only, since the
+/// transcript lives in the terminal's own scrollback above (see
+/// `chat::inline`). Replaces the old pane renderer
+/// (`render_chat_conversation`): same widgets, but laid out top-to-bottom
+/// inside the viewport rows instead of under a transcript.
+pub(super) fn render_chat_viewport(frame: &mut Frame, area: Rect, app: &mut App) {
+    // Rows: top rule, editor body (question box replaces it while a
+    // question is pending), popup slot, status line.
+    let input_line_count = app.chat.input_area_rows(area.width, area.height);
+    let popup_rows = match (app.chat.command_popup.as_ref(), app.chat.leader.as_ref()) {
+        (Some(state), _) => crate::cli::command_popup::popup_height(state, &app.chat.commands),
+        (None, Some(leader)) => leader.popup_height(area.width as usize),
+        (None, None) => 0,
+    };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            // The viewport may be taller than its furniture (a tall terminal):
+            // all slack goes to the top, so the composer + status line hug the
+            // bottom edge like the inline panes they replace.
+            Constraint::Min(0),
+            Constraint::Length(1),
+            // Editor body: `input_area_rows` already counts the bottom rule.
+            Constraint::Length(input_line_count.saturating_sub(1)),
+            Constraint::Length(1),
+            Constraint::Length(popup_rows),
+            Constraint::Length(1),
+        ])
+        .split(area);
+
+    // Top rule of the input area: also the popup's top boundary.
+    let rule_style = if app.chat.active_question() {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let rule = Paragraph::new(Line::styled(
+        "─".repeat(chunks[1].width as usize),
+        rule_style,
+    ));
+    frame.render_widget(rule, chunks[1]);
+
+    // Editor body (or the question box over it).
+    frame.render_widget(&app.chat.editor, chunks[2]);
+    if app.chat.active_question() {
+        super::render_question_box(frame, chunks[2], app, area.height);
+    }
+
+    // Bottom rule below the editor.
+    let rule = Paragraph::new(Line::styled(
+        "─".repeat(chunks[2].width as usize),
+        rule_style,
+    ));
+    frame.render_widget(rule, chunks[3]);
+
+    // Popup slot — only rows the popup actually needs are reserved, so the
+    // status line sits flush under the editor when no popup is open.
+    if popup_rows > 0
+        && let Some(ref popup) = app.chat.command_popup
+    {
+        let popup_area = Rect {
+            x: chunks[4].x,
+            y: chunks[4].y,
+            width: chunks[4].width,
+            height: popup_rows,
+        };
+        crate::cli::command_popup::render_command_popup(
+            frame,
+            popup_area,
+            popup,
+            &app.chat.commands,
+        );
+    } else if let Some(ref leader) = app.chat.leader {
+        // The leader popup fills the reserved slot the same way the `/`
+        // popup does.
+        leader.render(
+            frame,
+            Rect {
+                x: chunks[4].x,
+                y: chunks[4].y,
+                width: chunks[4].width,
+                height: popup_rows.max(1),
+            },
+        );
+    }
+
+    // Status line — the same left counters + right chips strip, at the
+    // viewport's last row.
+    let status = build_status_line(chunks[5].width as usize, selected_topic_detail(app), false);
+    frame.render_widget(Paragraph::new(status), chunks[5]);
 }
 
 #[cfg(test)]

@@ -1,3 +1,13 @@
+## [Unreleased]
+
+### Added
+- TUI `/topics` command: the `/` command popup lists the live topics (resolved server-side from the same registry the overview polls) and selecting one switches the chat screen — the dashboard's topic explorer pane is gone
+- TUI `/version` command reports the running build's version, replacing the chat screen's status sub-pane
+
+### Changed
+- The TUI chat screen is an inline scrollback UI: the transcript is printed into the terminal's native scrollback and only the composer, `/` command popup, and status line are drawn as a bottom viewport — tmux rewraps history natively, so the TUI's own line wrapping, message-pane cursor, selection, scroll state, mouse capture, and render cache are removed (net −6000 lines)
+- The chat screen's explorer, topic-info, and activity panes are removed; the overview screen keeps its own tables. Leader keys and mouse bindings tied to those panes are gone with them
+
 ## [0.10.0] - 2026-11-14
 
 ### Added

@@ -59,6 +59,9 @@ pub struct ArgCtx<'a> {
     /// This topic's own direct subagents — the only names `/close` accepts.
     /// Read per topic by the caller (`spawn_handler::subagents_of`).
     pub subagents: &'a [String],
+    /// Every live topic as `(name, channel)` — what `/topics` lists. Read by
+    /// the caller once for the whole payload, like `agents`.
+    pub all_topics: &'a [(String, String)],
 }
 
 /// The values a command's first argument level offers, resolved against
@@ -172,6 +175,7 @@ pub static CONFIRM_FLAG_ARGS: ArgSource = ArgSource::Provided(confirm_flag_args)
 /// level is provided whole and the usage line names the slot from the shape.
 pub static SPAWN_ARGS: ArgSource = ArgSource::Provided(spawn_args);
 pub static SEND_ARGS: ArgSource = ArgSource::Provided(send_args);
+pub static TOPICS_ARGS: ArgSource = ArgSource::Provided(topics_args);
 pub static CLOSE_ARGS: ArgSource = ArgSource::Provided(close_args);
 
 /// `/spawn`'s next levels: the types a spawn accepts, and then the four flags.
@@ -204,6 +208,20 @@ fn send_args(ctx: &ArgCtx) -> Vec<CommandArg> {
         .collect();
     args.extend(flags::rows(flags::SEND_FLAGS));
     args
+}
+
+/// `/topics`' next level: every live topic, `(name, channel)` — picking one
+/// opens the chat screen for it.
+fn topics_args(ctx: &ArgCtx) -> Vec<CommandArg> {
+    ctx.all_topics
+        .iter()
+        .map(|(name, channel)| {
+            val(
+                name,
+                &format!("Open the chat screen for this topic ({channel})"),
+            )
+        })
+        .collect()
 }
 
 /// `/close`'s next levels: this topic's own subagents — the only names it
@@ -331,6 +349,7 @@ mod tests {
             subagent_types: &[],
             agents: &[],
             subagents: &[],
+            all_topics: &[],
         }
     }
 
@@ -342,6 +361,7 @@ mod tests {
             subagent_types: types,
             agents: &[],
             subagents: &[],
+            all_topics: &[],
         }
     }
 
@@ -358,6 +378,7 @@ mod tests {
             subagent_types: &[],
             agents,
             subagents,
+            all_topics: &[],
         }
     }
 

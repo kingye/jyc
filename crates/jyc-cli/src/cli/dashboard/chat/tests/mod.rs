@@ -18,13 +18,13 @@ fn render_history_lines_deterministic_for_cache_reuse() {
         history_msg("ai", "world\nsecond line", Some("2026-08-13T10:00:05Z")),
     ];
     assert_eq!(
-        render_history_lines(&msgs, 80, false, false),
-        render_history_lines(&msgs, 80, false, false)
+        render_history_lines(&msgs, 80),
+        render_history_lines(&msgs, 80)
     );
     // Different width re-wraps — cache must not be reused.
     assert_ne!(
-        render_history_lines(&msgs, 80, false, false),
-        render_history_lines(&msgs, 20, false, false)
+        render_history_lines(&msgs, 80),
+        render_history_lines(&msgs, 20)
     );
 }
 
@@ -691,6 +691,10 @@ fn draw_sized(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    // The production loop keeps the terminal height in state; furniture
+    // that clamps against the terminal (e.g. the question box) measures
+    // against it. The test backend's height is the same terminal.
+    app.chat.term_height = height;
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
     terminal
         .draw(|frame| ui_chat_mode(frame, frame.area(), app))
@@ -1495,22 +1499,25 @@ fn leader_toggle_tool_detail_flips_expanded_flag() {
 }
 
 #[test]
-fn render_history_thinking_collapsed_shows_summary_not_body() {
+fn render_history_skips_thinking_pseudo_messages() {
     let msgs = vec![
         history_msg("user", "question", Some("2026-08-13T10:00:00Z")),
         history_msg("thinking", "secret chain of thought body", None),
         history_msg("ai", "answer", Some("2026-08-13T10:00:05Z")),
     ];
-    let (lines, _turns) = render_history_lines(&msgs, 80, false, false);
+    let (lines, _turns) = render_history_lines(&msgs, 80);
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
         .collect();
-    assert!(text.contains("💭 thinking — 28 chars"), "got: {text}");
+    // Thinking is live furniture (see `render_thinking_block`), never a
+    // printed transcript row — neither collapsed nor expanded.
+    assert!(!text.contains("💭"), "got: {text}");
     assert!(!text.contains("secret chain of thought body"));
-    // No dashed rule between the human block and the reply any more, and the
-    // collapsed thinking message must not swallow the blank row either.
-    assert!(!text.contains('┄'), "the rule should be gone: {text}");
+    assert!(text.contains("question"));
+    assert!(text.contains("answer"));
+    // The thinking message must not swallow the blank row between the
+    // human block and the reply.
     let answer = lines
         .iter()
         .position(|l| l.spans.iter().any(|s| s.content.contains("answer")))
@@ -1524,21 +1531,6 @@ fn render_history_thinking_collapsed_shows_summary_not_body() {
     );
 }
 
-#[test]
-fn render_history_thinking_expanded_shows_full_text() {
-    let msgs = vec![
-        history_msg("user", "question", Some("2026-08-13T10:00:00Z")),
-        history_msg("thinking", "full chain of thought", None),
-        history_msg("ai", "answer", Some("2026-08-13T10:00:05Z")),
-    ];
-    let (lines, _turns) = render_history_lines(&msgs, 80, true, false);
-    let text: String = lines
-        .iter()
-        .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
-        .collect();
-    assert!(text.contains("full chain of thought"), "got: {text}");
-}
-
 /// No speaker labels any more: the human side is a full-width background
 /// block, the agent's reply stays on the pane background.
 #[test]
@@ -1547,7 +1539,7 @@ fn render_history_marks_human_turns_with_background_not_labels() {
         history_msg("user", "question", Some("2026-08-13T10:00:00Z")),
         history_msg("ai", "answer", Some("2026-08-13T10:00:05Z")),
     ];
-    let (lines, _turns) = render_history_lines(&msgs, 80, false, false);
+    let (lines, _turns) = render_history_lines(&msgs, 80);
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
@@ -1612,7 +1604,7 @@ fn render_history_rows_fit_the_pane() {
         history_msg("user", "question", Some("2026-08-13T10:00:00Z")),
         history_msg("ai", "answer", Some("2026-08-13T10:00:05Z")),
     ];
-    let (lines, _turns) = render_history_lines(&msgs, 80, false, false);
+    let (lines, _turns) = render_history_lines(&msgs, 80);
     // `dim_style` on the line is what marks a round rule.
     let rules: Vec<&Line> = lines
         .iter()
@@ -1641,7 +1633,7 @@ fn render_history_blocks_piped_channel_sender() {
         "from feishu",
         Some("2026-08-13T10:00:00Z"),
     )];
-    let (lines, _turns) = render_history_lines(&msgs, 40, false, false);
+    let (lines, _turns) = render_history_lines(&msgs, 40);
     assert!(
         lines
             .iter()
@@ -2337,7 +2329,7 @@ fn rendered_text(lines: &[ratatui::text::Line<'_>]) -> String {
 #[test]
 fn user_message_leading_spaces_survive_markdown_rendering() {
     let messages = vec![history_msg("user", "  indented\nplain", None)];
-    let (lines, _) = render_history_lines(&messages, 40, false, false);
+    let (lines, _) = render_history_lines(&messages, 40);
     let text = rendered_text(&lines);
     assert!(
         text.contains('\u{00A0}'),
@@ -2349,7 +2341,7 @@ fn user_message_leading_spaces_survive_markdown_rendering() {
 #[test]
 fn user_message_deep_indent_renders_without_code_fence() {
     let messages = vec![history_msg("user", "    Hello", None)];
-    let (lines, _) = render_history_lines(&messages, 40, false, false);
+    let (lines, _) = render_history_lines(&messages, 40);
     let text = rendered_text(&lines);
     assert!(
         text.contains('\u{00A0}'),
@@ -2364,7 +2356,7 @@ fn user_message_deep_indent_renders_without_code_fence() {
 #[test]
 fn ai_message_leading_spaces_render_unchanged() {
     let messages = vec![history_msg("ai", "  indented", None)];
-    let (lines, _) = render_history_lines(&messages, 40, false, false);
+    let (lines, _) = render_history_lines(&messages, 40);
     let text = rendered_text(&lines);
     assert!(
         !text.contains('\u{00A0}'),

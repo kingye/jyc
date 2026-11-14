@@ -109,8 +109,6 @@ fn is_user_message(sender: &str) -> bool {
 pub(crate) fn render_history_lines(
     messages: &[ChatMessage],
     width: usize,
-    thinking_expanded: bool,
-    minimal_progress: bool,
 ) -> (Vec<Line<'static>>, Vec<usize>) {
     let mut all_lines: Vec<Line<'static>> = Vec::new();
     let mut user_turn_lines: Vec<usize> = Vec::new();
@@ -124,9 +122,6 @@ pub(crate) fn render_history_lines(
     // the terminal's own color, so a human turn reads at exactly the brightness
     // of the agent's reply.
     let user_style = Style::default().bg(USER_BG);
-    let thinking_style = Style::default()
-        .fg(Color::Gray)
-        .add_modifier(Modifier::ITALIC);
     let mut group_start_ts: Option<String> = None;
     // Last *conversation* sender (user/AI) — thinking pseudo-messages are
     // skipped so the human→AI blank row and the AI→human round close still
@@ -134,28 +129,12 @@ pub(crate) fn render_history_lines(
     let mut prev_conv_sender: Option<&str> = None;
 
     for (idx, msg) in messages.iter().enumerate() {
-        // Completed-turn thinking pseudo-message: collapsed one-liner by
-        // default, full wrapped text when expanded. Takes no part in
-        // round-rule grouping — the rules key off user/AI turns only.
+        // Thinking pseudo-messages never render here: thinking content is
+        // live furniture (see `render_thinking_block`), re-rendered every
+        // frame so ctrl+p t expands without reprinting scrollback. Skipped
+        // silently, so the human→AI blank row and the AI→human round close
+        // still fire across an interleaved thinking block.
         if msg.sender == "thinking" {
-            if minimal_progress {
-                // Minimal progress mode: the thinking line is a progress
-                // artifact, not conversation — leave it out, blank row and all,
-                // so no orphan gap is left where it used to sit.
-                continue;
-            }
-            if thinking_expanded && !msg.text.is_empty() {
-                for line in wrap_text_to_width(&msg.text, width) {
-                    all_lines.push(Line::from(Span::styled(line, thinking_style)));
-                }
-            } else {
-                let chars = msg.text.chars().count();
-                all_lines.push(Line::from(Span::styled(
-                    format!("💭 thinking — {chars} chars (ctrl+p t to expand)"),
-                    thinking_style,
-                )));
-            }
-            all_lines.push(Line::from(""));
             continue;
         }
 
@@ -442,8 +421,9 @@ fn minimal_progress_line(
 /// these lines unchanged. Legacy rows written before the raw-event shape
 /// have no `event.type`; their prose rides in `text` and passes through.
 /// Dynamic progress tail (thinking / activity / live ticker) — rebuilt
-/// every frame and printed after the transcript by the inline sync
-/// (see `chat::inline::InlinePrinter::sync`). Extracted from the old pane
+/// every frame and drawn as viewport furniture (see `render_chat_viewport`),
+/// so the spinner animates and elapsed-time ticks in place instead of
+/// freezing into a printed scrollback row. Extracted from the old pane
 /// renderer byte-for-byte: only the data source (`app`) and the width
 /// parameter remain.
 pub(crate) fn render_progress_tail(app: &App, width: u16) -> Vec<Line<'static>> {
@@ -1193,35 +1173,175 @@ fn format_tool_input_full(text: &str) -> Vec<String> {
     out
 }
 
+/// Rows the viewport's live furniture occupies. The viewport is exactly
+/// this tall (see `InlinePrinter::sync`), so the composer sits directly
+/// under the printed transcript — and every section length here must match
+/// `render_chat_viewport`'s layout one-to-one.
+pub(crate) struct FurnitureLayout {
+    pub tail: u16,
+    pub thinking: u16,
+    /// Editor chrome, `input_area_rows` semantics: includes its bottom rule.
+    pub input: u16,
+    pub popup: u16,
+}
+
+impl FurnitureLayout {
+    /// Total viewport rows: top rule + input (incl. bottom rule) + popup +
+    /// status line, under the tail/thinking blocks.
+    pub fn total(&self) -> u16 {
+        self.tail
+            .saturating_add(self.thinking)
+            .saturating_add(1) // top rule
+            .saturating_add(self.input)
+            .saturating_add(self.popup)
+            .saturating_add(1) // status line
+    }
+}
+
+/// Derives the furniture layout — the single source of truth for both the
+/// viewport height (`InlinePrinter::sync`) and `render_chat_viewport`'s
+/// section split. `term_height` bounds every section, so `total()` never
+/// exceeds it: the editor chrome and status line keep their rows first
+/// (input itself is capped at `term_height - 2`), then the popup, then
+/// thinking, and the progress tail gives up its rows last. On terminals
+/// shorter than that minimum the overflow sections clip rather than push
+/// the composer off screen.
+pub(crate) fn furniture_layout(app: &App, width: u16, term_height: u16) -> FurnitureLayout {
+    // The editor's two rules and the status line always render, so the
+    // editor body itself is capped first.
+    let input = app
+        .chat
+        .input_area_rows(width, term_height)
+        .min(term_height.max(1).saturating_sub(2));
+    // Rows left for the soft sections, in their cropping priority: popup
+    // first, then thinking, then the tail.
+    let budget = term_height.saturating_sub(input + 2);
+    let popup = match (app.chat.command_popup.as_ref(), app.chat.leader.as_ref()) {
+        (Some(state), _) => crate::cli::command_popup::popup_height(state, &app.chat.commands),
+        (None, Some(leader)) => leader.popup_height(width as usize),
+        (None, None) => 0,
+    }
+    .min(budget);
+    let thinking =
+        (render_thinking_block(app, width).len() as u16).min(budget.saturating_sub(popup));
+    let tail = (render_progress_tail(app, width).len() as u16)
+        .min(budget.saturating_sub(popup).saturating_sub(thinking));
+    FurnitureLayout {
+        tail,
+        thinking,
+        input,
+        popup,
+    }
+}
+
+/// Live furniture block for the current turn's thinking: live blocks from
+/// the websocket while the round is in flight, then the collapsed
+/// pseudo-message the completed round was folded into. One-line summary by
+/// default, the full wrapped text when ctrl+p t expanded it. Sits in
+/// the viewport (redrawn every frame) rather than the printed transcript,
+/// so toggling the expansion never reprints scrollback.
+pub(crate) fn render_thinking_block(app: &App, width: u16) -> Vec<Line<'static>> {
+    let style = Style::default()
+        .fg(Color::Gray)
+        .add_modifier(Modifier::ITALIC);
+    let render_block = |text: &str, expanded: bool| -> Vec<Line<'static>> {
+        if expanded {
+            wrap_text_to_width(text, width as usize)
+                .into_iter()
+                .map(|line| Line::from(Span::styled(line, style)))
+                .collect()
+        } else {
+            let chars = text.chars().count();
+            vec![Line::from(Span::styled(
+                format!("💭 thinking — {chars} chars (ctrl+p t to expand)"),
+                style,
+            ))]
+        }
+    };
+    // Live blocks for the in-flight turn come first (they are the state the
+    // viewport actually shows); once processing completes they are folded
+    // into a `thinking` pseudo-message in `messages` below.
+    let live: Vec<&str> = app
+        .chat
+        .channel
+        .as_deref()
+        .zip(app.chat.topic.as_deref())
+        .and_then(|(c, t)| app.chat.live_thinking_for(c, t))
+        .map(|blocks| blocks.iter().map(String::as_str).collect())
+        .unwrap_or_default();
+    if !live.is_empty() {
+        let expanded = app.chat.thinking_expanded;
+        return live
+            .iter()
+            .flat_map(|b| render_block(b, expanded))
+            .collect();
+    }
+    let Some(msg) = app
+        .chat
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.sender == "thinking" && !m.text.trim().is_empty())
+    else {
+        return Vec::new();
+    };
+    render_block(&msg.text, app.chat.thinking_expanded)
+}
+
 /// Renders the inline chat viewport — the live furniture only, since the
 /// transcript lives in the terminal's own scrollback above (see
 /// `chat::inline`). Replaces the old pane renderer
 /// (`render_chat_conversation`): same widgets, but laid out top-to-bottom
-/// inside the viewport rows instead of under a transcript.
+/// inside the viewport rows instead of under a transcript. The live tail
+/// and the thinking block live here (not in the transcript) so they redraw
+/// every frame — spinner animation, elapsed-time ticker, and the
+/// minimal/full progress + thinking-expansion toggles all take effect
+/// immediately without touching printed scrollback.
 pub(super) fn render_chat_viewport(frame: &mut Frame, area: Rect, app: &mut App) {
-    // Rows: top rule, editor body (question box replaces it while a
-    // question is pending), popup slot, status line.
-    let input_line_count = app.chat.input_area_rows(area.width, area.height);
-    let popup_rows = match (app.chat.command_popup.as_ref(), app.chat.leader.as_ref()) {
-        (Some(state), _) => crate::cli::command_popup::popup_height(state, &app.chat.commands),
-        (None, Some(leader)) => leader.popup_height(area.width as usize),
-        (None, None) => 0,
-    };
+    let layout = furniture_layout(app, area.width, app.chat.term_height);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            // The viewport may be taller than its furniture (a tall terminal):
-            // all slack goes to the top, so the composer + status line hug the
-            // bottom edge like the inline panes they replace.
+            // Slack (a caller handing down a taller area than the furniture
+            // needs — tests do): the real loop sizes the viewport to
+            // `layout.total()` exactly, so this resolves to zero there.
             Constraint::Min(0),
+            Constraint::Length(layout.tail),
+            Constraint::Length(layout.thinking),
             Constraint::Length(1),
             // Editor body: `input_area_rows` already counts the bottom rule.
-            Constraint::Length(input_line_count.saturating_sub(1)),
+            Constraint::Length(layout.input.saturating_sub(1)),
             Constraint::Length(1),
-            Constraint::Length(popup_rows),
+            Constraint::Length(layout.popup),
             Constraint::Length(1),
         ])
         .split(area);
+
+    // Live progress tail (thinking / activity / spinner / ticker) — the
+    // animated rows, repainted every frame.
+    if layout.tail > 0 {
+        let tail = render_progress_tail(app, area.width);
+        let block = Rect {
+            x: chunks[1].x,
+            y: chunks[1].y,
+            width: chunks[1].width,
+            height: layout.tail,
+        };
+        let lines = ratatui::widgets::Paragraph::new(tail);
+        frame.render_widget(lines, block);
+    }
+
+    // Latest-turn thinking block.
+    if layout.thinking > 0 {
+        let block = Rect {
+            x: chunks[2].x,
+            y: chunks[2].y,
+            width: chunks[2].width,
+            height: layout.thinking,
+        };
+        let lines = ratatui::widgets::Paragraph::new(render_thinking_block(app, area.width));
+        frame.render_widget(lines, block);
+    }
 
     // Top rule of the input area: also the popup's top boundary.
     let rule_style = if app.chat.active_question() {
@@ -1230,34 +1350,34 @@ pub(super) fn render_chat_viewport(frame: &mut Frame, area: Rect, app: &mut App)
         Style::default().fg(Color::DarkGray)
     };
     let rule = Paragraph::new(Line::styled(
-        "─".repeat(chunks[1].width as usize),
-        rule_style,
-    ));
-    frame.render_widget(rule, chunks[1]);
-
-    // Editor body (or the question box over it).
-    frame.render_widget(&app.chat.editor, chunks[2]);
-    if app.chat.active_question() {
-        super::render_question_box(frame, chunks[2], app, area.height);
-    }
-
-    // Bottom rule below the editor.
-    let rule = Paragraph::new(Line::styled(
-        "─".repeat(chunks[2].width as usize),
+        "─".repeat(chunks[3].width as usize),
         rule_style,
     ));
     frame.render_widget(rule, chunks[3]);
 
+    // Editor body (or the question box over it).
+    frame.render_widget(&app.chat.editor, chunks[4]);
+    if app.chat.active_question() {
+        super::render_question_box(frame, chunks[4], app, app.chat.term_height);
+    }
+
+    // Bottom rule below the editor.
+    let rule = Paragraph::new(Line::styled(
+        "─".repeat(chunks[4].width as usize),
+        rule_style,
+    ));
+    frame.render_widget(rule, chunks[5]);
+
     // Popup slot — only rows the popup actually needs are reserved, so the
     // status line sits flush under the editor when no popup is open.
-    if popup_rows > 0
+    if layout.popup > 0
         && let Some(ref popup) = app.chat.command_popup
     {
         let popup_area = Rect {
-            x: chunks[4].x,
-            y: chunks[4].y,
-            width: chunks[4].width,
-            height: popup_rows,
+            x: chunks[6].x,
+            y: chunks[6].y,
+            width: chunks[6].width,
+            height: layout.popup,
         };
         crate::cli::command_popup::render_command_popup(
             frame,
@@ -1271,18 +1391,18 @@ pub(super) fn render_chat_viewport(frame: &mut Frame, area: Rect, app: &mut App)
         leader.render(
             frame,
             Rect {
-                x: chunks[4].x,
-                y: chunks[4].y,
-                width: chunks[4].width,
-                height: popup_rows.max(1),
+                x: chunks[6].x,
+                y: chunks[6].y,
+                width: chunks[6].width,
+                height: layout.popup.max(1),
             },
         );
     }
 
     // Status line — the same left counters + right chips strip, at the
     // viewport's last row.
-    let status = build_status_line(chunks[5].width as usize, selected_topic_detail(app), false);
-    frame.render_widget(Paragraph::new(status), chunks[5]);
+    let status = build_status_line(chunks[7].width as usize, selected_topic_detail(app), false);
+    frame.render_widget(Paragraph::new(status), chunks[7]);
 }
 
 #[cfg(test)]
@@ -1305,6 +1425,162 @@ mod tests {
     #[test]
     fn agent_reply_is_ai_side() {
         assert!(!is_user_message("ai"));
+    }
+
+    #[test]
+    fn furniture_height_tracks_tail_and_thinking() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::super::WsEvent>();
+        drop(tx);
+        let mut app = App::new(rx, None);
+        app.chat.channel = Some("chan".into());
+        app.chat.topic = Some("t1".into());
+        let width = 40;
+        // Idle + no thinking: just the editor, its rules, and the status
+        // line.
+        let idle = furniture_layout(&app, width, 24);
+        assert_eq!(idle.tail, 0);
+        assert_eq!(idle.thinking, 0);
+        assert_eq!(
+            idle.total(),
+            idle.input + 1 + idle.popup + 1,
+            "idle furniture is composer chrome plus the status line"
+        );
+        // A round in flight adds the progress tail.
+        app.chat.awaiting_response = true;
+        // Live thinking renders as furniture — collapsed one-liner by
+        // default, full wrapped block when expanded.
+        app.chat.live_thinking.insert(
+            ("chan".to_string(), "t1".to_string()),
+            vec!["some thinking".to_string()],
+        );
+        let collapsed = furniture_layout(&app, width, 24);
+        assert_eq!(collapsed.thinking, 1, "collapsed thinking is one row");
+        let thinking_rows = render_thinking_block(&app, width);
+        assert!(
+            !thinking_rows.is_empty(),
+            "live thinking renders at least the header row"
+        );
+        assert!(
+            thinking_rows
+                .iter()
+                .any(|l| l.spans.iter().any(|s| s.content.contains("💭")))
+        );
+        app.chat.thinking_expanded = true;
+        let expanded = furniture_layout(&app, width, 24);
+        assert!(
+            expanded.thinking >= 1,
+            "expanded thinking keeps at least the header row"
+        );
+        assert_eq!(
+            expanded.total(),
+            expanded.tail + expanded.thinking + expanded.input + 1 + expanded.popup + 1,
+            "expanded thinking rows are part of the furniture total"
+        );
+    }
+
+    #[test]
+    fn short_terminal_shrinks_soft_furniture_before_the_essentials() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::super::WsEvent>();
+        drop(tx);
+        let mut app = App::new(rx, None);
+        app.chat.channel = Some("chan".into());
+        app.chat.topic = Some("t1".into());
+        // Long thinking plus an open ten-row command popup on a terminal
+        // with exactly one spare row above the essentials: the soft
+        // sections give up their rows before the tail/editor/status do.
+        app.chat
+            .live_thinking
+            .entry(("chan".to_string(), "t1".to_string()))
+            .or_default()
+            .push("word ".repeat(200));
+        app.chat.command_popup = Some(crate::cli::command_popup::CommandPopupState::new());
+        app.chat.commands = (0..10)
+            .map(|i| jyc_types::CommandInfo {
+                name: format!("/c{i}"),
+                ..Default::default()
+            })
+            .collect();
+        let width = 40;
+        let essentials = app.chat.input_area_rows(width, u16::MAX) + 2;
+        let layout = furniture_layout(&app, width, essentials + 1);
+        assert_eq!(
+            layout.popup, 1,
+            "the one spare row goes to the popup, clamped from ten"
+        );
+        assert_eq!(layout.thinking, 0, "thinking gives up its rows first");
+        assert!(
+            layout.total() <= essentials + 1,
+            "the furniture fits the short terminal"
+        );
+
+        // Even shorter than the editor chrome + rules: soft sections
+        // collapse to zero, the editor body is capped too, and the total
+        // still honors the terminal (what cannot fit clips at render time
+        // instead of pushing the composer off screen).
+        let tiny = app.chat.input_area_rows(width, u16::MAX);
+        let cramped = furniture_layout(&app, width, tiny);
+        assert_eq!(cramped.popup, 0);
+        assert_eq!(cramped.thinking, 0);
+        assert_eq!(cramped.tail, 0);
+        assert!(
+            cramped.total() <= tiny.max(1),
+            "total ({}) fits a {}-row terminal",
+            cramped.total(),
+            tiny
+        );
+    }
+
+    #[test]
+    fn furniture_thinking_rows_never_exceed_the_terminal() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::super::WsEvent>();
+        drop(tx);
+        let mut app = App::new(rx, None);
+        app.chat.channel = Some("chan".into());
+        app.chat.topic = Some("t1".into());
+        app.chat.awaiting_response = true;
+        app.chat.live_thinking.insert(
+            ("chan".to_string(), "t1".to_string()),
+            vec!["word ".repeat(200)],
+        );
+        app.chat.thinking_expanded = true;
+        for term_height in [10u16, 24, 200] {
+            let layout = furniture_layout(&app, 40, term_height);
+            assert!(
+                layout.total() <= term_height,
+                "furniture ({}) must fit a {term_height}-row terminal",
+                layout.total()
+            );
+        }
+    }
+
+    #[test]
+    fn history_lines_skip_thinking_pseudo_messages() {
+        let msgs = vec![
+            ChatMessage {
+                sender: "ai".into(),
+                text: "answer".into(),
+                timestamp: None,
+                id: 0,
+                client_id: None,
+            },
+            ChatMessage {
+                sender: "thinking".into(),
+                text: "secret chain".into(),
+                timestamp: None,
+                id: 1,
+                client_id: None,
+            },
+        ];
+        let (lines, _) = render_history_lines(&msgs, 40);
+        let joined: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
+            .collect();
+        assert!(
+            !joined.iter().any(|l| l.contains("secret chain")),
+            "thinking content stays out of the printed transcript:\n{}",
+            joined.join("\n")
+        );
     }
 
     #[test]

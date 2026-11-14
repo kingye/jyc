@@ -56,6 +56,10 @@ pub(crate) struct HyperlinkBackend<W: Write> {
     /// to clip region-span re-emissions (real terminals report via ioctl;
     /// tests have no tty). `None` in production.
     size_override: Option<Size>,
+    /// Test hook: overrides the cursor position reported by
+    /// `get_cursor_position` (real terminals answer the DEC cursor report;
+    /// tests have no tty). `None` in production.
+    cursor_override: Option<Position>,
 }
 
 impl<W: Write> HyperlinkBackend<W> {
@@ -66,6 +70,7 @@ impl<W: Write> HyperlinkBackend<W> {
             grid: Vec::new(),
             regions,
             size_override: None,
+            cursor_override: None,
         }
     }
 
@@ -377,6 +382,37 @@ impl<W: Write> Backend for HyperlinkBackend<W> {
         Ok(())
     }
 
+    /// Appends `n` line breaks at the cursor. A real terminal scrolls the
+    /// screen content up only when the cursor passes the last row —
+    /// newlines emitted above the bottom row just move the cursor down.
+    /// ratatui's inline anchoring relies on that behavior
+    /// (`compute_inline_size` appends `height - row - 1` to reserve rows
+    /// below the cursor), so the shadow grid must drop exactly the rows
+    /// that scrolled off, no more, otherwise it drifts from the physical
+    /// screen and later partial diffs mis-classify link rows.
+    /// Newline emission mirrors `ratatui-crossterm`'s implementation.
+    fn append_lines(&mut self, n: u16) -> io::Result<()> {
+        if n == 0 {
+            return Ok(());
+        }
+        let rows = self.size()?.height.max(1);
+        let cursor_row = self.get_cursor_position()?.y;
+        // Lines that pass the last row scroll off; the rest only move the
+        // cursor down within the screen.
+        let scrolled = n.saturating_sub(rows.saturating_sub(cursor_row + 1));
+        if scrolled > 0 {
+            let width = self.current_width().max(1) as usize;
+            let take = (scrolled as usize).min(self.grid.len());
+            self.grid.drain(0..take);
+            self.grid
+                .resize_with(rows as usize, || vec![Cell::default(); width]);
+        }
+        for _ in 0..n {
+            queue!(self.writer, Print("\n"))?;
+        }
+        self.writer.flush()
+    }
+
     fn hide_cursor(&mut self) -> io::Result<()> {
         execute!(self.writer, Hide)
     }
@@ -433,6 +469,9 @@ impl<W: Write> Backend for HyperlinkBackend<W> {
     }
 
     fn get_cursor_position(&mut self) -> io::Result<Position> {
+        if let Some(position) = self.cursor_override {
+            return Ok(position);
+        }
         crossterm::cursor::position()
             .map(|(x, y)| Position { x, y })
             .map_err(io::Error::other)
@@ -473,6 +512,16 @@ impl<W: Write> Backend for HyperlinkBackend<W> {
     }
 
     fn window_size(&mut self) -> io::Result<WindowSize> {
+        // Honor the override like `size` does: autoresize and the inline
+        // anchoring math both consult window_size, and a backend that
+        // answers differently between the two would anchor viewports at
+        // coordinates the grid does not actually have.
+        if let Some(size) = self.size_override {
+            return Ok(WindowSize {
+                columns_rows: size,
+                pixels: Size::default(),
+            });
+        }
         let terminal::WindowSize {
             columns,
             rows,
@@ -709,6 +758,44 @@ mod tests {
             .map(|(x, c)| (x as u16, y, c))
             .collect();
         backend.draw(updates.into_iter()).unwrap();
+    }
+
+    #[test]
+    fn append_lines_above_the_bottom_row_does_not_scroll_the_grid() {
+        let mut backend = backend_with_region(20, 10);
+        backend.size_override = Some(Size::new(20, 10));
+        backend.cursor_override = Some(Position::new(0, 2));
+        for y in 0..10 {
+            draw_row(&mut backend, y, "x");
+        }
+        backend.append_lines(3).unwrap();
+        assert_eq!(
+            HyperlinkBackend::<Vec<u8>>::row_text(&backend.grid[0]),
+            "x",
+            "newlines below the bottom row only move the cursor — row 0 stays put"
+        );
+        assert_eq!(backend.grid.len(), 10);
+    }
+
+    #[test]
+    fn append_lines_at_the_bottom_row_scroll_by_the_lines_past_the_edge() {
+        let mut backend = backend_with_region(20, 10);
+        backend.size_override = Some(Size::new(20, 10));
+        backend.cursor_override = Some(Position::new(0, 9));
+        for y in 0..10 {
+            draw_row(&mut backend, y, &y.to_string());
+        }
+        backend.append_lines(2).unwrap();
+        assert_eq!(
+            HyperlinkBackend::<Vec<u8>>::row_text(&backend.grid[0]),
+            "2",
+            "two newlines at the last row scroll off exactly rows 0 and 1"
+        );
+        assert_eq!(backend.grid.len(), 10);
+        // One newline with room below scrolls nothing.
+        backend.cursor_override = Some(Position::new(0, 8));
+        backend.append_lines(1).unwrap();
+        assert_eq!(HyperlinkBackend::<Vec<u8>>::row_text(&backend.grid[0]), "2");
     }
 
     #[test]
@@ -1036,6 +1123,7 @@ mod tests {
             grid: Vec::new(),
             regions: Rc::clone(&regions),
             size_override: Some(Size::new(W, H)),
+            cursor_override: None,
         };
         let mut term = Terminal::new(backend).unwrap();
 

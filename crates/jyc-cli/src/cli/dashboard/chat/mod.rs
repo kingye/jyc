@@ -149,19 +149,23 @@ pub(super) struct ChatState {
     /// overwritten); cleared when a processing round starts, converted
     /// into a `sender: "thinking"` pseudo-message when it completes.
     pub(super) live_thinking: std::collections::BTreeMap<(String, String), Vec<String>>,
-    /// Whether thinking display is expanded (live tail + completed-turn
-    /// pseudo-messages). Toggled via the leader popup (`t`); default
-    /// collapsed.
+    /// Whether the latest turn's thinking block is expanded to its full
+    /// wrapped text (viewport furniture — never reprints scrollback).
+    /// Toggled via the leader popup (`t`); default collapsed.
     pub(super) thinking_expanded: bool,
     /// Whether tool-call lines in the progress tail show the full,
     /// multi-line input detail instead of the one-line extracted
     /// summary. Toggled via the leader popup (`T`); default collapsed.
     pub(super) tool_detail_expanded: bool,
     /// Minimal progress mode: the live tail collapses to a single animated
-    /// line (`⠹ 12.4s · thinking... | bash`) and the completed-turn thinking
-    /// line is left out of the history. Toggled via the leader popup (`p`);
+    /// line (`⠹ 12.4s · thinking... | bash`). Live furniture, so the toggle
+    /// takes effect the same frame. Toggled via the leader popup (`p`);
     /// default on.
     pub(super) minimal_progress: bool,
+    /// Terminal height the chat UI last measured, in rows. Caps the
+    /// question box (`input_area_rows`) and sizes the inline viewport's
+    /// furniture; refreshed every frame from `InlinePrinter::size`.
+    pub(super) term_height: u16,
     /// Live processing status — updated by WS `processing` events.
     pub(super) live_processing: std::collections::BTreeMap<(String, String), (bool, bool)>,
     /// Live loop duration in milliseconds — updated by WS `loop_tick`
@@ -934,9 +938,13 @@ fn sync_command_popup(app: &mut App) {
 pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     // Layout for the inline chat viewport — the transcript lives in the
     // terminal's own scrollback above this viewport (see `chat::inline`),
-    // so what the viewport holds is only the live furniture:
+    // so what the viewport holds is only the live furniture, top to
+    // bottom:
     //
     //   ┌──────────────────────────────────────────────────┐
+    //   │  progress tail (thinking / activity / spinner)    │
+    //   │  latest turn's thinking (collapsed or expanded)   │
+    //   ├──────────────────────────────────────────────────┤
     //   │  composer (editor, question box covers it)        │
     //   ├──────────────────────────────────────────────────┤
     //   │  `/` command popup (only while a `/` is typed)    │
@@ -2327,6 +2335,7 @@ impl ChatState {
             thinking_expanded: false,
             tool_detail_expanded: false,
             minimal_progress: true,
+            term_height: 24,
             live_processing: std::collections::BTreeMap::new(),
             live_tick_ms: std::collections::BTreeMap::new(),
             last_seen_activity_id: std::collections::BTreeMap::new(),

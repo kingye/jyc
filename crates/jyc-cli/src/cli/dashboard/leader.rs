@@ -90,7 +90,7 @@ impl Leader {
 
     /// Render the anchored grid popup the chat viewport reserves rows for
     /// (below the input field). One grid row per line — the same layout
-    /// [`LeaderPopup::popup_height`] counts.
+    /// [`Self::popup_height`] counts.
     pub fn render_anchored(&self, frame: &mut Frame, rect: Rect) {
         let lines = leader_grid_lines(&self.entries, &self.buffer, rect.width as usize);
         render_leader_body(frame, rect, lines, &self.buffer);

@@ -1154,8 +1154,9 @@ impl FurnitureLayout {
 
 /// Derives the furniture layout — the single source of truth for both the
 /// viewport height (`InlinePrinter::sync`) and `render_chat_viewport`'s
-/// section split. `term_height` bounds every section, so `total()` never
-/// exceeds it: the editor chrome and status line keep their rows first
+/// section split. For terminals of two rows or more, `term_height` bounds
+/// every section, so `total()` never exceeds it: the editor chrome and
+/// status line keep their rows first
 /// (input itself is capped at `term_height - 2`), then the popup, then the
 /// progress tail (at least one row whenever it has anything to show), and
 /// the thinking block gives up its rows last. On terminals shorter than
@@ -1524,6 +1525,37 @@ mod tests {
             "total ({}) fits a {}-row terminal",
             cramped.total(),
             tiny
+        );
+    }
+
+    #[test]
+    fn tail_floor_wins_over_thinking_when_rows_run_out() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::super::WsEvent>();
+        drop(tx);
+        let mut app = App::new(rx, None);
+        app.chat.channel = Some("chan".into());
+        app.chat.topic = Some("t1".into());
+        app.chat.awaiting_response = true;
+        app.chat
+            .live_thinking
+            .entry(("chan".to_string(), "t1".to_string()))
+            .or_default()
+            .push("word ".repeat(200));
+        let width = 40;
+        let essentials = app.chat.input_area_rows(width, u16::MAX) + 2;
+        // One spare row above the essentials: the tail keeps its floor row
+        // (it has content while we await the reply) and thinking gets none.
+        let one = furniture_layout(&app, width, essentials + 1);
+        assert_eq!(one.tail, 1, "the live tail keeps its floor row");
+        assert_eq!(one.thinking, 0, "thinking yields the last row to the tail");
+        // Two spare rows: the tail still takes only its floor and thinking
+        // may grow into what remains.
+        let two = furniture_layout(&app, width, essentials + 2);
+        assert_eq!(two.tail, 1);
+        assert_eq!(two.thinking, 1, "one more row goes to thinking");
+        assert!(
+            two.total() <= essentials + 2,
+            "the furniture fits the terminal"
         );
     }
 

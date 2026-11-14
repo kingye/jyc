@@ -1200,25 +1200,32 @@ impl FurnitureLayout {
 
 /// Derives the furniture layout — the single source of truth for both the
 /// viewport height (`InlinePrinter::sync`) and `render_chat_viewport`'s
-/// section split. `term_height` bounds every section: on a short terminal
-/// the soft sections (thinking, then popup) give up their rows first so
-/// the furniture always fits; only the tail, editor chrome, and status
-/// line are essential and never shrink.
+/// section split. `term_height` bounds every section, so `total()` never
+/// exceeds it: the editor chrome and status line keep their rows first
+/// (input itself is capped at `term_height - 2`), then the popup, then
+/// thinking, and the progress tail gives up its rows last. On terminals
+/// shorter than that minimum the overflow sections clip rather than push
+/// the composer off screen.
 pub(crate) fn furniture_layout(app: &App, width: u16, term_height: u16) -> FurnitureLayout {
-    let tail = render_progress_tail(app, width).len() as u16;
-    let input = app.chat.input_area_rows(width, term_height);
-    // The editor's two rules and the status line always render.
-    let essential = tail.saturating_add(input).saturating_add(2);
+    // The editor's two rules and the status line always render, so the
+    // editor body itself is capped first.
+    let input = app
+        .chat
+        .input_area_rows(width, term_height)
+        .min(term_height.max(1).saturating_sub(2));
+    // Rows left for the soft sections, in their cropping priority: popup
+    // first, then thinking, then the tail.
+    let budget = term_height.saturating_sub(input + 2);
     let popup = match (app.chat.command_popup.as_ref(), app.chat.leader.as_ref()) {
         (Some(state), _) => crate::cli::command_popup::popup_height(state, &app.chat.commands),
         (None, Some(leader)) => leader.popup_height(width as usize),
         (None, None) => 0,
     }
-    // Thinking is the first thing a short terminal gives up; the popup is
-    // next.
-    .min(term_height.saturating_sub(essential));
-    let thinking = (render_thinking_block(app, width).len() as u16)
-        .min(term_height.saturating_sub(essential).saturating_sub(popup));
+    .min(budget);
+    let thinking =
+        (render_thinking_block(app, width).len() as u16).min(budget.saturating_sub(popup));
+    let tail = (render_progress_tail(app, width).len() as u16)
+        .min(budget.saturating_sub(popup).saturating_sub(thinking));
     FurnitureLayout {
         tail,
         thinking,
@@ -1504,6 +1511,22 @@ mod tests {
         assert!(
             layout.total() <= essentials + 1,
             "the furniture fits the short terminal"
+        );
+
+        // Even shorter than the editor chrome + rules: soft sections
+        // collapse to zero, the editor body is capped too, and the total
+        // still honors the terminal (what cannot fit clips at render time
+        // instead of pushing the composer off screen).
+        let tiny = app.chat.input_area_rows(width, u16::MAX);
+        let cramped = furniture_layout(&app, width, tiny);
+        assert_eq!(cramped.popup, 0);
+        assert_eq!(cramped.thinking, 0);
+        assert_eq!(cramped.tail, 0);
+        assert!(
+            cramped.total() <= tiny.max(1),
+            "total ({}) fits a {}-row terminal",
+            cramped.total(),
+            tiny
         );
     }
 

@@ -339,7 +339,7 @@ pub struct ContextRegionInfo {
 }
 
 /// Information about an active topic.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TopicInfo {
     /// Topic name (e.g., "issue-42", "pr-43", "support-ticket")
     pub name: String,

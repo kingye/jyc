@@ -625,21 +625,42 @@ pub async fn run(
     // codes after the restore, corrupting line alignment.
     let result = {
         let link_regions: hyperlink::LinkRegions = Rc::new(RefCell::new(Vec::new()));
-        let backend = hyperlink::HyperlinkBackend::new(stdout(), link_regions.clone());
         // Inline viewport, not the alternate screen: the chat transcript
         // prints into the native scrollback above (see `chat::inline`), so
-        // only the composer + popup + status line are ratatui's to draw.
-        // The overview screen (when reached) still owns the full window —
-        // it renders into this same viewport, which is tall enough to hold
-        // the whole terminal because the viewport height is resolved from
-        // the real terminal size at each draw.
-        let terminal = chat::inline::InlinePrinter::new(backend, crossterm::terminal::size()?.1)?;
+        // only the live furniture (progress tail + thinking + composer +
+        // popup + status line) is ratatui's to draw. The viewport is
+        // exactly as tall as that furniture — the printer recreates its
+        // terminal whenever the height changes (see
+        // `InlinePrinter::resize_viewport`), and the factory closure below
+        // is how a new inline viewport gets built at a given height.
+        // The overview screen (when reached) owns the full window: it
+        // renders into this same terminal while the alternate screen is
+        // active.
+        let link_regions_for_terminal = link_regions.clone();
+        let make_terminal = move |rows: u16| {
+            let backend =
+                hyperlink::HyperlinkBackend::new(stdout(), link_regions_for_terminal.clone());
+            ratatui::Terminal::with_options(
+                backend,
+                ratatui::TerminalOptions {
+                    viewport: ratatui::Viewport::Inline(rows.max(1)),
+                },
+            )
+        };
 
         let (_, ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let mut app = App::new(ws_rx, token);
         app.link_regions = link_regions;
         app.chat.link_rewrite = args.link_rewrite.clone();
-        let mut printer = terminal;
+        // The inline viewport opens exactly as tall as the boot furniture
+        // (composer + status), so no blank screen sits between the (empty)
+        // transcript and the input.
+        let (term_w, term_h) = crossterm::terminal::size()?;
+        app.chat.term_height = term_h;
+        let initial_rows = chat::render::furniture_layout(&app, term_w, term_h)
+            .total()
+            .max(1);
+        let mut printer = chat::inline::InlinePrinter::new(make_terminal, initial_rows)?;
         let mut last_poll = std::time::Instant::now() - POLL_INTERVAL; // Force immediate poll
         // Overview fetches run off-loop: each poll is spawned and its
         // result arrives on this channel, so the HTTP round-trip never
@@ -864,16 +885,16 @@ pub async fn run(
                 // Transcript: re-derive and print the tail that has not been
                 // printed yet. Runs before the viewport draw so a round-trip
                 // that both appends and updates the composer lands in one
-                // consistent frame.
-                let width = printer.size().width;
-                let (mut lines, _) = chat::render_history_lines(
-                    &app.chat.messages,
-                    width as usize,
-                    app.chat.thinking_expanded,
-                    app.chat.minimal_progress,
-                );
-                lines.extend(chat::render::render_progress_tail(&app, width));
-                printer.sync(lines, width)?;
+                // consistent frame. The live furniture (progress tail +
+                // thinking + composer + popup + status) is the viewport's
+                // business — never printed, so toggles and animations apply
+                // the same frame.
+                let size = printer.size();
+                app.chat.term_height = size.height;
+                let width = size.width;
+                let (lines, _) = chat::render_history_lines(&app.chat.messages, width as usize);
+                let furniture = chat::render::furniture_layout(&app, width, size.height);
+                printer.sync(lines, width, furniture.total().max(1))?;
                 printer.draw_viewport(|f| ui(f, &mut app))?;
             } else {
                 printer.draw_fullscreen(|f| ui(f, &mut app))?;

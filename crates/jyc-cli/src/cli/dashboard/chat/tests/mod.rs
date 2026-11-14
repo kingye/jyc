@@ -887,14 +887,24 @@ fn a_short_terminal_shrinks_the_context_not_the_options() {
 }
 
 /// The input area measures top rule + body + the bottom rule in one place.
-/// The body math is pre-existing; this pins the +1 rule row for both the
+/// The plain editor body is one row for empty input and grows with the
+/// wrapped lines of what is typed; this pins the +1 rule row for both the
 /// plain editor and an active question box.
 #[test]
 fn input_area_rows_reserves_the_bottom_rule() {
     let mut app = chatting_app();
     let body_height = 17; // a 24-row terminal's body, once the header is off
-    let body = (count_wrapped_lines(&app.chat.text(), 80) + 1).clamp(2, 11) as u16;
-    assert_eq!(app.chat.input_area_rows(80, body_height), body + 1);
+    assert!(
+        app.chat.text().is_empty(),
+        "fixture: the editor holds no draft, so the body is one row"
+    );
+    assert_eq!(app.chat.input_area_rows(80, body_height), 2);
+
+    // A draft that wraps stays one body row until it exceeds the width.
+    app.chat.editor = super::chat_editor("short draft");
+    let wrapped = count_wrapped_lines(&app.chat.text(), 80).clamp(1, 11) as u16;
+    assert!(wrapped >= 1);
+    assert_eq!(app.chat.input_area_rows(80, body_height), wrapped + 1);
 
     app.chat.questions = vec![PendingQuestion {
         topic: "jyc".to_string(),

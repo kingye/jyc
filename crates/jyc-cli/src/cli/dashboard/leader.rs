@@ -88,6 +88,14 @@ impl Leader {
         render_leader(frame, area, &self.entries, &self.buffer);
     }
 
+    /// Render the anchored grid popup the chat viewport reserves rows for
+    /// (below the input field). One grid row per line — the same layout
+    /// [`Self::popup_height`] counts.
+    pub fn render_anchored(&self, frame: &mut Frame, rect: Rect) {
+        let lines = leader_grid_lines(&self.entries, &self.buffer, rect.width as usize);
+        render_leader_body(frame, rect, lines, &self.buffer);
+    }
+
     /// Rows the anchored popup needs at `width` cells: grid rows + footer.
     /// The chat layout reserves exactly this many rows below the input field,
     /// so the layout and the renderer share this helper — and share the grid
@@ -132,6 +140,33 @@ fn leader_grid_rows(entries: &[LeaderEntry], width: usize) -> usize {
         .len()
         .div_ceil(leader_grid_cols(entries, width))
         .max(1)
+}
+
+/// Entries laid out as grid rows (multiple entries per line where the width
+/// fits them) for the anchored popup. Kept in sync with
+/// [`leader_grid_rows`] — the layout reserves exactly that many rows.
+fn leader_grid_lines(entries: &[LeaderEntry], buffer: &str, width: usize) -> Vec<Line<'static>> {
+    let key_col = leader_key_col_width(entries);
+    let cell = leader_cell_width(entries);
+    entries
+        .chunks(leader_grid_cols(entries, width))
+        .map(|row| {
+            let mut spans = Vec::with_capacity(row.len() * 4);
+            for (i, entry) in row.iter().enumerate() {
+                spans.push(leader_key_span(entry, buffer, key_col));
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(
+                    entry.name,
+                    Style::default().add_modifier(Modifier::BOLD),
+                ));
+                if i + 1 < row.len() {
+                    let used = key_col + 2 + entry.name.width();
+                    spans.push(Span::raw(" ".repeat(cell.saturating_sub(used))));
+                }
+            }
+            Line::from(spans)
+        })
+        .collect()
 }
 
 /// A leader key as shown in the popup. The space key is invisible as a bare

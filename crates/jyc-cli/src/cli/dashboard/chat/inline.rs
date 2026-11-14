@@ -619,6 +619,59 @@ mod tests {
         );
     }
 
+    /// Production order on the overview → chat round trip: the mode is
+    /// synced BEFORE the transcript sync and the draw, so the transcript
+    /// and the viewport both target the primary screen — not the alternate
+    /// screen the overview was drawn into.
+    #[test]
+    fn returning_to_chat_syncs_before_the_viewport_draw() {
+        let alt_calls = Rc::new(RefCell::new(Vec::new()));
+        let mut printer = InlinePrinter::new(
+            |h: u16| {
+                Terminal::with_options(
+                    TestBackend::new(20, 10),
+                    TerminalOptions {
+                        viewport: Viewport::Inline(h.min(10)),
+                    },
+                )
+            },
+            {
+                let alt_calls = alt_calls.clone();
+                move |on| {
+                    alt_calls.borrow_mut().push(on);
+                    Ok(())
+                }
+            },
+            2,
+        )
+        .expect("printer");
+        printer.draw_viewport(|_| {}).expect("paint");
+        printer.draw_fullscreen(|_| {}).expect("overview");
+        assert_eq!(alt_calls.borrow().as_slice(), &[true]);
+        // The dashboard loop: set_chat_visible comes first, then the
+        // transcript sync, then the routed draw.
+        printer.set_chat_visible(true).expect("mode sync");
+        printer.sync(vec![Line::from("back")], 20, 3).expect("sync");
+        printer.draw(|_| {}).expect("draw");
+        assert_eq!(
+            alt_calls.borrow().as_slice(),
+            &[true, false],
+            "no alt-screen churn from the return path"
+        );
+        assert!(
+            !printer.fullscreen,
+            "the draw routed into the inline viewport"
+        );
+        // One transcript row above the composer: the viewport sits directly
+        // under it (inline semantics — the screen below stays blank until
+        // the transcript fills the screen and starts scrolling).
+        assert_eq!(
+            printer.viewport_area.expect("area"),
+            Rect::new(0, 1, 20, 3),
+            "the chat viewport hugs the transcript tail, one row down"
+        );
+    }
+
     /// A fullscreen (overview) draw enters the alternate screen and rebuilds
     /// the terminal at the full window height; the next viewport draw leaves
     /// the alternate screen and comes back at the furniture height.

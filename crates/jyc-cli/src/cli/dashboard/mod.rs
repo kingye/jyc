@@ -891,6 +891,12 @@ pub async fn run(
             // screen runs in the alternate screen (entered on the chat →
             // overview switch), so while chat is hidden the terminal is
             // fullscreen and ratatui just draws there.
+            // Bring the terminal to the surface the current screen needs
+            // BEFORE anything is printed or drawn: sync inserts transcript
+            // rows and resizes the inline viewport, which must target the
+            // primary screen — not the alternate screen the overview was
+            // drawn into. Idempotent: a no-op when the mode is unchanged.
+            printer.set_chat_visible(app.chat.visible)?;
             if app.chat.visible {
                 // A topic switch landed this round: the old topic's rows are
                 // history in the scrollback, so the printer re-baselines and
@@ -913,9 +919,8 @@ pub async fn run(
                 let furniture = chat::render::furniture_layout(&app, width, size.height);
                 printer.sync(lines, width, furniture.total().max(1))?;
             }
-            // The printer routes on `app.chat.visible`: chat draws into the
-            // inline viewport, the overview into the fullscreen one — and it
-            // moves the terminal between them when the mode flips.
+            // The printer routes on the mode just synced above: chat draws
+            // into the inline viewport, the overview into the fullscreen one.
             printer.draw(|f| ui(f, &mut app))?;
 
             // Handle input: block up to 50ms for the first event, then

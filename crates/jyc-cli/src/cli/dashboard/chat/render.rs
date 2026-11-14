@@ -1200,26 +1200,25 @@ impl FurnitureLayout {
 
 /// Derives the furniture layout — the single source of truth for both the
 /// viewport height (`InlinePrinter::sync`) and `render_chat_viewport`'s
-/// section split. `term_height` caps the question box (see
-/// `input_area_rows`).
+/// section split. `term_height` bounds every section: on a short terminal
+/// the soft sections (thinking, then popup) give up their rows first so
+/// the furniture always fits; only the tail, editor chrome, and status
+/// line are essential and never shrink.
 pub(crate) fn furniture_layout(app: &App, width: u16, term_height: u16) -> FurnitureLayout {
     let tail = render_progress_tail(app, width).len() as u16;
     let input = app.chat.input_area_rows(width, term_height);
+    // The editor's two rules and the status line always render.
+    let essential = tail.saturating_add(input).saturating_add(2);
     let popup = match (app.chat.command_popup.as_ref(), app.chat.leader.as_ref()) {
         (Some(state), _) => crate::cli::command_popup::popup_height(state, &app.chat.commands),
         (None, Some(leader)) => leader.popup_height(width as usize),
         (None, None) => 0,
-    };
-    // Chrome (rules, composer, popup, status) and the tail are essential —
-    // cap the thinking block to whatever rows remain so the furniture
-    // always fits a short terminal.
-    let reserved = tail
-        .saturating_add(1)
-        .saturating_add(input)
-        .saturating_add(popup)
-        .saturating_add(1);
-    let thinking =
-        (render_thinking_block(app, width).len() as u16).min(term_height.saturating_sub(reserved));
+    }
+    // Thinking is the first thing a short terminal gives up; the popup is
+    // next.
+    .min(term_height.saturating_sub(essential));
+    let thinking = (render_thinking_block(app, width).len() as u16)
+        .min(term_height.saturating_sub(essential).saturating_sub(popup));
     FurnitureLayout {
         tail,
         thinking,
@@ -1469,6 +1468,42 @@ mod tests {
             expanded.total(),
             expanded.tail + expanded.thinking + expanded.input + 1 + expanded.popup + 1,
             "expanded thinking rows are part of the furniture total"
+        );
+    }
+
+    #[test]
+    fn short_terminal_shrinks_soft_furniture_before_the_essentials() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::super::WsEvent>();
+        drop(tx);
+        let mut app = App::new(rx, None);
+        app.chat.channel = Some("chan".into());
+        app.chat.topic = Some("t1".into());
+        // Long thinking plus an open ten-row command popup on a terminal
+        // with exactly one spare row above the essentials: the soft
+        // sections give up their rows before the tail/editor/status do.
+        app.chat
+            .live_thinking
+            .entry(("chan".to_string(), "t1".to_string()))
+            .or_default()
+            .push("word ".repeat(200));
+        app.chat.command_popup = Some(crate::cli::command_popup::CommandPopupState::new());
+        app.chat.commands = (0..10)
+            .map(|i| jyc_types::CommandInfo {
+                name: format!("/c{i}"),
+                ..Default::default()
+            })
+            .collect();
+        let width = 40;
+        let essentials = app.chat.input_area_rows(width, u16::MAX) + 2;
+        let layout = furniture_layout(&app, width, essentials + 1);
+        assert_eq!(
+            layout.popup, 1,
+            "the one spare row goes to the popup, clamped from ten"
+        );
+        assert_eq!(layout.thinking, 0, "thinking gives up its rows first");
+        assert!(
+            layout.total() <= essentials + 1,
+            "the furniture fits the short terminal"
         );
     }
 

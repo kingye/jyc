@@ -942,8 +942,8 @@ pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     // bottom:
     //
     //   ┌──────────────────────────────────────────────────┐
-    //   │  progress tail (thinking / activity / spinner)    │
     //   │  latest turn's thinking (collapsed or expanded)   │
+    //   │  progress tail (activity / spinner)               │
     //   ├──────────────────────────────────────────────────┤
     //   │  composer (editor, question box covers it)        │
     //   ├──────────────────────────────────────────────────┤
@@ -2535,7 +2535,9 @@ impl ChatState {
                 + 3)
             .clamp(6, question_box_max_rows(body_height)) as u16
         } else {
-            (count_wrapped_lines(&self.text(), width) + 1).clamp(2, 11) as u16
+            // Empty input takes one row; `count_wrapped_lines` already
+            // counts the wrapped visual rows of what is typed.
+            count_wrapped_lines(&self.text(), width).clamp(1, 11) as u16
         };
         // +1: the bottom rule row below the editor.
         body + 1

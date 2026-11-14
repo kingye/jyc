@@ -2,7 +2,7 @@
 //!
 //! The chat screen does not own the whole terminal: it prints transcript
 //! lines above an inline viewport that holds the live furniture — the
-//! progress tail (thinking / activity / spinner), the composer, the `/`
+//! progress tail (activity / live ticker), the composer, the `/`
 //! popup and the status line. Printed lines land in the terminal's own
 //! scrollback, so tmux/native scrolling works without the app tracking a
 //! scroll offset (see DESIGN.md "Chat inline viewport").

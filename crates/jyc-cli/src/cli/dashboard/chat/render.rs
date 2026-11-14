@@ -199,15 +199,22 @@ pub(crate) fn render_history_lines(
         // its background below). The human side's leading indentation is
         // protected from CommonMark's paragraph de-indentation (see
         // `protect_leading_whitespace`).
-        let md_input = if is_user {
-            protect_leading_whitespace(&msg.text)
+        // Pre-styled rows (a locally-answered command's pane snapshot) go
+        // over as-is: running them through the markdown path would flatten
+        // their colors. The inset still applies so the block lines up.
+        let mut msg_lines = if let Some(styled) = &msg.styled_lines {
+            wrap_styled_lines(styled.clone(), body_width)
         } else {
-            msg.text.clone()
+            let md_input = if is_user {
+                protect_leading_whitespace(&msg.text)
+            } else {
+                msg.text.clone()
+            };
+            let md_text = softbreaks_to_hardbreaks(&format!("{md_input}\n"));
+            let rendered =
+                tui_markdown::from_str_with_options(&md_text, &chat_markdown_options()).lines;
+            wrap_styled_lines(wrap_tables(rendered, body_width), body_width)
         };
-        let md_text = softbreaks_to_hardbreaks(&format!("{md_input}\n"));
-        let rendered =
-            tui_markdown::from_str_with_options(&md_text, &chat_markdown_options()).lines;
-        let mut msg_lines = wrap_styled_lines(wrap_tables(rendered, body_width), body_width);
         // The inset cell, one per row, both sides. A bare span is enough:
         // `Line::styled_graphemes` patches the row's own style onto every
         // grapheme it renders, so the block's background — or a code block's
@@ -1605,6 +1612,7 @@ mod tests {
                 timestamp: None,
                 id: 0,
                 client_id: None,
+                styled_lines: None,
             },
             ChatMessage {
                 sender: "thinking".into(),
@@ -1612,6 +1620,7 @@ mod tests {
                 timestamp: None,
                 id: 1,
                 client_id: None,
+                styled_lines: None,
             },
         ];
         let (lines, _) = render_history_lines(&msgs, 40);

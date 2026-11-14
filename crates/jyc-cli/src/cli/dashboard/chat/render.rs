@@ -1428,7 +1428,6 @@ mod tests {
         let mut app = App::new(rx, None);
         app.chat.channel = Some("chan".into());
         app.chat.topic = Some("t1".into());
-        app.chat.awaiting_response = true;
         let width = 40;
         // Idle + no thinking: just the editor, its rules, and the status
         // line.
@@ -1440,6 +1439,8 @@ mod tests {
             idle.input + 1 + idle.popup + 1,
             "idle furniture is composer chrome plus the status line"
         );
+        // A round in flight adds the progress tail.
+        app.chat.awaiting_response = true;
         // Live thinking renders as furniture — collapsed one-liner by
         // default, full wrapped block when expanded.
         app.chat.live_thinking.insert(

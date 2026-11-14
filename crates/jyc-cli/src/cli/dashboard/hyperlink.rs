@@ -493,6 +493,16 @@ impl<W: Write> Backend for HyperlinkBackend<W> {
     }
 
     fn window_size(&mut self) -> io::Result<WindowSize> {
+        // Honor the override like `size` does: autoresize and the inline
+        // anchoring math both consult window_size, and a backend that
+        // answers differently between the two would anchor viewports at
+        // coordinates the grid does not actually have.
+        if let Some(size) = self.size_override {
+            return Ok(WindowSize {
+                columns_rows: size,
+                pixels: Size::default(),
+            });
+        }
         let terminal::WindowSize {
             columns,
             rows,

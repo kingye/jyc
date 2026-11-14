@@ -56,6 +56,11 @@ pub(crate) struct InlinePrinter<B: Backend> {
     /// Whether the terminal currently serves a fullscreen surface (the
     /// alternate screen is active). `false` = inline chat viewport.
     fullscreen: bool,
+    /// Terminal height the fullscreen surface was built at. A terminal
+    /// resize while the overview is up does not move a ratatui inline
+    /// viewport (only `Terminal::resize` with a new requested height does),
+    /// so the fullscreen is rebuilt whenever this and the real size drift.
+    fullscreen_height: u16,
     /// Where the viewport sits on the terminal right now. Ratatui keeps
     /// the inline viewport's area private, so the printer tracks the last
     /// drawn frame's area itself — resize math needs the old top/bottom
@@ -93,6 +98,7 @@ impl<B: Backend> InlinePrinter<B> {
             terminal,
             viewport_height,
             fullscreen: false,
+            fullscreen_height: 0,
             viewport_area: None,
             printed: 0,
             printed_width: 0,
@@ -169,6 +175,7 @@ impl<B: Backend> InlinePrinter<B> {
             let height = self.terminal.size()?.height.max(1);
             self.terminal = (self.make_terminal)(height)?;
             self.fullscreen = true;
+            self.fullscreen_height = height;
         } else {
             (self.set_alt_screen)(false)?;
             self.terminal = (self.make_terminal)(self.viewport_height.max(1))?;
@@ -266,21 +273,30 @@ impl<B: Backend> InlinePrinter<B> {
     }
 
     /// Draws a fullscreen surface (the overview) on the whole terminal.
-    /// Switches to the alternate screen first — see [`Self::set_chat_visible`].
+    /// Enters the alternate screen first — see [`Self::set_chat_visible`] —
+    /// and follows terminal resizes while it stays up: a ratatui inline
+    /// viewport keeps its requested height across `autoresize`, so the
+    /// fullscreen is rebuilt at the new height whenever the size drifts.
+    /// Deliberately leaves `viewport_area` alone: that field is the *inline*
+    /// anchor, and the chat screen's position must survive the overview.
     pub(crate) fn draw_fullscreen<F>(&mut self, render_fn: F) -> Result<(), B::Error>
     where
         F: FnOnce(&mut ratatui::Frame),
     {
         self.set_chat_visible(false)?;
+        let size = self.terminal.size()?;
+        if self.fullscreen_height != size.height.max(1) {
+            self.terminal = (self.make_terminal)(size.height.max(1))?;
+            self.fullscreen_height = size.height.max(1);
+        }
         self.terminal.autoresize()?;
+        // No extra flush here: `draw` already swaps buffers, and a bare
+        // `Terminal::flush` would replay the reverse diff and erase the
+        // frame just drawn.
         self.terminal.draw(render_fn)?;
-        self.terminal.flush()?;
         Ok(())
     }
 
-    /// Redraws the viewport from `render_fn` (live tail + thinking +
-    /// composer + popup + status line). Leaves the alternate screen first
-    /// if a fullscreen draw happened since the last viewport draw.
     /// Draws the current screen, routing on the active mode: chat into the
     /// inline viewport, overview fullscreen on the alternate screen.
     pub(crate) fn draw<F>(&mut self, render_fn: F) -> Result<(), B::Error>
@@ -294,13 +310,23 @@ impl<B: Backend> InlinePrinter<B> {
         }
     }
 
+    /// Redraws the viewport from `render_fn` (live tail + thinking +
+    /// composer + popup + status line). Leaves the alternate screen first
+    /// if a fullscreen draw happened since the last viewport draw.
     pub(crate) fn draw_viewport<F>(&mut self, render_fn: F) -> Result<(), B::Error>
     where
         F: FnOnce(&mut ratatui::Frame),
     {
         self.set_chat_visible(true)?;
-        let frame = self.terminal.draw(render_fn)?;
-        self.viewport_area = Some(frame.area);
+        // `Frame::area` is the viewport; the `CompletedFrame`'s area is the
+        // whole terminal — using it here would grow `viewport_area` to the
+        // full screen and break every anchor calculation downstream.
+        let mut area = Rect::default();
+        self.terminal.draw(|f| {
+            area = f.area();
+            render_fn(f);
+        })?;
+        self.viewport_area = Some(area);
         Ok(())
     }
 }
@@ -567,6 +593,7 @@ mod tests {
             Rect::new(0, 8, 20, 2),
             "bottom-anchored once the transcript fills the screen"
         );
+        let appends_before_growth = *appended.borrow();
         // Grow the furniture with NO new transcript this frame.
         printer.sync(rows, 20, 5).expect("grow");
         assert_eq!(
@@ -586,9 +613,9 @@ mod tests {
             "the grown viewport's middle row is blank (rows 5 and 9 hold the furniture)"
         );
         assert_eq!(
-            *appended.borrow(),
-            3,
-            "growth scrolled via the backend append (the delta), not via reprint"
+            *appended.borrow() - appends_before_growth,
+            4,
+            "the growth itself appended the parked cursor row plus the height delta (3), not a full reprint"
         );
     }
 

@@ -691,6 +691,10 @@ fn draw_sized(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    // The production loop keeps the terminal height in state; furniture
+    // that clamps against the terminal (e.g. the question box) measures
+    // against it. The test backend's height is the same terminal.
+    app.chat.term_height = height;
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
     terminal
         .draw(|frame| ui_chat_mode(frame, frame.area(), app))

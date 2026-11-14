@@ -377,6 +377,26 @@ impl<W: Write> Backend for HyperlinkBackend<W> {
         Ok(())
     }
 
+    /// Appends `n` line breaks at the cursor. A real terminal scrolls the
+    /// screen content up as the cursor passes the last row, pushing the top
+    /// rows into scrollback — ratatui's inline viewport relies on this
+    /// (`compute_inline_size` reserves viewport rows through `append_lines`).
+    /// The shadow grid must mirror the scroll, otherwise it drifts from the
+    /// physical screen and later partial diffs mis-classify link rows.
+    /// Newline emission mirrors `ratatui-crossterm`'s implementation.
+    fn append_lines(&mut self, n: u16) -> io::Result<()> {
+        let scroll = n as usize;
+        if self.grid.len() > scroll {
+            self.grid.drain(0..scroll);
+        } else {
+            self.grid.clear();
+        }
+        for _ in 0..n {
+            queue!(self.writer, Print("\n"))?;
+        }
+        self.writer.flush()
+    }
+
     fn hide_cursor(&mut self) -> io::Result<()> {
         execute!(self.writer, Hide)
     }

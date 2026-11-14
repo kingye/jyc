@@ -1204,13 +1204,22 @@ impl FurnitureLayout {
 /// `input_area_rows`).
 pub(crate) fn furniture_layout(app: &App, width: u16, term_height: u16) -> FurnitureLayout {
     let tail = render_progress_tail(app, width).len() as u16;
-    let thinking = render_thinking_block(app, width).len() as u16;
     let input = app.chat.input_area_rows(width, term_height);
     let popup = match (app.chat.command_popup.as_ref(), app.chat.leader.as_ref()) {
         (Some(state), _) => crate::cli::command_popup::popup_height(state, &app.chat.commands),
         (None, Some(leader)) => leader.popup_height(width as usize),
         (None, None) => 0,
     };
+    // Chrome (rules, composer, popup, status) and the tail are essential —
+    // cap the thinking block to whatever rows remain so the furniture
+    // always fits a short terminal.
+    let reserved = tail
+        .saturating_add(1)
+        .saturating_add(input)
+        .saturating_add(popup)
+        .saturating_add(1);
+    let thinking =
+        (render_thinking_block(app, width).len() as u16).min(term_height.saturating_sub(reserved));
     FurnitureLayout {
         tail,
         thinking,
@@ -1219,15 +1228,48 @@ pub(crate) fn furniture_layout(app: &App, width: u16, term_height: u16) -> Furni
     }
 }
 
-/// Live furniture block for the latest turn's thinking: a one-line summary
-/// by default, the full wrapped text when ctrl+p t expanded it. Sits in
+/// Live furniture block for the current turn's thinking: live blocks from
+/// the websocket while the round is in flight, then the collapsed
+/// pseudo-message the completed round was folded into. One-line summary by
+/// default, the full wrapped text when ctrl+p t expanded it. Sits in
 /// the viewport (redrawn every frame) rather than the printed transcript,
-/// so toggling the expansion never reprints scrollback — and only the most
-/// recent turn's thinking shows; older turns stay out of the way.
+/// so toggling the expansion never reprints scrollback.
 pub(crate) fn render_thinking_block(app: &App, width: u16) -> Vec<Line<'static>> {
     let style = Style::default()
         .fg(Color::Gray)
         .add_modifier(Modifier::ITALIC);
+    let render_block = |text: &str, expanded: bool| -> Vec<Line<'static>> {
+        if expanded {
+            wrap_text_to_width(text, width as usize)
+                .into_iter()
+                .map(|line| Line::from(Span::styled(line, style)))
+                .collect()
+        } else {
+            let chars = text.chars().count();
+            vec![Line::from(Span::styled(
+                format!("💭 thinking — {chars} chars (ctrl+p t to expand)"),
+                style,
+            ))]
+        }
+    };
+    // Live blocks for the in-flight turn come first (they are the state the
+    // viewport actually shows); once processing completes they are folded
+    // into a `thinking` pseudo-message in `messages` below.
+    let live: Vec<&str> = app
+        .chat
+        .channel
+        .as_deref()
+        .zip(app.chat.topic.as_deref())
+        .and_then(|(c, t)| app.chat.live_thinking_for(c, t))
+        .map(|blocks| blocks.iter().map(String::as_str).collect())
+        .unwrap_or_default();
+    if !live.is_empty() {
+        let expanded = app.chat.thinking_expanded;
+        return live
+            .iter()
+            .flat_map(|b| render_block(b, expanded))
+            .collect();
+    }
     let Some(msg) = app
         .chat
         .messages
@@ -1237,18 +1279,7 @@ pub(crate) fn render_thinking_block(app: &App, width: u16) -> Vec<Line<'static>>
     else {
         return Vec::new();
     };
-    if app.chat.thinking_expanded {
-        wrap_text_to_width(&msg.text, width as usize)
-            .into_iter()
-            .map(|line| Line::from(Span::styled(line, style)))
-            .collect()
-    } else {
-        let chars = msg.text.chars().count();
-        vec![Line::from(Span::styled(
-            format!("💭 thinking — {chars} chars (ctrl+p t to expand)"),
-            style,
-        ))]
-    }
+    render_block(&msg.text, app.chat.thinking_expanded)
 }
 
 /// Renders the inline chat viewport — the live furniture only, since the

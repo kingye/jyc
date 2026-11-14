@@ -6,7 +6,7 @@ use crossterm::{
         self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
         KeyModifiers,
     },
-    terminal::{disable_raw_mode, enable_raw_mode},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use jyc_core::duration::{DurationStyle, format_duration_secs};
 use ratatui::{
@@ -603,8 +603,9 @@ pub async fn run(
     // Setup terminal — raw mode only, no alternate screen. The chat screen
     // is an inline UI: its transcript lives in the native scrollback above
     // the composer, so it must print into the same buffer the user scrolls
-    // with tmux. The overview screen enters the alternate screen on demand
-    // (see `App::set_chat_visible`) and leaves it when chat opens again.
+    // with tmux. The overview is a fullscreen surface on the alternate
+    // screen: `InlinePrinter` switches between the two on `chat.visible`
+    // transitions (see `chat::inline::InlinePrinter::set_chat_visible`).
     enable_raw_mode()?;
     stdout().execute(EnableBracketedPaste)?;
 
@@ -615,6 +616,9 @@ pub async fn run(
     // (Not restored on normal exit — the process ends after `run`.)
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        // Best-effort: also leave the alternate screen so a panic while
+        // the overview is up does not strand the user there.
+        let _ = stdout().execute(LeaveAlternateScreen);
         let _ = stdout().execute(DisableBracketedPaste);
         let _ = disable_raw_mode();
         default_hook(info);
@@ -647,6 +651,18 @@ pub async fn run(
                 },
             )
         };
+        // Fullscreen surfaces (the overview) draw on the alternate screen so
+        // they can paint the whole window without touching the printed chat
+        // transcript underneath; the printer drives the switch around its
+        // fullscreen draws (see `chat::inline::InlinePrinter::set_chat_visible`).
+        let set_alt_screen = |on: bool| -> std::io::Result<()> {
+            if on {
+                stdout().execute(EnterAlternateScreen)?;
+            } else {
+                stdout().execute(LeaveAlternateScreen)?;
+            }
+            Ok(())
+        };
 
         let (_, ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let mut app = App::new(ws_rx, token);
@@ -660,7 +676,8 @@ pub async fn run(
         let initial_rows = chat::render::furniture_layout(&app, term_w, term_h)
             .total()
             .max(1);
-        let mut printer = chat::inline::InlinePrinter::new(make_terminal, initial_rows)?;
+        let mut printer =
+            chat::inline::InlinePrinter::new(make_terminal, set_alt_screen, initial_rows)?;
         let mut last_poll = std::time::Instant::now() - POLL_INTERVAL; // Force immediate poll
         // Overview fetches run off-loop: each poll is spawned and its
         // result arrives on this channel, so the HTTP round-trip never
@@ -895,10 +912,11 @@ pub async fn run(
                 let (lines, _) = chat::render_history_lines(&app.chat.messages, width as usize);
                 let furniture = chat::render::furniture_layout(&app, width, size.height);
                 printer.sync(lines, width, furniture.total().max(1))?;
-                printer.draw_viewport(|f| ui(f, &mut app))?;
-            } else {
-                printer.draw_fullscreen(|f| ui(f, &mut app))?;
             }
+            // The printer routes on `app.chat.visible`: chat draws into the
+            // inline viewport, the overview into the fullscreen one — and it
+            // moves the terminal between them when the mode flips.
+            printer.draw(|f| ui(f, &mut app))?;
 
             // Handle input: block up to 50ms for the first event, then
             // drain everything already pending. One draw per burst (above)
@@ -950,7 +968,10 @@ pub async fn run(
         }
     }; // terminal + backend dropped here
 
-    // Restore terminal — safe now that no buffered escape codes remain
+    // Restore terminal — safe now that no buffered escape codes remain.
+    // Leaving the alternate screen is a no-op when the chat screen was up
+    // at exit; it matters when the loop ended on the overview.
+    stdout().execute(LeaveAlternateScreen)?;
     stdout().execute(DisableBracketedPaste)?;
     disable_raw_mode()?;
 

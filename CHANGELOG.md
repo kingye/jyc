@@ -9,7 +9,7 @@
 - The chat screen's explorer, topic-info, and activity panes are removed; the overview screen keeps its own tables. Leader keys and mouse bindings tied to those panes are gone with them
 
 ### Fixed
-- The inline chat viewport sizes to its live furniture (progress tail, thinking, composer, `/` popup, status line) instead of the full terminal height, so the composer sits directly under the printed transcript — no blank screen between history and input; the viewport re-anchors when the furniture grows or shrinks
+- The inline chat viewport sizes to its live furniture (progress tail, thinking, composer, `/` popup, status line) instead of the full terminal height, so the composer sits directly under the printed transcript — no blank screen between history and input; the viewport re-anchors when the furniture grows or shrinks, and the dashboard overview keeps its fullscreen surface by drawing on the alternate screen
 - The progress spinner, elapsed-time ticker, and the ctrl+p `p` (minimal progress) / `t` (expand thinking) toggles take effect immediately: the progress tail and the latest turn's thinking are viewport furniture repainted every frame, not frozen rows in the printed scrollback
 
 ## [0.10.0] - 2026-11-14
